@@ -1,0 +1,53 @@
+{
+  "name": "kavrix-workspace",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Zero-knowledge credentials vault monorepo",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/d4rkNinja/kavrix.git"
+  },
+  "homepage": "https://github.com/d4rkNinja/kavrix#readme",
+  "bugs": {
+    "url": "https://github.com/d4rkNinja/kavrix/issues"
+  },
+  "keywords": [
+    "credentials",
+    "password-manager",
+    "security",
+    "terminal",
+    "zero-knowledge"
+  ],
+  "type": "module",
+  "packageManager": "pnpm@11.21.0",
+  "engines": {
+    "node": ">=24.19.0 <25",
+    "pnpm": ">=11.0.0"
+  },
+  "scripts": {
+    "build": "pnpm -r --if-present build",
+    "clean": "pnpm -r --if-present clean",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "lint": "eslint . --max-warnings 0",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "typecheck": "pnpm -r --if-present typecheck",
+    "verify": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm test && pnpm build",
+    "changeset": "changeset",
+    "version-packages": "changeset version"
+  },
+  "devDependencies": {
+    "@changesets/cli": "2.31.1",
+    "@eslint/js": "10.0.1",
+    "@types/node": "24.13.3",
+    "@vitest/coverage-v8": "4.1.10",
+    "eslint": "10.0.1",
+    "prettier": "3.9.6",
+    "tsx": "4.23.4",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.65.0",
+    "vitest": "4.1.10"
+  }
+}

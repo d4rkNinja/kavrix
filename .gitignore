@@ -1,0 +1,16 @@
+node_modules/
+dist/
+coverage/
+/package-artifacts/
+*.tsbuildinfo
+.env
+.env.*
+!.env.example
+*.log
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+.kavrix/
+*.cvk
+*.kavrix-backup

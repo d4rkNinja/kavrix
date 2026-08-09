@@ -1,0 +1,35 @@
+import { z } from 'zod';
+
+const opaqueId = z
+  .string()
+  .min(1)
+  .max(128)
+  .regex(/^[A-Za-z0-9][A-Za-z0-9._~-]*$/, 'Must be an opaque identifier');
+
+export const vaultIdSchema = opaqueId.brand<'VaultId'>();
+export const keySlotIdSchema = opaqueId.brand<'KeySlotId'>();
+export const groupIdSchema = opaqueId.brand<'GroupId'>();
+export const itemIdSchema = opaqueId.brand<'ItemId'>();
+export const fieldIdSchema = opaqueId.brand<'FieldId'>();
+export const noteIdSchema = opaqueId.brand<'NoteId'>();
+export const templateIdSchema = opaqueId.brand<'TemplateId'>();
+export const templateMigrationIdSchema = opaqueId.brand<'TemplateMigrationId'>();
+export const deviceIdSchema = opaqueId.brand<'DeviceId'>();
+export const changeIdSchema = opaqueId.brand<'ChangeId'>();
+export const auditEventIdSchema = opaqueId.brand<'AuditEventId'>();
+export const attachmentIdSchema = opaqueId.brand<'AttachmentId'>();
+export const historyIdSchema = opaqueId.brand<'HistoryId'>();
+
+export type VaultId = z.infer<typeof vaultIdSchema>;
+export type KeySlotId = z.infer<typeof keySlotIdSchema>;
+export type GroupId = z.infer<typeof groupIdSchema>;
+export type ItemId = z.infer<typeof itemIdSchema>;
+export type FieldId = z.infer<typeof fieldIdSchema>;
+export type NoteId = z.infer<typeof noteIdSchema>;
+export type TemplateId = z.infer<typeof templateIdSchema>;
+export type TemplateMigrationId = z.infer<typeof templateMigrationIdSchema>;
+export type DeviceId = z.infer<typeof deviceIdSchema>;
+export type ChangeId = z.infer<typeof changeIdSchema>;
+export type AuditEventId = z.infer<typeof auditEventIdSchema>;
+export type AttachmentId = z.infer<typeof attachmentIdSchema>;
+export type HistoryId = z.infer<typeof historyIdSchema>;
