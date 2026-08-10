@@ -8,6 +8,7 @@ import { SyncLocalStateError } from '@kavrix/sync';
 const WINDOWS_ROOT = 'C:\\Windows';
 const WINDOWS_POWERSHELL =
   'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
+const WINDOWS_CHECK_TIMEOUT_MS = 15_000;
 const SQLITE_SIDE_SUFFIXES = ['-wal', '-shm', '-journal'] as const;
 const WINDOWS_DIRECTORY_SCRIPT = [
   "$ErrorActionPreference='Stop'",
@@ -272,7 +273,7 @@ function runWindowsCheck(script: string, input: Uint8Array): Promise<void> {
       failed = true;
       child.kill('SIGKILL');
     };
-    const timeout = setTimeout(fail, 5_000);
+    const timeout = setTimeout(fail, WINDOWS_CHECK_TIMEOUT_MS);
     timeout.unref();
     child.stdout.on('data', (value: Buffer) => {
       stdoutBytes += value.byteLength;

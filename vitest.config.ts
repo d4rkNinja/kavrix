@@ -3,6 +3,7 @@ import { defineConfig } from 'vitest/config';
 const mongoIntegrationEnabled =
   process.env['KAVRIX_MONGODB_URI'] !== undefined &&
   process.env['KAVRIX_MONGODB_URI'].length > 0;
+const testBoundaryTimeoutMs = process.platform === 'win32' ? 60_000 : 10_000;
 
 export default defineConfig({
   test: {
@@ -10,6 +11,7 @@ export default defineConfig({
     // process boundaries. Running those files concurrently can starve the
     // fixed fail-closed helper timeouts on two-core CI runners.
     fileParallelism: process.platform !== 'win32',
+    hookTimeout: testBoundaryTimeoutMs,
     include: mongoIntegrationEnabled
       ? [
           '{apps,packages}/**/*.test.ts',
@@ -21,7 +23,7 @@ export default defineConfig({
     restoreMocks: true,
     unstubEnvs: true,
     unstubGlobals: true,
-    testTimeout: 10_000,
+    testTimeout: testBoundaryTimeoutMs,
     coverage: {
       provider: 'v8',
       reporter: ['text', 'json-summary', 'html'],
