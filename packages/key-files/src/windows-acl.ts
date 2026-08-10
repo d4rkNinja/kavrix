@@ -26,21 +26,28 @@ $target = [Environment]::GetEnvironmentVariable('KAVRIX_ACL_TARGET', 'Process')
 if ([String]::IsNullOrEmpty($target)) { exit 3 }
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
 $sid = $identity.User
-$acl = Get-Acl -LiteralPath $target -ErrorAction Stop
-$acl.SetAccessRuleProtection($true, $false)
-$rules = @($acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]))
-foreach ($rule in $rules) { [void]$acl.RemoveAccessRuleSpecific($rule) }
+$isDirectory = [IO.Directory]::Exists($target)
+if ($isDirectory) {
+  $item = [IO.DirectoryInfo]::new($target)
+  $acl = [Security.AccessControl.DirectorySecurity]::new()
+} elseif ([IO.File]::Exists($target)) {
+  $item = [IO.FileInfo]::new($target)
+  $acl = [Security.AccessControl.FileSecurity]::new()
+} else { exit 4 }
+$item.Refresh()
+if (-not $item.Exists -or (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) { exit 4 }
 $acl.SetOwner($sid)
+$acl.SetAccessRuleProtection($true, $false)
 $fullControl = [Security.AccessControl.FileSystemRights]::FullControl
 $allow = [Security.AccessControl.AccessControlType]::Allow
 $inheritance = [Security.AccessControl.InheritanceFlags]::None
-if ([IO.Directory]::Exists($target)) {
+if ($isDirectory) {
   $inheritance = [Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [Security.AccessControl.InheritanceFlags]::ObjectInherit
 }
 $propagation = [Security.AccessControl.PropagationFlags]::None
 $rule = [Security.AccessControl.FileSystemAccessRule]::new($sid, $fullControl, $inheritance, $propagation, $allow)
 [void]$acl.AddAccessRule($rule)
-Set-Acl -LiteralPath $target -AclObject $acl -ErrorAction Stop
+$item.SetAccessControl($acl)
 `;
 
 const VERIFY_USER_ONLY_ACL = String.raw`
@@ -50,13 +57,22 @@ if ([String]::IsNullOrEmpty($target)) { exit 3 }
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
 $currentSid = $identity.User.Value
 $systemSid = 'S-1-5-18'
-$acl = Get-Acl -LiteralPath $target -ErrorAction Stop
+$isDirectory = [IO.Directory]::Exists($target)
+if ($isDirectory) {
+  $item = [IO.DirectoryInfo]::new($target)
+} elseif ([IO.File]::Exists($target)) {
+  $item = [IO.FileInfo]::new($target)
+} else { exit 4 }
+$item.Refresh()
+if (-not $item.Exists -or (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) { exit 4 }
+$sections = [Security.AccessControl.AccessControlSections]::Access -bor [Security.AccessControl.AccessControlSections]::Owner
+$acl = $item.GetAccessControl($sections)
 $ownerSid = $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
 if (-not $acl.AreAccessRulesProtected -or $ownerSid -ne $currentSid) { exit 2 }
 $rules = @($acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]))
 if ($rules.Count -eq 0) { exit 2 }
 $hasCurrentUserAllow = $false
-$hasSafeChildInheritance = -not [IO.Directory]::Exists($target)
+$hasSafeChildInheritance = -not $isDirectory
 foreach ($rule in $rules) {
   $ruleSid = $rule.IdentityReference.Value
   if ($rule.IsInherited) { exit 2 }

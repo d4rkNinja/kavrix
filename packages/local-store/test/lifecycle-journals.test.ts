@@ -28,7 +28,7 @@ import {
 } from '../src/index.js';
 
 const NOW = '2026-08-10T00:00:00.000Z';
-const TEST_TMPDIR = realpathSync(tmpdir());
+const TEST_TMPDIR = realpathSync.native(tmpdir());
 const LEASE_CHILD_MODULE = new URL('../dist/index.js', import.meta.url).href;
 const LEASE_CHILD_SOURCE = `
   import { writeFile } from 'node:fs/promises';

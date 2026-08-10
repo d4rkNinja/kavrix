@@ -36,7 +36,7 @@ import { digest, groupRecord, otherVaultId, timestamp, vaultId } from './fixture
 
 const WINDOWS_POWERSHELL =
   'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
-const TEST_TMPDIR = realpathSync(tmpdir());
+const TEST_TMPDIR = realpathSync.native(tmpdir());
 const WRONG_DIGEST = createHash('sha256')
   .update('wrong-hash-fixture')
   .digest('base64url');

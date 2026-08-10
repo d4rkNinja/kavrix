@@ -27,7 +27,7 @@ import {
 
 const WINDOWS_POWERSHELL =
   'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
-const TEST_TMPDIR = realpathSync(tmpdir());
+const TEST_TMPDIR = realpathSync.native(tmpdir());
 const roots: string[] = [];
 const stores: SqliteSyncLocalStore[] = [];
 
