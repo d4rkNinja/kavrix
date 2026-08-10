@@ -6,6 +6,10 @@ const mongoIntegrationEnabled =
 
 export default defineConfig({
   test: {
+    // Windows security tests intentionally exercise real PowerShell, ACL, and
+    // process boundaries. Running those files concurrently can starve the
+    // fixed fail-closed helper timeouts on two-core CI runners.
+    fileParallelism: process.platform !== 'win32',
     include: mongoIntegrationEnabled
       ? [
           '{apps,packages}/**/*.test.ts',
