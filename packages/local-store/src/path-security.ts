@@ -10,6 +10,7 @@ const WINDOWS_POWERSHELL =
   'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
 const WINDOWS_CHECK_TIMEOUT_MS = 15_000;
 const SQLITE_SIDE_SUFFIXES = ['-wal', '-shm', '-journal'] as const;
+let windowsDiagnosticEmitted = false;
 const WINDOWS_DIRECTORY_SCRIPT = [
   "$ErrorActionPreference='Stop'",
   "$path=[Environment]::GetEnvironmentVariable('KAVRIX_LOCAL_PATH_0','Process')",
@@ -240,9 +241,13 @@ async function prepareUnixDirectory(path: string): Promise<void> {
 /* v8 ignore stop */
 
 async function prepareWindowsDirectory(path: string): Promise<void> {
-  await runWindowsCheck(WINDOWS_DIRECTORY_SCRIPT, {
-    KAVRIX_LOCAL_PATH_0: path,
-  });
+  await runWindowsCheck(
+    WINDOWS_DIRECTORY_SCRIPT,
+    {
+      KAVRIX_LOCAL_PATH_0: path,
+    },
+    'directory',
+  );
 }
 
 async function prepareWindowsFiles(
@@ -255,7 +260,14 @@ async function prepareWindowsFiles(
     environment[`KAVRIX_LOCAL_PATH_${String(index)}`] = entry.path;
     environment[`KAVRIX_LOCAL_MODE_${String(index)}`] = entry.mode;
   }
-  await runWindowsCheck(WINDOWS_FILE_SCRIPT, environment);
+  const modes = new Set(entries.map((entry) => entry.mode));
+  const phase =
+    modes.size === 1
+      ? entries[0]?.mode === 'secure'
+        ? 'file-secure'
+        : 'file-verify'
+      : 'file-mixed';
+  await runWindowsCheck(WINDOWS_FILE_SCRIPT, environment, phase);
 }
 
 function encodedCommand(script: string): string {
@@ -265,11 +277,15 @@ function encodedCommand(script: string): string {
 function runWindowsCheck(
   script: string,
   environment: Readonly<Record<string, string>>,
+  phase: 'directory' | 'file-mixed' | 'file-secure' | 'file-verify',
 ): Promise<void> {
   return new Promise((resolvePromise, rejectPromise) => {
     const stdout: Uint8Array[] = [];
     let stdoutBytes = 0;
     let failed = false;
+    let spawnError = false;
+    let stderrPresent = false;
+    let timedOut = false;
     const child = spawn(
       WINDOWS_POWERSHELL,
       [
@@ -297,7 +313,10 @@ function runWindowsCheck(
       failed = true;
       child.kill('SIGKILL');
     };
-    const timeout = setTimeout(fail, WINDOWS_CHECK_TIMEOUT_MS);
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      fail();
+    }, WINDOWS_CHECK_TIMEOUT_MS);
     timeout.unref();
     child.stdout.on('data', (value: Buffer) => {
       stdoutBytes += value.byteLength;
@@ -312,10 +331,14 @@ function runWindowsCheck(
     });
     /* v8 ignore next 4 -- PowerShell failures are covered through generic exit errors */
     child.stderr.on('data', (value: Buffer) => {
+      stderrPresent = true;
       value.fill(0);
       fail();
     });
-    child.on('error', fail);
+    child.on('error', () => {
+      spawnError = true;
+      fail();
+    });
     child.on('close', (code, signal) => {
       clearTimeout(timeout);
       const valid =
@@ -329,9 +352,43 @@ function runWindowsCheck(
       combined.fill(0);
       for (const value of stdout) value.fill(0);
       if (matches) resolvePromise();
-      else rejectPromise(invalidState());
+      else {
+        emitWindowsDiagnostic({
+          phase,
+          code,
+          signalPresent: signal !== null,
+          spawnError,
+          stderrPresent,
+          stdoutBytes,
+          timedOut,
+        });
+        rejectPromise(invalidState());
+      }
     });
   });
+}
+
+function emitWindowsDiagnostic(
+  input: Readonly<{
+    phase: 'directory' | 'file-mixed' | 'file-secure' | 'file-verify';
+    code: number | null;
+    signalPresent: boolean;
+    spawnError: boolean;
+    stderrPresent: boolean;
+    stdoutBytes: number;
+    timedOut: boolean;
+  }>,
+): void {
+  if (
+    windowsDiagnosticEmitted ||
+    process.env['KAVRIX_WINDOWS_SECURITY_DIAGNOSTICS'] !== '1'
+  ) {
+    return;
+  }
+  windowsDiagnosticEmitted = true;
+  process.stderr.write(
+    `[kavrix-windows-security-diagnostic] ${JSON.stringify(input)}\n`,
+  );
 }
 
 async function assertCanonicalDirectory(path: string): Promise<void> {
