@@ -58,6 +58,7 @@ import {
   joinLifecycleJournalSerializedBytes,
   joinPreparedJournalRecordSchema,
   lifecycleOperationIdSchema,
+  vaultProfileSchema,
   type InitializationActiveJournalRecord,
   type InitializationCommittedJournalRecord,
   type InitializationJournalPort,
@@ -69,6 +70,8 @@ import {
   type JoinPreparedJournalRecord,
   type LifecycleOperationId,
   type VaultInitializationInput,
+  type VaultProfile,
+  type VaultProfileStorePort,
 } from '../src/index.js';
 import {
   readRequest,
@@ -234,6 +237,24 @@ describe('VaultInitializationCoordinator', () => {
       operationId: lifecycleOperationIdSchema.parse('operation.init.0001'),
       vaultId: vaultIdSchema.parse('vault.lifecycle'),
       deviceId: deviceIdSchema.parse('device.lifecycle'),
+      profile: {
+        version: 1,
+        serverUrl: `${server.url}/`,
+        vaultId: vaultIdSchema.parse('vault.lifecycle'),
+        deviceId: deviceIdSchema.parse('device.lifecycle'),
+        deviceLocator: {
+          version: 1,
+          vaultId: vaultIdSchema.parse('vault.lifecycle'),
+          deviceId: deviceIdSchema.parse('device.lifecycle'),
+          keySlotId: keySlotIdSchema.parse('slot.device'),
+        },
+        sessionLocator: {
+          version: 1,
+          vaultId: vaultIdSchema.parse('vault.lifecycle'),
+          deviceId: deviceIdSchema.parse('device.lifecycle'),
+          purpose: 'api-session',
+        },
+      },
     });
     expect(requests).toHaveLength(1);
     const request = required(requests[0]);
@@ -252,7 +273,21 @@ describe('VaultInitializationCoordinator', () => {
       'recovery-key',
     ]);
     await expectSameRootKey(body, display, harness.keychain);
+    const prepared = required(harness.initializationJournal.capturedCreateRecords[0]);
+    expect(() =>
+      initializationJournalRecordSchema.parse({
+        ...prepared,
+        profile: {
+          ...prepared.profile,
+          deviceLocator: {
+            ...prepared.profile.deviceLocator,
+            keySlotId: keySlotIdSchema.parse('slot.tampered-profile'),
+          },
+        },
+      }),
+    ).toThrow();
     expect(harness.initializationJournal.record?.state).toBe('committed');
+    expect(harness.profiles.records).toEqual([receipt.profile]);
     await expect(harness.coordinator.listOperations()).resolves.toEqual([
       creation.operationId,
     ]);
@@ -318,6 +353,10 @@ describe('VaultInitializationCoordinator', () => {
 
     await expect(creation.confirm(display)).rejects.toThrow();
     expect(harness.initializationJournal.record?.state).toBe('network-attempted');
+    expect(harness.profiles.records).toEqual([
+      harness.initializationJournal.record?.profile,
+    ]);
+    expect(harness.profiles.storeCalls).toBe(1);
     await expect(
       harness.coordinator.cancel(creation.operationId),
     ).rejects.toMatchObject({
@@ -331,6 +370,165 @@ describe('VaultInitializationCoordinator', () => {
     });
     expect(requests).toHaveLength(2);
     expect(requests[1]).toEqual(requests[0]);
+    expect(harness.profiles.storeCalls).toBe(2);
+  });
+
+  it('retains conservative intent and repairs profile persistence ambiguity', async () => {
+    const requests: CapturedRequest[] = [];
+    const server = await lifecycleServer(requests);
+    const failed = initializationHarness(server.url, '.profile.fail');
+    failed.profiles.failStore = 'before';
+    const failedCreation = failed.coordinator.begin(initializationInput());
+    const failedDisplay = failedCreation.takeDisplayMaterial();
+    const failure = await rejected(failedCreation.confirm(failedDisplay));
+    expect(failure).toMatchObject({ kind: 'profile' });
+    expect(String(failure)).not.toContain(failedDisplay.portableKey);
+    expect(JSON.stringify(failure)).not.toContain(failedDisplay.recoveryKey);
+    expect(requests).toHaveLength(0);
+    expect(failed.initializationJournal.record?.state).toBe('network-attempted');
+    expect(failed.keychain.size).toBe(1);
+    expect(failed.sessions.size).toBe(1);
+    await expect(
+      failed.coordinator.resume(failedCreation.operationId),
+    ).resolves.toMatchObject({
+      profile: { serverUrl: new URL(server.url).href },
+    });
+    expect(requests).toHaveLength(1);
+
+    const uncertain = initializationHarness(server.url, '.profile.uncertain');
+    uncertain.profiles.failStore = 'after';
+    const uncertainCreation = uncertain.coordinator.begin(initializationInput());
+    await expect(
+      uncertainCreation.confirm(uncertainCreation.takeDisplayMaterial()),
+    ).rejects.toMatchObject({ kind: 'profile' });
+    expect(uncertain.initializationJournal.record?.state).toBe('network-attempted');
+    expect(uncertain.profiles.records).toHaveLength(1);
+    expect(uncertain.keychain.size).toBe(1);
+    expect(uncertain.sessions.size).toBe(1);
+    await expect(
+      uncertain.coordinator.resume(uncertainCreation.operationId),
+    ).resolves.toMatchObject({ operationId: uncertainCreation.operationId });
+    expect(requests).toHaveLength(2);
+
+    const tampered = initializationHarness(server.url, '.profile.tamper');
+    tampered.profiles.tamperLoadedProfile = (profile) => ({
+      ...profile,
+      serverUrl: 'https://tampered-profile.invalid/',
+    });
+    const tamperedCreation = tampered.coordinator.begin(initializationInput());
+    await expect(
+      tamperedCreation.confirm(tamperedCreation.takeDisplayMaterial()),
+    ).rejects.toMatchObject({ kind: 'profile' });
+    expect(requests).toHaveLength(2);
+    expect(tampered.initializationJournal.record?.state).toBe('network-attempted');
+    expect(tampered.profiles.records).toHaveLength(1);
+    tampered.profiles.tamperLoadedProfile = undefined;
+    await expect(
+      tampered.coordinator.resume(tamperedCreation.operationId),
+    ).resolves.toMatchObject({ operationId: tamperedCreation.operationId });
+    expect(requests).toHaveLength(3);
+  });
+
+  it('reconciles uncertain intent marking before any profile write', async () => {
+    const requests: CapturedRequest[] = [];
+    const server = await lifecycleServer(requests);
+    const before = initializationHarness(server.url, '.mark.before');
+    before.initializationJournal.failMarkNetwork = 'before';
+    const beforeCreation = before.coordinator.begin(initializationInput());
+    await expect(
+      beforeCreation.confirm(beforeCreation.takeDisplayMaterial()),
+    ).rejects.toMatchObject({ kind: 'journal' });
+    expect(before.initializationJournal.record).toBeNull();
+    expect(before.profiles.records).toHaveLength(0);
+    expect(before.keychain.size).toBe(0);
+    expect(before.sessions.size).toBe(0);
+
+    const after = initializationHarness(server.url, '.mark.after');
+    after.initializationJournal.failMarkNetwork = 'after';
+    const afterCreation = after.coordinator.begin(initializationInput());
+    await expect(
+      afterCreation.confirm(afterCreation.takeDisplayMaterial()),
+    ).rejects.toMatchObject({ kind: 'journal' });
+    expect(after.initializationJournal.record?.state).toBe('network-attempted');
+    expect(after.profiles.records).toHaveLength(0);
+    expect(after.keychain.size).toBe(1);
+    expect(after.sessions.size).toBe(1);
+    expect(requests).toHaveLength(0);
+    await expect(
+      after.coordinator.resume(afterCreation.operationId),
+    ).resolves.toMatchObject({
+      operationId: afterCreation.operationId,
+    });
+    expect(requests).toHaveLength(1);
+  });
+
+  it('rejects a conflicting profile and a different resume endpoint generically', async () => {
+    const firstRequests: CapturedRequest[] = [];
+    let disconnect = true;
+    const firstServer = await lifecycleServer(firstRequests, {
+      bootstrap: (_body, request) => {
+        if (!disconnect) return undefined;
+        disconnect = false;
+        request.socket.destroy();
+        return 'disconnected';
+      },
+    });
+    const harness = initializationHarness(firstServer.url, '.profile.endpoint');
+    const creation = harness.coordinator.begin(initializationInput());
+    const display = creation.takeDisplayMaterial();
+    await expect(creation.confirm(display)).rejects.toThrow();
+    const keychainLoads = harness.keychain.loadCalls;
+    const sessionLoads = harness.sessions.loadCalls;
+
+    const secondRequests: CapturedRequest[] = [];
+    const secondServer = await lifecycleServer(secondRequests);
+    const wrongEndpoint = new VaultInitializationCoordinator({
+      controlPlane: developmentClient(secondServer.url),
+      journal: harness.initializationJournal,
+      profiles: harness.profiles,
+      keychain: harness.keychain,
+      sessions: harness.sessions,
+      clock: fixedClock(),
+      ids: {
+        operation: ids(lifecycleOperationIdSchema.parse('operation.unused.endpoint')),
+        vault: ids(vaultIdSchema.parse('vault.unused.endpoint')),
+        device: ids(deviceIdSchema.parse('device.unused.endpoint')),
+        keySlot: ids(
+          keySlotIdSchema.parse('slot.unused.portable'),
+          keySlotIdSchema.parse('slot.unused.recovery'),
+          keySlotIdSchema.parse('slot.unused.device'),
+        ),
+      },
+    });
+    const failure = await rejected(wrongEndpoint.resume(creation.operationId));
+    expect(failure).toMatchObject({ kind: 'profile' });
+    expect(String(failure)).not.toContain(firstServer.url);
+    expect(String(failure)).not.toContain(secondServer.url);
+    expect(harness.keychain.loadCalls).toBe(keychainLoads);
+    expect(harness.sessions.loadCalls).toBe(sessionLoads);
+    expect(secondRequests).toHaveLength(0);
+
+    const conflict = initializationHarness(firstServer.url, '.profile.conflict');
+    const deviceLocator = {
+      version: 1 as const,
+      vaultId: vaultIdSchema.parse('vault.lifecycle'),
+      deviceId: deviceIdSchema.parse('device.lifecycle'),
+      keySlotId: keySlotIdSchema.parse('slot.device'),
+    };
+    const sessionLocator = {
+      version: 1 as const,
+      vaultId: deviceLocator.vaultId,
+      deviceId: deviceLocator.deviceId,
+      purpose: 'api-session' as const,
+    };
+    await conflict.profiles.store(
+      profileFor('https://conflicting-profile.invalid', deviceLocator, sessionLocator),
+    );
+    const conflictCreation = conflict.coordinator.begin(initializationInput());
+    await expect(
+      conflictCreation.confirm(conflictCreation.takeDisplayMaterial()),
+    ).rejects.toMatchObject({ kind: 'profile' });
+    expect(firstRequests).toHaveLength(1);
   });
 
   it('fails closed for partial prepared stores and resumes after both durable stores', async () => {
@@ -375,6 +573,7 @@ describe('VaultInitializationCoordinator', () => {
         request,
         deviceLocator,
         sessionLocator,
+        profile: profileFor(server.url, deviceLocator, sessionLocator),
       });
       await partial.keychain.store(deviceLocator, deviceSecret);
       await expect(partial.coordinator.resume(partialOperation)).rejects.toMatchObject({
@@ -396,6 +595,7 @@ describe('VaultInitializationCoordinator', () => {
         request,
         deviceLocator,
         sessionLocator,
+        profile: profileFor(server.url, deviceLocator, sessionLocator),
       });
       await complete.keychain.store(deviceLocator, deviceSecret);
       await complete.sessions.store(sessionLocator, sessionSecret);
@@ -406,6 +606,29 @@ describe('VaultInitializationCoordinator', () => {
       });
       expect(requests).toHaveLength(2);
       expect(requests[1]).toEqual(requests[0]);
+
+      const cancellable = initializationHarness(server.url, '.prepared.cancel');
+      const cancellableOperation = lifecycleOperationIdSchema.parse(
+        'operation.init.prepared.cancel',
+      );
+      cancellable.initializationJournal.record =
+        initializationJournalRecordSchema.parse({
+          version: 1,
+          kind: 'vault-initialization',
+          operationId: cancellableOperation,
+          state: 'prepared',
+          request,
+          deviceLocator,
+          sessionLocator,
+          profile: profileFor(server.url, deviceLocator, sessionLocator),
+        });
+      await cancellable.keychain.store(deviceLocator, deviceSecret);
+      await cancellable.sessions.store(sessionLocator, sessionSecret);
+      await cancellable.coordinator.cancel(cancellableOperation);
+      expect(cancellable.initializationJournal.record).toBeNull();
+      expect(cancellable.profiles.records).toHaveLength(0);
+      expect(cancellable.keychain.size).toBe(0);
+      expect(cancellable.sessions.size).toBe(0);
     } finally {
       zeroize(deviceSecret);
       zeroize(sessionSecret);
@@ -433,11 +656,35 @@ describe('VaultInitializationCoordinator', () => {
     const display = creation.takeDisplayMaterial();
     await expect(creation.confirm(display)).rejects.toMatchObject({ kind: 'journal' });
     expect(committed.initializationJournal.record?.state).toBe('committed');
+    committed.profiles.clear();
     await expect(
       committed.coordinator.resume(creation.operationId),
     ).resolves.toMatchObject({
       operationId: creation.operationId,
     });
+    expect(committed.profiles.records).toEqual([
+      committed.initializationJournal.record?.profile,
+    ]);
+    expect(requests).toHaveLength(1);
+
+    const committedRecord = committed.initializationJournal.record;
+    if (committedRecord?.state !== 'committed') {
+      throw new Error('missing committed initialization');
+    }
+    committed.initializationJournal.record = initializationJournalRecordSchema.parse({
+      ...committedRecord,
+      profile: {
+        ...committedRecord.profile,
+        deviceLocator: {
+          ...committedRecord.profile.deviceLocator,
+          keySlotId: keySlotIdSchema.parse('slot.tampered-committed'),
+        },
+      },
+    });
+    const tampered = await rejected(committed.coordinator.resume(creation.operationId));
+    expect(tampered).toMatchObject({ kind: 'profile' });
+    expect(String(tampered)).not.toContain(display.portableKey);
+    expect(JSON.stringify(tampered)).not.toContain(display.recoveryKey);
     expect(requests).toHaveLength(1);
   });
 
@@ -781,13 +1028,16 @@ function initializationHarness(
   keychain: MemoryKeychain;
   sessions: MemorySessions;
   initializationJournal: MemoryInitializationJournal;
+  profiles: MemoryProfileStore;
 }> {
   const keychain = new MemoryKeychain();
   const sessions = new MemorySessions();
   const initializationJournal = new MemoryInitializationJournal();
+  const profiles = new MemoryProfileStore();
   const coordinator = new VaultInitializationCoordinator({
     controlPlane: developmentClient(baseUrl),
     journal: initializationJournal,
+    profiles,
     keychain,
     sessions,
     clock: fixedClock(),
@@ -802,7 +1052,7 @@ function initializationHarness(
       ),
     },
   });
-  return { coordinator, keychain, sessions, initializationJournal };
+  return { coordinator, keychain, sessions, initializationJournal, profiles };
 }
 
 function joinHarness(
@@ -1089,12 +1339,14 @@ function developmentClient(baseUrl: string): ControlPlaneClient {
 class MemoryKeychain implements KeychainPort {
   readonly #records = new Map<string, Uint8Array>();
   readonly capturedStoreInputs: Uint8Array[] = [];
+  loadCalls = 0;
 
   get size(): number {
     return this.#records.size;
   }
 
   load(locator: KeychainLocator): Promise<DeviceUnlockSecret | null> {
+    this.loadCalls += 1;
     const value = this.#records.get(locatorKey(locator));
     return Promise.resolve(
       value === undefined
@@ -1121,12 +1373,14 @@ class MemorySessions implements SessionCredentialPort {
   readonly #records = new Map<string, Uint8Array>();
   readonly capturedStoreInputs: Uint8Array[] = [];
   failStore: 'before' | 'after' | undefined;
+  loadCalls = 0;
 
   get size(): number {
     return this.#records.size;
   }
 
   load(locator: SessionCredentialLocator): Promise<SessionCredentialSecret | null> {
+    this.loadCalls += 1;
     const value = this.#records.get(locatorKey(locator));
     return Promise.resolve(
       value === undefined
@@ -1160,10 +1414,70 @@ class MemorySessions implements SessionCredentialPort {
   }
 }
 
+class MemoryProfileStore implements VaultProfileStorePort {
+  readonly #records = new Map<string, VaultProfile>();
+  storeCalls = 0;
+  loadCalls = 0;
+  failStore: 'before' | 'after' | undefined;
+  tamperLoadedProfile: ((profile: VaultProfile) => unknown) | undefined;
+
+  get records(): readonly VaultProfile[] {
+    return [...this.#records.values()].map((profile) => structuredClone(profile));
+  }
+
+  clear(): void {
+    this.#records.clear();
+  }
+
+  load(
+    vaultId: VaultProfile['vaultId'],
+    deviceId: VaultProfile['deviceId'],
+  ): Promise<VaultProfile | null> {
+    this.loadCalls += 1;
+    const profile = this.#records.get(`${vaultId}\0${deviceId}`);
+    if (profile === undefined) return Promise.resolve(null);
+    const value = structuredClone(profile);
+    return Promise.resolve(
+      vaultProfileSchema.parse(this.tamperLoadedProfile?.(value) ?? value),
+    );
+  }
+
+  store(profileInput: VaultProfile): Promise<void> {
+    this.storeCalls += 1;
+    if (this.failStore === 'before') {
+      this.failStore = undefined;
+      return Promise.reject(new Error('profile store failed'));
+    }
+    const profile = vaultProfileSchema.parse(structuredClone(profileInput));
+    const key = `${profile.vaultId}\0${profile.deviceId}`;
+    const serialized = JSON.stringify(profile);
+    for (const [existingKey, existing] of this.#records) {
+      const sharesLocator =
+        JSON.stringify(existing.deviceLocator) ===
+          JSON.stringify(profile.deviceLocator) ||
+        JSON.stringify(existing.sessionLocator) ===
+          JSON.stringify(profile.sessionLocator);
+      if (
+        (existingKey === key || sharesLocator) &&
+        JSON.stringify(existing) !== serialized
+      ) {
+        return Promise.reject(new Error('profile conflict'));
+      }
+    }
+    this.#records.set(key, profile);
+    if (this.failStore === 'after') {
+      this.failStore = undefined;
+      return Promise.reject(new Error('profile store acknowledgement failed'));
+    }
+    return Promise.resolve();
+  }
+}
+
 class MemoryInitializationJournal implements InitializationJournalPort {
   record: InitializationJournalRecord | null = null;
   readonly capturedCreateRecords: InitializationActiveJournalRecord[] = [];
   failCommitAfterMutation = false;
+  failMarkNetwork: 'before' | 'after' | undefined;
 
   createPrepared(record: InitializationActiveJournalRecord): Promise<void> {
     if (this.record !== null) return Promise.reject(new Error('duplicate'));
@@ -1185,24 +1499,39 @@ class MemoryInitializationJournal implements InitializationJournalPort {
   }
 
   markNetworkAttempted(operationId: LifecycleOperationId): Promise<void> {
+    if (this.failMarkNetwork === 'before') {
+      this.failMarkNetwork = undefined;
+      return Promise.reject(new Error('mark failed'));
+    }
     const record = this.active(operationId);
     this.record = cloneInitialization({ ...record, state: 'network-attempted' });
+    if (this.failMarkNetwork === 'after') {
+      this.failMarkNetwork = undefined;
+      return Promise.reject(new Error('mark acknowledgement failed'));
+    }
     return Promise.resolve();
   }
 
   commit(
     operationId: LifecycleOperationId,
     receipt: InitializationCommittedJournalRecord['receipt'],
+    profile: InitializationCommittedJournalRecord['profile'],
     committedAt: InitializationCommittedJournalRecord['committedAt'],
   ): Promise<void> {
     const record = this.active(operationId);
-    if (record.state !== 'network-attempted') return Promise.reject(new Error('state'));
+    if (
+      record.state !== 'network-attempted' ||
+      JSON.stringify(profile) !== JSON.stringify(record.profile)
+    ) {
+      return Promise.reject(new Error('state'));
+    }
     this.record = initializationJournalRecordSchema.parse({
       version: 1,
       kind: 'vault-initialization',
       operationId,
       state: 'committed',
       receipt,
+      profile,
       committedAt,
     });
     if (this.failCommitAfterMutation) {
@@ -1365,6 +1694,21 @@ function bearer(fill: number): ApiBearerToken {
 
 function locatorKey(locator: KeychainLocator | SessionCredentialLocator): string {
   return JSON.stringify(locator);
+}
+
+function profileFor(
+  baseUrl: string,
+  deviceLocator: KeychainLocator,
+  sessionLocator: SessionCredentialLocator,
+): VaultProfile {
+  return vaultProfileSchema.parse({
+    version: 1,
+    serverUrl: new URL(baseUrl).href,
+    vaultId: deviceLocator.vaultId,
+    deviceId: deviceLocator.deviceId,
+    deviceLocator,
+    sessionLocator,
+  });
 }
 
 function paths(requests: CapturedRequest[], path: string): CapturedRequest[] {

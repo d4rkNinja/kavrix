@@ -36,6 +36,19 @@ bootstrap route. A mismatch terminally wipes the attempt. Once confirmed, both p
 the same exact encrypted bootstrap body and crash-safe resume transitions; no plaintext
 portable, recovery, VRK, or device key enters the journal or network request.
 
+The active journal also binds the exact canonical `VaultProfile`: the actual control-plane
+base URL, vault/device IDs, and exact protected locators. The coordinator durably stores and
+records a conservative `network-attempted` intent before storing and reading back the profile
+through `VaultProfileStorePort`, and before using the protected session bearer. A prepared
+operation can therefore be cancelled without leaving a profile. Once intent is durable, any
+ambiguous profile write/readback retains the journal and protected material for exact repair.
+An exact duplicate is idempotent; conflicting identity, locator, endpoint, missing-readback,
+or tampered-readback state fails generically. Journal commit retains the same non-secret
+profile. A committed resume can repair a missing profile store entry without another network
+request, while a resume composed for another endpoint fails before loading or encoding bearer
+material. Profiles are not deleted because a bootstrap response can be lost after the server
+commits.
+
 ## Online unlock and active session facade
 
 `VaultClientSession` is the production, online-only unlock boundary over a strict

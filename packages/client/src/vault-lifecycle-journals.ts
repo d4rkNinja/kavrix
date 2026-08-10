@@ -1,4 +1,5 @@
 import {
+  canonicalJson,
   deviceIdSchema,
   enrollmentCompleteRequestSchema,
   keychainLocatorSchema,
@@ -9,6 +10,8 @@ import {
   vaultIdSchema,
 } from '@kavrix/schemas';
 import { z } from 'zod';
+
+import { vaultProfileSchema } from './vault-profile.js';
 
 export const lifecycleOperationIdSchema = z
   .string()
@@ -45,6 +48,7 @@ const initializationActiveSchema = z
     request: vaultBootstrapRequestSchema,
     deviceLocator: keychainLocatorSchema,
     sessionLocator: sessionCredentialLocatorSchema,
+    profile: vaultProfileSchema,
   })
   .strict()
   .superRefine((record, context) => {
@@ -53,12 +57,18 @@ const initializationActiveSchema = z
       record.deviceLocator.vaultId !== vault.id ||
       record.deviceLocator.deviceId !== device.id ||
       record.sessionLocator.vaultId !== vault.id ||
-      record.sessionLocator.deviceId !== device.id
+      record.sessionLocator.deviceId !== device.id ||
+      record.profile.vaultId !== vault.id ||
+      record.profile.deviceId !== device.id ||
+      canonicalJson(record.profile.deviceLocator) !==
+        canonicalJson(record.deviceLocator) ||
+      canonicalJson(record.profile.sessionLocator) !==
+        canonicalJson(record.sessionLocator)
     ) {
       context.addIssue({
         code: 'custom',
         path: ['request'],
-        message: 'Protected locators must match the initialization request',
+        message: 'The profile and protected locators must match the request',
       });
     }
     const deviceSlot = vault.keySlots.find(
@@ -85,9 +95,22 @@ const initializationCommittedSchema = z
     operationId: lifecycleOperationIdSchema,
     state: z.literal('committed'),
     receipt: vaultBootstrapResponseSchema,
+    profile: vaultProfileSchema,
     committedAt: timestampSchema,
   })
-  .strict();
+  .strict()
+  .superRefine((record, context) => {
+    if (
+      record.profile.vaultId !== record.receipt.vaultId ||
+      record.profile.deviceId !== record.receipt.deviceId
+    ) {
+      context.addIssue({
+        code: 'custom',
+        path: ['profile'],
+        message: 'The committed profile must match the bootstrap receipt',
+      });
+    }
+  });
 
 export const initializationJournalRecordSchema = z.union([
   initializationActiveSchema,
@@ -193,8 +216,9 @@ export type JoinJournalRecord = z.infer<typeof joinJournalRecordSchema>;
  * Implementations must durably flush before resolving, atomically reserve each
  * operation ID and protected locator, reject incompatible reuse, and implement
  * transitions as compare-and-set operations that are idempotent only for an
- * identical target record. `commit` must atomically replace the encrypted
- * request and locators with the receipt. `deletePrepared` must reject any state
+ * identical target record. `commit` must verify the profile is exactly the
+ * active record profile, then atomically replace the encrypted request and
+ * locators with the receipt and profile. `deletePrepared` must reject any state
  * other than `prepared`. Loaded values are fresh structural copies.
  */
 export interface InitializationJournalPort {
@@ -205,6 +229,7 @@ export interface InitializationJournalPort {
   commit(
     operationId: LifecycleOperationId,
     receipt: InitializationCommittedJournalRecord['receipt'],
+    profile: InitializationCommittedJournalRecord['profile'],
     committedAt: InitializationCommittedJournalRecord['committedAt'],
   ): Promise<void>;
   deletePrepared(operationId: LifecycleOperationId): Promise<void>;

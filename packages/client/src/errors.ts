@@ -60,6 +60,7 @@ export type VaultLifecycleFailureKind =
   | 'unsafe-cancel'
   | 'expired'
   | 'protected-storage'
+  | 'profile'
   | 'journal'
   | 'protocol';
 

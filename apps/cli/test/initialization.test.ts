@@ -3,11 +3,12 @@ import { PassThrough, Readable, Writable } from 'node:stream';
 import {
   VaultLifecycleError,
   lifecycleOperationIdSchema,
+  vaultProfileSchema,
   type VaultImportedPortableInitializationCreation,
   type VaultInitializationConfirmation,
   type VaultInitializationCreation,
   type VaultInitializationInput,
-  type VaultLifecycleReceipt,
+  type VaultInitializationReceipt,
 } from '@kavrix/client';
 import { deviceIdSchema, vaultIdSchema, type VaultPreferences } from '@kavrix/schemas';
 import { describe, expect, it, vi } from 'vitest';
@@ -30,10 +31,30 @@ import {
 } from '../src/index.js';
 
 const OPERATION_ID = lifecycleOperationIdSchema.parse('operation.cli.init.0001');
-const RECEIPT: VaultLifecycleReceipt = {
+const RECEIPT_VAULT_ID = vaultIdSchema.parse('vault.cli.init');
+const RECEIPT_DEVICE_ID = deviceIdSchema.parse('device.cli.init');
+const RECEIPT: VaultInitializationReceipt = {
   operationId: OPERATION_ID,
-  vaultId: vaultIdSchema.parse('vault.cli.init'),
-  deviceId: deviceIdSchema.parse('device.cli.init'),
+  vaultId: RECEIPT_VAULT_ID,
+  deviceId: RECEIPT_DEVICE_ID,
+  profile: vaultProfileSchema.parse({
+    version: 1,
+    serverUrl: 'https://vault.example/',
+    vaultId: RECEIPT_VAULT_ID,
+    deviceId: RECEIPT_DEVICE_ID,
+    deviceLocator: {
+      version: 1,
+      vaultId: RECEIPT_VAULT_ID,
+      deviceId: RECEIPT_DEVICE_ID,
+      keySlotId: 'slot.cli.init',
+    },
+    sessionLocator: {
+      version: 1,
+      vaultId: RECEIPT_VAULT_ID,
+      deviceId: RECEIPT_DEVICE_ID,
+      purpose: 'api-session',
+    },
+  }),
 };
 const PORTABLE = acquiredSecretSchema.parse('KAVRIX-PORTABLE-CLI-CANARY');
 const RECOVERY = acquiredSecretSchema.parse('KAVRIX-RECOVERY-CLI-CANARY');
@@ -544,7 +565,7 @@ function attempt(
   takeDisplayMaterial: () => Readonly<Record<string, string>>;
   confirm: (
     confirmation: VaultInitializationConfirmation,
-  ) => Promise<VaultLifecycleReceipt>;
+  ) => Promise<VaultInitializationReceipt>;
   cancel: () => void;
 }> {
   return {

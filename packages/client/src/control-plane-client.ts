@@ -62,6 +62,11 @@ export class ControlPlaneClient {
     this.#fetch = new SecureFetchClient(options);
   }
 
+  /** Canonical non-secret endpoint to bind durable local profiles. */
+  get baseUrl(): string {
+    return this.#fetch.baseUrl;
+  }
+
   health(): Promise<HealthResponse> {
     return this.#canonicalRequest(healthResponseSchema, {
       method: 'GET',

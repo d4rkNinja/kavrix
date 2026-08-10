@@ -3,6 +3,8 @@ import {
   sessionCredentialLocatorSchema,
   vaultIdSchema,
   deviceIdSchema,
+  type DeviceId,
+  type VaultId,
 } from '@kavrix/schemas';
 import { z } from 'zod';
 
@@ -55,6 +57,21 @@ export const vaultProfileSchema = z
   });
 
 export type VaultProfile = z.infer<typeof vaultProfileSchema>;
+
+/**
+ * Durable local persistence for a non-secret profile.
+ *
+ * `store` must durably flush before resolving. Repeating the exact profile is
+ * idempotent; reusing its vault/device identity or either protected locator for
+ * a different profile must fail closed. `load` returns a fresh canonical copy.
+ * There is intentionally no initialization-time delete: storage begins only
+ * after durable network intent, and an ambiguous request may already have
+ * committed the profile's vault/device remotely.
+ */
+export interface VaultProfileStorePort {
+  load(vaultId: VaultId, deviceId: DeviceId): Promise<VaultProfile | null>;
+  store(profile: VaultProfile): Promise<void>;
+}
 
 export function isInsecureLoopbackProfile(profile: VaultProfile): boolean {
   return new URL(profile.serverUrl).protocol === 'http:';

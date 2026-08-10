@@ -80,6 +80,11 @@ export class SecureFetchClient {
     this.#signal = options.signal;
   }
 
+  /** Canonical non-secret endpoint used for every request from this client. */
+  get baseUrl(): string {
+    return this.#baseUrl.href;
+  }
+
   async requestJson(options: RequestOptions): Promise<unknown> {
     const { response, timeoutSignal } = await this.#request(options);
     const contentType = response.headers.get('content-type');

@@ -30,6 +30,7 @@ import {
 import {
   apiBearerTokenSchema,
   associatedDataSchema,
+  canonicalJson,
   deviceIdSchema,
   deviceUnlockSecretSchema,
   keySlotIdSchema,
@@ -58,6 +59,11 @@ import {
   type InitializationJournalPort,
   type LifecycleOperationId,
 } from './vault-lifecycle-journals.js';
+import {
+  vaultProfileSchema,
+  type VaultProfile,
+  type VaultProfileStorePort,
+} from './vault-profile.js';
 
 const initializationInputSchema = z
   .object({
@@ -76,6 +82,7 @@ export interface VaultInitializationIds {
 export interface VaultInitializationCoordinatorOptions {
   readonly controlPlane: ControlPlaneClient;
   readonly journal: InitializationJournalPort;
+  readonly profiles: VaultProfileStorePort;
   readonly keychain: KeychainPort;
   readonly sessions: SessionCredentialPort;
   readonly clock: ClockPort;
@@ -107,6 +114,10 @@ export interface VaultLifecycleReceipt {
   readonly deviceId: DeviceId;
 }
 
+export interface VaultInitializationReceipt extends VaultLifecycleReceipt {
+  readonly profile: VaultProfile;
+}
+
 type AttemptState = 'created' | 'displayed' | 'running' | 'terminal';
 
 type OwnedDisplayMaterial = Readonly<{
@@ -125,7 +136,7 @@ class VaultInitializationAttempt {
   readonly #confirmOperation: (
     portableKey: PortableKey,
     recoveryKey: RecoveryKey,
-  ) => Promise<VaultLifecycleReceipt>;
+  ) => Promise<VaultInitializationReceipt>;
 
   constructor(
     operationId: LifecycleOperationId,
@@ -135,7 +146,7 @@ class VaultInitializationAttempt {
     confirmOperation: (
       portableKey: PortableKey,
       recoveryKey: RecoveryKey,
-    ) => Promise<VaultLifecycleReceipt>,
+    ) => Promise<VaultInitializationReceipt>,
   ) {
     this.operationId = operationId;
     this.#portableKey = portableKey;
@@ -164,7 +175,7 @@ class VaultInitializationAttempt {
 
   async confirm(
     confirmation: VaultInitializationConfirmation,
-  ): Promise<VaultLifecycleReceipt> {
+  ): Promise<VaultInitializationReceipt> {
     if (this.#state === 'running') throw new VaultLifecycleError('operation-busy');
     if (this.#state !== 'displayed') {
       throw new VaultLifecycleError('operation-unavailable');
@@ -216,7 +227,7 @@ export class VaultInitializationCreation extends VaultInitializationAttempt {
     confirmOperation: (
       portableKey: PortableKey,
       recoveryKey: RecoveryKey,
-    ) => Promise<VaultLifecycleReceipt>,
+    ) => Promise<VaultInitializationReceipt>,
   ) {
     super(
       operationId,
@@ -248,7 +259,7 @@ export class VaultImportedPortableInitializationCreation extends VaultInitializa
     confirmOperation: (
       portableKey: PortableKey,
       recoveryKey: RecoveryKey,
-    ) => Promise<VaultLifecycleReceipt>,
+    ) => Promise<VaultInitializationReceipt>,
   ) {
     super(
       operationId,
@@ -270,10 +281,18 @@ export class VaultImportedPortableInitializationCreation extends VaultInitializa
 
 export class VaultInitializationCoordinator {
   readonly #options: VaultInitializationCoordinatorOptions;
+  readonly #serverUrl: VaultProfile['serverUrl'];
   readonly #busy = new Set<LifecycleOperationId>();
 
   constructor(options: VaultInitializationCoordinatorOptions) {
     this.#options = options;
+    try {
+      this.#serverUrl = vaultProfileSchema.shape.serverUrl.parse(
+        options.controlPlane.baseUrl,
+      );
+    } catch {
+      throw new VaultLifecycleError('invalid-input');
+    }
   }
 
   begin(input: VaultInitializationInput): VaultInitializationCreation {
@@ -339,13 +358,14 @@ export class VaultInitializationCoordinator {
     }
   }
 
-  async resume(operationId: LifecycleOperationId): Promise<VaultLifecycleReceipt> {
+  async resume(operationId: LifecycleOperationId): Promise<VaultInitializationReceipt> {
     const id = parseId(lifecycleOperationIdSchema, operationId);
     return this.#exclusive(id, async () => {
       const record = await this.#load(id);
       if (record === null) throw new VaultLifecycleError('operation-unavailable');
       if (record.state === 'committed') {
-        return receiptFromBootstrap(record.operationId, record.receipt);
+        const profile = await this.#persistProfile(record.profile);
+        return receiptFromBootstrap(record.operationId, record.receipt, profile);
       }
       return this.#resumeActive(record);
     });
@@ -367,7 +387,7 @@ export class VaultInitializationCoordinator {
   ): (
     portableKey: PortableKey,
     recoveryKey: RecoveryKey,
-  ) => Promise<VaultLifecycleReceipt> {
+  ) => Promise<VaultInitializationReceipt> {
     return (portableKey, recoveryKey) =>
       this.#exclusive(operationId, () =>
         this.#prepareAndBootstrap(
@@ -386,7 +406,7 @@ export class VaultInitializationCoordinator {
     deviceKeyProvider: string,
     portableKey: PortableKey,
     recoveryKey: RecoveryKey,
-  ): Promise<VaultLifecycleReceipt> {
+  ): Promise<VaultInitializationReceipt> {
     const vaultId = parseId(vaultIdSchema, this.#options.ids.vault.next());
     const deviceId = parseId(deviceIdSchema, this.#options.ids.device.next());
     const slotIds = [
@@ -479,6 +499,24 @@ export class VaultInitializationCoordinator {
           deviceId,
           purpose: 'api-session',
         },
+        profile: {
+          version: 1,
+          serverUrl: this.#serverUrl,
+          vaultId,
+          deviceId,
+          deviceLocator: {
+            version: 1,
+            vaultId,
+            deviceId,
+            keySlotId: slotIds[2],
+          },
+          sessionLocator: {
+            version: 1,
+            vaultId,
+            deviceId,
+            purpose: 'api-session',
+          },
+        },
       });
       if (active.state === 'committed') throw new VaultLifecycleError('journal');
       return await this.#persistAndBootstrap(active, deviceKey, sessionSecret);
@@ -496,7 +534,7 @@ export class VaultInitializationCoordinator {
     record: InitializationActiveJournalRecord,
     deviceKey: DeviceKey,
     sessionSecret: z.infer<typeof sessionCredentialSecretSchema>,
-  ): Promise<VaultLifecycleReceipt> {
+  ): Promise<VaultInitializationReceipt> {
     await this.#assertProtectedLocatorsUnused(record);
     try {
       await this.#options.journal.createPrepared(record);
@@ -505,15 +543,8 @@ export class VaultInitializationCoordinator {
     }
     try {
       await this.#storeProtected(record, deviceKey, sessionSecret);
-      try {
-        await this.#options.journal.markNetworkAttempted(record.operationId);
-      } catch {
-        const afterFailure = await this.#loadOrNull(record.operationId);
-        if (afterFailure?.state !== 'network-attempted') {
-          await this.#deletePrepared(record);
-        }
-        throw new VaultLifecycleError('journal');
-      }
+      await this.#markNetworkAttempted(record);
+      await this.#persistProfile(record.profile);
       return await this.#bootstrap(record, sessionSecret);
     } catch (error) {
       await this.#deletePreparedBestEffort(record.operationId);
@@ -523,7 +554,11 @@ export class VaultInitializationCoordinator {
 
   async #resumeActive(
     record: InitializationActiveJournalRecord,
-  ): Promise<VaultLifecycleReceipt> {
+  ): Promise<VaultInitializationReceipt> {
+    const profile = this.#parseBoundProfile(record.profile);
+    if (record.state === 'network-attempted') {
+      await this.#persistProfile(profile);
+    }
     let deviceSecret: Awaited<ReturnType<KeychainPort['load']>>;
     let sessionSecret: Awaited<ReturnType<SessionCredentialPort['load']>>;
     try {
@@ -546,11 +581,8 @@ export class VaultInitializationCoordinator {
     try {
       await verifyDeviceBinding(record, deviceSecret);
       if (record.state === 'prepared') {
-        try {
-          await this.#options.journal.markNetworkAttempted(record.operationId);
-        } catch {
-          throw new VaultLifecycleError('journal');
-        }
+        await this.#markNetworkAttempted(record);
+        await this.#persistProfile(profile);
       }
       return await this.#bootstrap(record, sessionSecret);
     } finally {
@@ -601,19 +633,64 @@ export class VaultInitializationCoordinator {
   async #bootstrap(
     record: InitializationActiveJournalRecord,
     sessionSecret: Uint8Array,
-  ): Promise<VaultLifecycleReceipt> {
+  ): Promise<VaultInitializationReceipt> {
     const bearer = bearerFromBytes(sessionSecret);
     const receipt = await this.#options.controlPlane.bootstrap(bearer, record.request);
     try {
       await this.#options.journal.commit(
         record.operationId,
         receipt,
+        record.profile,
         nowTimestamp(this.#options.clock),
       );
     } catch {
       throw new VaultLifecycleError('journal');
     }
-    return receiptFromBootstrap(record.operationId, receipt);
+    return receiptFromBootstrap(record.operationId, receipt, record.profile);
+  }
+
+  async #persistProfile(profileInput: VaultProfile): Promise<VaultProfile> {
+    try {
+      const profile = this.#parseBoundProfile(profileInput);
+      await this.#options.profiles.store(structuredClone(profile));
+      const loaded = await this.#options.profiles.load(
+        profile.vaultId,
+        profile.deviceId,
+      );
+      const persisted = vaultProfileSchema.parse(loaded);
+      if (canonicalJson(persisted) !== canonicalJson(profile)) {
+        throw new VaultLifecycleError('profile');
+      }
+      return persisted;
+    } catch {
+      throw new VaultLifecycleError('profile');
+    }
+  }
+
+  #parseBoundProfile(profileInput: VaultProfile): VaultProfile {
+    try {
+      const profile = vaultProfileSchema.parse(profileInput);
+      if (profile.serverUrl !== this.#serverUrl) {
+        throw new VaultLifecycleError('profile');
+      }
+      return profile;
+    } catch {
+      throw new VaultLifecycleError('profile');
+    }
+  }
+
+  async #markNetworkAttempted(
+    record: InitializationActiveJournalRecord,
+  ): Promise<void> {
+    try {
+      await this.#options.journal.markNetworkAttempted(record.operationId);
+    } catch {
+      const afterFailure = await this.#loadOrNull(record.operationId);
+      if (afterFailure?.state === 'prepared') {
+        await this.#deletePrepared(afterFailure);
+      }
+      throw new VaultLifecycleError('journal');
+    }
   }
 
   async #load(
@@ -787,8 +864,22 @@ function parseId<Output>(
 function receiptFromBootstrap(
   operationId: LifecycleOperationId,
   receipt: VaultBootstrapResponse,
-): VaultLifecycleReceipt {
-  return { operationId, vaultId: receipt.vaultId, deviceId: receipt.deviceId };
+  profileInput: VaultProfile,
+): VaultInitializationReceipt {
+  try {
+    const profile = vaultProfileSchema.parse(profileInput);
+    if (profile.vaultId !== receipt.vaultId || profile.deviceId !== receipt.deviceId) {
+      throw new VaultLifecycleError('profile');
+    }
+    return {
+      operationId,
+      vaultId: receipt.vaultId,
+      deviceId: receipt.deviceId,
+      profile,
+    };
+  } catch {
+    throw new VaultLifecycleError('profile');
+  }
 }
 
 function lifecycleError(
