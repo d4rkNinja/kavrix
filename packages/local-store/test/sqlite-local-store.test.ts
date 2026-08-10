@@ -1,4 +1,3 @@
-import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import {
   chmod,
@@ -23,6 +22,7 @@ import { SyncLocalStateError, type ApplyPullPageInput } from '@kavrix/sync';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { openSqliteSyncLocalStore, type SqliteSyncLocalStore } from '../src/index.js';
+import { verifySecureLeaf } from '../src/path-security.js';
 import {
   groupRecord,
   mutation,
@@ -31,10 +31,8 @@ import {
   pullPage,
   vaultId,
 } from './fixtures.js';
+import { grantWindowsEveryoneFullControl } from './windows-acl-fixture.js';
 
-const WINDOWS_POWERSHELL =
-  'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
-const WINDOWS_ACL_TEST_TIMEOUT_MS = 15_000;
 const TEST_TMPDIR = await realpath(tmpdir());
 const roots: string[] = [];
 const stores: SqliteSyncLocalStore[] = [];
@@ -470,7 +468,7 @@ describe('SqliteSyncLocalStore', () => {
         fixture.store.close();
         const unsafePath = suffix === null ? fixture.path : `${fixture.path}${suffix}`;
         if (suffix !== null) await writeFile(unsafePath, new Uint8Array(32));
-        grantEveryone(unsafePath);
+        await grantWindowsEveryoneFullControl(unsafePath);
         await expect(
           openSqliteSyncLocalStore({ path: fixture.path }),
         ).rejects.toBeInstanceOf(SyncLocalStateError);
@@ -484,7 +482,7 @@ describe('SqliteSyncLocalStore', () => {
       const fixture = await createStore();
       await fixture.store.applyPullPage(pullPage([groupRecord()]));
       for (const path of [fixture.path, `${fixture.path}-wal`, `${fixture.path}-shm`]) {
-        expectCurrentUserOnly(path);
+        await verifySecureLeaf(path);
       }
     },
   );
@@ -494,7 +492,7 @@ describe('SqliteSyncLocalStore', () => {
     async () => {
       const fixture = await createStore();
       await fixture.store.applyPullPage(pullPage([groupRecord()]));
-      grantEveryone(fixture.path);
+      await grantWindowsEveryoneFullControl(fixture.path);
       await expect(
         fixture.store.enqueueMutation(
           vaultId,
@@ -513,7 +511,7 @@ describe('SqliteSyncLocalStore', () => {
       if (process.platform !== 'win32') return;
       const fixture = await createStore();
       await fixture.store.applyPullPage(pullPage([groupRecord()]));
-      grantEveryone(`${fixture.path}${suffix}`);
+      await grantWindowsEveryoneFullControl(`${fixture.path}${suffix}`);
       await expect(
         fixture.store.enqueueMutation(
           vaultId,
@@ -611,68 +609,4 @@ function testRoot(): string {
   );
   roots.push(root);
   return root;
-}
-
-function grantEveryone(path: string): void {
-  const script = [
-    "$ErrorActionPreference='Stop'",
-    '$path=[Console]::In.ReadToEnd()',
-    '$item=Get-Item -LiteralPath $path -Force',
-    '$sections=[Security.AccessControl.AccessControlSections]::Access -bor [Security.AccessControl.AccessControlSections]::Owner',
-    '$acl=$item.GetAccessControl($sections)',
-    '$world=New-Object Security.Principal.SecurityIdentifier("S-1-1-0")',
-    '$allow=[Security.AccessControl.AccessControlType]::Allow',
-    '$full=[Security.AccessControl.FileSystemRights]::FullControl',
-    '$rule=New-Object Security.AccessControl.FileSystemAccessRule($world,$full,$allow)',
-    '[void]$acl.AddAccessRule($rule)',
-    '$acl.SetAccessRuleProtection($true,$true)',
-    '$item.SetAccessControl($acl)',
-  ].join(';');
-  execFileSync(
-    WINDOWS_POWERSHELL,
-    ['-NoLogo', '-NoProfile', '-NonInteractive', '-Sta', '-Command', script],
-    {
-      env: { SystemRoot: 'C:\\Windows' },
-      input: path,
-      maxBuffer: 4_096,
-      timeout: WINDOWS_ACL_TEST_TIMEOUT_MS,
-      windowsHide: true,
-    },
-  );
-}
-
-function expectCurrentUserOnly(path: string): void {
-  const script = [
-    "$ErrorActionPreference='Stop'",
-    '$path=[Console]::In.ReadToEnd()',
-    '$item=Get-Item -LiteralPath $path -Force',
-    '$sections=[Security.AccessControl.AccessControlSections]::Access -bor [Security.AccessControl.AccessControlSections]::Owner',
-    '$acl=$item.GetAccessControl($sections)',
-    '$sid=[Security.Principal.WindowsIdentity]::GetCurrent().User',
-    'if(-not $acl.AreAccessRulesProtected){exit 41}',
-    'if($acl.GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $sid.Value){exit 42}',
-    '$rules=$acl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier])',
-    'if($rules.Count -ne 1){exit 43}',
-    '$rule=$rules[0]',
-    'if($rule.IsInherited){exit 44}',
-    'if($rule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow){exit 45}',
-    'if($rule.IdentityReference.Value -ne $sid.Value){exit 46}',
-    "[Console]::Out.Write('OK')",
-  ].join(';');
-  const output = execFileSync(
-    WINDOWS_POWERSHELL,
-    ['-NoLogo', '-NoProfile', '-NonInteractive', '-Sta', '-Command', script],
-    {
-      env: { SystemRoot: 'C:\\Windows' },
-      input: path,
-      maxBuffer: 4_096,
-      timeout: WINDOWS_ACL_TEST_TIMEOUT_MS,
-      windowsHide: true,
-    },
-  );
-  try {
-    expect(output.toString('utf8')).toBe('OK');
-  } finally {
-    output.fill(0);
-  }
 }

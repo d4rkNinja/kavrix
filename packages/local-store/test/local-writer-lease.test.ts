@@ -1,4 +1,3 @@
-import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import {
   chmod,
@@ -17,11 +16,9 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { SyncLocalStateError } from '@kavrix/sync';
 
 import { acquireLocalWriterLease, recoverStaleLocalWriterLease } from '../src/index.js';
-import { secureNewLeaf } from '../src/path-security.js';
+import { secureNewLeaf, verifySecureLeaf } from '../src/path-security.js';
+import { grantWindowsEveryoneFullControl } from './windows-acl-fixture.js';
 
-const WINDOWS_POWERSHELL =
-  'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
-const WINDOWS_ACL_TEST_TIMEOUT_MS = 15_000;
 const TEST_TMPDIR = await realpath(tmpdir());
 const roots: string[] = [];
 
@@ -145,7 +142,7 @@ describe('local writer lease', () => {
   it('rejects a live lease whose owner-only protection is weakened', async () => {
     const path = leasePath();
     const lease = await acquireLocalWriterLease(path);
-    if (process.platform === 'win32') grantEveryone(path);
+    if (process.platform === 'win32') await grantWindowsEveryoneFullControl(path);
     else await chmod(path, 0o644);
 
     await expect(lease.release()).rejects.toBeInstanceOf(SyncLocalStateError);
@@ -156,7 +153,7 @@ describe('local writer lease', () => {
     async () => {
       const path = leasePath();
       const lease = await acquireLocalWriterLease(path);
-      expectCurrentUserOnly(path);
+      await verifySecureLeaf(path);
       await lease.release();
     },
   );
@@ -169,68 +166,4 @@ function leasePath(): string {
   );
   roots.push(root);
   return join(root, 'state.writer.lock');
-}
-
-function grantEveryone(path: string): void {
-  const script = [
-    "$ErrorActionPreference='Stop'",
-    '$path=[Console]::In.ReadToEnd()',
-    '$item=Get-Item -LiteralPath $path -Force',
-    '$sections=[Security.AccessControl.AccessControlSections]::Access -bor [Security.AccessControl.AccessControlSections]::Owner',
-    '$acl=$item.GetAccessControl($sections)',
-    '$world=New-Object Security.Principal.SecurityIdentifier("S-1-1-0")',
-    '$allow=[Security.AccessControl.AccessControlType]::Allow',
-    '$full=[Security.AccessControl.FileSystemRights]::FullControl',
-    '$rule=New-Object Security.AccessControl.FileSystemAccessRule($world,$full,$allow)',
-    '[void]$acl.AddAccessRule($rule)',
-    '$acl.SetAccessRuleProtection($true,$true)',
-    '$item.SetAccessControl($acl)',
-  ].join(';');
-  execFileSync(
-    WINDOWS_POWERSHELL,
-    ['-NoLogo', '-NoProfile', '-NonInteractive', '-Sta', '-Command', script],
-    {
-      env: { SystemRoot: 'C:\\Windows' },
-      input: path,
-      maxBuffer: 4_096,
-      timeout: WINDOWS_ACL_TEST_TIMEOUT_MS,
-      windowsHide: true,
-    },
-  );
-}
-
-function expectCurrentUserOnly(path: string): void {
-  const script = [
-    "$ErrorActionPreference='Stop'",
-    '$path=[Console]::In.ReadToEnd()',
-    '$item=Get-Item -LiteralPath $path -Force',
-    '$sections=[Security.AccessControl.AccessControlSections]::Access -bor [Security.AccessControl.AccessControlSections]::Owner',
-    '$acl=$item.GetAccessControl($sections)',
-    '$sid=[Security.Principal.WindowsIdentity]::GetCurrent().User',
-    'if(-not $acl.AreAccessRulesProtected){exit 41}',
-    'if($acl.GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $sid.Value){exit 42}',
-    '$rules=$acl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier])',
-    'if($rules.Count -ne 1){exit 43}',
-    '$rule=$rules[0]',
-    'if($rule.IsInherited){exit 44}',
-    'if($rule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow){exit 45}',
-    'if($rule.IdentityReference.Value -ne $sid.Value){exit 46}',
-    "[Console]::Out.Write('OK')",
-  ].join(';');
-  const output = execFileSync(
-    WINDOWS_POWERSHELL,
-    ['-NoLogo', '-NoProfile', '-NonInteractive', '-Sta', '-Command', script],
-    {
-      env: { SystemRoot: 'C:\\Windows' },
-      input: path,
-      maxBuffer: 4_096,
-      timeout: WINDOWS_ACL_TEST_TIMEOUT_MS,
-      windowsHide: true,
-    },
-  );
-  try {
-    expect(output.toString('utf8')).toBe('OK');
-  } finally {
-    output.fill(0);
-  }
 }

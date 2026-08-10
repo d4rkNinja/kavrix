@@ -1,4 +1,3 @@
-import { execFileSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -32,10 +31,11 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { openSqliteSyncLocalStore, type SqliteSyncLocalStore } from '../src/index.js';
 import { digest, groupRecord, otherVaultId, timestamp, vaultId } from './fixtures.js';
+import {
+  grantWindowsEveryoneFullControl,
+  removeWindowsEveryoneGrant,
+} from './windows-acl-fixture.js';
 
-const WINDOWS_POWERSHELL =
-  'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
-const WINDOWS_ACL_TEST_TIMEOUT_MS = 15_000;
 const TEST_TMPDIR = await realpath(tmpdir());
 const WRONG_DIGEST = createHash('sha256')
   .update('wrong-hash-fixture')
@@ -641,11 +641,11 @@ describe('SqliteSyncLocalStore client adapters', () => {
         'durability-unknown-key-1',
         groupRecord('group.uncertain'),
       );
-      grantEveryone(fixture.path);
+      await grantWindowsEveryoneFullControl(fixture.path);
       await expect(fixture.store.enqueueBatch([mutation])).rejects.toBeInstanceOf(
         OpaqueMutationDurabilityUnknownError,
       );
-      protectCurrentUserOnly(fixture.path);
+      await removeWindowsEveryoneGrant(fixture.path);
       const reopened = await openSqliteSyncLocalStore({ path: fixture.path });
       stores.push(reopened);
       await expect(reopened.enqueueBatch([mutation])).resolves.toBeUndefined();
@@ -968,53 +968,4 @@ async function collect<Value>(values: AsyncIterable<Value>): Promise<Value[]> {
   const result: Value[] = [];
   for await (const value of values) result.push(value);
   return result;
-}
-
-function grantEveryone(path: string): void {
-  runAclScript(path, [
-    '$world=New-Object Security.Principal.SecurityIdentifier("S-1-1-0")',
-    '$allow=[Security.AccessControl.AccessControlType]::Allow',
-    '$full=[Security.AccessControl.FileSystemRights]::FullControl',
-    '$rule=New-Object Security.AccessControl.FileSystemAccessRule($world,$full,$allow)',
-    '[void]$acl.AddAccessRule($rule)',
-    '$acl.SetAccessRuleProtection($true,$true)',
-  ]);
-}
-
-function protectCurrentUserOnly(path: string): void {
-  runAclScript(path, [
-    '$sid=[Security.Principal.WindowsIdentity]::GetCurrent().User',
-    '$allow=[Security.AccessControl.AccessControlType]::Allow',
-    '$full=[Security.AccessControl.FileSystemRights]::FullControl',
-    '$security=New-Object Security.AccessControl.FileSecurity',
-    '$security.SetOwner($sid)',
-    '$security.SetAccessRuleProtection($true,$false)',
-    '$rule=New-Object Security.AccessControl.FileSystemAccessRule($sid,$full,$allow)',
-    '[void]$security.AddAccessRule($rule)',
-    '$item.SetAccessControl($security)',
-    '$acl=$security',
-  ]);
-}
-
-function runAclScript(path: string, body: readonly string[]): void {
-  const script = [
-    "$ErrorActionPreference='Stop'",
-    '$path=[Console]::In.ReadToEnd()',
-    '$item=Get-Item -LiteralPath $path -Force',
-    '$sections=[Security.AccessControl.AccessControlSections]::Access -bor [Security.AccessControl.AccessControlSections]::Owner',
-    '$acl=$item.GetAccessControl($sections)',
-    ...body,
-    '$item.SetAccessControl($acl)',
-  ].join(';');
-  execFileSync(
-    WINDOWS_POWERSHELL,
-    ['-NoLogo', '-NoProfile', '-NonInteractive', '-Sta', '-Command', script],
-    {
-      env: { SystemRoot: 'C:\\Windows' },
-      input: path,
-      maxBuffer: 4_096,
-      timeout: WINDOWS_ACL_TEST_TIMEOUT_MS,
-      windowsHide: true,
-    },
-  );
 }
