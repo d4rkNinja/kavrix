@@ -12,23 +12,25 @@ const WINDOWS_CHECK_TIMEOUT_MS = 15_000;
 const SQLITE_SIDE_SUFFIXES = ['-wal', '-shm', '-journal'] as const;
 const WINDOWS_DIRECTORY_SCRIPT = [
   "$ErrorActionPreference='Stop'",
-  '$path=[Console]::In.ReadToEnd()',
+  "$path=[Environment]::GetEnvironmentVariable('KAVRIX_LOCAL_PATH_0','Process')",
   'if([String]::IsNullOrWhiteSpace($path)){exit 11}',
   '$identity=[Security.Principal.WindowsIdentity]::GetCurrent()',
   '$sid=$identity.User',
   'if(-not [IO.Directory]::Exists($path)){',
-  '  $security=New-Object Security.AccessControl.DirectorySecurity',
+  '  $security=[Security.AccessControl.DirectorySecurity]::new()',
   '  $security.SetOwner($sid)',
   '  $security.SetAccessRuleProtection($true,$false)',
   "  $inherit=[Security.AccessControl.InheritanceFlags]'ContainerInherit,ObjectInherit'",
   '  $propagation=[Security.AccessControl.PropagationFlags]::None',
   '  $allow=[Security.AccessControl.AccessControlType]::Allow',
   '  $full=[Security.AccessControl.FileSystemRights]::FullControl',
-  '  $rule=New-Object Security.AccessControl.FileSystemAccessRule($sid,$full,$inherit,$propagation,$allow)',
+  '  $rule=[Security.AccessControl.FileSystemAccessRule]::new($sid,$full,$inherit,$propagation,$allow)',
   '  [void]$security.AddAccessRule($rule)',
   '  [void][IO.Directory]::CreateDirectory($path,$security)',
   '}',
-  '$item=Get-Item -LiteralPath $path -Force',
+  '$item=[IO.DirectoryInfo]::new($path)',
+  '$item.Refresh()',
+  'if(-not $item.Exists){exit 12}',
   'if(($item.Attributes -band [IO.FileAttributes]::ReparsePoint)-ne 0){exit 12}',
   "$acl=$item.GetAccessControl('Access,Owner')",
   'if(-not $acl.AreAccessRulesProtected){exit 13}',
@@ -47,18 +49,20 @@ const WINDOWS_DIRECTORY_SCRIPT = [
 ].join(';');
 const WINDOWS_FILE_SCRIPT = [
   "$ErrorActionPreference='Stop'",
-  '$document=[Console]::In.ReadToEnd()|ConvertFrom-Json',
-  '$entries=@($document.entries)',
-  'if($entries.Count -lt 1 -or $entries.Count -gt 4){exit 31}',
+  "$countText=[Environment]::GetEnvironmentVariable('KAVRIX_LOCAL_ENTRY_COUNT','Process')",
+  '$count=0',
+  'if(-not [Int32]::TryParse($countText,[ref]$count) -or $count -lt 1 -or $count -gt 4){exit 31}',
   '$identity=[Security.Principal.WindowsIdentity]::GetCurrent()',
   '$sid=$identity.User',
   '$allow=[Security.AccessControl.AccessControlType]::Allow',
   '$full=[Security.AccessControl.FileSystemRights]::FullControl',
-  'foreach($entry in $entries){',
-  '  $path=[string]$entry.path',
-  '  $mode=[string]$entry.mode',
+  'for($index=0;$index -lt $count;$index++){',
+  "  $path=[Environment]::GetEnvironmentVariable(('KAVRIX_LOCAL_PATH_{0}' -f $index),'Process')",
+  "  $mode=[Environment]::GetEnvironmentVariable(('KAVRIX_LOCAL_MODE_{0}' -f $index),'Process')",
   "  if([String]::IsNullOrWhiteSpace($path) -or ($mode -ne 'secure' -and $mode -ne 'verify')){exit 32}",
-  '  $item=Get-Item -LiteralPath $path -Force',
+  '  $item=[IO.FileInfo]::new($path)',
+  '  $item.Refresh()',
+  '  if(-not $item.Exists){exit 33}',
   '  if(($item.Attributes -band [IO.FileAttributes]::ReparsePoint)-ne 0){exit 33}',
   "  $before=$item.GetAccessControl('Access,Owner')",
   '  if($before.GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $sid.Value){exit 34}',
@@ -75,10 +79,10 @@ const WINDOWS_FILE_SCRIPT = [
   "  if($mode -eq 'verify'){",
   '    if(-not $before.AreAccessRulesProtected -or $beforeAllowed -ne 1){exit 40}',
   '  } else {',
-  '    $security=New-Object Security.AccessControl.FileSecurity',
+  '    $security=[Security.AccessControl.FileSecurity]::new()',
   '    $security.SetOwner($sid)',
   '    $security.SetAccessRuleProtection($true,$false)',
-  '    $rule=New-Object Security.AccessControl.FileSystemAccessRule($sid,$full,$allow)',
+  '    $rule=[Security.AccessControl.FileSystemAccessRule]::new($sid,$full,$allow)',
   '    [void]$security.AddAccessRule($rule)',
   '    $item.SetAccessControl($security)',
   '  }',
@@ -234,38 +238,56 @@ async function prepareUnixDirectory(path: string): Promise<void> {
 /* v8 ignore stop */
 
 async function prepareWindowsDirectory(path: string): Promise<void> {
-  const input = Buffer.from(path, 'utf8');
-  try {
-    await runWindowsCheck(WINDOWS_DIRECTORY_SCRIPT, input);
-  } finally {
-    input.fill(0);
-  }
+  await runWindowsCheck(WINDOWS_DIRECTORY_SCRIPT, {
+    KAVRIX_LOCAL_PATH_0: path,
+  });
 }
 
 async function prepareWindowsFiles(
   entries: readonly { path: string; mode: 'secure' | 'verify' }[],
 ): Promise<void> {
-  const input = Buffer.from(JSON.stringify({ entries }), 'utf8');
-  try {
-    await runWindowsCheck(WINDOWS_FILE_SCRIPT, input);
-  } finally {
-    input.fill(0);
+  const environment: Record<string, string> = {
+    KAVRIX_LOCAL_ENTRY_COUNT: String(entries.length),
+  };
+  for (const [index, entry] of entries.entries()) {
+    environment[`KAVRIX_LOCAL_PATH_${String(index)}`] = entry.path;
+    environment[`KAVRIX_LOCAL_MODE_${String(index)}`] = entry.mode;
   }
+  await runWindowsCheck(WINDOWS_FILE_SCRIPT, environment);
 }
 
-function runWindowsCheck(script: string, input: Uint8Array): Promise<void> {
+function encodedCommand(script: string): string {
+  return Buffer.from(script, 'utf16le').toString('base64');
+}
+
+function runWindowsCheck(
+  script: string,
+  environment: Readonly<Record<string, string>>,
+): Promise<void> {
   return new Promise((resolvePromise, rejectPromise) => {
     const stdout: Uint8Array[] = [];
     let stdoutBytes = 0;
     let failed = false;
     const child = spawn(
       WINDOWS_POWERSHELL,
-      ['-NoLogo', '-NoProfile', '-NonInteractive', '-Sta', '-Command', script],
+      [
+        '-NoLogo',
+        '-NoProfile',
+        '-NonInteractive',
+        '-ExecutionPolicy',
+        'Bypass',
+        '-EncodedCommand',
+        encodedCommand(script),
+      ],
       {
         shell: false,
         windowsHide: true,
-        stdio: ['pipe', 'pipe', 'pipe'],
-        env: { SystemRoot: WINDOWS_ROOT },
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env: {
+          SystemRoot: WINDOWS_ROOT,
+          WINDIR: WINDOWS_ROOT,
+          ...environment,
+        },
       },
     );
     /* v8 ignore next 4 -- the fixed trusted helper's OS failure path */
@@ -307,8 +329,6 @@ function runWindowsCheck(script: string, input: Uint8Array): Promise<void> {
       if (matches) resolvePromise();
       else rejectPromise(invalidState());
     });
-    child.stdin.on('error', fail);
-    child.stdin.end(Buffer.from(input.buffer, input.byteOffset, input.byteLength));
   });
 }
 
