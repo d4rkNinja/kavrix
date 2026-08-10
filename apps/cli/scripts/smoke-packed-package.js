@@ -376,20 +376,36 @@ async function prepareSecureKeyDirectory(path) {
   const script = String.raw`
 $ErrorActionPreference = 'Stop'
 $target = [Environment]::GetEnvironmentVariable('KAVRIX_SMOKE_ACL_TARGET', 'Process')
+if ([String]::IsNullOrWhiteSpace($target)) { exit 11 }
+$item = [IO.DirectoryInfo]::new($target)
+$item.Refresh()
+if (-not $item.Exists) { exit 12 }
+if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { exit 12 }
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
 $sid = $identity.User
-$acl = Get-Acl -LiteralPath $target -ErrorAction Stop
-$acl.SetAccessRuleProtection($true, $false)
-$rules = @($acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]))
-foreach ($rule in $rules) { [void]$acl.RemoveAccessRuleSpecific($rule) }
+$security = [Security.AccessControl.DirectorySecurity]::new()
+$security.SetOwner($sid)
+$security.SetAccessRuleProtection($true, $false)
 $fullControl = [Security.AccessControl.FileSystemRights]::FullControl
 $allow = [Security.AccessControl.AccessControlType]::Allow
 $inheritance = [Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [Security.AccessControl.InheritanceFlags]::ObjectInherit
 $propagation = [Security.AccessControl.PropagationFlags]::None
 $rule = [Security.AccessControl.FileSystemAccessRule]::new($sid, $fullControl, $inheritance, $propagation, $allow)
-[void]$acl.AddAccessRule($rule)
-$acl.SetOwner($sid)
-Set-Acl -LiteralPath $target -AclObject $acl -ErrorAction Stop
+[void]$security.AddAccessRule($rule)
+$item.SetAccessControl($security)
+$item.Refresh()
+$sections = [Security.AccessControl.AccessControlSections]::Access -bor [Security.AccessControl.AccessControlSections]::Owner
+$acl = $item.GetAccessControl($sections)
+if (-not $acl.AreAccessRulesProtected) { exit 13 }
+if ($acl.GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $sid.Value) { exit 14 }
+$rules = $acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])
+if ($rules.Count -ne 1) { exit 15 }
+$actual = $rules[0]
+if ($actual.IsInherited) { exit 16 }
+if ($actual.AccessControlType -ne $allow) { exit 17 }
+if ($actual.IdentityReference.Value -ne $sid.Value) { exit 18 }
+if (($actual.FileSystemRights -band $fullControl) -ne $fullControl) { exit 19 }
+[Console]::Out.Write('OK')
 `;
   const powershell = String.raw`C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`;
   const prepared = run(
@@ -405,14 +421,15 @@ Set-Acl -LiteralPath $target -AclObject $acl -ErrorAction Stop
     ],
     {
       env: {
-        ...process.env,
         KAVRIX_SMOKE_ACL_TARGET: path,
         SystemRoot: String.raw`C:\Windows`,
         WINDIR: String.raw`C:\Windows`,
       },
+      maxBuffer: 4_096,
+      timeout: 15_000,
     },
   );
-  if (prepared.status !== 0) {
+  if (prepared.status !== 0 || prepared.stdout !== 'OK' || prepared.stderr !== '') {
     throw new Error('Could not prepare the packed key-file smoke directory.');
   }
 }
