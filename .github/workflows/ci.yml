@@ -52,8 +52,6 @@ jobs:
         run: node --input-type=module -e "if (process.arch !== process.env.EXPECTED_ARCH) process.exit(1)"
       - run: pnpm install --frozen-lockfile
       - run: pnpm verify
-        env:
-          KAVRIX_WINDOWS_SECURITY_DIAGNOSTICS: ${{ runner.os == 'Windows' && '1' || '0' }}
       - name: Install and smoke-test the packed public CLI
         run: pnpm --filter kavrix --fail-if-no-match package:smoke
 

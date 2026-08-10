@@ -10,7 +10,6 @@ const WINDOWS_POWERSHELL =
   'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
 const WINDOWS_CHECK_TIMEOUT_MS = 15_000;
 const SQLITE_SIDE_SUFFIXES = ['-wal', '-shm', '-journal'] as const;
-let windowsDiagnosticEmitted = false;
 const WINDOWS_DIRECTORY_SCRIPT = [
   "$ErrorActionPreference='Stop'",
   "$path=[Environment]::GetEnvironmentVariable('KAVRIX_LOCAL_PATH_0','Process')",
@@ -49,6 +48,9 @@ const WINDOWS_DIRECTORY_SCRIPT = [
   'if($allowed -ne 1){exit 19}',
   "[Console]::Out.Write('OK')",
 ].join(';');
+// Windows may initially assign an exclusively created leaf to the process token's
+// default owner. Secure mode accepts only that owner or the user before replacing
+// the owner and DACL; verify mode and the postcondition remain exact-user-only.
 const WINDOWS_FILE_SCRIPT = [
   "$ErrorActionPreference='Stop'",
   "$countText=[Environment]::GetEnvironmentVariable('KAVRIX_LOCAL_ENTRY_COUNT','Process')",
@@ -56,6 +58,8 @@ const WINDOWS_FILE_SCRIPT = [
   'if(-not [Int32]::TryParse($countText,[ref]$count) -or $count -lt 1 -or $count -gt 4){exit 31}',
   '$identity=[Security.Principal.WindowsIdentity]::GetCurrent()',
   '$sid=$identity.User',
+  '$tokenOwner=$identity.Owner',
+  'if($null -eq $tokenOwner){exit 34}',
   '$allow=[Security.AccessControl.AccessControlType]::Allow',
   '$full=[Security.AccessControl.FileSystemRights]::FullControl',
   '$sections=[Security.AccessControl.AccessControlSections]::Access -bor [Security.AccessControl.AccessControlSections]::Owner',
@@ -68,7 +72,8 @@ const WINDOWS_FILE_SCRIPT = [
   '  if(-not $item.Exists){exit 33}',
   '  if(($item.Attributes -band [IO.FileAttributes]::ReparsePoint)-ne 0){exit 33}',
   '  $before=$item.GetAccessControl($sections)',
-  '  if($before.GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $sid.Value){exit 34}',
+  '  $beforeOwner=$before.GetOwner([Security.Principal.SecurityIdentifier]).Value',
+  "  if($beforeOwner -ne $sid.Value -and ($mode -ne 'secure' -or $beforeOwner -ne $tokenOwner.Value)){exit 34}",
   '  $beforeRules=$before.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier])',
   '  $beforeAllowed=0',
   '  foreach($ruleEntry in $beforeRules){',
@@ -241,13 +246,9 @@ async function prepareUnixDirectory(path: string): Promise<void> {
 /* v8 ignore stop */
 
 async function prepareWindowsDirectory(path: string): Promise<void> {
-  await runWindowsCheck(
-    WINDOWS_DIRECTORY_SCRIPT,
-    {
-      KAVRIX_LOCAL_PATH_0: path,
-    },
-    'directory',
-  );
+  await runWindowsCheck(WINDOWS_DIRECTORY_SCRIPT, {
+    KAVRIX_LOCAL_PATH_0: path,
+  });
 }
 
 async function prepareWindowsFiles(
@@ -260,14 +261,7 @@ async function prepareWindowsFiles(
     environment[`KAVRIX_LOCAL_PATH_${String(index)}`] = entry.path;
     environment[`KAVRIX_LOCAL_MODE_${String(index)}`] = entry.mode;
   }
-  const modes = new Set(entries.map((entry) => entry.mode));
-  const phase =
-    modes.size === 1
-      ? entries[0]?.mode === 'secure'
-        ? 'file-secure'
-        : 'file-verify'
-      : 'file-mixed';
-  await runWindowsCheck(WINDOWS_FILE_SCRIPT, environment, phase);
+  await runWindowsCheck(WINDOWS_FILE_SCRIPT, environment);
 }
 
 function encodedCommand(script: string): string {
@@ -277,15 +271,11 @@ function encodedCommand(script: string): string {
 function runWindowsCheck(
   script: string,
   environment: Readonly<Record<string, string>>,
-  phase: 'directory' | 'file-mixed' | 'file-secure' | 'file-verify',
 ): Promise<void> {
   return new Promise((resolvePromise, rejectPromise) => {
     const stdout: Uint8Array[] = [];
     let stdoutBytes = 0;
     let failed = false;
-    let spawnError = false;
-    let stderrPresent = false;
-    let timedOut = false;
     const child = spawn(
       WINDOWS_POWERSHELL,
       [
@@ -313,10 +303,7 @@ function runWindowsCheck(
       failed = true;
       child.kill('SIGKILL');
     };
-    const timeout = setTimeout(() => {
-      timedOut = true;
-      fail();
-    }, WINDOWS_CHECK_TIMEOUT_MS);
+    const timeout = setTimeout(fail, WINDOWS_CHECK_TIMEOUT_MS);
     timeout.unref();
     child.stdout.on('data', (value: Buffer) => {
       stdoutBytes += value.byteLength;
@@ -331,14 +318,10 @@ function runWindowsCheck(
     });
     /* v8 ignore next 4 -- PowerShell failures are covered through generic exit errors */
     child.stderr.on('data', (value: Buffer) => {
-      stderrPresent = true;
       value.fill(0);
       fail();
     });
-    child.on('error', () => {
-      spawnError = true;
-      fail();
-    });
+    child.on('error', fail);
     child.on('close', (code, signal) => {
       clearTimeout(timeout);
       const valid =
@@ -352,43 +335,9 @@ function runWindowsCheck(
       combined.fill(0);
       for (const value of stdout) value.fill(0);
       if (matches) resolvePromise();
-      else {
-        emitWindowsDiagnostic({
-          phase,
-          code,
-          signalPresent: signal !== null,
-          spawnError,
-          stderrPresent,
-          stdoutBytes,
-          timedOut,
-        });
-        rejectPromise(invalidState());
-      }
+      else rejectPromise(invalidState());
     });
   });
-}
-
-function emitWindowsDiagnostic(
-  input: Readonly<{
-    phase: 'directory' | 'file-mixed' | 'file-secure' | 'file-verify';
-    code: number | null;
-    signalPresent: boolean;
-    spawnError: boolean;
-    stderrPresent: boolean;
-    stdoutBytes: number;
-    timedOut: boolean;
-  }>,
-): void {
-  if (
-    windowsDiagnosticEmitted ||
-    process.env['KAVRIX_WINDOWS_SECURITY_DIAGNOSTICS'] !== '1'
-  ) {
-    return;
-  }
-  windowsDiagnosticEmitted = true;
-  process.stderr.write(
-    `[kavrix-windows-security-diagnostic] ${JSON.stringify(input)}\n`,
-  );
 }
 
 async function assertCanonicalDirectory(path: string): Promise<void> {
