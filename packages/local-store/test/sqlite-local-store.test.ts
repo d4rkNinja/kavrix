@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import { realpathSync } from 'node:fs';
 import { chmod, link, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -26,6 +27,7 @@ import {
 
 const WINDOWS_POWERSHELL =
   'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
+const TEST_TMPDIR = realpathSync(tmpdir());
 const roots: string[] = [];
 const stores: SqliteSyncLocalStore[] = [];
 
@@ -39,8 +41,8 @@ afterEach(async () => {
   }
   for (const root of roots.splice(0)) {
     if (
-      dirname(root) !== tmpdir() ||
-      !root.startsWith(join(tmpdir(), 'kavrix-local-store-test-'))
+      dirname(root) !== TEST_TMPDIR ||
+      !root.startsWith(join(TEST_TMPDIR, 'kavrix-local-store-test-'))
     ) {
       throw new Error('Refusing to remove an unverified test directory');
     }
@@ -596,7 +598,7 @@ async function createStore(
 
 function testRoot(): string {
   const root = join(
-    tmpdir(),
+    TEST_TMPDIR,
     `kavrix-local-store-test-${randomUUID().replaceAll('-', '')}`,
   );
   roots.push(root);

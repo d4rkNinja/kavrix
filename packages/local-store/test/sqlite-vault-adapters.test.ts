@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
+import { realpathSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -35,6 +36,7 @@ import { digest, groupRecord, otherVaultId, timestamp, vaultId } from './fixture
 
 const WINDOWS_POWERSHELL =
   'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
+const TEST_TMPDIR = realpathSync(tmpdir());
 const WRONG_DIGEST = createHash('sha256')
   .update('wrong-hash-fixture')
   .digest('base64url');
@@ -51,8 +53,8 @@ afterEach(async () => {
   }
   for (const root of roots.splice(0)) {
     if (
-      dirname(root) !== tmpdir() ||
-      !root.startsWith(join(tmpdir(), 'kavrix-vault-adapter-test-'))
+      dirname(root) !== TEST_TMPDIR ||
+      !root.startsWith(join(TEST_TMPDIR, 'kavrix-vault-adapter-test-'))
     ) {
       throw new Error('Refusing to remove an unverified test directory');
     }
@@ -662,7 +664,7 @@ async function createStore(
   }> = {},
 ): Promise<Readonly<{ path: string; store: SqliteSyncLocalStore }>> {
   const root = join(
-    tmpdir(),
+    TEST_TMPDIR,
     `kavrix-vault-adapter-test-${randomUUID().replaceAll('-', '')}`,
   );
   roots.push(root);

@@ -75,6 +75,7 @@ jobs:
           cache: pnpm
           package-manager-cache: false
       - run: pnpm install --frozen-lockfile
+      - run: pnpm build
       - name: Start pinned MongoDB 8.0.26 replica set
         shell: bash
         run: |

@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import { realpathSync } from 'node:fs';
 import { readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -27,6 +28,7 @@ import {
 } from '../src/index.js';
 
 const NOW = '2026-08-10T00:00:00.000Z';
+const TEST_TMPDIR = realpathSync(tmpdir());
 const LEASE_CHILD_MODULE = new URL('../dist/index.js', import.meta.url).href;
 const LEASE_CHILD_SOURCE = `
   import { writeFile } from 'node:fs/promises';
@@ -689,7 +691,10 @@ async function openJoin(
 }
 
 function journalPath(filename: string): Readonly<{ root: string; path: string }> {
-  const root = join(tmpdir(), `kavrix-lifecycle-${randomUUID().replaceAll('-', '')}`);
+  const root = join(
+    TEST_TMPDIR,
+    `kavrix-lifecycle-${randomUUID().replaceAll('-', '')}`,
+  );
   roots.push(root);
   return { root, path: join(root, filename) };
 }

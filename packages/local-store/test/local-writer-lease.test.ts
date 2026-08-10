@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import { realpathSync } from 'node:fs';
 import { chmod, link, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -13,6 +14,7 @@ import { secureNewLeaf } from '../src/path-security.js';
 
 const WINDOWS_POWERSHELL =
   'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
+const TEST_TMPDIR = realpathSync(tmpdir());
 const roots: string[] = [];
 
 afterEach(async () => {
@@ -154,7 +156,7 @@ describe('local writer lease', () => {
 
 function leasePath(): string {
   const root = join(
-    tmpdir(),
+    TEST_TMPDIR,
     `kavrix-writer-lease-${randomUUID().replaceAll('-', '')}`,
   );
   roots.push(root);

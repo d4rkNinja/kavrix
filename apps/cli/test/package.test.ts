@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { existsSync, readFileSync } from 'node:fs';
+import { delimiter, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
@@ -71,12 +71,7 @@ describe('public package', () => {
   it('packs only metadata and compiled dist artifacts', () => {
     const output = execFileSync(
       process.execPath,
-      [
-        resolve(dirname(process.execPath), 'node_modules/corepack/dist/pnpm.js'),
-        'pack',
-        '--dry-run',
-        '--json',
-      ],
+      [resolvePnpmEntrypoint(), 'pack', '--dry-run', '--json'],
       { cwd: packageDirectory, encoding: 'utf8' },
     );
     const pack = packOutputSchema.parse(JSON.parse(output));
@@ -148,3 +143,27 @@ describe('public package', () => {
     expect(compiled).not.toContain('@kavrix/');
   });
 });
+
+function resolvePnpmEntrypoint(): string {
+  const pathDirectories = (process.env['PATH'] ?? '')
+    .split(delimiter)
+    .filter((value) => value.length > 0);
+  const candidates = [
+    process.env['npm_execpath'],
+    process.env['PNPM_HOME'] === undefined
+      ? undefined
+      : resolve(process.env['PNPM_HOME'], '..', 'pnpm', 'bin', 'pnpm.cjs'),
+    ...pathDirectories.flatMap((directory) => [
+      resolve(directory, '..', 'pnpm', 'bin', 'pnpm.cjs'),
+      resolve(directory, '..', 'dist', 'pnpm.js'),
+    ]),
+  ];
+  const entrypoint = candidates.find(
+    (candidate): candidate is string =>
+      candidate !== undefined && existsSync(candidate),
+  );
+  if (entrypoint === undefined) {
+    throw new Error('The pnpm entrypoint is unavailable for package inspection.');
+  }
+  return entrypoint;
+}
