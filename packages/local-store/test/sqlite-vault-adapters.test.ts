@@ -35,6 +35,7 @@ import { digest, groupRecord, otherVaultId, timestamp, vaultId } from './fixture
 
 const WINDOWS_POWERSHELL =
   'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
+const WINDOWS_ACL_TEST_TIMEOUT_MS = 15_000;
 const TEST_TMPDIR = await realpath(tmpdir());
 const WRONG_DIGEST = createHash('sha256')
   .update('wrong-hash-fixture')
@@ -1012,7 +1013,7 @@ function runAclScript(path: string, body: readonly string[]): void {
       env: { SystemRoot: 'C:\\Windows' },
       input: path,
       maxBuffer: 4_096,
-      timeout: 5_000,
+      timeout: WINDOWS_ACL_TEST_TIMEOUT_MS,
       windowsHide: true,
     },
   );

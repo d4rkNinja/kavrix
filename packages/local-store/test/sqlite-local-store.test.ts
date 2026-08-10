@@ -34,6 +34,7 @@ import {
 
 const WINDOWS_POWERSHELL =
   'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
+const WINDOWS_ACL_TEST_TIMEOUT_MS = 15_000;
 const TEST_TMPDIR = await realpath(tmpdir());
 const roots: string[] = [];
 const stores: SqliteSyncLocalStore[] = [];
@@ -634,7 +635,7 @@ function grantEveryone(path: string): void {
       env: { SystemRoot: 'C:\\Windows' },
       input: path,
       maxBuffer: 4_096,
-      timeout: 5_000,
+      timeout: WINDOWS_ACL_TEST_TIMEOUT_MS,
       windowsHide: true,
     },
   );
@@ -665,7 +666,7 @@ function expectCurrentUserOnly(path: string): void {
       env: { SystemRoot: 'C:\\Windows' },
       input: path,
       maxBuffer: 4_096,
-      timeout: 5_000,
+      timeout: WINDOWS_ACL_TEST_TIMEOUT_MS,
       windowsHide: true,
     },
   );
