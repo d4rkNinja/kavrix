@@ -30,6 +30,7 @@ import {
   tokenVersionSchema,
   vaultRevisionSchema,
 } from './primitives.js';
+import { attachmentHeaderContentHash } from './content-hash.js';
 
 export const syncEntityTypeSchema = z.enum(['vault', 'group', 'item', 'attachment']);
 export const syncOperationSchema = z.enum(['upsert', 'tombstone', 'restore', 'purge']);
@@ -89,12 +90,11 @@ export const changeRecordSchema = z
     }
   });
 
-export const deviceRecordSchema = z
+const publicDeviceRecordObjectSchema = z
   .object({
     id: deviceIdSchema,
     vaultId: vaultIdSchema,
     schemaVersion: schemaVersionSchema,
-    tokenHash: sha256DigestSchema,
     tokenVersion: tokenVersionSchema,
     encryptedLabel: aeadEnvelopeSchema.optional(),
     scopes: z
@@ -105,22 +105,35 @@ export const deviceRecordSchema = z
     lastSeenAt: timestampSchema.optional(),
     revokedAt: timestampSchema.optional(),
   })
-  .strict()
-  .superRefine((device, context) => {
-    if (
-      device.encryptedLabel !== undefined &&
-      (device.encryptedLabel.aad.vaultId !== device.vaultId ||
-        device.encryptedLabel.aad.schemaVersion !== device.schemaVersion ||
-        device.encryptedLabel.aad.entityType !== 'device-label' ||
-        device.encryptedLabel.aad.entityId !== device.id)
-    ) {
-      context.addIssue({
-        code: 'custom',
-        message: 'Encrypted device label has invalid associated data',
-        path: ['encryptedLabel', 'aad'],
-      });
-    }
-  });
+  .strict();
+
+function validateDeviceBinding(
+  device: z.infer<typeof publicDeviceRecordObjectSchema>,
+  context: z.RefinementCtx,
+): void {
+  if (
+    device.encryptedLabel !== undefined &&
+    (device.encryptedLabel.aad.vaultId !== device.vaultId ||
+      device.encryptedLabel.aad.schemaVersion !== device.schemaVersion ||
+      device.encryptedLabel.aad.entityType !== 'device-label' ||
+      device.encryptedLabel.aad.entityId !== device.id)
+  ) {
+    context.addIssue({
+      code: 'custom',
+      message: 'Encrypted device label has invalid associated data',
+      path: ['encryptedLabel', 'aad'],
+    });
+  }
+}
+
+/** Hash-free device shape returned over authenticated control-plane routes. */
+export const publicDeviceRecordSchema =
+  publicDeviceRecordObjectSchema.superRefine(validateDeviceBinding);
+
+/** Server persistence shape; bearer material is represented only by its digest. */
+export const deviceRecordSchema = publicDeviceRecordObjectSchema
+  .extend({ tokenHash: sha256DigestSchema })
+  .superRefine(validateDeviceBinding);
 
 export const protectedLocalDeviceStateSchema = z
   .object({
@@ -247,6 +260,13 @@ export const attachmentStreamStartInputSchema = z
         message:
           'Staged header revision must immediately follow the expected attachment',
         path: ['header', 'recordRevision'],
+      });
+    }
+    if (attachmentHeaderContentHash(input.header) !== input.header.contentHash) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Staged attachment headers require their exact canonical content hash',
+        path: ['header', 'contentHash'],
       });
     }
   });

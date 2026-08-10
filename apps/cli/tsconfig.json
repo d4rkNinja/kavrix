@@ -1,0 +1,15 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "ignoreDeprecations": "6.0",
+    "noEmit": true
+  },
+  "include": ["src/**/*.ts", "test/**/*.ts"],
+  "references": [
+    { "path": "../../packages/client/tsconfig.build.json" },
+    { "path": "../../packages/schemas/tsconfig.build.json" },
+    { "path": "../../packages/core/tsconfig.build.json" },
+    { "path": "../../packages/crypto/tsconfig.build.json" },
+    { "path": "../../packages/key-files/tsconfig.build.json" }
+  ]
+}

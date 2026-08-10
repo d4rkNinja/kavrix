@@ -72,15 +72,32 @@ dashboard views never render the key.
 6. The client generates an independent random VRK and recovery key, derives the
    portable and recovery KEKs locally, and creates independent authenticated VRK
    slots.
-7. The client uploads only wrapped VRK envelopes, public derivation metadata,
-   opaque IDs/versions, and the initial device authentication material required
-   by the enrollment protocol.
-8. It optionally remembers this device through the native keychain, then clears
-   raw keys and transient KEKs best effort.
+7. Before the bootstrap request, the client independently generates a random
+   256-bit API session credential and durably stores its raw bytes in the native
+   keychain under the new vault/device identity. This entry is separate from any
+   device-unlock secret or VRK slot.
+8. Over verified HTTPS, the client sends that credential once as the bearer for
+   `POST /v1/vaults`, together with only the revision-zero encrypted vault,
+   wrapped VRK envelopes, public derivation metadata, and first-device metadata.
+   The service atomically creates the vault, rollback/sync anchor, first device,
+   session, and global credential-hash claim. It never returns the credential.
+9. It clears raw keys, the transient bearer copy, and KEKs best effort. The
+   durable native-keychain credential remains available for authenticated sync.
 
 Cancellation before the server commit leaves no usable remote vault. An
 interruption after commit must resume without generating an unrelated second
-vault or losing the recovery material confirmation state.
+vault or losing the recovery material confirmation state. An exact retry uses
+the same locally protected bearer and encrypted body; incompatible reuse,
+existing vault/device identity, or a credential-hash collision fails closed.
+The route does not exist unless the operator explicitly enables the bootstrap
+configuration gate. Operators should enable it only for the intended
+provisioning window and disable it afterward; source and per-bearer rate limits
+still apply while enabled.
+
+The server-side bootstrap/Mongo transaction and the distinct native session
+credential adapter are implemented and have real MongoDB replica-set and
+Windows Credential Manager tests. `creds init` composition is not yet wired,
+and real macOS Keychain/Linux Secret Service behavior remains unverified.
 
 ### Import an existing key
 
@@ -165,30 +182,47 @@ Protocol sequence:
 
 1. Device B validates the server URL, vault ID shape, input bounds, and local
    key-file safety before sending secret authorization material.
-2. Over verified HTTPS, it submits the invite to the enrollment endpoint. The
-   API hashes and compares it, checks vault/scope/expiry/revocation/rate state,
-   and atomically changes one valid invite from unused to consumed.
-3. The service issues Device B a new random device token. Only its hash is
-   retained server-side. Duplicate display names are resolved without confusing
-   device identity; opaque device IDs remain unique.
-4. Device B stores the token in native protected storage or an explicitly
-   supported protected session channel. Failure to store it must be reported and
-   enrollment must remain resumable without logging the token.
-5. Device B downloads the portable slot's public algorithm, salt, context,
-   versions, and wrapped VRK envelope.
-6. It obtains the same portable key locally, derives the KEK locally, and
-   authenticates the VRK unwrap. The API never sees the key, KEK, or VRK.
-7. On success, it decrypts synchronized records locally and optionally creates a
-   device-specific VRK slot protected by the native keychain.
+2. Device B generates an independent random 256-bit enrollment credential and
+   durably protects it in bounded pending-flow state before making the exchange.
+   Over verified HTTPS it submits the invite as the bearer credential and the
+   new credential in the dedicated redacted `X-Kavrix-Successor-Token` header.
+3. The API hashes both credentials, checks vault/scope/expiry/revocation/rate
+   state, atomically consumes the invite, and stores only the successor hash. A
+   successful response includes the exact canonical public vault record: wrapped
+   slots and encrypted vault ciphertext only, bound to the redeemed vault ID.
+4. Device B validates that response, selects an active portable slot at the
+   current key version, obtains the portable key locally, derives the KEK
+   locally, and authenticates the VRK unwrap with the exact vault, slot, schema,
+   and key-version binding. The API never sees the portable key, KEK, or VRK.
+5. Only after authenticated unwrap succeeds does Device B generate and durably
+   protect an independent random 256-bit device-session token. It authenticates
+   with the enrollment credential and sends the device token only in the
+   dedicated successor header. The service stores only its hash. Neither
+   successor is returned by the service or derivable from its parent.
+6. Device B reuses an exact persisted successor only to retry an ambiguous
+   response. The server rejects reuse of a bearer value across invite,
+   enrollment, and device-token classes. Device B stores the final device token
+   in native protected storage or an explicitly supported protected session
+   channel. Duplicate display names do not affect unique opaque device IDs.
+7. After enrollment, Device B decrypts synchronized records locally and may
+   create a device-specific VRK slot protected by the native keychain.
 8. It records the highest seen vault/key version in protected local state and
    clears transient key material best effort.
 
 A used, expired, revoked, malformed, or rate-limited invite returns a generic
-enrollment failure. A wrong portable key returns a generic unlock failure. The
-output must not reveal whether the vault, key prefix, slot, or invite was nearly
-correct. Enrollment authorization can succeed before local unwrap; if unwrap or
-local persistence then fails, retry uses a bounded resumable protocol rather
-than reusing a consumed invite blindly.
+enrollment failure. A wrong portable key or tampered envelope returns one generic
+unlock failure and **must not** trigger enrollment completion. The output must
+not reveal whether the vault, key prefix, slot, or invite was nearly correct.
+
+Invite consumption necessarily happens before Device B can validate the
+portable key because the redeemed response supplies the authenticated wrapped
+slot. If local unwrap fails, the invite is already consumed and the enrollment
+credential remains bounded by its original expiry, but no device session has
+been created. Device B may retry the exact invite/enrollment-successor exchange
+within that expiry to recover from an ambiguous response; it must not generate a
+different successor for the consumed invite. Abandoning the flow or reaching
+expiry requires a newly issued invite. Possession of an expired or consumed
+parent alone cannot recover or derive an active successor.
 
 ## Remember, forget, and revoke
 
@@ -202,6 +236,12 @@ secret or protected root material only in:
 If the keychain is unavailable, locked, or fails its security checks, the CLI
 asks for the portable key/passphrase on each unlock. It never writes a plaintext
 fallback.
+
+The device's API session credential is a different native-keychain entry with a
+device-scoped `api-session` locator. Deleting a device-unlock entry must not
+delete the session credential, and deleting the session credential must not
+delete or reinterpret VRK-unlock material. There is no plaintext-file fallback
+for either entry class.
 
 The lifecycle operations have intentionally different effects:
 
@@ -258,9 +298,10 @@ checksum comparison, protected and unprotected files, Unix modes, Windows ACLs,
 symlink/reparse rejection, masked and explicit-stdin paths, absence from argv/
 environment/logs/requests/database/completions, atomic invite consumption under
 concurrency, expiry/revocation/replay/rate behavior, independent device tokens,
-same-key unlock on a simulated second device, real platform keychains, resumable
-enrollment, portable-slot rotation, device confirmation, last-slot protection,
-and post-revocation sync denial.
+non-derivability of successors from expired or consumed parents, redaction of
+the successor header, same-key unlock on a simulated second device, real
+platform keychains, resumable enrollment, portable-slot rotation, device
+confirmation, last-slot protection, and post-revocation sync denial.
 
 The end-to-end acceptance case is complete only after Device B decrypts records
 created on Device A while the portable key remains absent from every server and

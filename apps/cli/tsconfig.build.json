@@ -1,0 +1,21 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": true,
+    "declarationMap": false,
+    "ignoreDeprecations": "6.0",
+    "outDir": "dist",
+    "rootDir": "src",
+    "sourceMap": false,
+    "tsBuildInfoFile": ".tsbuildinfo"
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": ["test/**/*.ts"],
+  "references": [
+    { "path": "../../packages/client/tsconfig.build.json" },
+    { "path": "../../packages/schemas/tsconfig.build.json" },
+    { "path": "../../packages/core/tsconfig.build.json" },
+    { "path": "../../packages/crypto/tsconfig.build.json" },
+    { "path": "../../packages/key-files/tsconfig.build.json" }
+  ]
+}

@@ -3,17 +3,24 @@ import type {
   AttachmentStreamFinalizeInput,
   AttachmentStreamProgress,
   AttachmentStreamStartInput,
-  ChangeRecord,
+  DeviceUnlockSecret,
   EncryptedAttachmentRecord,
   EncryptedGroupRecord,
   EncryptedItemRecord,
   GroupId,
   ItemId,
+  KeychainLocator,
   OpaqueMutation,
   PersistedAttachmentChunkRecord,
   PersistedAttachmentHeaderRecord,
-  SecretBytes,
+  SessionCredentialLocator,
+  SessionCredentialSecret,
   SyncCursor,
+  SyncPullResponse,
+  SyncPushRequest,
+  SyncPushResponse,
+  TemplateMigrationPublicationRequest,
+  TemplateMigrationPublicationResponse,
   VaultId,
   VaultRecord,
 } from '@kavrix/schemas';
@@ -46,9 +53,30 @@ export interface IdGeneratorPort<TId extends string> {
 }
 
 export interface KeychainPort {
-  load(locator: string): Promise<SecretBytes | null>;
-  store(locator: string, secret: SecretBytes): Promise<void>;
-  delete(locator: string): Promise<void>;
+  load(
+    locator: KeychainLocator,
+    signal?: AbortSignal,
+  ): Promise<DeviceUnlockSecret | null>;
+  store(
+    locator: KeychainLocator,
+    secret: DeviceUnlockSecret,
+    signal?: AbortSignal,
+  ): Promise<void>;
+  delete(locator: KeychainLocator, signal?: AbortSignal): Promise<void>;
+}
+
+/** Native secure storage for API session credentials, separate from VRK slots. */
+export interface SessionCredentialPort {
+  load(
+    locator: SessionCredentialLocator,
+    signal?: AbortSignal,
+  ): Promise<SessionCredentialSecret | null>;
+  store(
+    locator: SessionCredentialLocator,
+    secret: SessionCredentialSecret,
+    signal?: AbortSignal,
+  ): Promise<void>;
+  delete(locator: SessionCredentialLocator, signal?: AbortSignal): Promise<void>;
 }
 
 export interface VaultStoragePort {
@@ -73,6 +101,11 @@ export interface VaultStoragePort {
   beginAttachmentStream(
     input: AttachmentStreamStartInput,
   ): Promise<AttachmentStreamStagingSession>;
+  /**
+   * Idempotently aborts the exact hidden staging operation identified by the
+   * canonical start input. Incompatible idempotency-key reuse fails closed.
+   */
+  abortAttachmentStream(input: AttachmentStreamStartInput): Promise<void>;
   getAttachmentStreamHeader(
     vaultId: VaultId,
     attachmentId: AttachmentId,
@@ -88,5 +121,15 @@ export interface VaultStoragePort {
     attachmentId: AttachmentId,
     startIndex: number,
   ): AsyncIterable<PersistedAttachmentChunkRecord>;
-  pullChanges(cursor: SyncCursor, limit: number): Promise<readonly ChangeRecord[]>;
+  /** Returns one canonical, rollback-bound page with immutable opaque snapshots. */
+  pullSyncPage(cursor: SyncCursor, limit: number): Promise<SyncPullResponse>;
+  /** Applies and durably checkpoints one ordered, idempotent sync batch. */
+  pushSyncBatch(batch: SyncPushRequest): Promise<SyncPushResponse>;
+  /**
+   * Atomically publishes one bounded opaque group-template migration. Exact
+   * batch retries return the original canonical response.
+   */
+  publishTemplateMigration(
+    batch: TemplateMigrationPublicationRequest,
+  ): Promise<TemplateMigrationPublicationResponse>;
 }

@@ -31,8 +31,15 @@ MongoDB. Never weaken this boundary for convenience.
 - `packages/crypto`: small, misuse-resistant cryptographic APIs.
 - `packages/storage`: adapters implementing core storage ports.
 - `packages/sync`: opaque change tracking and conflict handling.
+- `packages/client`: hardened HTTPS control/sync transport and unlocked-vault
+  orchestration; it never sends local unlock material.
 - `packages/keychain`: native secure-storage abstraction with no plaintext-file
   fallback.
+- `packages/key-files`: protected portable-key file I/O, path safety, and
+  ACL/mode enforcement.
+- `packages/clipboard`: guarded native clipboard copy and conditional clearing.
+- `packages/runner`: shell-free child execution with bounded, secret-redacted
+  process boundaries.
 - `packages/import-export`: encrypted backup and guarded transfer flows.
 - `packages/tui`: dynamic, schema-driven Ink components; no hard-coded form per
   credential type.

@@ -1,0 +1,35 @@
+{
+  "name": "@kavrix/keychain",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=24.19.0 <25"
+  },
+  "scripts": {
+    "build": "tsc -b tsconfig.build.json",
+    "typecheck": "tsc -b tsconfig.build.json --pretty false && tsc -p tsconfig.json --pretty false",
+    "test": "vitest run --root ../.. packages/keychain"
+  },
+  "dependencies": {
+    "@kavrix/client": "workspace:*",
+    "@kavrix/core": "workspace:*",
+    "@kavrix/schemas": "workspace:*",
+    "@kavrix/sync": "workspace:*"
+  },
+  "optionalDependencies": {
+    "@napi-rs/keyring": "catalog:"
+  }
+}

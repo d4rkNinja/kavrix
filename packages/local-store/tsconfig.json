@@ -1,0 +1,14 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "ignoreDeprecations": "6.0",
+    "noEmit": true
+  },
+  "include": ["src/**/*.ts", "test/**/*.ts"],
+  "references": [
+    { "path": "../client/tsconfig.build.json" },
+    { "path": "../keychain/tsconfig.build.json" },
+    { "path": "../schemas/tsconfig.build.json" },
+    { "path": "../sync/tsconfig.build.json" }
+  ]
+}

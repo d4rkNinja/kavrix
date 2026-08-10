@@ -19,6 +19,13 @@ a release, this table must name the maintained release lines and their security-
 update window. End-of-life versions will not receive fixes and must not be used
 for sensitive data.
 
+The repository can build a self-contained `kavrix` npm archive, but “packs
+successfully” is not a supported release state. npm ownership, trusted-publisher
+configuration, private vulnerability reporting, secret scanning with push
+protection, a successful CodeQL run, a named private contact, signed release
+authorization, and post-publication verification remain mandatory. See
+the [Public Release Process](./docs/release.md).
+
 ## Reporting a vulnerability
 
 Do not open a public issue, discussion, pull request, or chat containing an
@@ -80,8 +87,8 @@ The planned baseline is:
   keys;
 - versioned envelopes with fresh nonces and context-bound AAD;
 - an API and MongoDB that store ciphertext, wrapped keys, public KDF parameters,
-  opaque sync metadata, and hashes of device tokens/invites, but cannot decrypt
-  vault records.
+  opaque sync metadata, and hashes of session/device tokens, enrollment
+  credentials, and invites, but cannot decrypt vault records.
 
 Full details and current limitations are in
 [docs/cryptography.md](./docs/cryptography.md),
@@ -165,7 +172,21 @@ capable least-privilege CI, verified platform artifacts, and signed checksums
 where practical. Publishing, tagging, or signing is a separate authorized action
 and is never implied by this policy.
 
+The prepared npm workflow uses no long-lived registry token. It packs once,
+inspects and offline-installs that exact archive, verifies the embedded
+CycloneDX SBOM against the executable hash, and gives the same `.tgz` to npm OIDC
+with provenance. A tag/package-version mismatch or any workspace protocol,
+unexpected archive path, missing license, fixture canary, runtime dependency, or
+failed platform smoke test closes publication.
+
 ## Important limitations
+
+Initial-vault creation is an explicit, disabled-by-default server capability.
+Enabling it opens a rate-limited provisioning endpoint; deployment operators
+must restrict the provisioning window and disable it afterward. The backend
+transaction has real replica-set evidence and native session storage has real
+Windows Credential Manager evidence, but macOS/Linux native behavior and the
+end-user `creds init` composition are not yet verified.
 
 The design cannot protect plaintext from malware or an administrator/root user
 on an unlocked host, keyloggers, screen/terminal capture, clipboard monitoring,

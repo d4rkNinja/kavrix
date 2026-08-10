@@ -41,15 +41,23 @@ const groups = [
 ];
 
 describe('name resolution', () => {
-  it('accepts schema-parsed candidates and prioritizes exact IDs and names', () => {
+  it('prioritizes exact IDs, aliases/slugs, names, then case-insensitive matches', () => {
     expect(resolveNamedEntity('group.1', groups).id).toBe('group.1');
     expect(resolveNamedEntity('ＰＲＯＤ', groups).id).toBe('group.2');
 
-    const exactNameOverAlias = [
+    const exactAliasOverName = [
       ...groups,
       group('group.3', 'Primary', 'primary-name', []),
     ];
-    expect(resolveNamedEntity('primary', exactNameOverAlias).id).toBe('group.3');
+    expect(resolveNamedEntity('Primary', exactAliasOverName).id).toBe('group.2');
+
+    const exactNameOverCaseInsensitiveAlias = [
+      ...groups,
+      group('group.3', 'primary', 'primary-name', []),
+    ];
+    expect(resolveNamedEntity('primary', exactNameOverCaseInsensitiveAlias).id).toBe(
+      'group.3',
+    );
   });
 
   it('uses a unique prefix only after every exact lookup phase', () => {
@@ -62,12 +70,18 @@ describe('name resolution', () => {
     );
   });
 
-  it('never silently chooses between duplicate exact names', () => {
-    const duplicates = [
+  it('prefers an exact-case name and never chooses duplicate exact names', () => {
+    const caseVariant = [
       ...groups,
       group('group.3', 'email accounts', 'other-mail', []),
     ];
-    expect(() => resolveNamedEntity('Email Accounts', duplicates)).toThrow(
+    expect(resolveNamedEntity('Email Accounts', caseVariant).id).toBe('group.1');
+
+    const exactDuplicates = [
+      ...groups,
+      group('group.3', 'Email Accounts', 'other-mail', []),
+    ];
+    expect(() => resolveNamedEntity('Email Accounts', exactDuplicates)).toThrow(
       AmbiguousNameError,
     );
   });

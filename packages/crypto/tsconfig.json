@@ -4,5 +4,6 @@
     "ignoreDeprecations": "6.0",
     "noEmit": true
   },
-  "include": ["src/**/*.ts", "test/**/*.ts"]
+  "include": ["src/**/*.ts", "test/**/*.ts"],
+  "references": [{ "path": "../schemas/tsconfig.build.json" }]
 }

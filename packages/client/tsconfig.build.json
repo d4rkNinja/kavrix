@@ -1,0 +1,21 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "composite": true,
+    "declaration": true,
+    "declarationMap": true,
+    "noEmit": false,
+    "outDir": "dist",
+    "rootDir": "src",
+    "tsBuildInfoFile": ".tsbuildinfo"
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": ["test/**/*.ts"],
+  "references": [
+    { "path": "../clipboard/tsconfig.build.json" },
+    { "path": "../core/tsconfig.build.json" },
+    { "path": "../crypto/tsconfig.build.json" },
+    { "path": "../schemas/tsconfig.build.json" },
+    { "path": "../sync/tsconfig.build.json" }
+  ]
+}

@@ -1,0 +1,18 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "ignoreDeprecations": "6.0",
+    "noEmit": true
+  },
+  "include": [
+    "src/**/*.ts",
+    "test/**/*.ts",
+    "integration/**/*.ts",
+    "vitest.integration.config.ts"
+  ],
+  "references": [
+    { "path": "../../packages/core/tsconfig.build.json" },
+    { "path": "../../packages/schemas/tsconfig.build.json" },
+    { "path": "../../packages/storage/tsconfig.build.json" }
+  ]
+}

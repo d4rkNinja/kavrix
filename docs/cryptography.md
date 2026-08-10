@@ -415,14 +415,28 @@ never silently copies the file into application data.
 
 Enrollment authorization is cryptographically independent of encryption:
 
+- Initial vault bootstrap has no invite parent. Before the request, the client
+  independently generates and natively protects a canonical random 32-byte API
+  session credential. It sends the base64url form only as the HTTPS bearer; the
+  enabled bootstrap service atomically claims the SHA-256 hash with the initial
+  ciphertext-only vault/device/sync state and returns only opaque IDs.
 - An invite is a high-entropy API secret, hashed at rest, short-lived,
   single-use, revocable, and rate-limited.
-- A successful atomic invite exchange issues a new independent high-entropy
-  device bearer token; only its hash is stored.
+- Before each exchange, the joining client generates and durably protects a new
+  independent high-entropy successor credential. The API receives it only in a
+  dedicated redacted header, atomically claims its globally unique hash, and
+  never returns or stores the plaintext. Exact retries reuse the same successor
+  only before the original authorization expires.
 - The joining client downloads public portable-slot parameters and the wrapped
   VRK, then derives and unwraps locally with the user's portable key.
 - Neither invite nor device token is accepted as an unlock key. Neither portable
   nor recovery key is accepted by an enrollment/API schema.
+
+The native keychain stores raw session-credential bytes under a distinct
+device-scoped locator. Session credentials and device-unlock secrets are both
+32-byte values but have separate branded schemas and ports; byte length does not
+make them interchangeable. There is no file fallback. JavaScript/native copies
+are cleared best effort and cannot be guaranteed zeroized.
 
 TLS is mandatory in production because client-side encryption does not protect
 bearer tokens, request metadata, or service integrity. The full flow appears in

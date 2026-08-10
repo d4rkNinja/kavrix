@@ -10,16 +10,64 @@ permissions:
 
 jobs:
   verify:
-    name: Verify (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
+    name: Verify (${{ matrix.label }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        include:
+          - label: Linux x64
+            runner: ubuntu-24.04
+            expected_arch: x64
+          - label: Linux arm64
+            runner: ubuntu-24.04-arm
+            expected_arch: arm64
+          - label: macOS x64
+            runner: macos-15-intel
+            expected_arch: x64
+          - label: macOS arm64
+            runner: macos-15
+            expected_arch: arm64
+          - label: Windows x64
+            runner: windows-2025
+            expected_arch: x64
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
       - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
         with:
+          version: 11.21.0
+          run_install: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: 24.19.0
+          cache: pnpm
+          package-manager-cache: false
+      - name: Verify runner architecture
+        env:
+          EXPECTED_ARCH: ${{ matrix.expected_arch }}
+        shell: bash
+        run: node --input-type=module -e "if (process.arch !== process.env.EXPECTED_ARCH) process.exit(1)"
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm verify
+      - name: Install and smoke-test the packed public CLI
+        run: pnpm --filter kavrix --fail-if-no-match package:smoke
+
+  mongo-integration:
+    name: MongoDB replica-set integration and canary
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      KAVRIX_MONGODB_URI: mongodb://127.0.0.1:27017/?replicaSet=rs0&directConnection=true
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: 11.21.0
           run_install: false
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
@@ -27,15 +75,59 @@ jobs:
           cache: pnpm
           package-manager-cache: false
       - run: pnpm install --frozen-lockfile
-      - run: pnpm verify
+      - name: Start pinned MongoDB 8.0.26 replica set
+        shell: bash
+        run: |
+          set -euo pipefail
+          image='docker.io/library/mongo@sha256:3ce3de7f40e914034b03b7dec654005ab54f7dc8306937e44ec6760d9e9409a1'
+          docker pull "$image"
+          docker run --detach --name kavrix-mongodb --publish 127.0.0.1:27017:27017 \
+            "$image" --replSet rs0 --bind_ip_all
+          for attempt in $(seq 1 60); do
+            if docker exec kavrix-mongodb mongosh --quiet \
+              --eval 'db.adminCommand({ping: 1}).ok' >/dev/null 2>&1; then
+              break
+            fi
+            if [[ "$attempt" == '60' ]]; then
+              docker logs kavrix-mongodb
+              exit 1
+            fi
+            sleep 1
+          done
+          docker exec kavrix-mongodb mongosh --quiet --eval \
+            'rs.initiate({_id:"rs0",members:[{_id:0,host:"127.0.0.1:27017"}]})'
+          for attempt in $(seq 1 60); do
+            if docker exec kavrix-mongodb mongosh --quiet \
+              --eval 'if (!db.hello().isWritablePrimary) quit(1)' >/dev/null 2>&1; then
+              exit 0
+            fi
+            if [[ "$attempt" == '60' ]]; then
+              docker logs kavrix-mongodb
+              exit 1
+            fi
+            sleep 1
+          done
+      - name: Storage transactions and plaintext persistence canary
+        run: pnpm --filter @kavrix/storage --fail-if-no-match test:integration
+      - name: API authorization and plaintext rejection canary
+        run: pnpm --filter @kavrix/api --fail-if-no-match test:integration
+      - name: Enforce repository coverage thresholds with real adapters
+        run: pnpm test:coverage
+      - name: Stop MongoDB
+        if: always()
+        run: docker rm --force kavrix-mongodb
 
   dependency-audit:
     name: Dependency audit
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
       - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
         with:
+          version: 11.21.0
           run_install: false
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
@@ -48,6 +140,7 @@ jobs:
   package-dry-run:
     name: Package contents
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
@@ -65,6 +158,7 @@ jobs:
       - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
         if: steps.public_package.outputs.exists == 'true'
         with:
+          version: 11.21.0
           run_install: false
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         if: steps.public_package.outputs.exists == 'true'

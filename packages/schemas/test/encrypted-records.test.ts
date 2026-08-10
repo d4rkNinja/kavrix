@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   aeadEnvelopeSchema,
   attachmentChunkCiphertextSchema,
+  attachmentHeaderContentHash,
   attachmentSecretStreamManifestSchema,
   attachmentSecretStreamRecordSchema,
   attachmentStreamFinalizeInputSchema,
@@ -102,13 +103,17 @@ describe('opaque persisted records', () => {
     });
     expect(header).toBeDefined();
     expect(chunk).toBeDefined();
-    const persistedHeader = persistedAttachmentHeaderRecordSchema.parse({
+    const initialPersistedHeader = persistedAttachmentHeaderRecordSchema.parse({
       entityType: 'attachment-header',
       record: header,
       recordRevision: 0,
       contentHash: digest,
       createdAt: timestamp,
       updatedAt: timestamp,
+    });
+    const persistedHeader = persistedAttachmentHeaderRecordSchema.parse({
+      ...initialPersistedHeader,
+      contentHash: attachmentHeaderContentHash(initialPersistedHeader),
     });
     const persistedChunk = persistedAttachmentChunkRecordSchema.parse({
       entityType: 'attachment-chunk',

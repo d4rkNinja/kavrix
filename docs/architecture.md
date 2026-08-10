@@ -97,8 +97,13 @@ tokens in transit; client-side AEAD independently protects vault content.
 | `packages/core`          | Framework-free entities, policies, ports, typed errors, use cases                 | Import CLI, TUI, HTTP, MongoDB, or platform adapters                |
 | `packages/crypto`        | Random generation, KDF, AEAD, key wrapping, slot and rotation primitives          | Perform network/storage I/O or expose easy-to-misuse raw primitives |
 | `packages/storage`       | Implement core storage ports for API, MongoDB where explicitly allowed, and tests | Decrypt application records or invent parallel domain types         |
-| `packages/sync`          | Opaque change tracking, cursors, idempotency, conflicts, encrypted offline queue  | Resolve conflicting secret edits with silent last-write-wins        |
+| `packages/sync`          | Opaque change tracking, cursors, idempotency, conflicts, and rollback policy      | Persist plaintext or resolve conflicts with silent last-write-wins  |
+| `packages/client`        | HTTPS API transport, opaque snapshot application, and unlocked read sessions      | Send unlock material to the API or bypass canonical wire schemas    |
+| `packages/local-store`   | Restrictive SQLite ciphertext cache, cursors, and durable offline mutation queue  | Store plaintext or replace the native protected rollback anchor     |
 | `packages/keychain`      | Native secure-storage abstraction and capability detection                        | Fall back to plaintext files                                        |
+| `packages/key-files`     | Protected portable-key file I/O, path checks, ACL/mode enforcement, atomic writes | Follow links, accept broad access, or expose key content in argv    |
+| `packages/clipboard`     | Fixed native clipboard backends, generation-safe copy and conditional clearing    | Put copied values in argv or erase unrelated clipboard content      |
+| `packages/runner`        | Shell-free child execution with bounded, secret-redacted process boundaries       | Inherit stdin/stdio or interpolate a secret-bearing shell command   |
 | `packages/import-export` | Encrypted backup/restore and guarded explicit transfer flows                      | Create plaintext temporary files by default                         |
 | `packages/tui`           | Ink screens, dynamic schema-driven forms, terminal sanitization                   | Access databases or implement cryptography                          |
 | `packages/test-utils`    | Clearly fake fixtures, fake keychain, encrypted test vaults, canary helpers       | Leak into production dependency graphs                              |

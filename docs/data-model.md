@@ -24,13 +24,13 @@
 
 ## Data classification
 
-| Class                              | Examples                                                                                                                 | Persistence rule                                                                                 |
-| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------ |
-| Secret key material                | Portable/recovery/device keys, passphrases, KEKs, unwrapped VRK/group/item/attachment keys                               | Local memory only, except explicit native-keychain or protected key-file flow; never API/MongoDB |
-| Encrypted application content      | Names, aliases, tags, field definitions/values, notes, preferences, history/audit details, attachment metadata/content   | XChaCha20-Poly1305 AEAD or secretstream ciphertext only outside the active client                |
-| Wrapped key material               | VRK slots, group keys, item keys, attachment keys                                                                        | Versioned authenticated envelope only                                                            |
-| Authentication secret              | Plaintext device token or enrollment invite                                                                              | Shown/held only for the explicit local flow; server stores a cryptographic hash                  |
-| Public/opaque operational metadata | Opaque IDs, versions, salts/KDF costs, nonces, revisions, sequence, timestamps, tombstone state, ciphertext sizes/hashes | May be stored by API/MongoDB; minimize and document                                              |
+| Class                              | Examples                                                                                                                 | Persistence rule                                                                                  |
+| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------- |
+| Secret key material                | Portable/recovery/device keys, passphrases, KEKs, unwrapped VRK/group/item/attachment keys                               | Local memory only, except explicit native-keychain or protected key-file flow; never API/MongoDB  |
+| Encrypted application content      | Names, aliases, tags, field definitions/values, notes, preferences, history/audit details, attachment metadata/content   | XChaCha20-Poly1305 AEAD or secretstream ciphertext only outside the active client                 |
+| Wrapped key material               | VRK slots, group keys, item keys, attachment keys                                                                        | Versioned authenticated envelope only                                                             |
+| Authentication secret              | Plaintext API session/device token, enrollment credential, or invite                                                     | Held only in an explicit protected local flow/native keychain; server stores a cryptographic hash |
+| Public/opaque operational metadata | Opaque IDs, versions, salts/KDF costs, nonces, revisions, sequence, timestamps, tombstone state, ciphertext sizes/hashes | May be stored by API/MongoDB; minimize and document                                               |
 
 Ciphertext and its hash are not treated as harmless log data. Routine request/
 response logging omits encrypted bodies to reduce correlation, volume, and
@@ -320,19 +320,33 @@ Public/opaque fields:
 Forbidden: portable/passphrase/recovery/device plaintext, any KEK/unwrapped VRK,
 or decrypted preferences.
 
-### `devices`
+### `api_devices`, `api_sessions`, and `api_credential_claims`
 
 - device and vault IDs;
 - device-token hash and token version;
 - encrypted label when a label is needed;
 - scope, confirmed key version, created/last-seen/revoked timestamps.
 
-The plaintext device token is returned only during its creation exchange and is
-never recoverable from this record.
+The joining client generates and durably protects the plaintext device token
+before its completion exchange. The service receives it only through the
+dedicated redacted successor header and never returns or stores it; the device,
+session, and global credential-claim records contain only its SHA-256 hash.
 
-Enrollment invites should use a dedicated collection even if initially managed
-near devices. It stores invite ID, vault/creator IDs, invite hash, scope, expiry,
-state, bounded attempt/rate metadata, and created/consumed/revoked timestamps.
+Initial vault creation uses the same canonical 32-byte session credential but
+has no parent invite: the caller stores it in the native keychain before sending
+it as the bootstrap request's HTTPS bearer. A bootstrap credential claim stores
+the bearer hash plus an exact-request digest for retry safety. The bootstrap
+transaction atomically inserts the revision-zero `vaults` document, its
+`vault_counters`/first `changes` sync anchor, first `api_devices` record,
+`api_sessions` record, and globally unique `api_credential_claims` record.
+Incompatible retry, vault/device collision, or reuse of any invite, enrollment,
+or session hash fails without a partial insert.
+
+`api_invites` and `api_enrollments` are dedicated collections. They store invite
+ID where applicable, vault/creator IDs, credential hashes, scope, expiry, state,
+and created/consumed/revoked timestamps. One `_id` namespace in
+`api_credential_claims` prevents a hash from being reused across invite,
+enrollment, bootstrap-session, and enrolled-session credentials.
 
 ### `groups`
 
@@ -451,8 +465,10 @@ search index, if persisted, is encrypted; decrypted search state exists only
 while unlocked.
 
 Configuration contains server URL, product/profile preferences, and opaque IDs,
-but no plaintext portable/recovery key, passphrase, device token, MongoDB
-credential, or decrypted vault data. Native keychain references are opaque.
+but no plaintext portable/recovery key, passphrase, device/session token,
+MongoDB credential, or decrypted vault data. Native keychain references are
+opaque. A session credential uses a device-scoped `api-session` locator; it is
+not a key-slot locator and cannot be loaded through the device-unlock port.
 
 ## Schema evolution
 

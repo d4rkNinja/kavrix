@@ -11,13 +11,14 @@ must also be consistent with `docs/threat-model.md` and `docs/cryptography.md`.
 
 Requirements:
 
-- Node.js 24 LTS
+- Node.js 24.19.x (the minimum release with stable built-in Argon2)
 - pnpm 11 through Corepack
 
 ```sh
 corepack enable
 pnpm install --frozen-lockfile
 pnpm verify
+pnpm test:coverage
 ```
 
 Use a changeset for a user-visible or publishable package change:

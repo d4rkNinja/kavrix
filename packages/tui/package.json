@@ -1,0 +1,35 @@
+{
+  "name": "@kavrix/tui",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=24.19.0 <25"
+  },
+  "scripts": {
+    "build": "tsc -b tsconfig.build.json",
+    "format:check": "prettier --check \"src/**/*.{ts,tsx}\" \"test/**/*.ts\" package.json \"tsconfig*.json\"",
+    "lint": "eslint . --max-warnings 0",
+    "typecheck": "tsc -b tsconfig.build.json --pretty false && tsc -p tsconfig.json --pretty false",
+    "test": "vitest run --root ../.. packages/tui/test"
+  },
+  "dependencies": {
+    "@kavrix/schemas": "workspace:*",
+    "ink": "catalog:",
+    "react": "catalog:"
+  },
+  "devDependencies": {
+    "@types/react": "catalog:"
+  }
+}

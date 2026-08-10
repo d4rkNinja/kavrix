@@ -1,0 +1,122 @@
+import {
+  credentialCopyReceiptSchema,
+  credentialShowProjectionSchema,
+  type CredentialCopyOptions,
+  type CredentialCopyReceipt,
+  type CredentialShowProjection,
+} from '@kavrix/client';
+import {
+  apiBearerTokenSchema,
+  deviceIdSchema,
+  enrollmentCompleteRequestSchema,
+  inviteIdSchema,
+  publicInviteRecordSchema,
+  schemaVersionSchema,
+  vaultIdSchema,
+  type InviteId,
+  type PublicInviteRecord,
+  type VaultId,
+} from '@kavrix/schemas';
+import { z } from 'zod';
+
+export const cliStatusSchema = z
+  .object({
+    vaultState: z.enum(['locked', 'unlocked']),
+    vaultId: vaultIdSchema.optional(),
+    deviceId: deviceIdSchema.optional(),
+    syncState: z.enum(['offline', 'idle', 'syncing', 'error']),
+    pendingChanges: z.number().int().nonnegative(),
+    lastSyncAt: z.iso.datetime({ offset: true }).optional(),
+  })
+  .strict()
+  .superRefine((status, context) => {
+    if (status.vaultState === 'unlocked' && status.vaultId === undefined) {
+      context.addIssue({
+        code: 'custom',
+        path: ['vaultId'],
+        message: 'Unlocked status requires a vault ID',
+      });
+    }
+  });
+
+export const cliInviteJoinRequestSchema = z
+  .object({
+    inviteToken: apiBearerTokenSchema,
+    device: enrollmentCompleteRequestSchema.omit({ vaultId: true }),
+  })
+  .strict();
+
+export const cliInviteJoinResultSchema = z
+  .object({
+    vaultId: vaultIdSchema,
+    deviceId: deviceIdSchema,
+  })
+  .strict();
+
+export type CliStatus = z.infer<typeof cliStatusSchema>;
+export type CliShowResult = CredentialShowProjection;
+export type CliInviteJoinRequest = z.infer<typeof cliInviteJoinRequestSchema>;
+export type CliInviteJoinResult = z.infer<typeof cliInviteJoinResultSchema>;
+
+export interface CliUseCasePorts {
+  status(): Promise<CliStatus>;
+  lock(): Promise<void>;
+  show(groupQuery: string, credentialQuery: string): Promise<CliShowResult>;
+  copy(
+    groupQuery: string,
+    credentialQuery: string,
+    fieldQuery: string,
+    options?: CredentialCopyOptions,
+  ): Promise<CredentialCopyReceipt>;
+  listInvites(vaultId: VaultId): Promise<readonly PublicInviteRecord[]>;
+  revokeInvite(vaultId: VaultId, inviteId: InviteId): Promise<void>;
+  /**
+   * Completes the two-step enrollment protocol. The adapter owns durable,
+   * idempotent generation and reuse of independent enrollment/session successor
+   * tokens; it must persist the resulting session token and never return it to
+   * the renderer.
+   */
+  joinInvite(request: CliInviteJoinRequest): Promise<CliInviteJoinResult>;
+}
+
+export function parseStatus(value: unknown): CliStatus {
+  return cliStatusSchema.parse(value);
+}
+
+export function parseShowResult(value: unknown): CliShowResult {
+  return credentialShowProjectionSchema.parse(value);
+}
+
+export function parseCopyReceipt(value: unknown): CredentialCopyReceipt {
+  return credentialCopyReceiptSchema.parse(value);
+}
+
+export function parseInviteList(value: unknown): readonly PublicInviteRecord[] {
+  return z.array(publicInviteRecordSchema).max(10_000).parse(value);
+}
+
+export function parseJoinResult(value: unknown): CliInviteJoinResult {
+  return cliInviteJoinResultSchema.parse(value);
+}
+
+export function parseVaultId(value: string): VaultId {
+  return vaultIdSchema.parse(value);
+}
+
+export function parseInviteId(value: string): InviteId {
+  return inviteIdSchema.parse(value);
+}
+
+export function shapeInviteJoinRequest(
+  inviteToken: string,
+  deviceId: string,
+  schemaVersion: number,
+): CliInviteJoinRequest {
+  return cliInviteJoinRequestSchema.parse({
+    inviteToken,
+    device: {
+      deviceId: deviceIdSchema.parse(deviceId),
+      schemaVersion: schemaVersionSchema.parse(schemaVersion),
+    },
+  });
+}

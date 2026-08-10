@@ -6,10 +6,12 @@ import {
   MAX_ATTACHMENT_STREAM_PLAINTEXT_BYTES,
   attachmentStreamProgressSchema,
   attachmentStreamStartInputSchema,
+  attachmentHeaderContentHash,
   encryptedAttachmentRecordSchema,
   groupIdSchema,
   itemIdSchema,
   persistedAttachmentChunkRecordSchema,
+  persistedAttachmentHeaderRecordSchema,
   sha256DigestSchema,
   type AttachmentStreamProgress,
   type AttachmentStreamStartInput,
@@ -57,29 +59,33 @@ function envelope(
 }
 
 function start(): AttachmentStreamStartInput {
+  const header = persistedAttachmentHeaderRecordSchema.parse({
+    entityType: 'attachment-header',
+    record: {
+      version: 1,
+      algorithm: 'secretstream-xchacha20-poly1305',
+      streamVersion: 1,
+      schemaVersion: 1,
+      keyVersion: 1,
+      vaultId: 'vault.1',
+      groupId: 'group.1',
+      itemId: 'item.1',
+      attachmentId: 'attachment.1',
+      recordType: 'header',
+      header: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+    },
+    recordRevision: 0,
+    contentHash: digest,
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  });
   return attachmentStreamStartInputSchema.parse({
     version: 1,
     idempotencyKey: 'attachment-staging-key-1',
     expectedAttachmentRevision: null,
     header: {
-      entityType: 'attachment-header',
-      record: {
-        version: 1,
-        algorithm: 'secretstream-xchacha20-poly1305',
-        streamVersion: 1,
-        schemaVersion: 1,
-        keyVersion: 1,
-        vaultId: 'vault.1',
-        groupId: 'group.1',
-        itemId: 'item.1',
-        attachmentId: 'attachment.1',
-        recordType: 'header',
-        header: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
-      },
-      recordRevision: 0,
-      contentHash: digest,
-      createdAt: timestamp,
-      updatedAt: timestamp,
+      ...header,
+      contentHash: attachmentHeaderContentHash(header),
     },
   });
 }
@@ -132,6 +138,22 @@ function finalRecord(chunkCount: number): EncryptedAttachmentRecord {
 }
 
 describe('incremental attachment staging policy', () => {
+  it('rejects a caller-supplied hash that does not cover the exact header', () => {
+    const valid = start();
+    const malformed = {
+      ...valid,
+      header: { ...valid.header, contentHash: digest },
+    };
+    expect(attachmentStreamStartInputSchema.safeParse(malformed).success).toBe(false);
+    expect(() =>
+      advanceAttachmentStaging(
+        malformed as AttachmentStreamStartInput,
+        createAttachmentStagingProgress(),
+        chunk(0, 'final'),
+      ),
+    ).toThrow();
+  });
+
   it('resumes from persisted progress and accepts an idempotent retry', () => {
     const first = advanceAttachmentStaging(
       start(),

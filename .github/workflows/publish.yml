@@ -16,8 +16,14 @@ jobs:
   publish:
     if: ${{ !github.event.release.prerelease }}
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     environment: npm
     steps:
+      - name: Require the reviewed public repository
+        env:
+          REPOSITORY_VISIBILITY: ${{ github.event.repository.visibility }}
+        shell: bash
+        run: test "$REPOSITORY_VISIBILITY" = 'public'
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           ref: ${{ github.event.release.tag_name }}
@@ -27,6 +33,7 @@ jobs:
         run: test -f apps/cli/package.json
       - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
         with:
+          version: 11.21.0
           run_install: false
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
@@ -35,4 +42,101 @@ jobs:
           package-manager-cache: false
       - run: pnpm install --frozen-lockfile
       - run: pnpm verify
-      - run: pnpm --filter kavrix --fail-if-no-match publish --access public --no-git-checks
+      - run: pnpm test:coverage
+      - name: Match a stable package version to the release tag
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'NODE'
+          import { readFileSync } from 'node:fs';
+          const manifest = JSON.parse(readFileSync('apps/cli/package.json', 'utf8'));
+          if (!/^\d+\.\d+\.\d+$/u.test(manifest.version)) {
+            throw new Error('Only stable SemVer package versions may use this workflow.');
+          }
+          if (process.env.RELEASE_TAG !== `v${manifest.version}`) {
+            throw new Error(`Release tag ${process.env.RELEASE_TAG} does not match kavrix@${manifest.version}.`);
+          }
+          NODE
+          test "$(git tag --points-at HEAD --list "$RELEASE_TAG")" = "$RELEASE_TAG"
+      - name: Reject token-based npm authentication
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -z "${NODE_AUTH_TOKEN:-}"
+          test -z "${NPM_TOKEN:-}"
+          if git grep --line-number '_authToken' -- '*.npmrc'; then
+            echo 'Long-lived npm authentication is forbidden.' >&2
+            exit 1
+          fi
+      - name: Pack the release archive exactly once
+        id: package
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(node -p "require('./apps/cli/package.json').version")"
+          test ! -e package-artifacts
+          mkdir package-artifacts
+          pnpm --filter kavrix --fail-if-no-match pack \
+            --pack-destination package-artifacts
+          archive="$PWD/package-artifacts/kavrix-${version}.tgz"
+          test -f "$archive"
+          mapfile -t archives < <(find package-artifacts -maxdepth 1 -type f -name '*.tgz' -print)
+          test "${#archives[@]}" -eq 1
+          test "${archives[0]}" = "package-artifacts/kavrix-${version}.tgz"
+          echo "archive=$archive" >> "$GITHUB_OUTPUT"
+      - name: Inspect and smoke-test the exact release archive
+        env:
+          PACKAGE_ARCHIVE: ${{ steps.package.outputs.archive }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          node apps/cli/scripts/smoke-packed-package.js "$PACKAGE_ARCHIVE"
+          inspection="$(mktemp -d)"
+          trap 'rm -rf -- "$inspection"' EXIT
+          tar -xzf "$PACKAGE_ARCHIVE" -C "$inspection" \
+            --no-same-owner --no-same-permissions
+          bin="$inspection/package/dist/bin.js"
+          readme="$inspection/package/README.md"
+          sbom="$inspection/package/dist/kavrix.cdx.json"
+          for notice in \
+            'commander@15.0.0 (MIT)' \
+            'zod@4.4.3 (MIT)' \
+            'libsodium-wrappers@0.8.4 (ISC)' \
+            'libsodium@0.8.4 (ISC)'; do
+            grep --fixed-strings "$notice" "$bin" >/dev/null
+          done
+          for attribution in \
+            'EFF Short Wordlist for Passphrases #1' \
+            'https://www.eff.org/files/2016/09/08/eff_short_wordlist_1.txt' \
+            'https://creativecommons.org/licenses/by/4.0/' \
+            'dice-code column'; do
+            grep --fixed-strings "$attribution" "$readme" >/dev/null
+          done
+          for sbom_marker in \
+            'pkg:npm/commander@15.0.0' \
+            'pkg:npm/zod@4.4.3' \
+            'pkg:npm/libsodium-wrappers@0.8.4' \
+            'pkg:npm/libsodium@0.8.4' \
+            'urn:kavrix:data:eff-short-wordlist-for-passphrases-1' \
+            'CC-BY-4.0' \
+            'kavrix:source-sha256' \
+            '8f5ca830b8bffb6fe39c9736c024a00a6a6411adb3f83a9be8bfeeb6e067ae69'; do
+            grep --fixed-strings "$sbom_marker" "$sbom" >/dev/null
+          done
+          if grep --recursive --binary-files=text --extended-regexp \
+            'workspace:|secret-password-canary|secret-note-canary|runtime-vault-secret-canary|KAVRIX-BACKUP-PLAINTEXT-CANARY|plaintext-storage-canary|unique-plaintext-canary-7ac19783|canary-plaintext-value' \
+            "$inspection/package"; then
+            echo 'A workspace protocol or plaintext canary reached the archive.' >&2
+            exit 1
+          fi
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: kavrix-release-candidate
+          path: package-artifacts/*.tgz
+          if-no-files-found: error
+      - name: Publish the inspected archive through npm OIDC
+        env:
+          PACKAGE_ARCHIVE: ${{ steps.package.outputs.archive }}
+        run: npm publish "$PACKAGE_ARCHIVE" --access public --provenance

@@ -12,8 +12,12 @@
     }
   },
   "files": [
-    "dist"
+    "dist",
+    "!dist/.tsbuildinfo"
   ],
+  "engines": {
+    "node": ">=24.19.0 <25"
+  },
   "scripts": {
     "build": "tsc -b tsconfig.build.json",
     "typecheck": "tsc -b tsconfig.build.json --pretty false && tsc -p tsconfig.json --pretty false",
