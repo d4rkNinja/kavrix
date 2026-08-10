@@ -69,13 +69,17 @@ bin.
    prove only the OS/architecture they actually ran.
 4. Create a signed `vX.Y.Z` tag at that exact commit and a non-prerelease GitHub
    release only after publication has been authorized.
-5. The release workflow checks out the tag, proves `vX.Y.Z` equals the package
-   version, rejects token configuration, reruns verification, and creates exactly
-   one archive. The authoritative supplied-archive smoke installs that same
-   archive offline and validates its dynamic chunk allowlist, README attribution,
-   aggregate/per-artifact SBOM hashes, bundled-library licenses, EFF data
-   component, canary absence, and lazy crypto loading. No later step rebuilds or
-   repacks it before it is uploaded as the immutable workflow artifact.
+5. The release workflow fetches full history, peels the tag to its commit, proves
+   that commit is contained in `origin/main`, and requires an exact-SHA successful
+   completed `main` push run of `.github/workflows/ci.yml`. An unavailable or
+   malformed GitHub Actions API response, or no exact matching run, fails closed.
+   It then proves `vX.Y.Z` equals the package version, rejects token configuration,
+   reruns verification, and creates exactly one archive. The authoritative
+   supplied-archive smoke installs that same archive offline and validates its
+   dynamic chunk allowlist, README attribution, aggregate/per-artifact SBOM
+   hashes, bundled-library licenses, EFF data component, canary absence, and lazy
+   crypto loading. No later step rebuilds or repacks it before it is uploaded as
+   the immutable workflow artifact.
 6. The workflow passes that exact `.tgz`—not a rebuilt directory—to
    `npm publish --access public --provenance`. Authentication must come from npm
    OIDC (`id-token: write`), not `NPM_TOKEN` or `NODE_AUTH_TOKEN`.
