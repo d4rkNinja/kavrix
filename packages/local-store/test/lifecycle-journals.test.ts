@@ -1,7 +1,6 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { realpathSync } from 'node:fs';
-import { readFile, rm } from 'node:fs/promises';
+import { readFile, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -28,7 +27,7 @@ import {
 } from '../src/index.js';
 
 const NOW = '2026-08-10T00:00:00.000Z';
-const TEST_TMPDIR = realpathSync.native(tmpdir());
+const TEST_TMPDIR = await realpath(tmpdir());
 const LEASE_CHILD_MODULE = new URL('../dist/index.js', import.meta.url).href;
 const LEASE_CHILD_SOURCE = `
   import { writeFile } from 'node:fs/promises';
@@ -88,7 +87,7 @@ class TestNativeEntries {
 describe('SqliteInitializationJournal', () => {
   it('persists exact records with CAS transitions and atomically drops active locators', async () => {
     const fixture = journalPath('initialization.sqlite');
-    const journal = await openInitialization(fixture.path);
+    let journal = await openInitialization(fixture.path);
     const prepared = initializationRecord('operation.init.sqlite.0001');
 
     await journal.createPrepared(prepared);
@@ -103,14 +102,16 @@ describe('SqliteInitializationJournal', () => {
     await journal.commit(
       prepared.operationId,
       { vaultId: prepared.request.vault.id, deviceId: prepared.request.device.id },
+      prepared.profile,
       NOW,
     );
     await journal.commit(
       prepared.operationId,
       { vaultId: prepared.request.vault.id, deviceId: prepared.request.device.id },
+      prepared.profile,
       NOW,
     );
-    expect(await journal.load(prepared.operationId)).toEqual({
+    const committed = {
       version: 1,
       kind: 'vault-initialization',
       operationId: prepared.operationId,
@@ -119,8 +120,10 @@ describe('SqliteInitializationJournal', () => {
         vaultId: prepared.request.vault.id,
         deviceId: prepared.request.device.id,
       },
+      profile: prepared.profile,
       committedAt: NOW,
-    });
+    } as const;
+    expect(await journal.load(prepared.operationId)).toEqual(committed);
     await expect(journal.deletePrepared(prepared.operationId)).rejects.toBeInstanceOf(
       SyncLocalStateError,
     );
@@ -140,6 +143,10 @@ describe('SqliteInitializationJournal', () => {
     } finally {
       database.close();
     }
+    await journal.close();
+    openJournals.splice(openJournals.indexOf(journal), 1);
+    journal = await openInitialization(fixture.path);
+    expect(await journal.load(prepared.operationId)).toEqual(committed);
   });
 
   it('rejects operation and locator collisions while deleting only prepared records', async () => {
@@ -246,6 +253,30 @@ describe('SqliteInitializationJournal', () => {
     ).rejects.toBeInstanceOf(SyncLocalStateError);
   }, 30_000);
 
+  it('uses initialization format v2 and refuses the earlier format without migration', async () => {
+    const fixture = journalPath('initialization.sqlite');
+    const journal = await openInitialization(fixture.path);
+    await journal.close();
+    openJournals.splice(openJournals.indexOf(journal), 1);
+
+    const oldFormat = new DatabaseSync(fixture.path);
+    expect(oldFormat.prepare('PRAGMA user_version').get()).toEqual({ user_version: 2 });
+    expect(
+      oldFormat
+        .prepare(`SELECT value FROM lifecycle_metadata WHERE key = 'format'`)
+        .get(),
+    ).toEqual({ value: 'kavrix-initialization-journal-v2' });
+    oldFormat.exec('PRAGMA user_version = 1');
+    oldFormat
+      .prepare(`UPDATE lifecycle_metadata SET value = ? WHERE key = 'format'`)
+      .run('kavrix-initialization-journal-v1');
+    oldFormat.close();
+
+    await expect(
+      openSqliteInitializationJournal({ path: fixture.path }),
+    ).rejects.toBeInstanceOf(SyncLocalStateError);
+  });
+
   it('holds a cross-process-style writer lease for the journal lifetime', async () => {
     const { path } = journalPath('initialization.sqlite');
     const journal = await openInitialization(path);
@@ -285,6 +316,7 @@ describe('SqliteInitializationJournal', () => {
       journal.commit(
         prepared.operationId,
         { vaultId: prepared.request.vault.id, deviceId: prepared.request.device.id },
+        prepared.profile,
         NOW,
       ),
     ).rejects.toBeInstanceOf(SyncLocalStateError);
@@ -295,13 +327,23 @@ describe('SqliteInitializationJournal', () => {
     await journal.commit(
       prepared.operationId,
       { vaultId: prepared.request.vault.id, deviceId: prepared.request.device.id },
+      prepared.profile,
       NOW,
     );
     await expect(
       journal.commit(
         prepared.operationId,
         { vaultId: prepared.request.vault.id, deviceId: prepared.request.device.id },
+        prepared.profile,
         '2026-08-10T00:00:01.000Z',
+      ),
+    ).rejects.toBeInstanceOf(SyncLocalStateError);
+    await expect(
+      journal.commit(
+        prepared.operationId,
+        { vaultId: prepared.request.vault.id, deviceId: prepared.request.device.id },
+        { ...prepared.profile, serverUrl: 'https://other.example/' },
+        NOW,
       ),
     ).rejects.toBeInstanceOf(SyncLocalStateError);
   }, 30_000);
@@ -776,6 +818,19 @@ function initializationRecord(
       vaultId,
       deviceId,
       purpose: 'api-session',
+    },
+    profile: {
+      version: 1,
+      serverUrl: 'https://vault.example/',
+      vaultId,
+      deviceId,
+      deviceLocator: { version: 1, vaultId, deviceId, keySlotId: slotId },
+      sessionLocator: {
+        version: 1,
+        vaultId,
+        deviceId,
+        purpose: 'api-session',
+      },
     },
   });
   if (parsed.state === 'committed') throw new Error('Invalid test fixture');

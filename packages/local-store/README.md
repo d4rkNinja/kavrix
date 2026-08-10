@@ -16,13 +16,24 @@ and deletion state before pending rows are removed, preventing the UI from
 temporarily reverting to older pulled state. `close()` checkpoints and closes
 the connection; operations fail closed after closure.
 
-`SqliteInitializationJournal` implements the canonical initialization journal
-with exact encrypted/public records, compare-and-set lifecycle transitions,
-operation and protected-locator reservations, and atomic replacement by the
-non-secret bootstrap receipt. `SqliteJoinLifecycleJournal` keeps only its
-operation/state/session-locator mirror in SQLite. Its three 32-byte bearer
-values live exclusively in `NativeJoinJournalSecrets`; no encoded protected
-record or bearer bytes are written to SQLite.
+`openSqliteVaultProfileStore` persists canonical, non-secret vault/device
+profiles in a separate restrictive SQLite database. Exact retries are
+idempotent; conflicting vault/device identities or protected locator reuse fail
+closed. The store has no initialization-time delete because a remote bootstrap
+may already have committed the identity. Profile rows and aggregate serialized
+bytes are bounded and every load returns a freshly parsed structural copy. Each
+canonical locator embeds the same vault/device identity as its profile, so
+cross-identity locator reuse is rejected before insertion; independent unique
+constraints remain as persistence-boundary defense in depth.
+
+`SqliteInitializationJournal` implements the canonical v2 initialization journal
+with exact encrypted/public records and active/committed profiles,
+compare-and-set lifecycle transitions, operation and protected-locator
+reservations, and atomic replacement by the non-secret bootstrap receipt.
+`SqliteJoinLifecycleJournal` keeps only its operation/state/session-locator
+mirror in SQLite. Its three 32-byte bearer values live exclusively in
+`NativeJoinJournalSecrets`; no encoded protected record or bearer bytes are
+written to SQLite.
 
 Join recovery uses explicit `reserving`, `transitioning`, `deleting`, and
 `committing` SQLite phases. Each intent is committed and checkpointed before
@@ -87,8 +98,9 @@ unexpected file types, broad ACLs, and unverifiable ownership fail closed.
 - Bounded local completion receipts cannot permanently reserve every historical
   idempotency key. After an oldest receipt is pruned, protection against ancient
   changed-key reuse relies on the server's durable idempotency contract.
-- The current file format is `kavrix-local-sync-v2`. This package has no in-place
-  migration from an earlier local format; an unsupported schema fails closed
+- The current sync format is `kavrix-local-sync-v2`; the profile-bearing
+  initialization-journal format is v2. This package has no in-place migration
+  from either earlier local format; an unsupported schema fails closed
   and must be rebuilt from the remote opaque vault after preserving any still
   pending local work through a separately reviewed migration flow.
 - WAL, filesystem snapshots, SSD behavior, backups, and prior copies can retain

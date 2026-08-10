@@ -19,12 +19,19 @@ export {
   type SqliteSyncLocalStoreOptions,
   type SyncEntityType,
 } from './sqlite-local-store.js';
+export {
+  openSqliteVaultProfileStore,
+  SqliteVaultProfileStore,
+  type SqliteVaultProfileStoreOptions,
+} from './vault-profile-store.js';
 export type {
   InitializationJournalPort,
   InitializationJournalRecord,
   JoinJournalRecord,
   JoinLifecycleJournalPort,
   LifecycleOperationId,
+  VaultProfile,
+  VaultProfileStorePort,
 } from '@kavrix/client';
 export type { OpaqueMutation, OpaqueSyncRecord, VaultId } from '@kavrix/schemas';
 export type {

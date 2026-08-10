@@ -53,9 +53,10 @@ export class SqliteInitializationJournal
       options,
       limits,
       INITIALIZATION_APPLICATION_ID,
-      'kavrix-initialization-journal-v1',
+      'kavrix-initialization-journal-v2',
       INIT_SCHEMA,
       verifyInitializationDatabaseRows,
+      2,
     );
     return new SqliteInitializationJournal(
       opened.database,
@@ -145,6 +146,7 @@ export class SqliteInitializationJournal
   public commit(
     operationIdInput: LifecycleOperationId,
     receipt: InitializationCommittedJournalRecord['receipt'],
+    profile: InitializationCommittedJournalRecord['profile'],
     committedAt: InitializationCommittedJournalRecord['committedAt'],
   ): Promise<void> {
     return this.exclusive(async () => {
@@ -155,6 +157,7 @@ export class SqliteInitializationJournal
         operationId,
         state: 'committed',
         receipt,
+        profile,
         committedAt,
       });
       const encoded = encodeBounded(committed, this.limits.maxSerializedBytes);
@@ -165,6 +168,9 @@ export class SqliteInitializationJournal
           throw invalidState();
         }
         if (existing.state !== 'network-attempted') {
+          throw invalidState();
+        }
+        if (JSON.stringify(existing.profile) !== JSON.stringify(committed.profile)) {
           throw invalidState();
         }
         const changed = this.database

@@ -1,7 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { realpathSync } from 'node:fs';
-import { rm } from 'node:fs/promises';
+import { realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -36,7 +35,7 @@ import { digest, groupRecord, otherVaultId, timestamp, vaultId } from './fixture
 
 const WINDOWS_POWERSHELL =
   'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
-const TEST_TMPDIR = realpathSync.native(tmpdir());
+const TEST_TMPDIR = await realpath(tmpdir());
 const WRONG_DIGEST = createHash('sha256')
   .update('wrong-hash-fixture')
   .digest('base64url');
@@ -1001,7 +1000,8 @@ function runAclScript(path: string, body: readonly string[]): void {
     "$ErrorActionPreference='Stop'",
     '$path=[Console]::In.ReadToEnd()',
     '$item=Get-Item -LiteralPath $path -Force',
-    "$acl=$item.GetAccessControl('Access,Owner')",
+    '$sections=[Security.AccessControl.AccessControlSections]::Access -bor [Security.AccessControl.AccessControlSections]::Owner',
+    '$acl=$item.GetAccessControl($sections)',
     ...body,
     '$item.SetAccessControl($acl)',
   ].join(';');

@@ -10,7 +10,7 @@ import {
 } from './local-writer-lease.js';
 import { prepareSecureDatabasePath, secureSqliteFiles } from './path-security.js';
 
-const SCHEMA_VERSION = 1;
+const DEFAULT_SCHEMA_VERSION = 1;
 const MAX_OPERATION_LIMIT = 256;
 const DEFAULT_MAX_SERIALIZED_BYTES = 8 * 1024 * 1024;
 const DEFAULT_MAX_DATABASE_BYTES = 64 * 1024 * 1024;
@@ -18,6 +18,7 @@ const MAX_CONFIGURED_DATABASE_BYTES = 512 * 1024 * 1024;
 
 export const INITIALIZATION_APPLICATION_ID = 0x4b4a4931;
 export const JOIN_APPLICATION_ID = 0x4b4a4a31;
+export const VAULT_PROFILE_APPLICATION_ID = 0x4b565031;
 export const INIT_SCHEMA = {
   lifecycle_metadata: `CREATE TABLE lifecycle_metadata (
     key TEXT PRIMARY KEY NOT NULL,
@@ -174,6 +175,7 @@ export async function openLifecycleDatabase(
   format: string,
   schema: Readonly<Record<string, string>>,
   verifyRows: (database: DatabaseSync, limits: LifecycleJournalLimits) => void,
+  schemaVersion = DEFAULT_SCHEMA_VERSION,
 ): Promise<
   Readonly<{ database: DatabaseSync; path: string; lease: LocalWriterLease }>
 > {
@@ -195,9 +197,17 @@ export async function openLifecycleDatabase(
       enableForeignKeyConstraints: true,
       timeout: 5_000,
     });
-    initializeDatabase(database, limits, applicationId, format, schema);
+    initializeDatabase(database, limits, applicationId, format, schema, schemaVersion);
     database.enableDefensive(true);
-    verifyDatabase(database, limits, applicationId, format, schema, verifyRows);
+    verifyDatabase(
+      database,
+      limits,
+      applicationId,
+      format,
+      schema,
+      verifyRows,
+      schemaVersion,
+    );
     await secureSqliteFiles(path, true);
     await assertPhysicalSize(path, limits.maxDatabaseBytes);
     return { database, path, lease };
@@ -296,7 +306,9 @@ function initializeDatabase(
   applicationId: number,
   format: string,
   schema: Readonly<Record<string, string>>,
+  schemaVersion: number,
 ): void {
+  if (!Number.isSafeInteger(schemaVersion) || schemaVersion < 1) throw invalidState();
   database.exec(`
     PRAGMA trusted_schema = OFF;
     PRAGMA foreign_keys = ON;
@@ -331,11 +343,11 @@ function initializeDatabase(
         .prepare(`INSERT INTO lifecycle_metadata(key, value) VALUES ('format', ?)`)
         .run(format);
       database.exec(`PRAGMA application_id = ${String(applicationId)}`);
-      database.exec(`PRAGMA user_version = ${String(SCHEMA_VERSION)}`);
+      database.exec(`PRAGMA user_version = ${String(schemaVersion)}`);
     });
   } else if (
     currentApplicationId !== applicationId ||
-    currentVersion !== SCHEMA_VERSION
+    currentVersion !== schemaVersion
   ) {
     throw invalidState();
   }
@@ -354,11 +366,12 @@ function verifyDatabase(
   format: string,
   schema: Readonly<Record<string, string>>,
   verifyRows: (database: DatabaseSync, limits: LifecycleJournalLimits) => void,
+  schemaVersion: number,
 ): void {
   if (
     integerPragma(database, 'PRAGMA application_id', 'application_id') !==
       applicationId ||
-    integerPragma(database, 'PRAGMA user_version', 'user_version') !== SCHEMA_VERSION
+    integerPragma(database, 'PRAGMA user_version', 'user_version') !== schemaVersion
   ) {
     throw invalidState();
   }

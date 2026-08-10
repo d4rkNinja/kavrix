@@ -1,7 +1,14 @@
 import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { realpathSync } from 'node:fs';
-import { chmod, link, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import {
+  chmod,
+  link,
+  mkdir,
+  readFile,
+  realpath,
+  rm,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -27,7 +34,7 @@ import {
 
 const WINDOWS_POWERSHELL =
   'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
-const TEST_TMPDIR = realpathSync.native(tmpdir());
+const TEST_TMPDIR = await realpath(tmpdir());
 const roots: string[] = [];
 const stores: SqliteSyncLocalStore[] = [];
 
@@ -610,7 +617,8 @@ function grantEveryone(path: string): void {
     "$ErrorActionPreference='Stop'",
     '$path=[Console]::In.ReadToEnd()',
     '$item=Get-Item -LiteralPath $path -Force',
-    "$acl=$item.GetAccessControl('Access,Owner')",
+    '$sections=[Security.AccessControl.AccessControlSections]::Access -bor [Security.AccessControl.AccessControlSections]::Owner',
+    '$acl=$item.GetAccessControl($sections)',
     '$world=New-Object Security.Principal.SecurityIdentifier("S-1-1-0")',
     '$allow=[Security.AccessControl.AccessControlType]::Allow',
     '$full=[Security.AccessControl.FileSystemRights]::FullControl',
@@ -637,7 +645,8 @@ function expectCurrentUserOnly(path: string): void {
     "$ErrorActionPreference='Stop'",
     '$path=[Console]::In.ReadToEnd()',
     '$item=Get-Item -LiteralPath $path -Force',
-    "$acl=$item.GetAccessControl('Access,Owner')",
+    '$sections=[Security.AccessControl.AccessControlSections]::Access -bor [Security.AccessControl.AccessControlSections]::Owner',
+    '$acl=$item.GetAccessControl($sections)',
     '$sid=[Security.Principal.WindowsIdentity]::GetCurrent().User',
     'if(-not $acl.AreAccessRulesProtected){exit 41}',
     'if($acl.GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $sid.Value){exit 42}',
