@@ -74,7 +74,7 @@ describe('public package', () => {
       [resolvePnpmEntrypoint(), 'pack', '--dry-run', '--json'],
       { cwd: packageDirectory, encoding: 'utf8' },
     );
-    const pack = packOutputSchema.parse(JSON.parse(output));
+    const pack = packOutputSchema.parse(JSON.parse(extractJsonDocument(output)));
     const paths = pack.files.map(({ path }) => path);
     expect(paths).toContain('dist/bin.js');
     expect(
@@ -143,6 +143,22 @@ describe('public package', () => {
     expect(compiled).not.toContain('@kavrix/');
   });
 });
+
+function extractJsonDocument(output: string): string {
+  const documentStart = /^\{$/mu.exec(output);
+  const end = output.lastIndexOf('}');
+  if (documentStart?.index === undefined || end < documentStart.index) {
+    throw new Error('The pack report did not contain a JSON document.');
+  }
+  const preamble = output.slice(0, documentStart.index);
+  if (!/^(?:\[(?:WARN|INFO)\][^\n]*\n)*$/u.test(preamble)) {
+    throw new Error(`The pack report emitted unexpected output: ${preamble}`);
+  }
+  if (output.slice(end + 1).trim().length > 0) {
+    throw new Error('The pack report emitted trailing output after the JSON document.');
+  }
+  return output.slice(documentStart.index, end + 1);
+}
 
 function resolvePnpmEntrypoint(): string {
   const pathDirectories = (process.env['PATH'] ?? '')
