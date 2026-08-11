@@ -1,7 +1,10 @@
 import {
   apiSessionResponseSchema,
   changeRecordSchema,
+  controlListPageOptionsSchema,
+  decodeControlListCursor,
   deviceRecordSchema,
+  encodeControlListCursor,
   inviteIdSchema,
   sha256DigestSchema,
   timestampSchema,
@@ -10,8 +13,9 @@ import {
   vaultIdSchema,
   type DeviceId,
   type DeviceRecord,
+  type ControlListPageOptions,
+  type ControlListCursorPayload,
   type InviteId,
-  type PublicInviteRecord,
   type Sha256Digest,
   type Timestamp,
   type VaultBootstrapResponse,
@@ -61,6 +65,8 @@ import {
 } from './mongo-documents.js';
 import type {
   AuthorizationPort,
+  AuthorizationDevicePage,
+  AuthorizationInvitePage,
   EnrollmentCompletion,
   InviteGrant,
   InviteRedemption,
@@ -584,18 +590,48 @@ export class MongoAuthorizationPort implements AuthorizationPort {
     }
   }
 
-  public async listInvites(
+  public async listInvitePage(
     vaultIdInput: VaultId,
+    optionsInput: ControlListPageOptions,
     now: Date,
-  ): Promise<readonly PublicInviteRecord[]> {
+  ): Promise<AuthorizationInvitePage> {
     const vaultId = vaultIdSchema.parse(vaultIdInput);
+    const options = controlListPageOptionsSchema.parse(optionsInput);
+    const cursor = bindControlListCursor(options, 'invites', vaultId);
     const values = await this.#invites()
-      .find({ vaultId })
+      .find(
+        cursor === undefined
+          ? { vaultId }
+          : {
+              vaultId,
+              $or: [
+                { createdAt: { $lt: cursor.createdAt } },
+                { createdAt: cursor.createdAt, _id: { $gt: cursor.id } },
+              ],
+            },
+      )
       .sort({ createdAt: -1, _id: 1 })
+      .hint('invites_by_vault_created_id_v2')
+      .limit(options.limit + 1)
       .toArray();
-    return values.map((value) =>
+    const invites = values.map((value) =>
       publicInviteFromDocument(mongoApiInviteDocumentSchema.parse(value), now),
     );
+    const page = invites.slice(0, options.limit);
+    const final = page.at(-1);
+    return {
+      invites: page,
+      nextCursor:
+        invites.length <= options.limit || final === undefined
+          ? null
+          : encodeControlListCursor({
+              version: 1,
+              resource: 'invites',
+              vaultId,
+              createdAt: final.createdAt,
+              id: final.id,
+            }),
+    };
   }
 
   public async revokeInvite(
@@ -632,13 +668,47 @@ export class MongoAuthorizationPort implements AuthorizationPort {
     });
   }
 
-  public async listDevices(vaultIdInput: VaultId): Promise<readonly DeviceRecord[]> {
+  public async listDevicePage(
+    vaultIdInput: VaultId,
+    optionsInput: ControlListPageOptions,
+  ): Promise<AuthorizationDevicePage> {
     const vaultId = vaultIdSchema.parse(vaultIdInput);
+    const options = controlListPageOptionsSchema.parse(optionsInput);
+    const cursor = bindControlListCursor(options, 'devices', vaultId);
     const values = await this.#devices()
-      .find({ vaultId })
+      .find(
+        cursor === undefined
+          ? { vaultId }
+          : {
+              vaultId,
+              $or: [
+                { 'record.createdAt': { $gt: cursor.createdAt } },
+                { 'record.createdAt': cursor.createdAt, _id: { $gt: cursor.id } },
+              ],
+            },
+      )
       .sort({ 'record.createdAt': 1, _id: 1 })
+      .hint('devices_by_vault_created_id_v2')
+      .limit(options.limit + 1)
       .toArray();
-    return values.map((value) => mongoApiDeviceDocumentSchema.parse(value).record);
+    const devices = values.map(
+      (value) => mongoApiDeviceDocumentSchema.parse(value).record,
+    );
+    const page = devices.slice(0, options.limit);
+    const final = page.at(-1);
+    return {
+      devices: page,
+      nextCursor:
+        devices.length <= options.limit || final === undefined
+          ? null
+          : encodeControlListCursor({
+              version: 1,
+              resource: 'devices',
+              vaultId,
+              createdAt: final.createdAt,
+              id: final.id,
+            }),
+    };
   }
 
   public async revokeDevice(
@@ -732,6 +802,19 @@ function redemptionReceipt(invite: MongoApiInviteDocument): InviteRedemption {
     scopes: invite.scopes,
     enrollmentExpiresAt: invite.enrollmentExpiresAt,
   };
+}
+
+function bindControlListCursor<Resource extends 'invites' | 'devices'>(
+  options: ControlListPageOptions,
+  resource: Resource,
+  vaultId: VaultId,
+): Extract<ControlListCursorPayload, { resource: Resource }> | undefined {
+  if (options.cursor === undefined) return undefined;
+  const cursor = decodeControlListCursor(options.cursor);
+  if (cursor.resource !== resource || cursor.vaultId !== vaultId) {
+    throw new TypeError('Control-list cursor does not match this resource');
+  }
+  return cursor as Extract<ControlListCursorPayload, { resource: Resource }>;
 }
 
 function isDuplicateKey(error: unknown): boolean {

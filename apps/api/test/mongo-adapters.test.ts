@@ -2,7 +2,10 @@ import type { Db, MongoClient } from 'mongodb';
 import { describe, expect, it, vi } from 'vitest';
 
 import {
+  decodeControlListCursor,
   deviceIdSchema,
+  deviceRecordSchema,
+  encodeControlListCursor,
   inviteIdSchema,
   schemaVersionSchema,
   sha256DigestSchema,
@@ -24,6 +27,7 @@ import {
 
 import {
   enrollmentCompletionHash,
+  deviceDocument,
   inviteGrantDocument,
   mongoApiCollectionNames,
   mongoApiCollectionOptions,
@@ -47,6 +51,7 @@ import { fixedWindowIdentity } from '../src/mongo-rate-limit.js';
 import { parseMongoApiServerConfig } from '../src/server.js';
 
 const vaultId = vaultIdSchema.parse('vault.mongo-test');
+const otherVaultId = vaultIdSchema.parse('vault.mongo-other');
 const deviceId = deviceIdSchema.parse('device.mongo-test');
 const createdAt = timestampSchema.parse('2026-08-10T00:00:00.000Z');
 const expiresAt = timestampSchema.parse('2026-08-10T00:10:00.000Z');
@@ -408,6 +413,332 @@ describe('Mongo API persistence contracts', () => {
     ).toMatchObject({ state: 'redeemed', consumedAt: createdAt });
   });
 
+  it('adds exact v2 pagination indexes without replacing legacy indexes', () => {
+    expect(mongoApiIndexes.api_invites).toEqual([
+      { key: { tokenHash: 1 }, name: 'invite_token_hash', unique: true },
+      { key: { vaultId: 1, createdAt: -1 }, name: 'invites_by_vault' },
+      {
+        key: { vaultId: 1, createdAt: -1, _id: 1 },
+        name: 'invites_by_vault_created_id_v2',
+      },
+    ]);
+    expect(mongoApiIndexes.api_devices).toEqual([
+      { key: { vaultId: 1, _id: 1 }, name: 'devices_by_vault' },
+      { key: { 'record.tokenHash': 1 }, name: 'device_token_hash', unique: true },
+      {
+        key: { vaultId: 1, 'record.createdAt': 1, _id: 1 },
+        name: 'devices_by_vault_created_id_v2',
+      },
+    ]);
+  });
+
+  it.each([0, 1, 200, 201])(
+    'bounds Mongo invite pages with %i available rows and cursors from the final returned row',
+    async (rowCount) => {
+      const lookaheadCreatedAt = timestampSchema.parse('2026-08-09T23:59:59.000Z');
+      const rows = Array.from({ length: rowCount }, (_value, index) =>
+        inviteDocument(
+          `invite-page-${String(index).padStart(3, '0')}`,
+          index,
+          index === 200 ? lookaheadCreatedAt : createdAt,
+        ),
+      );
+      const fixture = paginationDatabase(mongoApiCollectionNames.invites, rows);
+      const authorization = new MongoAuthorizationPort(
+        {} as MongoClient,
+        fixture.database,
+      );
+
+      const page = await authorization.listInvitePage(
+        vaultId,
+        { limit: 200 },
+        new Date(createdAt),
+      );
+
+      expect(page.invites).toHaveLength(Math.min(rowCount, 200));
+      expect(page.nextCursor === null).toBe(rowCount <= 200);
+      expect(fixture.queries).toEqual([
+        {
+          filter: { vaultId },
+          sort: { createdAt: -1, _id: 1 },
+          hint: 'invites_by_vault_created_id_v2',
+          limit: 201,
+        },
+      ]);
+      if (page.nextCursor !== null) {
+        expect(decodeControlListCursor(page.nextCursor)).toEqual({
+          version: 1,
+          resource: 'invites',
+          vaultId,
+          createdAt,
+          id: 'invite-page-199',
+        });
+      }
+      expect(JSON.stringify(page)).not.toContain('tokenHash');
+    },
+  );
+
+  it('uses the exact vault-bound invite continuation predicate and validates lookahead', async () => {
+    const cursorCreatedAt = timestampSchema.parse('2026-08-09T23:59:59.000Z');
+    const cursor = encodeControlListCursor({
+      version: 1,
+      resource: 'invites',
+      vaultId,
+      createdAt: cursorCreatedAt,
+      id: inviteIdSchema.parse('invite-cursor'),
+    });
+    const valid = inviteDocument('invite-after-cursor', 1, cursorCreatedAt);
+    const invalidLookahead = {
+      ...inviteDocument('invite-invalid-lookahead', 2),
+      _id: '*',
+    };
+    const fixture = paginationDatabase(mongoApiCollectionNames.invites, [
+      valid,
+      invalidLookahead,
+    ]);
+    const authorization = new MongoAuthorizationPort(
+      {} as MongoClient,
+      fixture.database,
+    );
+
+    await expect(
+      authorization.listInvitePage(vaultId, { limit: 1, cursor }, new Date(createdAt)),
+    ).rejects.toThrow();
+    expect(fixture.queries).toEqual([
+      {
+        filter: {
+          vaultId,
+          $or: [
+            { createdAt: { $lt: cursorCreatedAt } },
+            { createdAt: cursorCreatedAt, _id: { $gt: 'invite-cursor' } },
+          ],
+        },
+        sort: { createdAt: -1, _id: 1 },
+        hint: 'invites_by_vault_created_id_v2',
+        limit: 2,
+      },
+    ]);
+  });
+
+  it('uses the exact vault-bound device continuation predicate and validates lookahead', async () => {
+    const cursorCreatedAt = timestampSchema.parse('2026-08-10T00:00:01.000Z');
+    const cursor = encodeControlListCursor({
+      version: 1,
+      resource: 'devices',
+      vaultId,
+      createdAt: cursorCreatedAt,
+      id: deviceIdSchema.parse('device-cursor'),
+    });
+    const valid = apiDeviceDocument('device-after-cursor', 1, cursorCreatedAt);
+    const invalidLookahead = {
+      ...apiDeviceDocument('device-invalid-lookahead', 2),
+      record: {
+        ...apiDeviceDocument('device-invalid-lookahead', 2).record,
+        tokenHash: '*',
+      },
+    };
+    const fixture = paginationDatabase(mongoApiCollectionNames.devices, [
+      valid,
+      invalidLookahead,
+    ]);
+    const authorization = new MongoAuthorizationPort(
+      {} as MongoClient,
+      fixture.database,
+    );
+
+    await expect(
+      authorization.listDevicePage(vaultId, { limit: 1, cursor }),
+    ).rejects.toThrow();
+    expect(fixture.queries).toEqual([
+      {
+        filter: {
+          vaultId,
+          $or: [
+            { 'record.createdAt': { $gt: cursorCreatedAt } },
+            {
+              'record.createdAt': cursorCreatedAt,
+              _id: { $gt: 'device-cursor' },
+            },
+          ],
+        },
+        sort: { 'record.createdAt': 1, _id: 1 },
+        hint: 'devices_by_vault_created_id_v2',
+        limit: 2,
+      },
+    ]);
+  });
+
+  it.each([0, 1, 200])(
+    'bounds Mongo device pages with %i available rows',
+    async (rowCount) => {
+      const rows = Array.from({ length: rowCount }, (_value, index) =>
+        apiDeviceDocument(`device-page-${String(index).padStart(3, '0')}`, index),
+      );
+      const fixture = paginationDatabase(mongoApiCollectionNames.devices, rows);
+      const authorization = new MongoAuthorizationPort(
+        {} as MongoClient,
+        fixture.database,
+      );
+
+      const page = await authorization.listDevicePage(vaultId, { limit: 200 });
+
+      expect(page.devices).toHaveLength(rowCount);
+      expect(page.nextCursor).toBeNull();
+      expect(fixture.queries).toEqual([
+        {
+          filter: { vaultId },
+          sort: { 'record.createdAt': 1, _id: 1 },
+          hint: 'devices_by_vault_created_id_v2',
+          limit: 201,
+        },
+      ]);
+    },
+  );
+
+  it('bounds a 201-row Mongo device page and resumes to an exact terminal page', async () => {
+    const lookaheadCreatedAt = timestampSchema.parse('2026-08-10T00:00:02.000Z');
+    const rows = Array.from({ length: 201 }, (_value, index) =>
+      apiDeviceDocument(
+        `device-page-${String(index).padStart(3, '0')}`,
+        index,
+        index === 200 ? lookaheadCreatedAt : createdAt,
+      ),
+    );
+    const fixture = paginationDatabase(mongoApiCollectionNames.devices, rows);
+    const authorization = new MongoAuthorizationPort(
+      {} as MongoClient,
+      fixture.database,
+    );
+
+    const first = await authorization.listDevicePage(vaultId, { limit: 200 });
+    expect(first.devices).toHaveLength(200);
+    expect(fixture.queries[0]).toEqual({
+      filter: { vaultId },
+      sort: { 'record.createdAt': 1, _id: 1 },
+      hint: 'devices_by_vault_created_id_v2',
+      limit: 201,
+    });
+    if (first.nextCursor === null) throw new Error('Missing device page cursor');
+    expect(decodeControlListCursor(first.nextCursor)).toEqual({
+      version: 1,
+      resource: 'devices',
+      vaultId,
+      createdAt,
+      id: 'device-page-199',
+    });
+
+    const terminalFixture = paginationDatabase(mongoApiCollectionNames.devices, [
+      rows[200],
+    ]);
+    const terminalAuthorization = new MongoAuthorizationPort(
+      {} as MongoClient,
+      terminalFixture.database,
+    );
+    await expect(
+      terminalAuthorization.listDevicePage(vaultId, {
+        limit: 200,
+        cursor: first.nextCursor,
+      }),
+    ).resolves.toMatchObject({
+      devices: [expect.objectContaining({ id: 'device-page-200' })],
+      nextCursor: null,
+    });
+  });
+
+  it('rejects invalid limits and resource/vault cursor swaps before Mongo access', async () => {
+    const fixture = paginationDatabase(mongoApiCollectionNames.invites, []);
+    const authorization = new MongoAuthorizationPort(
+      {} as MongoClient,
+      fixture.database,
+    );
+    const created = timestampSchema.parse(createdAt);
+    const wrongResource = encodeControlListCursor({
+      version: 1,
+      resource: 'devices',
+      vaultId,
+      createdAt: created,
+      id: deviceId,
+    });
+    const wrongVault = encodeControlListCursor({
+      version: 1,
+      resource: 'invites',
+      vaultId: otherVaultId,
+      createdAt: created,
+      id: inviteIdSchema.parse('invite-cursor'),
+    });
+
+    for (const options of [
+      { limit: 0 },
+      { limit: 201 },
+      { limit: 1.5 },
+      { limit: 1, cursor: 'malformed' },
+      { limit: 1, cursor: wrongResource },
+      { limit: 1, cursor: wrongVault },
+    ]) {
+      await expect(
+        authorization.listInvitePage(vaultId, options as never, new Date(createdAt)),
+      ).rejects.toThrow();
+    }
+    await expect(
+      authorization.listInvitePage(
+        'invalid vault' as never,
+        { limit: 1 },
+        new Date(createdAt),
+      ),
+    ).rejects.toThrow();
+    expect(fixture.find).not.toHaveBeenCalled();
+
+    const deviceFixture = paginationDatabase(mongoApiCollectionNames.devices, []);
+    const deviceAuthorization = new MongoAuthorizationPort(
+      {} as MongoClient,
+      deviceFixture.database,
+    );
+    const inviteCursor = encodeControlListCursor({
+      version: 1,
+      resource: 'invites',
+      vaultId,
+      createdAt: created,
+      id: inviteIdSchema.parse('invite-device-swap'),
+    });
+    const otherVaultDeviceCursor = encodeControlListCursor({
+      version: 1,
+      resource: 'devices',
+      vaultId: otherVaultId,
+      createdAt: created,
+      id: deviceIdSchema.parse('device-cursor'),
+    });
+    for (const options of [
+      { limit: 0 },
+      { limit: 201 },
+      { limit: 1.5 },
+      { limit: 1, cursor: 'malformed' },
+      { limit: 1, cursor: inviteCursor },
+      { limit: 1, cursor: otherVaultDeviceCursor },
+    ]) {
+      await expect(
+        deviceAuthorization.listDevicePage(vaultId, options as never),
+      ).rejects.toThrow();
+    }
+    await expect(
+      deviceAuthorization.listDevicePage('invalid vault' as never, { limit: 1 }),
+    ).rejects.toThrow();
+    expect(deviceFixture.find).not.toHaveBeenCalled();
+
+    const arbitraryDeviceCursor = encodeControlListCursor({
+      version: 1,
+      resource: 'devices',
+      vaultId,
+      createdAt: created,
+      id: deviceIdSchema.parse('device-arbitrary-position'),
+    });
+    await expect(
+      deviceAuthorization.listDevicePage(vaultId, {
+        limit: 1,
+        cursor: arbitraryDeviceCursor,
+      }),
+    ).resolves.toEqual({ devices: [], nextCursor: null });
+  });
+
   it('strictly rejects plaintext-bearing and inconsistent documents', () => {
     const active = inviteGrantDocument({
       id: inviteIdSchema.parse('invite.strict-test'),
@@ -641,5 +972,98 @@ function apiInitializationDatabase(
     scanNames,
     closeCalls,
     installWasCompleteBeforeEveryScan: () => installWasComplete,
+  };
+}
+
+function inviteDocument(
+  id: string,
+  hashFill: number,
+  documentCreatedAt: ReturnType<typeof timestampSchema.parse> = createdAt,
+): ReturnType<typeof inviteGrantDocument> {
+  return inviteGrantDocument({
+    id: inviteIdSchema.parse(id),
+    tokenHash: hash(hashFill % 256),
+    vaultId,
+    scopes: ['sync:read'],
+    issuedByDeviceId: deviceId,
+    createdAt: documentCreatedAt,
+    expiresAt,
+  });
+}
+
+function apiDeviceDocument(
+  id: string,
+  hashFill: number,
+  documentCreatedAt: ReturnType<typeof timestampSchema.parse> = createdAt,
+): ReturnType<typeof deviceDocument> {
+  const parsedId = deviceIdSchema.parse(id);
+  return deviceDocument(
+    deviceRecordSchema.parse({
+      id: parsedId,
+      vaultId,
+      schemaVersion: 1,
+      tokenHash: hash(hashFill % 256),
+      tokenVersion: 1,
+      scopes: ['sync:read'],
+      createdAt: documentCreatedAt,
+    }),
+  );
+}
+
+function paginationDatabase(
+  collectionName: string,
+  rows: readonly unknown[],
+): {
+  readonly database: Db;
+  readonly find: ReturnType<typeof vi.fn>;
+  readonly queries: readonly Readonly<{
+    filter: unknown;
+    sort?: unknown;
+    hint?: unknown;
+    limit?: number;
+  }>[];
+} {
+  const queries: {
+    filter: unknown;
+    sort?: unknown;
+    hint?: unknown;
+    limit?: number;
+  }[] = [];
+  const find = vi.fn((filter: unknown) => {
+    const query: {
+      filter: unknown;
+      sort?: unknown;
+      hint?: unknown;
+      limit?: number;
+    } = { filter };
+    queries.push(query);
+    const cursor = {
+      sort: (sort: unknown) => {
+        query.sort = sort;
+        return cursor;
+      },
+      hint: (hint: unknown) => {
+        query.hint = hint;
+        return cursor;
+      },
+      limit: (limit: number) => {
+        query.limit = limit;
+        return cursor;
+      },
+      toArray: () => Promise.resolve(rows.slice(0, query.limit)),
+    };
+    return cursor;
+  });
+  return {
+    database: {
+      collection: (name: string) => {
+        if (name !== collectionName) {
+          throw new Error(`Unexpected pagination collection ${name}`);
+        }
+        return { find };
+      },
+    } as unknown as Db,
+    find,
+    queries,
   };
 }

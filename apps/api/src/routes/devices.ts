@@ -1,11 +1,13 @@
 import {
-  deviceListResponseSchema,
+  controlListPageQuerySchema,
+  decodeControlListCursor,
+  deviceListPageResponseSchema,
   vaultDevicePathSchema,
   vaultPathSchema,
 } from '@kavrix/schemas';
 
 import { parseRequest } from '../boundary.js';
-import { ApiNotFoundError } from '../errors.js';
+import { ApiNotFoundError, ApiValidationError } from '../errors.js';
 import type { ApiRoutePlugin } from '../route-context.js';
 import { timestamp } from '../route-utils.js';
 
@@ -13,16 +15,21 @@ export const deviceRoutes: ApiRoutePlugin = (app, context) => {
   app.get('/v1/vaults/:vaultId/devices', async (request) => {
     const { vaultId } = parseRequest(vaultPathSchema, request.params);
     await context.security.authenticate(request, 'device:manage', vaultId);
-    const devices = await context.ports.authorization.listDevices(vaultId);
-    return deviceListResponseSchema.parse({
-      devices: devices.map((device) => {
-        if (device.vaultId !== vaultId) {
-          throw new Error('Authorization storage crossed a vault boundary');
-        }
-        const { tokenHash, ...publicDevice } = device;
-        void tokenHash;
-        return publicDevice;
-      }),
+    const options = parseRequest(controlListPageQuerySchema, request.query);
+    assertDeviceRequestCursorContext(options.cursor, vaultId);
+    const page = await context.ports.authorization.listDevicePage(vaultId, options);
+    const devices = page.devices.map((device) => {
+      if (device.vaultId !== vaultId) {
+        throw new Error('Authorization storage crossed a vault boundary');
+      }
+      const { tokenHash, ...publicDevice } = device;
+      void tokenHash;
+      return publicDevice;
+    });
+    assertDeviceCursorContext(page.nextCursor, vaultId);
+    return deviceListPageResponseSchema.parse({
+      devices,
+      nextCursor: page.nextCursor,
     });
   });
 
@@ -41,3 +48,25 @@ export const deviceRoutes: ApiRoutePlugin = (app, context) => {
   });
   return Promise.resolve();
 };
+
+function assertDeviceCursorContext(
+  cursor: string | null | undefined,
+  vaultId: string,
+): void {
+  if (cursor === null || cursor === undefined) return;
+  const payload = decodeControlListCursor(cursor);
+  if (payload.resource !== 'devices' || payload.vaultId !== vaultId) {
+    throw new Error('Authorization storage returned a misbound control-list cursor');
+  }
+}
+
+function assertDeviceRequestCursorContext(
+  cursor: string | null | undefined,
+  vaultId: string,
+): void {
+  if (cursor === null || cursor === undefined) return;
+  const payload = decodeControlListCursor(cursor);
+  if (payload.resource !== 'devices' || payload.vaultId !== vaultId) {
+    throw new ApiValidationError();
+  }
+}

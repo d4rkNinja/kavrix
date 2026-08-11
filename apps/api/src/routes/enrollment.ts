@@ -1,11 +1,13 @@
 import {
   apiSessionResponseSchema,
+  controlListPageQuerySchema,
+  decodeControlListCursor,
   deviceRecordSchema,
   enrollmentCompleteRequestSchema,
   enrollmentCompleteResponseSchema,
   inviteIssueRequestSchema,
   inviteIssueResponseSchema,
-  inviteListResponseSchema,
+  inviteListPageResponseSchema,
   inviteRedeemResponseSchema,
   vaultRecordSchema,
   vaultPathSchema,
@@ -17,6 +19,7 @@ import {
   ApiAuthenticationError,
   ApiAuthorizationError,
   ApiNotFoundError,
+  ApiValidationError,
 } from '../errors.js';
 import type { ApiRoutePlugin } from '../route-context.js';
 import { addSeconds, timestamp } from '../route-utils.js';
@@ -63,17 +66,23 @@ export const enrollmentRoutes: ApiRoutePlugin = (app, context) => {
   app.get('/v1/vaults/:vaultId/invites', async (request) => {
     const { vaultId } = parseRequest(vaultPathSchema, request.params);
     await context.security.authenticate(request, 'device:manage', vaultId);
-    const invites = await context.ports.authorization.listInvites(
+    const options = parseRequest(controlListPageQuerySchema, request.query);
+    assertRequestCursorContext(options.cursor, 'invites', vaultId);
+    const page = await context.ports.authorization.listInvitePage(
       vaultId,
+      options,
       context.ports.clock.now(),
     );
-    return inviteListResponseSchema.parse({
-      invites: invites.map((invite) => {
-        if (invite.vaultId !== vaultId) {
-          throw new Error('Authorization storage crossed an invite vault boundary');
-        }
-        return invite;
-      }),
+    const invites = page.invites.map((invite) => {
+      if (invite.vaultId !== vaultId) {
+        throw new Error('Authorization storage crossed an invite vault boundary');
+      }
+      return invite;
+    });
+    assertControlListCursorContext(page.nextCursor, 'invites', vaultId);
+    return inviteListPageResponseSchema.parse({
+      invites,
+      nextCursor: page.nextCursor,
     });
   });
 
@@ -162,3 +171,27 @@ export const enrollmentRoutes: ApiRoutePlugin = (app, context) => {
   });
   return Promise.resolve();
 };
+
+function assertRequestCursorContext(
+  cursor: string | null | undefined,
+  resource: 'invites' | 'devices',
+  vaultId: string,
+): void {
+  if (cursor === null || cursor === undefined) return;
+  const payload = decodeControlListCursor(cursor);
+  if (payload.resource !== resource || payload.vaultId !== vaultId) {
+    throw new ApiValidationError();
+  }
+}
+
+function assertControlListCursorContext(
+  cursor: string | null | undefined,
+  resource: 'invites' | 'devices',
+  vaultId: string,
+): void {
+  if (cursor === null || cursor === undefined) return;
+  const payload = decodeControlListCursor(cursor);
+  if (payload.resource !== resource || payload.vaultId !== vaultId) {
+    throw new Error('Authorization storage returned a misbound control-list cursor');
+  }
+}

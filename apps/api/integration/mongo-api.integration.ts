@@ -128,9 +128,14 @@ describeMongo('Mongo API adapters against a transaction-capable replica set', ()
       authorization.findSession(session.hash, afterExpiry),
     ).resolves.toBeNull();
 
-    const publicInvites = await authorization.listInvites(vaultId, baseTime);
-    expect(publicInvites).toHaveLength(1);
-    expect(JSON.stringify(publicInvites)).not.toContain(invite.hash);
+    const publicInvitePage = await authorization.listInvitePage(
+      vaultId,
+      { limit: 50 },
+      baseTime,
+    );
+    expect(publicInvitePage.invites).toHaveLength(1);
+    expect(publicInvitePage.nextCursor).toBeNull();
+    expect(JSON.stringify(publicInvitePage)).not.toContain(invite.hash);
     const raw = JSON.stringify(
       await database.collection(mongoApiCollectionNames.invites).find({}).toArray(),
     );

@@ -388,10 +388,18 @@ export const mongoApiIndexes: Readonly<
   api_devices: [
     { key: { vaultId: 1, _id: 1 }, name: 'devices_by_vault' },
     { key: { 'record.tokenHash': 1 }, name: 'device_token_hash', unique: true },
+    {
+      key: { vaultId: 1, 'record.createdAt': 1, _id: 1 },
+      name: 'devices_by_vault_created_id_v2',
+    },
   ],
   api_invites: [
     { key: { tokenHash: 1 }, name: 'invite_token_hash', unique: true },
     { key: { vaultId: 1, createdAt: -1 }, name: 'invites_by_vault' },
+    {
+      key: { vaultId: 1, createdAt: -1, _id: 1 },
+      name: 'invites_by_vault_created_id_v2',
+    },
   ],
   api_enrollments: [],
   api_rate_limits: [

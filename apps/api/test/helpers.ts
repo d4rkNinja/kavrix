@@ -15,9 +15,12 @@ import {
   attachmentStreamStartInputSchema,
   associatedDataSchema,
   changeRecordSchema,
+  controlListPageOptionsSchema,
   contentHashForRecord,
+  decodeControlListCursor,
   deviceIdSchema,
   deviceRecordSchema,
+  encodeControlListCursor,
   groupIdSchema,
   inviteIdSchema,
   keySlotIdSchema,
@@ -37,6 +40,8 @@ import {
   type AttachmentStreamProgress,
   type AttachmentStreamStartInput,
   type ChangeRecord,
+  type ControlListCursorPayload,
+  type ControlListPageOptions,
   type DeviceId,
   type DeviceRecord,
   type EncryptedAttachmentRecord,
@@ -69,6 +74,8 @@ import {
   NodeTokenPort,
   type ApiPorts,
   type ApiStoragePort,
+  type AuthorizationDevicePage,
+  type AuthorizationInvitePage,
   type AuthorizationPort,
   type EnrollmentCompletion,
   type InviteGrant,
@@ -134,10 +141,15 @@ export class MemoryAuthorization implements AuthorizationPort {
     return Promise.resolve();
   }
 
-  public listInvites(
-    vault: VaultId,
+  public async listInvitePage(
+    vaultInput: VaultId,
+    optionsInput: ControlListPageOptions,
     now: Date,
-  ): Promise<readonly PublicInviteRecord[]> {
+  ): Promise<AuthorizationInvitePage> {
+    await Promise.resolve();
+    const vault = vaultIdSchema.parse(vaultInput);
+    const options = controlListPageOptionsSchema.parse(optionsInput);
+    const cursor = bindMemoryControlListCursor(options, 'invites', vault);
     const values = [...this.invites.values()]
       .filter((invite) => invite.vaultId === vault)
       .map((invite) =>
@@ -159,8 +171,24 @@ export class MemoryAuthorization implements AuthorizationPort {
           ...(invite.consumedAt === undefined ? {} : { consumedAt: invite.consumedAt }),
           ...(invite.revokedAt === undefined ? {} : { revokedAt: invite.revokedAt }),
         }),
-      );
-    return Promise.resolve(values);
+      )
+      .sort(compareInviteRows)
+      .filter((invite) => cursor === undefined || isAfterInviteCursor(invite, cursor));
+    const invites = values.slice(0, options.limit);
+    const final = invites.at(-1);
+    return {
+      invites,
+      nextCursor:
+        values.length <= options.limit || final === undefined
+          ? null
+          : encodeControlListCursor({
+              version: 1,
+              resource: 'invites',
+              vaultId: vault,
+              createdAt: final.createdAt,
+              id: final.id,
+            }),
+    };
   }
 
   public revokeInvite(
@@ -299,10 +327,33 @@ export class MemoryAuthorization implements AuthorizationPort {
     );
   }
 
-  public listDevices(vault: VaultId): Promise<readonly DeviceRecord[]> {
-    return Promise.resolve(
-      [...this.devices.values()].filter((device) => device.vaultId === vault),
-    );
+  public async listDevicePage(
+    vaultInput: VaultId,
+    optionsInput: ControlListPageOptions,
+  ): Promise<AuthorizationDevicePage> {
+    await Promise.resolve();
+    const vault = vaultIdSchema.parse(vaultInput);
+    const options = controlListPageOptionsSchema.parse(optionsInput);
+    const cursor = bindMemoryControlListCursor(options, 'devices', vault);
+    const values = [...this.devices.values()]
+      .filter((device) => device.vaultId === vault)
+      .sort(compareDeviceRows)
+      .filter((device) => cursor === undefined || isAfterDeviceCursor(device, cursor));
+    const devices = values.slice(0, options.limit);
+    const final = devices.at(-1);
+    return {
+      devices,
+      nextCursor:
+        values.length <= options.limit || final === undefined
+          ? null
+          : encodeControlListCursor({
+              version: 1,
+              resource: 'devices',
+              vaultId: vault,
+              createdAt: final.createdAt,
+              id: final.id,
+            }),
+    };
   }
 
   public revokeDevice(
@@ -935,4 +986,59 @@ export function authHeader(token: string): { readonly authorization: string } {
 
 function attachmentKey(targetVaultId: VaultId, entityId: string): string {
   return `${targetVaultId}:${entityId}`;
+}
+
+function bindMemoryControlListCursor<Resource extends 'invites' | 'devices'>(
+  options: ControlListPageOptions,
+  resource: Resource,
+  vaultId: VaultId,
+): Extract<ControlListCursorPayload, { resource: Resource }> | undefined {
+  if (options.cursor === undefined) return undefined;
+  const cursor = decodeControlListCursor(options.cursor);
+  if (cursor.resource !== resource || cursor.vaultId !== vaultId) {
+    throw new TypeError('Control-list cursor does not match this resource');
+  }
+  return cursor as Extract<ControlListCursorPayload, { resource: Resource }>;
+}
+
+function compareInviteRows(
+  left: PublicInviteRecord,
+  right: PublicInviteRecord,
+): number {
+  if (left.createdAt !== right.createdAt) {
+    return left.createdAt > right.createdAt ? -1 : 1;
+  }
+  return compareBinaryIdentifiers(left.id, right.id);
+}
+
+function compareDeviceRows(left: DeviceRecord, right: DeviceRecord): number {
+  if (left.createdAt !== right.createdAt) {
+    return left.createdAt < right.createdAt ? -1 : 1;
+  }
+  return compareBinaryIdentifiers(left.id, right.id);
+}
+
+function compareBinaryIdentifiers(left: string, right: string): number {
+  if (left === right) return 0;
+  return left < right ? -1 : 1;
+}
+
+function isAfterInviteCursor(
+  invite: PublicInviteRecord,
+  cursor: Extract<ControlListCursorPayload, { resource: 'invites' }>,
+): boolean {
+  return (
+    invite.createdAt < cursor.createdAt ||
+    (invite.createdAt === cursor.createdAt && invite.id > cursor.id)
+  );
+}
+
+function isAfterDeviceCursor(
+  device: DeviceRecord,
+  cursor: Extract<ControlListCursorPayload, { resource: 'devices' }>,
+): boolean {
+  return (
+    device.createdAt > cursor.createdAt ||
+    (device.createdAt === cursor.createdAt && device.id > cursor.id)
+  );
 }

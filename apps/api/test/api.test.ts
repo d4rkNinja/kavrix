@@ -8,9 +8,12 @@ import {
   associatedDataSchema,
   changeIdSchema,
   changeRecordSchema,
+  decodeControlListCursor,
   deviceIdSchema,
   deviceRecordSchema,
   encryptedGroupRecordSchema,
+  encodeControlListCursor,
+  inviteIdSchema,
   inviteRedeemResponseSchema,
   keySlotIdSchema,
   opaqueMutationSchema,
@@ -30,6 +33,7 @@ import {
   digest,
   envelope,
   groupTombstone,
+  MemoryAuthorization,
   nowIso,
   otherVaultId,
   vaultFixture,
@@ -472,6 +476,7 @@ describe('zero-knowledge Fastify API', () => {
     expect(activeInvites.statusCode).toBe(200);
     expect(activeInvites.json()).toMatchObject({
       invites: [{ id: issuedInvite.inviteId, state: 'active' }],
+      nextCursor: null,
     });
     expect(activeInvites.body).not.toContain('tokenHash');
 
@@ -559,6 +564,7 @@ describe('zero-knowledge Fastify API', () => {
       headers: authHeader(fixture.token),
     });
     expect(devices.statusCode).toBe(200);
+    expect(devices.json()).toMatchObject({ nextCursor: null });
     expect(devices.body).not.toContain('tokenHash');
     expect(devices.body).not.toContain(sessionToken);
 
@@ -574,6 +580,453 @@ describe('zero-knowledge Fastify API', () => {
       headers: authHeader(sessionToken),
     });
     expect(afterRevocation.statusCode).toBe(401);
+  });
+
+  it('authenticates before parsing control-list queries and enforces page limits', async () => {
+    const fixture = await createTestPorts();
+    const app = tracked(buildApi({ ports: fixture.ports, environment: 'test' }));
+    const list = vi.spyOn(fixture.authorization, 'listInvitePage');
+    const listDevices = vi.spyOn(fixture.authorization, 'listDevicePage');
+
+    const unauthenticated = await app.inject({
+      method: 'GET',
+      url: `/v1/vaults/${vaultId}/invites?cursor=${'x'.repeat(513)}`,
+    });
+    expect(unauthenticated.statusCode).toBe(401);
+    expect(list).not.toHaveBeenCalled();
+    const unauthenticatedDevices = await app.inject({
+      method: 'GET',
+      url: `/v1/vaults/${vaultId}/devices?cursor=${'x'.repeat(513)}`,
+    });
+    expect(unauthenticatedDevices.statusCode).toBe(401);
+    expect(listDevices).not.toHaveBeenCalled();
+
+    for (const limit of ['0', '201', '1.5']) {
+      for (const resource of ['invites', 'devices'] as const) {
+        const invalid = await app.inject({
+          method: 'GET',
+          url: `/v1/vaults/${vaultId}/${resource}?limit=${limit}`,
+          headers: authHeader(fixture.token),
+        });
+        expect(invalid.statusCode).toBe(400);
+      }
+    }
+    expect(list).not.toHaveBeenCalled();
+    expect(listDevices).not.toHaveBeenCalled();
+
+    for (const [query, expectedLimit] of [
+      ['', 50],
+      ['?limit=1', 1],
+      ['?limit=200', 200],
+    ] as const) {
+      const response = await app.inject({
+        method: 'GET',
+        url: `/v1/vaults/${vaultId}/invites${query}`,
+        headers: authHeader(fixture.token),
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({ invites: [], nextCursor: null });
+      expect(list).toHaveBeenLastCalledWith(
+        vaultId,
+        { limit: expectedLimit },
+        expect.any(Date),
+      );
+      const deviceResponse = await app.inject({
+        method: 'GET',
+        url: `/v1/vaults/${vaultId}/devices${query}`,
+        headers: authHeader(fixture.token),
+      });
+      expect(deviceResponse.statusCode).toBe(200);
+      expect(deviceResponse.json()).toMatchObject({
+        devices: [{ id: 'device-1' }],
+        nextCursor: null,
+      });
+      expect(listDevices).toHaveBeenLastCalledWith(vaultId, {
+        limit: expectedLimit,
+      });
+    }
+  });
+
+  it('rejects malformed or misbound request cursors and accepts an arbitrary same-vault position', async () => {
+    const fixture = await createTestPorts();
+    const app = tracked(buildApi({ ports: fixture.ports, environment: 'test' }));
+    const list = vi.spyOn(fixture.authorization, 'listInvitePage');
+    const listDevices = vi.spyOn(fixture.authorization, 'listDevicePage');
+    const createdAt = timestampSchema.parse(nowIso);
+    const encodeRaw = (value: string): string =>
+      Buffer.from(value, 'utf8').toString('base64url');
+    const invalidCursors = [
+      'not*base64url',
+      encodeRaw(
+        `{"version":1, "vaultId":"${vaultId}","createdAt":"${createdAt}","resource":"invites","id":"invite-arbitrary"}`,
+      ),
+      'x'.repeat(513),
+      encodeRaw(
+        `{"createdAt":"${createdAt}","id":"invite-arbitrary","resource":"invites","vaultId":"${vaultId}","version":2}`,
+      ),
+      encodeControlListCursor({
+        version: 1,
+        resource: 'devices',
+        vaultId,
+        createdAt,
+        id: deviceIdSchema.parse('device-arbitrary'),
+      }),
+      encodeControlListCursor({
+        version: 1,
+        resource: 'invites',
+        vaultId: otherVaultId,
+        createdAt,
+        id: 'invite-arbitrary',
+      }),
+    ];
+
+    for (const cursor of invalidCursors) {
+      const response = await app.inject({
+        method: 'GET',
+        url: `/v1/vaults/${vaultId}/invites?cursor=${encodeURIComponent(cursor)}`,
+        headers: authHeader(fixture.token),
+      });
+      expect(response.statusCode).toBe(400);
+    }
+    expect(list).not.toHaveBeenCalled();
+
+    const deviceInvalidCursors = [
+      'not*base64url',
+      encodeRaw(
+        `{"version":1, "vaultId":"${vaultId}","createdAt":"${createdAt}","resource":"devices","id":"device-arbitrary"}`,
+      ),
+      'x'.repeat(513),
+      encodeRaw(
+        `{"createdAt":"${createdAt}","id":"device-arbitrary","resource":"devices","vaultId":"${vaultId}","version":2}`,
+      ),
+      encodeControlListCursor({
+        version: 1,
+        resource: 'devices',
+        vaultId: otherVaultId,
+        createdAt,
+        id: deviceIdSchema.parse('device-arbitrary'),
+      }),
+      encodeControlListCursor({
+        version: 1,
+        resource: 'invites',
+        vaultId,
+        createdAt,
+        id: inviteIdSchema.parse('invite-arbitrary'),
+      }),
+    ];
+    for (const cursor of deviceInvalidCursors) {
+      const response = await app.inject({
+        method: 'GET',
+        url: `/v1/vaults/${vaultId}/devices?cursor=${encodeURIComponent(cursor)}`,
+        headers: authHeader(fixture.token),
+      });
+      expect(response.statusCode).toBe(400);
+    }
+
+    const inviteCursorForDeviceRoute = encodeControlListCursor({
+      version: 1,
+      resource: 'invites',
+      vaultId,
+      createdAt,
+      id: inviteIdSchema.parse('invite-arbitrary'),
+    });
+    for (const cursor of [inviteCursorForDeviceRoute]) {
+      const response = await app.inject({
+        method: 'GET',
+        url: `/v1/vaults/${vaultId}/devices?cursor=${encodeURIComponent(cursor)}`,
+        headers: authHeader(fixture.token),
+      });
+      expect(response.statusCode).toBe(400);
+    }
+    expect(listDevices).not.toHaveBeenCalled();
+
+    const arbitrary = encodeControlListCursor({
+      version: 1,
+      resource: 'invites',
+      vaultId,
+      createdAt,
+      id: 'invite-arbitrary',
+    });
+    const accepted = await app.inject({
+      method: 'GET',
+      url: `/v1/vaults/${vaultId}/invites?limit=1&cursor=${arbitrary}`,
+      headers: authHeader(fixture.token),
+    });
+    expect(accepted.statusCode).toBe(200);
+    expect(accepted.json()).toEqual({ invites: [], nextCursor: null });
+    expect(list).toHaveBeenCalledWith(
+      vaultId,
+      { limit: 1, cursor: arbitrary },
+      expect.any(Date),
+    );
+  });
+
+  it('matches binary keyset pagination in memory at empty, full, and lookahead boundaries', async () => {
+    for (const rowCount of [0, 1, 200, 201]) {
+      const authorization = new MemoryAuthorization();
+      for (let index = 0; index < rowCount; index += 1) {
+        const suffix = String(index).padStart(3, '0');
+        const inviteCreatedAt = timestampSchema.parse(
+          index === 200 ? '2026-08-09T23:59:59.000Z' : '2026-08-10T00:00:01.000Z',
+        );
+        const deviceCreatedAt = timestampSchema.parse(
+          index === 200 ? '2026-08-10T00:00:02.000Z' : '2026-08-10T00:00:01.000Z',
+        );
+        await authorization.createInvite({
+          id: inviteIdSchema.parse(`invite-${suffix}`),
+          tokenHash: digest(`invite-page-${suffix}`),
+          vaultId,
+          scopes: ['sync:read'],
+          issuedByDeviceId: deviceIdSchema.parse('device-page-issuer'),
+          createdAt: inviteCreatedAt,
+          expiresAt: timestampSchema.parse('2026-08-10T00:10:00.000Z'),
+        });
+        const pageDeviceId = deviceIdSchema.parse(`device-${suffix}`);
+        authorization.devices.set(
+          pageDeviceId,
+          deviceRecordSchema.parse({
+            id: pageDeviceId,
+            vaultId,
+            schemaVersion: 1,
+            tokenHash: digest(`device-page-${suffix}`),
+            tokenVersion: 1,
+            scopes: ['sync:read'],
+            createdAt: deviceCreatedAt,
+          }),
+        );
+      }
+
+      const first = await authorization.listInvitePage(
+        vaultId,
+        { limit: 200 },
+        new Date(nowIso),
+      );
+      expect(first.invites).toHaveLength(Math.min(rowCount, 200));
+      expect(first.nextCursor === null).toBe(rowCount <= 200);
+      if (rowCount === 201 && first.nextCursor !== null) {
+        expect(decodeControlListCursor(first.nextCursor)).toEqual({
+          version: 1,
+          resource: 'invites',
+          vaultId,
+          createdAt: '2026-08-10T00:00:01.000Z',
+          id: 'invite-199',
+        });
+        const terminal = await authorization.listInvitePage(
+          vaultId,
+          { limit: 200, cursor: first.nextCursor },
+          new Date(nowIso),
+        );
+        expect(terminal.invites.map(({ id }) => id)).toEqual(['invite-200']);
+        expect(terminal.nextCursor).toBeNull();
+      }
+
+      const firstDevices = await authorization.listDevicePage(vaultId, {
+        limit: 200,
+      });
+      expect(firstDevices.devices).toHaveLength(Math.min(rowCount, 200));
+      expect(firstDevices.nextCursor === null).toBe(rowCount <= 200);
+      if (rowCount === 201 && firstDevices.nextCursor !== null) {
+        expect(decodeControlListCursor(firstDevices.nextCursor)).toEqual({
+          version: 1,
+          resource: 'devices',
+          vaultId,
+          createdAt: '2026-08-10T00:00:01.000Z',
+          id: 'device-199',
+        });
+        const terminal = await authorization.listDevicePage(vaultId, {
+          limit: 200,
+          cursor: firstDevices.nextCursor,
+        });
+        expect(terminal.devices.map(({ id }) => id)).toEqual(['device-200']);
+        expect(terminal.nextCursor).toBeNull();
+      }
+    }
+  });
+
+  it('reparses memory page options and binds cursors independently of routes', async () => {
+    const authorization = new MemoryAuthorization();
+    const createdAt = timestampSchema.parse(nowIso);
+    const wrongResource = encodeControlListCursor({
+      version: 1,
+      resource: 'devices',
+      vaultId,
+      createdAt,
+      id: deviceIdSchema.parse('device-memory-cursor'),
+    });
+    const wrongVault = encodeControlListCursor({
+      version: 1,
+      resource: 'invites',
+      vaultId: otherVaultId,
+      createdAt,
+      id: inviteIdSchema.parse('invite-memory-cursor'),
+    });
+    for (const options of [
+      { limit: 0 },
+      { limit: 201 },
+      { limit: 1.5 },
+      { limit: 1, cursor: 'malformed' },
+      { limit: 1, cursor: wrongResource },
+      { limit: 1, cursor: wrongVault },
+    ]) {
+      await expect(
+        authorization.listInvitePage(vaultId, options as never, new Date(nowIso)),
+      ).rejects.toThrow();
+    }
+    await expect(
+      authorization.listInvitePage(
+        'invalid vault' as never,
+        { limit: 1 },
+        new Date(nowIso),
+      ),
+    ).rejects.toThrow();
+
+    const wrongDeviceResource = encodeControlListCursor({
+      version: 1,
+      resource: 'invites',
+      vaultId,
+      createdAt,
+      id: inviteIdSchema.parse('invite-device-swap'),
+    });
+    const wrongDeviceVault = encodeControlListCursor({
+      version: 1,
+      resource: 'devices',
+      vaultId: otherVaultId,
+      createdAt,
+      id: deviceIdSchema.parse('device-memory-cursor'),
+    });
+    for (const options of [
+      { limit: 0 },
+      { limit: 201 },
+      { limit: 1.5 },
+      { limit: 1, cursor: 'malformed' },
+      { limit: 1, cursor: wrongDeviceResource },
+      { limit: 1, cursor: wrongDeviceVault },
+    ]) {
+      await expect(
+        authorization.listDevicePage(vaultId, options as never),
+      ).rejects.toThrow();
+    }
+    await expect(
+      authorization.listDevicePage('invalid vault' as never, { limit: 1 }),
+    ).rejects.toThrow();
+
+    const arbitrary = encodeControlListCursor({
+      version: 1,
+      resource: 'invites',
+      vaultId,
+      createdAt,
+      id: inviteIdSchema.parse('invite-memory-arbitrary'),
+    });
+    await expect(
+      authorization.listInvitePage(
+        vaultId,
+        { limit: 1, cursor: arbitrary },
+        new Date(nowIso),
+      ),
+    ).resolves.toEqual({ invites: [], nextCursor: null });
+
+    const arbitraryDevice = encodeControlListCursor({
+      version: 1,
+      resource: 'devices',
+      vaultId,
+      createdAt,
+      id: deviceIdSchema.parse('device-memory-arbitrary'),
+    });
+    await expect(
+      authorization.listDevicePage(vaultId, {
+        limit: 1,
+        cursor: arbitraryDevice,
+      }),
+    ).resolves.toEqual({ devices: [], nextCursor: null });
+  });
+
+  it('uses timestamp direction and binary ID ties identically for memory invite and device pages', async () => {
+    const authorization = new MemoryAuthorization();
+    const issuer = deviceIdSchema.parse('device-page-issuer');
+    const inviteRows = [
+      ['invite-newest', '2026-08-10T00:00:02.000Z'],
+      ['invite-~', '2026-08-10T00:00:01.000Z'],
+      ['invite-a', '2026-08-10T00:00:01.000Z'],
+      ['invite-_', '2026-08-10T00:00:01.000Z'],
+      ['invite-A', '2026-08-10T00:00:01.000Z'],
+      ['invite-0', '2026-08-10T00:00:01.000Z'],
+      ['invite-oldest', '2026-08-10T00:00:00.000Z'],
+    ] as const;
+    for (const [id, createdAt] of inviteRows) {
+      await authorization.createInvite({
+        id: inviteIdSchema.parse(id),
+        tokenHash: digest(`hash-${id}`),
+        vaultId,
+        scopes: ['sync:read'],
+        issuedByDeviceId: issuer,
+        createdAt: timestampSchema.parse(createdAt),
+        expiresAt: timestampSchema.parse('2026-08-10T00:10:00.000Z'),
+      });
+    }
+    const firstInvites = await authorization.listInvitePage(
+      vaultId,
+      { limit: 4 },
+      new Date(nowIso),
+    );
+    expect(firstInvites.invites.map(({ id }) => id)).toEqual([
+      'invite-newest',
+      'invite-0',
+      'invite-A',
+      'invite-_',
+    ]);
+    if (firstInvites.nextCursor === null) throw new Error('Missing invite cursor');
+    const secondInvites = await authorization.listInvitePage(
+      vaultId,
+      { limit: 4, cursor: firstInvites.nextCursor },
+      new Date(nowIso),
+    );
+    expect(secondInvites.invites.map(({ id }) => id)).toEqual([
+      'invite-a',
+      'invite-~',
+      'invite-oldest',
+    ]);
+
+    const deviceRows = [
+      ['device-newest', '2026-08-10T00:00:02.000Z'],
+      ['device-~', '2026-08-10T00:00:01.000Z'],
+      ['device-a', '2026-08-10T00:00:01.000Z'],
+      ['device-_', '2026-08-10T00:00:01.000Z'],
+      ['device-A', '2026-08-10T00:00:01.000Z'],
+      ['device-0', '2026-08-10T00:00:01.000Z'],
+      ['device-oldest', '2026-08-10T00:00:00.000Z'],
+    ] as const;
+    for (const [id, createdAt] of deviceRows) {
+      const parsedId = deviceIdSchema.parse(id);
+      authorization.devices.set(
+        parsedId,
+        deviceRecordSchema.parse({
+          id: parsedId,
+          vaultId,
+          schemaVersion: 1,
+          tokenHash: digest(`hash-${id}`),
+          tokenVersion: 1,
+          scopes: ['sync:read'],
+          createdAt,
+        }),
+      );
+    }
+    const firstDevices = await authorization.listDevicePage(vaultId, { limit: 4 });
+    expect(firstDevices.devices.map(({ id }) => id)).toEqual([
+      'device-oldest',
+      'device-0',
+      'device-A',
+      'device-_',
+    ]);
+    if (firstDevices.nextCursor === null) throw new Error('Missing device cursor');
+    const secondDevices = await authorization.listDevicePage(vaultId, {
+      limit: 4,
+      cursor: firstDevices.nextCursor,
+    });
+    expect(secondDevices.devices.map(({ id }) => id)).toEqual([
+      'device-a',
+      'device-~',
+      'device-newest',
+    ]);
   });
 
   it('lists and revokes an unused invite by opaque ID', async () => {
@@ -672,15 +1125,141 @@ describe('zero-knowledge Fastify API', () => {
       vaultId: otherVaultId,
     });
     const list = vi
-      .spyOn(fixture.authorization, 'listDevices')
-      .mockResolvedValueOnce([crossed]);
+      .spyOn(fixture.authorization, 'listDevicePage')
+      .mockResolvedValueOnce({ devices: [crossed], nextCursor: null });
     const crossedList = await app.inject({
       method: 'GET',
       url: `/v1/vaults/${vaultId}/devices`,
       headers: authHeader(fixture.token),
     });
     expect(crossedList.statusCode).toBe(500);
+
+    list.mockResolvedValueOnce({
+      devices: [seeded],
+      nextCursor: encodeControlListCursor({
+        version: 1,
+        resource: 'devices',
+        vaultId: otherVaultId,
+        createdAt: seeded.createdAt,
+        id: seeded.id,
+      }),
+    });
+    const crossedCursor = await app.inject({
+      method: 'GET',
+      url: `/v1/vaults/${vaultId}/devices`,
+      headers: authHeader(fixture.token),
+    });
+    expect(crossedCursor.statusCode).toBe(500);
+
+    list.mockResolvedValueOnce({
+      devices: [seeded],
+      nextCursor: encodeControlListCursor({
+        version: 1,
+        resource: 'devices',
+        vaultId,
+        createdAt: seeded.createdAt,
+        id: deviceIdSchema.parse('device-not-final-row'),
+      }),
+    });
+    const nonfinalCursor = await app.inject({
+      method: 'GET',
+      url: `/v1/vaults/${vaultId}/devices`,
+      headers: authHeader(fixture.token),
+    });
+    expect(nonfinalCursor.statusCode).toBe(500);
     list.mockRestore();
+
+    const inviteList = vi
+      .spyOn(fixture.authorization, 'listInvitePage')
+      .mockResolvedValueOnce({
+        invites: [],
+        nextCursor: encodeControlListCursor({
+          version: 1,
+          resource: 'devices',
+          vaultId,
+          createdAt: timestampSchema.parse(nowIso),
+          id: deviceIdSchema.parse('device-backend-cursor'),
+        }),
+      });
+    const wrongInviteResource = await app.inject({
+      method: 'GET',
+      url: `/v1/vaults/${vaultId}/invites`,
+      headers: authHeader(fixture.token),
+    });
+    expect(wrongInviteResource.statusCode).toBe(500);
+    await fixture.authorization.createInvite({
+      id: inviteIdSchema.parse('invite-backend-row'),
+      tokenHash: digest('invite-backend-row'),
+      vaultId,
+      scopes: ['sync:read'],
+      issuedByDeviceId: deviceIdSchema.parse('device-1'),
+      createdAt: timestampSchema.parse(nowIso),
+      expiresAt: timestampSchema.parse('2026-08-10T00:10:00.000Z'),
+    });
+    const seededInvite = (
+      await fixture.authorization.listInvitePage(
+        vaultId,
+        { limit: 1 },
+        new Date(nowIso),
+      )
+    ).invites[0];
+    if (seededInvite === undefined) throw new Error('Missing seeded invite');
+    inviteList.mockResolvedValueOnce({
+      invites: [{ ...seededInvite, vaultId: otherVaultId }],
+      nextCursor: null,
+    });
+    const crossedInviteRow = await app.inject({
+      method: 'GET',
+      url: `/v1/vaults/${vaultId}/invites`,
+      headers: authHeader(fixture.token),
+    });
+    expect(crossedInviteRow.statusCode).toBe(500);
+
+    inviteList.mockResolvedValueOnce({
+      invites: [seededInvite],
+      nextCursor: encodeControlListCursor({
+        version: 1,
+        resource: 'invites',
+        vaultId: otherVaultId,
+        createdAt: seededInvite.createdAt,
+        id: seededInvite.id,
+      }),
+    });
+    const crossedInviteCursor = await app.inject({
+      method: 'GET',
+      url: `/v1/vaults/${vaultId}/invites`,
+      headers: authHeader(fixture.token),
+    });
+    expect(crossedInviteCursor.statusCode).toBe(500);
+
+    inviteList.mockResolvedValueOnce({
+      invites: [seededInvite],
+      nextCursor: encodeControlListCursor({
+        version: 1,
+        resource: 'invites',
+        vaultId,
+        createdAt: seededInvite.createdAt,
+        id: inviteIdSchema.parse('invite-not-final-row'),
+      }),
+    });
+    const nonfinalInviteCursor = await app.inject({
+      method: 'GET',
+      url: `/v1/vaults/${vaultId}/invites`,
+      headers: authHeader(fixture.token),
+    });
+    expect(nonfinalInviteCursor.statusCode).toBe(500);
+
+    inviteList.mockResolvedValueOnce({
+      invites: [seededInvite],
+      nextCursor: 'malformed' as never,
+    });
+    const malformedInviteCursor = await app.inject({
+      method: 'GET',
+      url: `/v1/vaults/${vaultId}/invites`,
+      headers: authHeader(fixture.token),
+    });
+    expect(malformedInviteCursor.statusCode).toBe(500);
+    inviteList.mockRestore();
 
     fixture.storage.vaults.delete(vaultId);
     const absentVault = await app.inject({

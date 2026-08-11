@@ -4,6 +4,8 @@ import type {
   ApiBearerToken,
   ApiSessionResponse,
   ApiScope,
+  ControlListCursor,
+  ControlListPageOptions,
   DeviceId,
   DeviceRecord,
   InviteId,
@@ -15,6 +17,16 @@ import type {
   VaultBootstrapResponse,
   VaultId,
 } from '@kavrix/schemas';
+
+export type AuthorizationInvitePage = Readonly<{
+  invites: readonly PublicInviteRecord[];
+  nextCursor: ControlListCursor | null;
+}>;
+
+export type AuthorizationDevicePage = Readonly<{
+  devices: readonly DeviceRecord[];
+  nextCursor: ControlListCursor | null;
+}>;
 
 export type SessionPrincipal = Omit<ApiSessionResponse, 'scopes'> & {
   readonly scopes: readonly ApiScope[];
@@ -75,7 +87,11 @@ export interface AuthorizationPort {
     completion: EnrollmentCompletion,
     now: Date,
   ): Promise<DeviceRecord | null>;
-  listInvites(vaultId: VaultId, now: Date): Promise<readonly PublicInviteRecord[]>;
+  listInvitePage(
+    vaultId: VaultId,
+    options: ControlListPageOptions,
+    now: Date,
+  ): Promise<AuthorizationInvitePage>;
   /**
    * Atomically transitions an active invite to revoked against redemption.
    * Exactly one concurrent redeem/revoke transition may win. Repeating an
@@ -86,7 +102,10 @@ export interface AuthorizationPort {
     inviteId: InviteId,
     revokedAt: Timestamp,
   ): Promise<boolean>;
-  listDevices(vaultId: VaultId): Promise<readonly DeviceRecord[]>;
+  listDevicePage(
+    vaultId: VaultId,
+    options: ControlListPageOptions,
+  ): Promise<AuthorizationDevicePage>;
   /** Atomically marks the device revoked and invalidates all of its sessions. */
   revokeDevice(
     vaultId: VaultId,
