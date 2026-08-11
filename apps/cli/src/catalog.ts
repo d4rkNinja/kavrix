@@ -500,6 +500,7 @@ export const CLI_COMMAND_CATALOG: readonly CliCommandDescriptor[] = Object.freez
             execute: async (context, _arguments, options) => {
               const { parseJoinResult, shapeInviteJoinRequest } =
                 await import('./contracts.js');
+              const serverUrl = optionString(options, 'server');
               const vaultId = requiredOption(options, 'vault', 'vault ID');
               const schemaVersion = parseInput(
                 schemaVersionOptionSchema,
@@ -526,7 +527,6 @@ export const CLI_COMMAND_CATALOG: readonly CliCommandDescriptor[] = Object.freez
                   shapeInviteJoinRequest(token, vault, version),
               );
               const joinInvite = useCases(context, 'device invite join').joinInvite;
-              const serverUrl = optionString(options, 'server');
               const result = parseJoinResult(
                 serverUrl === undefined
                   ? await joinInvite(request, portableKey)
@@ -679,13 +679,17 @@ function optionBoolean(
   return options[key] === true;
 }
 
-/** Reads an optional string option, treating an empty value as absent. */
+/** Reads an optional string option and rejects an explicitly empty value. */
 function optionString(
   options: Readonly<Record<string, unknown>>,
   key: string,
 ): string | undefined {
   const value = options[key];
-  return typeof value === 'string' && value.length > 0 ? value : undefined;
+  if (value === undefined) return undefined;
+  if (typeof value !== 'string' || value.length === 0) {
+    throw new CliUsageError('The server URL is invalid.');
+  }
+  return value;
 }
 
 function parseInitializationStartOptions(

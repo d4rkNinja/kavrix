@@ -505,6 +505,33 @@ describe('injectable initialization commands', () => {
     expect(cancel).toHaveBeenNthCalledWith(2, OPERATION_ID, 'https://sync.example/');
   });
 
+  it.each([
+    ['start', ['init', '--server', '']],
+    ['resume', ['init', 'resume', OPERATION_ID, '--server', '']],
+    ['cancel', ['init', 'cancel', OPERATION_ID, '--server', '']],
+  ])('rejects an explicitly empty server before init %s', async (_name, argv) => {
+    const begin = vi.fn();
+    const resume = vi.fn();
+    const cancel = vi.fn();
+    const result = await executeInit(
+      argv,
+      {
+        coordinator: coordinatorWith({ begin, resume, cancel }),
+        sensitiveDisplay: recordingDisplay([]).port,
+      },
+      secretInput(),
+    );
+
+    expect(result).toEqual({
+      exitCode: CLI_EXIT_CODES.usage,
+      stdout: '',
+      stderr: 'Error [CLI_USAGE]: The server URL is invalid.\n',
+    });
+    expect(begin).not.toHaveBeenCalled();
+    expect(resume).not.toHaveBeenCalled();
+    expect(cancel).not.toHaveBeenCalled();
+  });
+
   it('keeps argv, environment, completion, output, and errors free of canaries', async () => {
     const environmentCanary = 'KAVRIX_INIT_ENV_SECRET_CANARY';
     vi.stubEnv('KAVRIX_PORTABLE_KEY', environmentCanary);

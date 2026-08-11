@@ -36,6 +36,7 @@ export interface ProductionPortsOptions {
   readonly join: (
     request: CliInviteJoinRequest,
     portableKey: string,
+    serverUrl?: string,
   ) => Promise<CliInviteJoinResult>;
   readonly allowInsecureLoopbackDevelopment?: boolean;
 }
@@ -145,7 +146,10 @@ export function createProductionPorts(
     // batch, so the key arrives as an argument. Reading it again here would
     // double-prompt interactively and could never succeed under
     // `--invite-stdin`, where the stream is already exhausted.
-    joinInvite: (request, portableKey) => options.join(request, portableKey),
+    joinInvite: (request, portableKey, serverUrl) =>
+      serverUrl === undefined
+        ? options.join(request, portableKey)
+        : options.join(request, portableKey, serverUrl),
   };
 }
 

@@ -443,6 +443,31 @@ describe('CLI command shell', () => {
       'https://sync.example/',
     );
   });
+
+  it('rejects an explicitly empty invite server before the use case', async () => {
+    const joinInvite = vi.fn();
+    const readBatch = vi.fn(() =>
+      Promise.resolve([ACQUIRED_TOKEN, ACQUIRED_PORTABLE_KEY]),
+    );
+    const secrets: SecretInputPort = {
+      read: () => Promise.reject(new Error('Unexpected single secret read')),
+      readBatch,
+    };
+
+    const result = await execute(
+      ['device', 'invite', 'join', '--vault', 'vault.primary', '--server', ''],
+      { joinInvite },
+      secrets,
+    );
+
+    expect(result).toEqual({
+      exitCode: CLI_EXIT_CODES.usage,
+      stdout: '',
+      stderr: 'Error [CLI_USAGE]: The server URL is invalid.\n',
+    });
+    expect(readBatch).not.toHaveBeenCalled();
+    expect(joinInvite).not.toHaveBeenCalled();
+  });
 });
 
 async function execute(
