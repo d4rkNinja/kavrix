@@ -9,12 +9,23 @@ import {
   vaultIdSchema,
   type Sha256Digest,
 } from '@kavrix/schemas';
+import {
+  apiScopesFragment,
+  canonicalTimestampFragment,
+  encryptedDeviceLabelFragment,
+  opaqueIdentifierFragment,
+  sha256DigestFragment,
+  supportedSchemaVersionFragment,
+  supportedTokenVersionFragment,
+} from '@kavrix/storage';
 
 import {
   enrollmentCompletionHash,
   inviteGrantDocument,
+  mongoApiCollectionNames,
   mongoApiCollectionOptions,
   mongoApiCredentialClaimDocumentSchema,
+  mongoApiEnrollmentDocumentSchema,
   mongoApiInviteDocumentSchema,
   publicInviteFromDocument,
 } from '../src/mongo-documents.js';
@@ -28,7 +39,315 @@ const expiresAt = timestampSchema.parse('2026-08-10T00:10:00.000Z');
 const hash = (fill: number): Sha256Digest =>
   sha256DigestSchema.parse(Buffer.alloc(32, fill).toString('base64url'));
 
+interface TestMongoSchema {
+  bsonType?: string | readonly string[];
+  required?: readonly string[];
+  additionalProperties?: boolean;
+  properties?: Record<string, TestMongoSchema>;
+  oneOf?: readonly TestMongoSchema[];
+  enum?: readonly unknown[];
+  items?: TestMongoSchema;
+  minItems?: number;
+  maxItems?: number;
+  uniqueItems?: boolean;
+  multipleOf?: number;
+  minimum?: number;
+  maximum?: number;
+}
+
+function requireValue<T>(value: T | undefined, message: string): T {
+  if (value === undefined) throw new Error(message);
+  return value;
+}
+
+function collectionSchema(
+  name: keyof typeof mongoApiCollectionOptions,
+): TestMongoSchema {
+  const validator = mongoApiCollectionOptions[name].validator as
+    Record<string, unknown> | undefined;
+  expect(validator).toBeDefined();
+  return requireValue(
+    validator?.['$jsonSchema'] as TestMongoSchema | undefined,
+    `missing validator for ${name}`,
+  );
+}
+
+function property(schema: TestMongoSchema, ...path: string[]): TestMongoSchema {
+  let current = schema;
+  for (const segment of path) {
+    const next = current.properties?.[segment];
+    expect(next, `missing Mongo validator path ${path.join('.')}`).toBeDefined();
+    current = requireValue(next, `missing Mongo validator path ${path.join('.')}`);
+  }
+  return current;
+}
+
+function branch(
+  schema: TestMongoSchema,
+  discriminator: string,
+  value: string,
+): TestMongoSchema {
+  const match = schema.oneOf?.find((candidate) =>
+    candidate.properties?.[discriminator]?.enum?.includes(value),
+  );
+  expect(match, `missing ${discriminator}=${value} branch`).toBeDefined();
+  return requireValue(match, `missing ${discriminator}=${value} branch`);
+}
+
+function expectExactBranch(
+  schema: TestMongoSchema,
+  discriminator: string,
+  value: string,
+  required: readonly string[],
+): void {
+  const selected = branch(schema, discriminator, value);
+  expect(selected.additionalProperties).toBe(false);
+  expect([...(selected.required ?? [])].sort()).toEqual([...required].sort());
+  expect(Object.keys(selected.properties ?? {}).sort()).toEqual([...required].sort());
+}
+
+function walkSchemas(
+  schema: TestMongoSchema,
+  visit: (schema: TestMongoSchema) => void,
+): void {
+  visit(schema);
+  for (const child of Object.values(schema.properties ?? {})) walkSchemas(child, visit);
+  for (const child of schema.oneOf ?? []) walkSchemas(child, visit);
+  if (schema.items !== undefined) walkSchemas(schema.items, visit);
+}
+
 describe('Mongo API persistence contracts', () => {
+  it('defines every API collection with a strict erroring validator', () => {
+    const names = Object.values(mongoApiCollectionNames);
+    expect(Object.keys(mongoApiCollectionOptions).sort()).toEqual([...names].sort());
+    for (const name of names) {
+      const options = mongoApiCollectionOptions[name];
+      expect(options.validationLevel).toBe('strict');
+      expect(options.validationAction).toBe('error');
+      const schema = collectionSchema(name);
+      expect(
+        schema.additionalProperties === false ||
+          schema.oneOf?.every((candidate) => candidate.additionalProperties === false),
+      ).toBe(true);
+    }
+  });
+
+  it('composes the same canonical fragments into API persistence validators', () => {
+    const session = collectionSchema('api_sessions');
+    expect(property(session, '_id')).toBe(sha256DigestFragment);
+    expect(property(session, 'vaultId')).toBe(opaqueIdentifierFragment);
+    expect(property(session, 'scopes')).toBe(apiScopesFragment);
+    expect(property(session, 'createdAt')).toBe(canonicalTimestampFragment);
+
+    const device = property(collectionSchema('api_devices'), 'record');
+    expect(property(device, 'schemaVersion')).toBe(supportedSchemaVersionFragment);
+    expect(property(device, 'tokenVersion')).toBe(supportedTokenVersionFragment);
+    expect(property(device, 'tokenHash')).toBe(sha256DigestFragment);
+    expect(property(device, 'encryptedLabel')).toBe(encryptedDeviceLabelFragment);
+    expect(property(device, 'scopes')).toBe(apiScopesFragment);
+
+    const invite = branch(collectionSchema('api_invites'), 'state', 'active');
+    expect(property(invite, 'tokenHash')).toBe(sha256DigestFragment);
+    expect(property(invite, 'createdAt')).toBe(canonicalTimestampFragment);
+    const validators = JSON.stringify(mongoApiCollectionOptions);
+    expect(validators).toContain('"ciphertext"');
+    for (const forbidden of [
+      '"passphrase"',
+      '"password"',
+      '"portableKey"',
+      '"recoveryKey"',
+      '"deviceToken"',
+      '"decrypted"',
+    ]) {
+      expect(validators).not.toContain(forbidden);
+    }
+  });
+
+  it('bounds API numeric and array fragments and closes every BSON object', () => {
+    let numericCount = 0;
+    let arrayCount = 0;
+    for (const name of Object.values(mongoApiCollectionNames)) {
+      walkSchemas(collectionSchema(name), (schema) => {
+        if (schema.bsonType !== undefined && typeof schema.bsonType !== 'string') {
+          const numericTypes = schema.bsonType.filter((type) =>
+            ['int', 'long', 'double', 'decimal'].includes(type),
+          );
+          if (numericTypes.length > 0) {
+            numericCount += 1;
+            expect(schema.bsonType).toEqual(['int', 'long', 'double']);
+            expect(schema.multipleOf).toBe(1);
+            expect(Number.isSafeInteger(schema.minimum)).toBe(true);
+            expect(Number.isSafeInteger(schema.maximum)).toBe(true);
+          }
+        }
+        if (schema.bsonType === 'array') {
+          arrayCount += 1;
+          expect(schema.minItems).toBe(1);
+          expect(schema.maxItems).toBe(3);
+          expect(schema.uniqueItems).toBe(true);
+        }
+        if (schema.bsonType === 'object') {
+          expect(schema.additionalProperties).toBe(false);
+          expect(schema.required).toBeDefined();
+          for (const required of schema.required ?? []) {
+            expect(schema.properties).toHaveProperty(required);
+          }
+        }
+      });
+    }
+    expect(numericCount).toBeGreaterThan(0);
+    expect(arrayCount).toBeGreaterThan(0);
+
+    expect(property(collectionSchema('api_rate_limits'), 'count')).toEqual({
+      bsonType: ['int', 'long', 'double'],
+      multipleOf: 1,
+      minimum: 1,
+      maximum: Number.MAX_SAFE_INTEGER,
+    });
+    const device = property(collectionSchema('api_devices'), 'record');
+    expect(property(device, 'schemaVersion').enum).toEqual([1]);
+    expect(property(device, 'tokenVersion').enum).toEqual([1]);
+  });
+
+  it('uses exact state branches for invites, enrollments, and claims', () => {
+    const inviteCommon = [
+      '_id',
+      'tokenHash',
+      'vaultId',
+      'issuedByDeviceId',
+      'scopes',
+      'state',
+      'createdAt',
+      'expiresAt',
+    ] as const;
+    expectExactBranch(collectionSchema('api_invites'), 'state', 'active', inviteCommon);
+    expectExactBranch(collectionSchema('api_invites'), 'state', 'redeemed', [
+      ...inviteCommon,
+      'consumedAt',
+      'enrollmentTokenHash',
+      'enrollmentExpiresAt',
+    ]);
+    expectExactBranch(collectionSchema('api_invites'), 'state', 'revoked', [
+      ...inviteCommon,
+      'revokedAt',
+    ]);
+
+    const enrollmentCommon = [
+      '_id',
+      'vaultId',
+      'scopes',
+      'state',
+      'createdAt',
+      'expiresAt',
+    ] as const;
+    expectExactBranch(
+      collectionSchema('api_enrollments'),
+      'state',
+      'active',
+      enrollmentCommon,
+    );
+    expectExactBranch(collectionSchema('api_enrollments'), 'state', 'completed', [
+      ...enrollmentCommon,
+      'completionHash',
+      'sessionTokenHash',
+      'deviceId',
+      'completedAt',
+    ]);
+
+    const claims = collectionSchema('api_credential_claims');
+    expectExactBranch(claims, 'kind', 'invite', ['_id', 'kind', 'createdAt']);
+    expectExactBranch(claims, 'kind', 'enrollment', [
+      '_id',
+      'kind',
+      'parentHash',
+      'createdAt',
+    ]);
+    const sessionBranches = claims.oneOf?.filter((candidate) =>
+      candidate.properties?.['kind']?.enum?.includes('session'),
+    );
+    expect(sessionBranches).toHaveLength(2);
+    expect(
+      sessionBranches?.map((candidate) =>
+        Object.keys(candidate.properties ?? {}).sort(),
+      ),
+    ).toEqual([
+      ['_id', 'createdAt', 'kind', 'parentHash'].sort(),
+      ['_id', 'bootstrapHash', 'createdAt', 'kind'].sort(),
+    ]);
+  });
+
+  it('rejects every partial redemption field on a revoked canonical invite', () => {
+    const active = inviteGrantDocument({
+      id: inviteIdSchema.parse('invite.revoked-parity'),
+      tokenHash: hash(20),
+      vaultId,
+      scopes: ['sync:read'],
+      issuedByDeviceId: deviceId,
+      createdAt,
+      expiresAt,
+    });
+    expect(
+      mongoApiInviteDocumentSchema.safeParse({
+        ...active,
+        state: 'revoked',
+        revokedAt: createdAt,
+      }).success,
+    ).toBe(true);
+    const redemptionFields = {
+      consumedAt: createdAt,
+      enrollmentTokenHash: hash(21),
+      enrollmentExpiresAt: expiresAt,
+    };
+    for (const keys of [
+      ['consumedAt'],
+      ['enrollmentTokenHash'],
+      ['enrollmentExpiresAt'],
+      ['consumedAt', 'enrollmentTokenHash'],
+      ['consumedAt', 'enrollmentExpiresAt'],
+      ['enrollmentTokenHash', 'enrollmentExpiresAt'],
+    ] as const) {
+      const partial = Object.fromEntries(
+        keys.map((key) => [key, redemptionFields[key]]),
+      );
+      expect(
+        mongoApiInviteDocumentSchema.safeParse({
+          ...active,
+          state: 'revoked',
+          revokedAt: createdAt,
+          ...partial,
+        }).success,
+      ).toBe(false);
+    }
+  });
+
+  it('rejects every partial completion field set on an active enrollment', () => {
+    const active = {
+      _id: hash(30),
+      vaultId,
+      scopes: ['sync:read'],
+      state: 'active',
+      createdAt,
+      expiresAt,
+    } as const;
+    expect(mongoApiEnrollmentDocumentSchema.safeParse(active).success).toBe(true);
+
+    const completionFields = {
+      completionHash: hash(31),
+      sessionTokenHash: hash(32),
+      deviceId,
+      completedAt: createdAt,
+    } as const;
+    const entries = Object.entries(completionFields);
+    for (let mask = 1; mask < 2 ** entries.length - 1; mask += 1) {
+      const partial = Object.fromEntries(
+        entries.filter((_, index) => (mask & (1 << index)) !== 0),
+      );
+      expect(
+        mongoApiEnrollmentDocumentSchema.safeParse({ ...active, ...partial }).success,
+      ).toBe(false);
+    }
+  });
+
   it('projects invite state without exposing token hashes', () => {
     const active = inviteGrantDocument({
       id: inviteIdSchema.parse('invite.mongo-test'),

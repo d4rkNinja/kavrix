@@ -1,4 +1,37 @@
+import {
+  DEFAULT_MAX_BACKUP_RECORDS,
+  MAX_ATTACHMENT_CHUNKS,
+  MAX_ATTACHMENT_CHUNK_PLAINTEXT_BYTES,
+  MAX_ATTACHMENT_STREAM_CIPHERTEXT_BYTES,
+  MAX_ATTACHMENT_STREAM_PLAINTEXT_BYTES,
+  MAX_IDEMPOTENCY_KEY_CHARS,
+  MAX_SEMANTIC_REVISION,
+  MAX_SUPPORTED_BACKUP_BYTES,
+  MAX_SYNC_PUSH_MUTATIONS,
+  MAX_TEMPLATE_MIGRATION_RESULTS,
+  MAX_VAULT_KEY_SLOTS,
+  MIN_IDEMPOTENCY_KEY_CHARS,
+  MIN_VAULT_KEY_SLOTS,
+} from '@kavrix/schemas';
 import type { CreateCollectionOptions, Document, IndexDescription } from 'mongodb';
+
+import {
+  aeadEnvelopeFragment,
+  canonicalTimestampFragment,
+  keySlotFragment,
+  nonnegativeSemanticRevisionFragment,
+  opaqueIdentifierFragment,
+  persistedAttachmentChunkFragment,
+  persistedAttachmentHeaderFragment,
+  positiveSemanticVersionFragment,
+  safeInteger,
+  sha256DigestFragment,
+  strictObject,
+  supportedCryptographicVersionFragment,
+  supportedSchemaVersionFragment,
+  type MongoJsonSchema,
+} from './mongo-validator-fragments.js';
+import { MAX_MONGO_RESTORE_ENTRY_BYTES } from './restore-documents.js';
 
 export const mongoStorageCollectionNames = {
   vaults: 'vaults',
@@ -22,151 +55,52 @@ export const mongoStorageCollectionNames = {
 export type MongoStorageCollectionName =
   (typeof mongoStorageCollectionNames)[keyof typeof mongoStorageCollectionNames];
 
-const numberType = ['int', 'long', 'double', 'decimal'] as const;
-const timestamp = { bsonType: 'string' } as const;
-const digest = { bsonType: 'string', pattern: '^[A-Za-z0-9_-]{43}$' } as const;
-const identifier = {
-  bsonType: 'string',
-  minLength: 1,
-  maxLength: 128,
-  pattern: '^[A-Za-z0-9][A-Za-z0-9._~-]*$',
-} as const;
-
-const aad = {
-  bsonType: 'object',
-  required: [
-    'version',
-    'schemaVersion',
-    'keyVersion',
-    'vaultId',
-    'entityType',
-    'entityId',
-    'purpose',
-  ],
-  additionalProperties: false,
-  properties: {
-    version: { bsonType: numberType },
-    schemaVersion: { bsonType: numberType },
-    keyVersion: { bsonType: numberType },
-    vaultId: identifier,
-    entityType: { bsonType: 'string' },
-    entityId: identifier,
-    purpose: { bsonType: 'string' },
-    groupId: identifier,
-    parentId: identifier,
-  },
-} as const;
-
-const envelope = {
-  bsonType: 'object',
-  required: [
-    'version',
-    'algorithm',
-    'nonce',
-    'ciphertext',
-    'authenticationTag',
-    'aad',
-    'keyVersion',
-  ],
-  additionalProperties: false,
-  properties: {
-    version: { bsonType: numberType },
-    algorithm: { enum: ['xchacha20-poly1305-ietf'] },
-    nonce: { bsonType: 'string' },
-    ciphertext: { bsonType: 'string' },
-    authenticationTag: { bsonType: 'string' },
-    aad,
-    keyVersion: { bsonType: numberType },
-  },
-} as const;
-
-const derivation = {
-  oneOf: [
-    {
-      bsonType: 'object',
-      required: ['algorithm', 'version', 'salt', 'context', 'outputLength'],
-      additionalProperties: false,
-      properties: {
-        algorithm: { enum: ['hkdf-sha256'] },
-        version: { bsonType: numberType },
-        salt: { bsonType: 'string' },
-        context: {
-          enum: [
-            'credvault/v1/portable-key-wrap',
-            'credvault/v1/recovery-key-wrap',
-            'credvault/v1/device-key-wrap',
-          ],
-        },
-        outputLength: { bsonType: numberType },
-        provider: { bsonType: 'string' },
-      },
-    },
-    {
-      bsonType: 'object',
-      required: [
-        'algorithm',
-        'version',
-        'salt',
-        'memoryKiB',
-        'passes',
-        'parallelism',
-        'outputLength',
-      ],
-      additionalProperties: false,
-      properties: {
-        algorithm: { enum: ['argon2id'] },
-        version: { bsonType: numberType },
-        salt: { bsonType: 'string' },
-        memoryKiB: { bsonType: numberType },
-        passes: { bsonType: numberType },
-        parallelism: { bsonType: numberType },
-        outputLength: { bsonType: numberType },
-      },
-    },
-  ],
-} as const;
-
-const keySlot = {
-  bsonType: 'object',
-  required: [
-    'slotVersion',
-    'id',
-    'type',
-    'state',
-    'keyVersion',
-    'wrappedRootKey',
-    'derivation',
-    'createdAt',
-  ],
-  additionalProperties: false,
-  properties: {
-    slotVersion: { bsonType: numberType },
-    id: identifier,
-    type: { enum: ['portable-key', 'passphrase', 'recovery-key', 'device-key'] },
-    state: { enum: ['pending', 'active', 'superseded', 'revoked'] },
-    keyVersion: { bsonType: numberType },
-    wrappedRootKey: envelope,
-    derivation,
-    deviceId: identifier,
-    createdAt: timestamp,
-    supersededAt: timestamp,
-    revokedAt: timestamp,
-  },
-} as const;
-
-function strictObject(
-  required: readonly string[],
-  properties: Readonly<Record<string, unknown>>,
-): Document {
-  return {
-    bsonType: 'object',
-    required,
-    additionalProperties: false,
-    properties,
-  };
+function stringEnum(values: readonly string[]): MongoJsonSchema {
+  return { bsonType: 'string', enum: values };
 }
 
-const vaultRecord = strictObject(
+function literalInteger(value: number): MongoJsonSchema {
+  return { ...safeInteger({ minimum: value, maximum: value }), enum: [value] };
+}
+
+function boundedArray(
+  items: MongoJsonSchema,
+  minItems: number,
+  maxItems: number,
+): MongoJsonSchema {
+  return { bsonType: 'array', minItems, maxItems, items };
+}
+
+const nonEmptyStringFragment: MongoJsonSchema = {
+  bsonType: 'string',
+  minLength: 1,
+};
+const boundedRestoreStringFragment: MongoJsonSchema = {
+  bsonType: 'string',
+  minLength: 1,
+  maxLength: 512,
+};
+const sha256HexFragment: MongoJsonSchema = {
+  bsonType: 'string',
+  minLength: 64,
+  maxLength: 64,
+  pattern: '^[a-f0-9]{64}$',
+};
+const idempotencyKeyFragment: MongoJsonSchema = {
+  bsonType: 'string',
+  minLength: MIN_IDEMPOTENCY_KEY_CHARS,
+  maxLength: MAX_IDEMPOTENCY_KEY_CHARS,
+};
+const positiveSemanticRevisionFragment = safeInteger({
+  minimum: 1,
+  maximum: MAX_SEMANTIC_REVISION,
+});
+const nullableSemanticRevisionFragment: MongoJsonSchema = {
+  oneOf: [nonnegativeSemanticRevisionFragment, { bsonType: 'null' }],
+};
+const versionOneFragment = literalInteger(1);
+
+const vaultRecordFragment = strictObject(
   [
     'id',
     'schemaVersion',
@@ -179,19 +113,19 @@ const vaultRecord = strictObject(
     'updatedAt',
   ],
   {
-    id: identifier,
-    schemaVersion: { bsonType: numberType },
-    cryptographicVersion: { bsonType: numberType },
-    keySlots: { bsonType: 'array', items: keySlot },
-    currentKeyVersion: { bsonType: numberType },
-    revision: { bsonType: numberType },
-    encryptedPreferences: envelope,
-    createdAt: timestamp,
-    updatedAt: timestamp,
+    id: opaqueIdentifierFragment,
+    schemaVersion: supportedSchemaVersionFragment,
+    cryptographicVersion: supportedCryptographicVersionFragment,
+    keySlots: boundedArray(keySlotFragment, MIN_VAULT_KEY_SLOTS, MAX_VAULT_KEY_SLOTS),
+    currentKeyVersion: positiveSemanticVersionFragment,
+    revision: nonnegativeSemanticRevisionFragment,
+    encryptedPreferences: aeadEnvelopeFragment,
+    createdAt: canonicalTimestampFragment,
+    updatedAt: canonicalTimestampFragment,
   },
 );
 
-const groupRecord = strictObject(
+const groupRecordFragment = strictObject(
   [
     'id',
     'vaultId',
@@ -204,20 +138,20 @@ const groupRecord = strictObject(
     'updatedAt',
   ],
   {
-    id: identifier,
-    vaultId: identifier,
-    schemaVersion: { bsonType: numberType },
-    wrappedGroupKey: envelope,
-    encryptedPayload: envelope,
-    templateVersion: { bsonType: numberType },
-    recordRevision: { bsonType: numberType },
-    createdAt: timestamp,
-    updatedAt: timestamp,
-    tombstonedAt: timestamp,
+    id: opaqueIdentifierFragment,
+    vaultId: opaqueIdentifierFragment,
+    schemaVersion: supportedSchemaVersionFragment,
+    wrappedGroupKey: aeadEnvelopeFragment,
+    encryptedPayload: aeadEnvelopeFragment,
+    templateVersion: positiveSemanticVersionFragment,
+    recordRevision: nonnegativeSemanticRevisionFragment,
+    createdAt: canonicalTimestampFragment,
+    updatedAt: canonicalTimestampFragment,
+    tombstonedAt: canonicalTimestampFragment,
   },
 );
 
-const itemRecord = strictObject(
+const itemRecordFragment = strictObject(
   [
     'id',
     'vaultId',
@@ -231,21 +165,21 @@ const itemRecord = strictObject(
     'updatedAt',
   ],
   {
-    id: identifier,
-    vaultId: identifier,
-    groupId: identifier,
-    schemaVersion: { bsonType: numberType },
-    wrappedItemKey: envelope,
-    encryptedPayload: envelope,
-    recordRevision: { bsonType: numberType },
-    ciphertextHash: digest,
-    createdAt: timestamp,
-    updatedAt: timestamp,
-    tombstonedAt: timestamp,
+    id: opaqueIdentifierFragment,
+    vaultId: opaqueIdentifierFragment,
+    groupId: opaqueIdentifierFragment,
+    schemaVersion: supportedSchemaVersionFragment,
+    wrappedItemKey: aeadEnvelopeFragment,
+    encryptedPayload: aeadEnvelopeFragment,
+    recordRevision: nonnegativeSemanticRevisionFragment,
+    ciphertextHash: sha256DigestFragment,
+    createdAt: canonicalTimestampFragment,
+    updatedAt: canonicalTimestampFragment,
+    tombstonedAt: canonicalTimestampFragment,
   },
 );
 
-const attachmentRecord = strictObject(
+const attachmentRecordFragment = strictObject(
   [
     'id',
     'vaultId',
@@ -260,34 +194,34 @@ const attachmentRecord = strictObject(
     'updatedAt',
   ],
   {
-    id: identifier,
-    vaultId: identifier,
-    groupId: identifier,
-    itemId: identifier,
-    schemaVersion: { bsonType: numberType },
-    wrappedAttachmentKey: envelope,
-    encryptedManifest: envelope,
-    chunkCount: { bsonType: numberType },
-    recordRevision: { bsonType: numberType },
-    createdAt: timestamp,
-    updatedAt: timestamp,
-    tombstonedAt: timestamp,
+    id: opaqueIdentifierFragment,
+    vaultId: opaqueIdentifierFragment,
+    groupId: opaqueIdentifierFragment,
+    itemId: opaqueIdentifierFragment,
+    schemaVersion: supportedSchemaVersionFragment,
+    wrappedAttachmentKey: aeadEnvelopeFragment,
+    encryptedManifest: aeadEnvelopeFragment,
+    chunkCount: safeInteger({ minimum: 1, maximum: MAX_ATTACHMENT_CHUNKS }),
+    recordRevision: nonnegativeSemanticRevisionFragment,
+    createdAt: canonicalTimestampFragment,
+    updatedAt: canonicalTimestampFragment,
+    tombstonedAt: canonicalTimestampFragment,
   },
 );
 
-const auditRecord = strictObject(
+const auditRecordFragment = strictObject(
   ['id', 'vaultId', 'schemaVersion', 'encryptedPayload', 'recordRevision', 'createdAt'],
   {
-    id: identifier,
-    vaultId: identifier,
-    schemaVersion: { bsonType: numberType },
-    encryptedPayload: envelope,
-    recordRevision: { bsonType: numberType },
-    createdAt: timestamp,
+    id: opaqueIdentifierFragment,
+    vaultId: opaqueIdentifierFragment,
+    schemaVersion: supportedSchemaVersionFragment,
+    encryptedPayload: aeadEnvelopeFragment,
+    recordRevision: nonnegativeSemanticRevisionFragment,
+    createdAt: canonicalTimestampFragment,
   },
 );
 
-const historyRecord = strictObject(
+const historyRecordFragment = strictObject(
   [
     'id',
     'vaultId',
@@ -300,277 +234,375 @@ const historyRecord = strictObject(
     'createdAt',
   ],
   {
-    id: identifier,
-    vaultId: identifier,
-    groupId: identifier,
-    itemId: identifier,
-    schemaVersion: { bsonType: numberType },
-    encryptedPayload: envelope,
-    itemRecordRevision: { bsonType: numberType },
-    ciphertextHash: digest,
-    createdAt: timestamp,
+    id: opaqueIdentifierFragment,
+    vaultId: opaqueIdentifierFragment,
+    groupId: opaqueIdentifierFragment,
+    itemId: opaqueIdentifierFragment,
+    schemaVersion: supportedSchemaVersionFragment,
+    encryptedPayload: aeadEnvelopeFragment,
+    itemRecordRevision: nonnegativeSemanticRevisionFragment,
+    ciphertextHash: sha256DigestFragment,
+    createdAt: canonicalTimestampFragment,
   },
 );
 
-const secretStreamIdentityProperties = {
-  version: { bsonType: numberType },
-  algorithm: { enum: ['secretstream-xchacha20-poly1305'] },
-  streamVersion: { bsonType: numberType },
-  schemaVersion: { bsonType: numberType },
-  keyVersion: { bsonType: numberType },
-  vaultId: identifier,
-  groupId: identifier,
-  itemId: identifier,
-  attachmentId: identifier,
-} as const;
-
-const persistedHeader = strictObject(
-  ['entityType', 'record', 'recordRevision', 'contentHash', 'createdAt', 'updatedAt'],
-  {
-    entityType: { enum: ['attachment-header'] },
-    record: strictObject(
-      [
-        'version',
-        'algorithm',
-        'streamVersion',
-        'schemaVersion',
-        'keyVersion',
+const changeEntityTypes = ['vault', 'group', 'item', 'attachment'] as const;
+const changeOperations = ['upsert', 'tombstone', 'restore', 'purge'] as const;
+const changeRecordFragment: MongoJsonSchema = {
+  oneOf: changeEntityTypes.flatMap((entityType) =>
+    changeOperations.map((operation) => {
+      const required = [
+        'id',
         'vaultId',
-        'groupId',
-        'itemId',
-        'attachmentId',
-        'recordType',
-        'header',
+        'serverSequence',
+        'entityType',
+        'entityId',
+        'recordRevision',
+        'operation',
+        'createdAt',
+      ];
+      if (operation !== 'purge') required.push('ciphertextHash');
+      return strictObject(required, {
+        id: opaqueIdentifierFragment,
+        vaultId: opaqueIdentifierFragment,
+        serverSequence: positiveSemanticRevisionFragment,
+        entityType: stringEnum([entityType]),
+        entityId: opaqueIdentifierFragment,
+        recordRevision: nonnegativeSemanticRevisionFragment,
+        operation: stringEnum([operation]),
+        ciphertextHash: sha256DigestFragment,
+        createdAt: canonicalTimestampFragment,
+      });
+    }),
+  ),
+};
+
+const tombstoneRecordFragment: MongoJsonSchema = {
+  oneOf: changeEntityTypes.flatMap((entityType) => [
+    strictObject(
+      [
+        'vaultId',
+        'entityType',
+        'entityId',
+        'state',
+        'tombstoneRevision',
+        'lastRecordRevision',
+        'lastCiphertextHash',
+        'deletedAt',
       ],
       {
-        ...secretStreamIdentityProperties,
-        recordType: { enum: ['header'] },
-        header: { bsonType: 'string' },
+        vaultId: opaqueIdentifierFragment,
+        entityType: stringEnum([entityType]),
+        entityId: opaqueIdentifierFragment,
+        state: stringEnum(['deleted']),
+        tombstoneRevision: nonnegativeSemanticRevisionFragment,
+        lastRecordRevision: nonnegativeSemanticRevisionFragment,
+        lastCiphertextHash: sha256DigestFragment,
+        deletedAt: canonicalTimestampFragment,
+        purgeAfter: canonicalTimestampFragment,
       },
     ),
-    recordRevision: { bsonType: numberType },
-    contentHash: digest,
-    createdAt: timestamp,
-    updatedAt: timestamp,
-  },
-);
-
-const persistedChunk = strictObject(
-  [
-    'entityType',
-    'record',
-    'plaintextBytes',
-    'recordRevision',
-    'ciphertextHash',
-    'createdAt',
-    'updatedAt',
-  ],
-  {
-    entityType: { enum: ['attachment-chunk'] },
-    record: strictObject(
+    strictObject(
       [
-        'version',
-        'algorithm',
-        'streamVersion',
-        'schemaVersion',
-        'keyVersion',
         'vaultId',
-        'groupId',
-        'itemId',
-        'attachmentId',
-        'recordType',
-        'index',
-        'ciphertext',
-        'tag',
+        'entityType',
+        'entityId',
+        'state',
+        'tombstoneRevision',
+        'lastRecordRevision',
+        'lastCiphertextHash',
+        'deletedAt',
+        'restoredAt',
       ],
       {
-        ...secretStreamIdentityProperties,
-        recordType: { enum: ['chunk'] },
-        index: { bsonType: numberType },
-        ciphertext: { bsonType: 'string' },
-        tag: { enum: ['message', 'final'] },
+        vaultId: opaqueIdentifierFragment,
+        entityType: stringEnum([entityType]),
+        entityId: opaqueIdentifierFragment,
+        state: stringEnum(['restored']),
+        tombstoneRevision: nonnegativeSemanticRevisionFragment,
+        lastRecordRevision: nonnegativeSemanticRevisionFragment,
+        lastCiphertextHash: sha256DigestFragment,
+        deletedAt: canonicalTimestampFragment,
+        restoredAt: canonicalTimestampFragment,
       },
     ),
-    plaintextBytes: { bsonType: numberType },
-    recordRevision: { bsonType: numberType },
-    ciphertextHash: digest,
-    createdAt: timestamp,
-    updatedAt: timestamp,
-  },
-);
+  ]),
+};
 
-const progress = strictObject(
-  ['version', 'state', 'nextChunkIndex', 'totalPlaintextBytes', 'totalCiphertextBytes'],
-  {
-    version: { bsonType: numberType },
-    state: { enum: ['empty', 'writing', 'ready-to-finalize'] },
-    nextChunkIndex: { bsonType: numberType },
-    totalPlaintextBytes: { bsonType: numberType },
-    totalCiphertextBytes: { bsonType: numberType },
-    lastChunkIndex: { bsonType: numberType },
-    lastChunkCiphertextHash: digest,
-    lastChunkPlaintextBytes: { bsonType: numberType },
-  },
-);
-
-const startInput = strictObject(
-  ['version', 'idempotencyKey', 'expectedAttachmentRevision', 'header'],
-  {
-    version: { bsonType: numberType },
-    idempotencyKey: { bsonType: 'string', minLength: 16, maxLength: 256 },
-    expectedAttachmentRevision: { bsonType: [...numberType, 'null'] },
-    header: persistedHeader,
-  },
-);
-
-const changeRecord = strictObject(
-  [
-    'id',
-    'vaultId',
-    'serverSequence',
-    'entityType',
-    'entityId',
-    'recordRevision',
-    'operation',
-    'createdAt',
-  ],
-  {
-    id: identifier,
-    vaultId: identifier,
-    serverSequence: { bsonType: numberType },
-    entityType: { enum: ['vault', 'group', 'item', 'attachment'] },
-    entityId: identifier,
-    recordRevision: { bsonType: numberType },
-    operation: { enum: ['upsert', 'tombstone', 'restore', 'purge'] },
-    ciphertextHash: digest,
-    createdAt: timestamp,
-  },
-);
-
-const tombstoneRecord = strictObject(
-  [
-    'vaultId',
-    'entityType',
-    'entityId',
-    'state',
-    'tombstoneRevision',
-    'lastRecordRevision',
-    'lastCiphertextHash',
-    'deletedAt',
-  ],
-  {
-    vaultId: identifier,
-    entityType: { enum: ['vault', 'group', 'item', 'attachment'] },
-    entityId: identifier,
-    state: { enum: ['deleted', 'restored'] },
-    tombstoneRevision: { bsonType: numberType },
-    lastRecordRevision: { bsonType: numberType },
-    lastCiphertextHash: digest,
-    deletedAt: timestamp,
-    restoredAt: timestamp,
-    purgeAfter: timestamp,
-  },
-);
-
-const opaqueSyncPayload = {
+const opaqueSyncPayloadFragment: MongoJsonSchema = {
   oneOf: [
-    vaultRecord,
-    groupRecord,
-    itemRecord,
-    attachmentRecord,
-    tombstoneRecord,
+    vaultRecordFragment,
+    groupRecordFragment,
+    itemRecordFragment,
+    attachmentRecordFragment,
+    tombstoneRecordFragment,
     { bsonType: 'null' },
   ],
-} as const;
+};
 
-const backupEntry = {
+const syncPushResultFragment: MongoJsonSchema = {
   oneOf: [
-    strictObject(['kind', 'record'], {
-      kind: { enum: ['vault'] },
-      record: vaultRecord,
+    strictObject(['status', 'idempotencyKey', 'disposition', 'change'], {
+      status: stringEnum(['accepted']),
+      idempotencyKey: idempotencyKeyFragment,
+      disposition: stringEnum(['committed', 'duplicate']),
+      change: changeRecordFragment,
     }),
-    strictObject(['kind', 'record'], {
-      kind: { enum: ['group'] },
-      record: groupRecord,
-    }),
-    strictObject(['kind', 'record'], {
-      kind: { enum: ['item'] },
-      record: itemRecord,
-    }),
-    strictObject(['kind', 'record'], {
-      kind: { enum: ['attachment'] },
-      record: attachmentRecord,
-    }),
-    strictObject(['kind', 'record'], {
-      kind: { enum: ['attachment-header'] },
-      record: persistedHeader,
-    }),
-    strictObject(['kind', 'record'], {
-      kind: { enum: ['attachment-chunk'] },
-      record: persistedChunk,
-    }),
-    strictObject(['kind', 'record'], {
-      kind: { enum: ['audit'] },
-      record: auditRecord,
-    }),
-    strictObject(['kind', 'record'], {
-      kind: { enum: ['history'] },
-      record: historyRecord,
-    }),
-    strictObject(['kind', 'entityType', 'record'], {
-      kind: { enum: ['tombstone-predecessor'] },
-      entityType: { enum: ['group', 'item', 'attachment'] },
-      record: { oneOf: [groupRecord, itemRecord, attachmentRecord] },
-    }),
-    strictObject(['kind', 'record'], {
-      kind: { enum: ['tombstone'] },
-      record: tombstoneRecord,
+    strictObject(['status', 'idempotencyKey', 'currentRevision', 'current'], {
+      status: stringEnum(['conflict']),
+      idempotencyKey: idempotencyKeyFragment,
+      currentRevision: nonnegativeSemanticRevisionFragment,
+      current: opaqueSyncPayloadFragment,
     }),
   ],
-} as const;
+};
 
-const restoreSessionCommonProperties = {
-  _id: digest,
-  restoreSessionId: digest,
-  maximumBytes: { bsonType: numberType },
-  maximumRecords: { bsonType: numberType },
-  stagedBytes: { bsonType: numberType },
-  stagedRecords: { bsonType: numberType },
-  createdAt: timestamp,
-  updatedAt: timestamp,
-  vaultId: identifier,
-} as const;
+const syncPushResponseFragment = strictObject(
+  ['vaultId', 'serverVaultRevision', 'batchIdempotencyKey', 'results'],
+  {
+    vaultId: opaqueIdentifierFragment,
+    serverVaultRevision: nonnegativeSemanticRevisionFragment,
+    batchIdempotencyKey: idempotencyKeyFragment,
+    results: boundedArray(syncPushResultFragment, 1, MAX_SYNC_PUSH_MUTATIONS),
+  },
+);
 
-const backupRestoreSession = {
+const templateMigrationPublicationResultFragment = strictObject(
+  ['idempotencyKey', 'change'],
+  {
+    idempotencyKey: idempotencyKeyFragment,
+    change: changeRecordFragment,
+  },
+);
+const templateMigrationPublicationResponseFragment = strictObject(
+  ['vaultId', 'batchIdempotencyKey', 'serverVaultRevision', 'results'],
+  {
+    vaultId: opaqueIdentifierFragment,
+    batchIdempotencyKey: idempotencyKeyFragment,
+    serverVaultRevision: nonnegativeSemanticRevisionFragment,
+    results: boundedArray(
+      templateMigrationPublicationResultFragment,
+      1,
+      MAX_TEMPLATE_MIGRATION_RESULTS,
+    ),
+  },
+);
+
+const attachmentProgressCounters = {
+  version: versionOneFragment,
+  nextChunkIndex: safeInteger({ minimum: 0, maximum: MAX_ATTACHMENT_CHUNKS }),
+  totalPlaintextBytes: safeInteger({
+    minimum: 0,
+    maximum: MAX_ATTACHMENT_STREAM_PLAINTEXT_BYTES,
+  }),
+  totalCiphertextBytes: safeInteger({
+    minimum: 0,
+    maximum: MAX_ATTACHMENT_STREAM_CIPHERTEXT_BYTES,
+  }),
+} satisfies Readonly<Record<string, MongoJsonSchema>>;
+const attachmentProgressWithLastChunk = {
+  ...attachmentProgressCounters,
+  lastChunkIndex: safeInteger({
+    minimum: 0,
+    maximum: MAX_ATTACHMENT_CHUNKS - 1,
+  }),
+  lastChunkCiphertextHash: sha256DigestFragment,
+  lastChunkPlaintextBytes: safeInteger({
+    minimum: 0,
+    maximum: MAX_ATTACHMENT_CHUNK_PLAINTEXT_BYTES,
+  }),
+} satisfies Readonly<Record<string, MongoJsonSchema>>;
+const attachmentProgressFragment: MongoJsonSchema = {
   oneOf: [
     strictObject(
       [
-        '_id',
-        'restoreSessionId',
-        'maximumBytes',
-        'maximumRecords',
+        'version',
         'state',
-        'stagedBytes',
-        'stagedRecords',
-        'createdAt',
-        'updatedAt',
+        'nextChunkIndex',
+        'totalPlaintextBytes',
+        'totalCiphertextBytes',
       ],
       {
-        ...restoreSessionCommonProperties,
-        state: { enum: ['staging'] },
+        ...attachmentProgressCounters,
+        state: stringEnum(['empty']),
+        nextChunkIndex: literalInteger(0),
+        totalPlaintextBytes: literalInteger(0),
+        totalCiphertextBytes: literalInteger(0),
       },
     ),
+    ...(['writing', 'ready-to-finalize'] as const).map((state) =>
+      strictObject(
+        [
+          'version',
+          'state',
+          'nextChunkIndex',
+          'totalPlaintextBytes',
+          'totalCiphertextBytes',
+          'lastChunkIndex',
+          'lastChunkCiphertextHash',
+          'lastChunkPlaintextBytes',
+        ],
+        {
+          ...attachmentProgressWithLastChunk,
+          state: stringEnum([state]),
+          nextChunkIndex: safeInteger({
+            minimum: 1,
+            maximum:
+              state === 'writing' ? MAX_ATTACHMENT_CHUNKS - 1 : MAX_ATTACHMENT_CHUNKS,
+          }),
+        },
+      ),
+    ),
+  ],
+};
+
+const attachmentStartInputFragment = strictObject(
+  ['version', 'idempotencyKey', 'expectedAttachmentRevision', 'header'],
+  {
+    version: versionOneFragment,
+    idempotencyKey: idempotencyKeyFragment,
+    expectedAttachmentRevision: nullableSemanticRevisionFragment,
+    header: persistedAttachmentHeaderFragment,
+  },
+);
+
+const attachmentStagingCommonProperties = {
+  _id: nonEmptyStringFragment,
+  vaultId: opaqueIdentifierFragment,
+  attachmentId: opaqueIdentifierFragment,
+  idempotencyKey: idempotencyKeyFragment,
+  inputHash: sha256HexFragment,
+  createdAt: canonicalTimestampFragment,
+  updatedAt: canonicalTimestampFragment,
+} satisfies Readonly<Record<string, MongoJsonSchema>>;
+const attachmentStagingCommonRequired = [
+  '_id',
+  'vaultId',
+  'attachmentId',
+  'idempotencyKey',
+  'inputHash',
+  'state',
+  'createdAt',
+  'updatedAt',
+] as const;
+const attachmentStagingFragment: MongoJsonSchema = {
+  oneOf: [
+    strictObject([...attachmentStagingCommonRequired, 'input', 'progress'], {
+      ...attachmentStagingCommonProperties,
+      state: stringEnum(['active']),
+      input: attachmentStartInputFragment,
+      progress: attachmentProgressFragment,
+    }),
     strictObject(
       [
-        '_id',
-        'restoreSessionId',
-        'maximumBytes',
-        'maximumRecords',
-        'state',
-        'stagedBytes',
-        'stagedRecords',
-        'createdAt',
-        'updatedAt',
+        ...attachmentStagingCommonRequired,
+        'input',
+        'progress',
+        'finalizeHash',
+        'finalizedAt',
+      ],
+      {
+        ...attachmentStagingCommonProperties,
+        state: stringEnum(['finalized']),
+        input: attachmentStartInputFragment,
+        progress: attachmentProgressFragment,
+        finalizeHash: sha256HexFragment,
+        finalizedAt: canonicalTimestampFragment,
+      },
+    ),
+    strictObject([...attachmentStagingCommonRequired, 'abortedAt'], {
+      ...attachmentStagingCommonProperties,
+      state: stringEnum(['aborted']),
+      abortedAt: canonicalTimestampFragment,
+    }),
+  ],
+};
+
+const backupEntryFragment: MongoJsonSchema = {
+  oneOf: [
+    strictObject(['kind', 'record'], {
+      kind: stringEnum(['vault']),
+      record: vaultRecordFragment,
+    }),
+    strictObject(['kind', 'record'], {
+      kind: stringEnum(['group']),
+      record: groupRecordFragment,
+    }),
+    strictObject(['kind', 'record'], {
+      kind: stringEnum(['item']),
+      record: itemRecordFragment,
+    }),
+    strictObject(['kind', 'record'], {
+      kind: stringEnum(['attachment']),
+      record: attachmentRecordFragment,
+    }),
+    strictObject(['kind', 'record'], {
+      kind: stringEnum(['attachment-header']),
+      record: persistedAttachmentHeaderFragment,
+    }),
+    strictObject(['kind', 'record'], {
+      kind: stringEnum(['attachment-chunk']),
+      record: persistedAttachmentChunkFragment,
+    }),
+    strictObject(['kind', 'record'], {
+      kind: stringEnum(['audit']),
+      record: auditRecordFragment,
+    }),
+    strictObject(['kind', 'record'], {
+      kind: stringEnum(['history']),
+      record: historyRecordFragment,
+    }),
+    strictObject(['kind', 'entityType', 'record'], {
+      kind: stringEnum(['tombstone-predecessor']),
+      entityType: stringEnum(['group', 'item', 'attachment']),
+      record: {
+        oneOf: [groupRecordFragment, itemRecordFragment, attachmentRecordFragment],
+      },
+    }),
+    strictObject(['kind', 'record'], {
+      kind: stringEnum(['tombstone']),
+      record: tombstoneRecordFragment,
+    }),
+  ],
+};
+
+const restoreSessionCommonProperties = {
+  _id: sha256DigestFragment,
+  restoreSessionId: sha256DigestFragment,
+  maximumBytes: safeInteger({ minimum: 1, maximum: MAX_SUPPORTED_BACKUP_BYTES }),
+  maximumRecords: safeInteger({
+    minimum: 1,
+    maximum: DEFAULT_MAX_BACKUP_RECORDS,
+  }),
+  stagedBytes: safeInteger({ minimum: 0, maximum: MAX_SUPPORTED_BACKUP_BYTES }),
+  stagedRecords: safeInteger({
+    minimum: 0,
+    maximum: DEFAULT_MAX_BACKUP_RECORDS,
+  }),
+  createdAt: canonicalTimestampFragment,
+  updatedAt: canonicalTimestampFragment,
+  vaultId: opaqueIdentifierFragment,
+} satisfies Readonly<Record<string, MongoJsonSchema>>;
+const restoreSessionCommonRequired = [
+  '_id',
+  'restoreSessionId',
+  'maximumBytes',
+  'maximumRecords',
+  'state',
+  'stagedBytes',
+  'stagedRecords',
+  'createdAt',
+  'updatedAt',
+] as const;
+const backupRestoreSessionFragment: MongoJsonSchema = {
+  oneOf: [
+    strictObject(restoreSessionCommonRequired, {
+      ...restoreSessionCommonProperties,
+      state: stringEnum(['staging']),
+    }),
+    strictObject(
+      [
+        ...restoreSessionCommonRequired,
         'vaultId',
         'transcriptSha256',
         'summaryRecordCount',
@@ -578,35 +610,24 @@ const backupRestoreSession = {
       ],
       {
         ...restoreSessionCommonProperties,
-        state: { enum: ['committed'] },
-        transcriptSha256: digest,
-        summaryRecordCount: { bsonType: numberType },
-        committedAt: timestamp,
+        state: stringEnum(['committed']),
+        transcriptSha256: sha256DigestFragment,
+        summaryRecordCount: safeInteger({
+          minimum: 1,
+          maximum: DEFAULT_MAX_BACKUP_RECORDS,
+        }),
+        committedAt: canonicalTimestampFragment,
       },
     ),
-    strictObject(
-      [
-        '_id',
-        'restoreSessionId',
-        'maximumBytes',
-        'maximumRecords',
-        'state',
-        'stagedBytes',
-        'stagedRecords',
-        'createdAt',
-        'updatedAt',
-        'abortedAt',
-      ],
-      {
-        ...restoreSessionCommonProperties,
-        state: { enum: ['aborted'] },
-        abortedAt: timestamp,
-      },
-    ),
+    strictObject([...restoreSessionCommonRequired, 'abortedAt'], {
+      ...restoreSessionCommonProperties,
+      state: stringEnum(['aborted']),
+      abortedAt: canonicalTimestampFragment,
+    }),
   ],
-} as const;
+};
 
-const backupRestoreEntry = strictObject(
+const backupRestoreEntryFragment = strictObject(
   [
     '_id',
     'restoreSessionId',
@@ -618,154 +639,133 @@ const backupRestoreEntry = strictObject(
     'entry',
   ],
   {
-    _id: { bsonType: 'string' },
-    restoreSessionId: digest,
-    ordinal: { bsonType: numberType },
-    identity: { bsonType: 'string' },
-    entryHash: { bsonType: 'string', pattern: '^[a-f0-9]{64}$' },
-    vaultId: identifier,
-    bytes: { bsonType: numberType },
-    entry: backupEntry,
-  },
-);
-
-const syncPushResult = {
-  oneOf: [
-    strictObject(['status', 'idempotencyKey', 'disposition', 'change'], {
-      status: { enum: ['accepted'] },
-      idempotencyKey: { bsonType: 'string', minLength: 16, maxLength: 256 },
-      disposition: { enum: ['committed', 'duplicate'] },
-      change: changeRecord,
+    _id: boundedRestoreStringFragment,
+    restoreSessionId: sha256DigestFragment,
+    ordinal: safeInteger({
+      minimum: 0,
+      maximum: DEFAULT_MAX_BACKUP_RECORDS - 1,
     }),
-    strictObject(['status', 'idempotencyKey', 'currentRevision', 'current'], {
-      status: { enum: ['conflict'] },
-      idempotencyKey: { bsonType: 'string', minLength: 16, maxLength: 256 },
-      currentRevision: { bsonType: numberType },
-      current: opaqueSyncPayload,
-    }),
-  ],
-} as const;
-
-const syncPushResponse = strictObject(
-  ['vaultId', 'serverVaultRevision', 'batchIdempotencyKey', 'results'],
-  {
-    vaultId: identifier,
-    serverVaultRevision: { bsonType: numberType },
-    batchIdempotencyKey: { bsonType: 'string', minLength: 16, maxLength: 256 },
-    results: { bsonType: 'array', items: syncPushResult },
+    identity: boundedRestoreStringFragment,
+    entryHash: sha256HexFragment,
+    vaultId: opaqueIdentifierFragment,
+    bytes: safeInteger({ minimum: 1, maximum: MAX_MONGO_RESTORE_ENTRY_BYTES }),
+    entry: backupEntryFragment,
   },
 );
 
-const templateMigrationPublicationResult = strictObject(['idempotencyKey', 'change'], {
-  idempotencyKey: { bsonType: 'string', minLength: 16, maxLength: 256 },
-  change: changeRecord,
-});
-
-const templateMigrationPublicationResponse = strictObject(
-  ['vaultId', 'batchIdempotencyKey', 'serverVaultRevision', 'results'],
-  {
-    vaultId: identifier,
-    batchIdempotencyKey: { bsonType: 'string', minLength: 16, maxLength: 256 },
-    serverVaultRevision: { bsonType: numberType },
-    results: {
-      bsonType: 'array',
-      minItems: 1,
-      maxItems: 100,
-      items: templateMigrationPublicationResult,
-    },
-  },
-);
-
-function validator(schema: Document): CreateCollectionOptions {
+function validator(schema: MongoJsonSchema): CreateCollectionOptions {
   return {
-    validator: { $jsonSchema: schema },
+    validator: { $jsonSchema: schema as Document },
     validationLevel: 'strict',
     validationAction: 'error',
   };
 }
+
+const syncPushBatchCommonProperties = {
+  _id: nonEmptyStringFragment,
+  vaultId: opaqueIdentifierFragment,
+  batchIdempotencyKey: idempotencyKeyFragment,
+  requestHash: sha256HexFragment,
+  mutationCount: safeInteger({ minimum: 1, maximum: MAX_SYNC_PUSH_MUTATIONS }),
+  nextMutationIndex: safeInteger({ minimum: 0, maximum: MAX_SYNC_PUSH_MUTATIONS }),
+  createdAt: canonicalTimestampFragment,
+  updatedAt: canonicalTimestampFragment,
+} satisfies Readonly<Record<string, MongoJsonSchema>>;
+const syncPushBatchCommonRequired = [
+  '_id',
+  'vaultId',
+  'batchIdempotencyKey',
+  'requestHash',
+  'mutationCount',
+  'state',
+  'nextMutationIndex',
+  'results',
+  'createdAt',
+  'updatedAt',
+] as const;
 
 export const mongoStorageCollectionOptions: Readonly<
   Record<MongoStorageCollectionName, CreateCollectionOptions>
 > = {
   vaults: validator(
     strictObject(['_id', 'vaultId', 'record'], {
-      _id: identifier,
-      vaultId: identifier,
-      record: vaultRecord,
+      _id: opaqueIdentifierFragment,
+      vaultId: opaqueIdentifierFragment,
+      record: vaultRecordFragment,
     }),
   ),
   groups: validator(
     strictObject(['_id', 'vaultId', 'groupId', 'record'], {
-      _id: { bsonType: 'string' },
-      vaultId: identifier,
-      groupId: identifier,
-      record: groupRecord,
+      _id: nonEmptyStringFragment,
+      vaultId: opaqueIdentifierFragment,
+      groupId: opaqueIdentifierFragment,
+      record: groupRecordFragment,
     }),
   ),
   items: validator(
     strictObject(['_id', 'vaultId', 'groupId', 'itemId', 'record'], {
-      _id: { bsonType: 'string' },
-      vaultId: identifier,
-      groupId: identifier,
-      itemId: identifier,
-      record: itemRecord,
+      _id: nonEmptyStringFragment,
+      vaultId: opaqueIdentifierFragment,
+      groupId: opaqueIdentifierFragment,
+      itemId: opaqueIdentifierFragment,
+      record: itemRecordFragment,
     }),
   ),
   attachments: validator(
     strictObject(
       ['_id', 'vaultId', 'groupId', 'itemId', 'attachmentId', 'stagingId', 'record'],
       {
-        _id: { bsonType: 'string' },
-        vaultId: identifier,
-        groupId: identifier,
-        itemId: identifier,
-        attachmentId: identifier,
-        stagingId: { bsonType: 'string' },
-        record: attachmentRecord,
+        _id: nonEmptyStringFragment,
+        vaultId: opaqueIdentifierFragment,
+        groupId: opaqueIdentifierFragment,
+        itemId: opaqueIdentifierFragment,
+        attachmentId: opaqueIdentifierFragment,
+        stagingId: nonEmptyStringFragment,
+        record: attachmentRecordFragment,
       },
     ),
   ),
   audits: validator(
     strictObject(['_id', 'vaultId', 'auditId', 'record'], {
-      _id: { bsonType: 'string' },
-      vaultId: identifier,
-      auditId: identifier,
-      record: auditRecord,
+      _id: nonEmptyStringFragment,
+      vaultId: opaqueIdentifierFragment,
+      auditId: opaqueIdentifierFragment,
+      record: auditRecordFragment,
     }),
   ),
   histories: validator(
     strictObject(['_id', 'vaultId', 'groupId', 'itemId', 'historyId', 'record'], {
-      _id: { bsonType: 'string' },
-      vaultId: identifier,
-      groupId: identifier,
-      itemId: identifier,
-      historyId: identifier,
-      record: historyRecord,
+      _id: nonEmptyStringFragment,
+      vaultId: opaqueIdentifierFragment,
+      groupId: opaqueIdentifierFragment,
+      itemId: opaqueIdentifierFragment,
+      historyId: opaqueIdentifierFragment,
+      record: historyRecordFragment,
     }),
   ),
   changes: validator(
     strictObject(['_id', 'vaultId', 'serverSequence', 'record', 'payload'], {
-      _id: { bsonType: 'string' },
-      vaultId: identifier,
-      serverSequence: { bsonType: numberType },
-      record: changeRecord,
-      payload: opaqueSyncPayload,
+      _id: nonEmptyStringFragment,
+      vaultId: opaqueIdentifierFragment,
+      serverSequence: positiveSemanticRevisionFragment,
+      record: changeRecordFragment,
+      payload: opaqueSyncPayloadFragment,
     }),
   ),
   tombstones: validator(
     strictObject(['_id', 'vaultId', 'entityType', 'entityId', 'record'], {
-      _id: { bsonType: 'string' },
-      vaultId: identifier,
-      entityType: { enum: ['vault', 'group', 'item', 'attachment'] },
-      entityId: identifier,
-      record: tombstoneRecord,
+      _id: nonEmptyStringFragment,
+      vaultId: opaqueIdentifierFragment,
+      entityType: stringEnum(changeEntityTypes),
+      entityId: opaqueIdentifierFragment,
+      record: tombstoneRecordFragment,
     }),
   ),
   vault_counters: validator(
     strictObject(['_id', 'changeSequence', 'vaultRevision'], {
-      _id: identifier,
-      changeSequence: { bsonType: numberType },
-      vaultRevision: { bsonType: numberType },
+      _id: opaqueIdentifierFragment,
+      changeSequence: nonnegativeSemanticRevisionFragment,
+      vaultRevision: nonnegativeSemanticRevisionFragment,
     }),
   ),
   idempotency_commits: validator(
@@ -780,50 +780,36 @@ export const mongoStorageCollectionOptions: Readonly<
         'committedAt',
       ],
       {
-        _id: { bsonType: 'string' },
-        vaultId: identifier,
-        idempotencyKey: { bsonType: 'string', minLength: 16, maxLength: 256 },
-        inputHash: { bsonType: 'string', pattern: '^[a-f0-9]{64}$' },
-        entityType: { enum: ['vault', 'group', 'item', 'attachment'] },
-        change: changeRecord,
-        committedAt: timestamp,
+        _id: nonEmptyStringFragment,
+        vaultId: opaqueIdentifierFragment,
+        idempotencyKey: idempotencyKeyFragment,
+        inputHash: sha256HexFragment,
+        entityType: stringEnum(changeEntityTypes),
+        change: changeRecordFragment,
+        committedAt: canonicalTimestampFragment,
       },
     ),
   ),
-  sync_push_batches: validator(
-    strictObject(
-      [
-        '_id',
-        'vaultId',
-        'batchIdempotencyKey',
-        'requestHash',
-        'mutationCount',
-        'state',
-        'nextMutationIndex',
-        'results',
-        'createdAt',
-        'updatedAt',
-      ],
-      {
-        _id: { bsonType: 'string' },
-        vaultId: identifier,
-        batchIdempotencyKey: {
-          bsonType: 'string',
-          minLength: 16,
-          maxLength: 256,
-        },
-        requestHash: { bsonType: 'string', pattern: '^[a-f0-9]{64}$' },
-        mutationCount: { bsonType: numberType },
-        state: { enum: ['running', 'completed'] },
-        nextMutationIndex: { bsonType: numberType },
-        results: { bsonType: 'array', items: syncPushResult },
-        response: syncPushResponse,
-        createdAt: timestamp,
-        updatedAt: timestamp,
-        completedAt: timestamp,
-      },
-    ),
-  ),
+  sync_push_batches: validator({
+    oneOf: [
+      strictObject(syncPushBatchCommonRequired, {
+        ...syncPushBatchCommonProperties,
+        state: stringEnum(['running']),
+        results: boundedArray(syncPushResultFragment, 0, MAX_SYNC_PUSH_MUTATIONS),
+      }),
+      strictObject([...syncPushBatchCommonRequired, 'response', 'completedAt'], {
+        ...syncPushBatchCommonProperties,
+        state: stringEnum(['completed']),
+        nextMutationIndex: safeInteger({
+          minimum: 1,
+          maximum: MAX_SYNC_PUSH_MUTATIONS,
+        }),
+        results: boundedArray(syncPushResultFragment, 1, MAX_SYNC_PUSH_MUTATIONS),
+        response: syncPushResponseFragment,
+        completedAt: canonicalTimestampFragment,
+      }),
+    ],
+  }),
   template_migration_publications: validator(
     strictObject(
       [
@@ -835,63 +821,34 @@ export const mongoStorageCollectionOptions: Readonly<
         'committedAt',
       ],
       {
-        _id: { bsonType: 'string' },
-        vaultId: identifier,
-        batchIdempotencyKey: {
-          bsonType: 'string',
-          minLength: 16,
-          maxLength: 256,
-        },
-        requestHash: { bsonType: 'string', pattern: '^[a-f0-9]{64}$' },
-        response: templateMigrationPublicationResponse,
-        committedAt: timestamp,
+        _id: nonEmptyStringFragment,
+        vaultId: opaqueIdentifierFragment,
+        batchIdempotencyKey: idempotencyKeyFragment,
+        requestHash: sha256HexFragment,
+        response: templateMigrationPublicationResponseFragment,
+        committedAt: canonicalTimestampFragment,
       },
     ),
   ),
-  attachment_staging: validator(
-    strictObject(
-      [
-        '_id',
-        'vaultId',
-        'attachmentId',
-        'idempotencyKey',
-        'inputHash',
-        'state',
-        'createdAt',
-        'updatedAt',
-      ],
-      {
-        _id: { bsonType: 'string' },
-        vaultId: identifier,
-        attachmentId: identifier,
-        idempotencyKey: { bsonType: 'string', minLength: 16, maxLength: 256 },
-        inputHash: { bsonType: 'string', pattern: '^[a-f0-9]{64}$' },
-        state: { enum: ['active', 'finalized', 'aborted'] },
-        input: startInput,
-        progress,
-        finalizeHash: { bsonType: 'string', pattern: '^[a-f0-9]{64}$' },
-        createdAt: timestamp,
-        updatedAt: timestamp,
-        finalizedAt: timestamp,
-        abortedAt: timestamp,
-      },
-    ),
-  ),
+  attachment_staging: validator(attachmentStagingFragment),
   attachment_staging_chunks: validator(
     strictObject(
       ['_id', 'stagingId', 'vaultId', 'attachmentId', 'chunkIndex', 'record'],
       {
-        _id: { bsonType: 'string' },
-        stagingId: { bsonType: 'string' },
-        vaultId: identifier,
-        attachmentId: identifier,
-        chunkIndex: { bsonType: numberType },
-        record: persistedChunk,
+        _id: nonEmptyStringFragment,
+        stagingId: nonEmptyStringFragment,
+        vaultId: opaqueIdentifierFragment,
+        attachmentId: opaqueIdentifierFragment,
+        chunkIndex: safeInteger({
+          minimum: 0,
+          maximum: MAX_ATTACHMENT_CHUNKS - 1,
+        }),
+        record: persistedAttachmentChunkFragment,
       },
     ),
   ),
-  backup_restore_sessions: validator(backupRestoreSession),
-  backup_restore_entries: validator(backupRestoreEntry),
+  backup_restore_sessions: validator(backupRestoreSessionFragment),
+  backup_restore_entries: validator(backupRestoreEntryFragment),
 };
 
 export const mongoStorageIndexes: Readonly<

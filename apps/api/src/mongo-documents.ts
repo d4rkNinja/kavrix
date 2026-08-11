@@ -14,6 +14,18 @@ import {
   type PublicInviteRecord,
   type Sha256Digest,
 } from '@kavrix/schemas';
+import {
+  apiScopesFragment,
+  canonicalTimestampFragment,
+  encryptedDeviceLabelFragment,
+  opaqueIdentifierFragment,
+  safeInteger,
+  sha256DigestFragment,
+  strictObject,
+  supportedSchemaVersionFragment,
+  supportedTokenVersionFragment,
+  type MongoJsonSchema,
+} from '@kavrix/storage';
 import type { CreateCollectionOptions, Document, IndexDescription } from 'mongodb';
 import { z } from 'zod';
 
@@ -68,11 +80,18 @@ export const mongoApiInviteDocumentSchema = z
   })
   .strict()
   .superRefine((invite, context) => {
+    const hasAnyRedemption =
+      invite.consumedAt !== undefined ||
+      invite.enrollmentTokenHash !== undefined ||
+      invite.enrollmentExpiresAt !== undefined;
     const hasRedemption =
       invite.consumedAt !== undefined &&
       invite.enrollmentTokenHash !== undefined &&
       invite.enrollmentExpiresAt !== undefined;
-    if ((invite.state === 'redeemed') !== hasRedemption) {
+    if (
+      (invite.state === 'redeemed') !== hasRedemption ||
+      (invite.state !== 'redeemed' && hasAnyRedemption)
+    ) {
       context.addIssue({ code: 'custom', message: 'Invalid invite redemption state' });
     }
     if ((invite.state === 'revoked') !== (invite.revokedAt !== undefined)) {
@@ -104,12 +123,20 @@ export const mongoApiEnrollmentDocumentSchema = z
   })
   .strict()
   .superRefine((enrollment, context) => {
+    const hasAnyCompletion =
+      enrollment.completionHash !== undefined ||
+      enrollment.sessionTokenHash !== undefined ||
+      enrollment.deviceId !== undefined ||
+      enrollment.completedAt !== undefined;
     const completed =
       enrollment.completionHash !== undefined &&
       enrollment.sessionTokenHash !== undefined &&
       enrollment.deviceId !== undefined &&
       enrollment.completedAt !== undefined;
-    if ((enrollment.state === 'completed') !== completed) {
+    if (
+      (enrollment.state === 'completed') !== completed ||
+      (enrollment.state === 'active' && hasAnyCompletion)
+    ) {
       context.addIssue({ code: 'custom', message: 'Invalid enrollment state' });
     }
   });
@@ -170,76 +197,11 @@ export const mongoApiCollectionNames = {
 export type MongoApiCollectionName =
   (typeof mongoApiCollectionNames)[keyof typeof mongoApiCollectionNames];
 
-const identifier = {
-  bsonType: 'string',
-  minLength: 1,
-  maxLength: 128,
-  pattern: '^[A-Za-z0-9][A-Za-z0-9._~-]*$',
-};
-const digest = {
-  bsonType: 'string',
-  minLength: 43,
-  maxLength: 43,
-  pattern: '^[A-Za-z0-9_-]{43}$',
-};
-const timestamp = {
-  bsonType: 'string',
-  pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]+)?Z$',
-};
-const scopes = {
-  bsonType: 'array',
-  minItems: 1,
-  maxItems: 3,
-  uniqueItems: true,
-  items: { enum: ['sync:read', 'sync:write', 'device:manage'] },
-};
-const numberType = ['int', 'long', 'double'];
+function stringEnum(values: readonly string[]): MongoJsonSchema {
+  return { bsonType: 'string', enum: values };
+}
 
-const aad = strictObject(
-  [
-    'version',
-    'schemaVersion',
-    'keyVersion',
-    'vaultId',
-    'entityType',
-    'entityId',
-    'purpose',
-  ],
-  {
-    version: { bsonType: numberType, enum: [1] },
-    schemaVersion: { bsonType: numberType, minimum: 1 },
-    keyVersion: { bsonType: numberType, minimum: 1 },
-    vaultId: identifier,
-    groupId: identifier,
-    parentId: identifier,
-    entityType: { bsonType: 'string' },
-    entityId: identifier,
-    purpose: { bsonType: 'string' },
-  },
-);
-
-const envelope = strictObject(
-  [
-    'version',
-    'algorithm',
-    'nonce',
-    'ciphertext',
-    'authenticationTag',
-    'aad',
-    'keyVersion',
-  ],
-  {
-    version: { bsonType: numberType, enum: [1] },
-    algorithm: { enum: ['xchacha20-poly1305-ietf'] },
-    nonce: { bsonType: 'string' },
-    ciphertext: { bsonType: 'string' },
-    authenticationTag: { bsonType: 'string' },
-    aad,
-    keyVersion: { bsonType: numberType, minimum: 1 },
-  },
-);
-
-const deviceRecord = strictObject(
+const deviceRecordFragment = strictObject(
   [
     'id',
     'vaultId',
@@ -250,98 +212,163 @@ const deviceRecord = strictObject(
     'createdAt',
   ],
   {
-    id: identifier,
-    vaultId: identifier,
-    schemaVersion: { bsonType: numberType, minimum: 1 },
-    tokenHash: digest,
-    tokenVersion: { bsonType: numberType, minimum: 1 },
-    encryptedLabel: envelope,
-    scopes,
-    createdAt: timestamp,
-    lastSeenAt: timestamp,
-    revokedAt: timestamp,
+    id: opaqueIdentifierFragment,
+    vaultId: opaqueIdentifierFragment,
+    schemaVersion: supportedSchemaVersionFragment,
+    tokenHash: sha256DigestFragment,
+    tokenVersion: supportedTokenVersionFragment,
+    encryptedLabel: encryptedDeviceLabelFragment,
+    scopes: apiScopesFragment,
+    createdAt: canonicalTimestampFragment,
+    lastSeenAt: canonicalTimestampFragment,
+    revokedAt: canonicalTimestampFragment,
   },
 );
+
+const inviteCommonProperties = {
+  _id: opaqueIdentifierFragment,
+  tokenHash: sha256DigestFragment,
+  vaultId: opaqueIdentifierFragment,
+  issuedByDeviceId: opaqueIdentifierFragment,
+  scopes: apiScopesFragment,
+  createdAt: canonicalTimestampFragment,
+  expiresAt: canonicalTimestampFragment,
+} satisfies Readonly<Record<string, MongoJsonSchema>>;
+const inviteCommonRequired = [
+  '_id',
+  'tokenHash',
+  'vaultId',
+  'issuedByDeviceId',
+  'scopes',
+  'state',
+  'createdAt',
+  'expiresAt',
+] as const;
+
+const enrollmentCommonProperties = {
+  _id: sha256DigestFragment,
+  vaultId: opaqueIdentifierFragment,
+  scopes: apiScopesFragment,
+  createdAt: canonicalTimestampFragment,
+  expiresAt: canonicalTimestampFragment,
+} satisfies Readonly<Record<string, MongoJsonSchema>>;
+const enrollmentCommonRequired = [
+  '_id',
+  'vaultId',
+  'scopes',
+  'state',
+  'createdAt',
+  'expiresAt',
+] as const;
 
 export const mongoApiCollectionOptions: Readonly<
   Record<MongoApiCollectionName, CreateCollectionOptions>
 > = {
   api_sessions: validator(
     strictObject(['_id', 'vaultId', 'deviceId', 'scopes', 'createdAt'], {
-      _id: digest,
-      vaultId: identifier,
-      deviceId: identifier,
-      scopes,
-      createdAt: timestamp,
-      revokedAt: timestamp,
+      _id: sha256DigestFragment,
+      vaultId: opaqueIdentifierFragment,
+      deviceId: opaqueIdentifierFragment,
+      scopes: apiScopesFragment,
+      createdAt: canonicalTimestampFragment,
+      revokedAt: canonicalTimestampFragment,
     }),
   ),
   api_devices: validator(
     strictObject(['_id', 'vaultId', 'record'], {
-      _id: identifier,
-      vaultId: identifier,
-      record: deviceRecord,
+      _id: opaqueIdentifierFragment,
+      vaultId: opaqueIdentifierFragment,
+      record: deviceRecordFragment,
     }),
   ),
-  api_invites: validator(
-    strictObject(
-      [
-        '_id',
-        'tokenHash',
-        'vaultId',
-        'issuedByDeviceId',
-        'scopes',
-        'state',
-        'createdAt',
-        'expiresAt',
-      ],
-      {
-        _id: identifier,
-        tokenHash: digest,
-        vaultId: identifier,
-        issuedByDeviceId: identifier,
-        scopes,
-        state: { enum: ['active', 'redeemed', 'revoked'] },
-        createdAt: timestamp,
-        expiresAt: timestamp,
-        consumedAt: timestamp,
-        revokedAt: timestamp,
-        enrollmentTokenHash: digest,
-        enrollmentExpiresAt: timestamp,
-      },
-    ),
-  ),
-  api_enrollments: validator(
-    strictObject(['_id', 'vaultId', 'scopes', 'state', 'createdAt', 'expiresAt'], {
-      _id: digest,
-      vaultId: identifier,
-      scopes,
-      state: { enum: ['active', 'completed'] },
-      createdAt: timestamp,
-      expiresAt: timestamp,
-      completionHash: digest,
-      sessionTokenHash: digest,
-      deviceId: identifier,
-      completedAt: timestamp,
-    }),
-  ),
+  api_invites: validator({
+    oneOf: [
+      strictObject(inviteCommonRequired, {
+        ...inviteCommonProperties,
+        state: stringEnum(['active']),
+      }),
+      strictObject(
+        [
+          ...inviteCommonRequired,
+          'consumedAt',
+          'enrollmentTokenHash',
+          'enrollmentExpiresAt',
+        ],
+        {
+          ...inviteCommonProperties,
+          state: stringEnum(['redeemed']),
+          consumedAt: canonicalTimestampFragment,
+          enrollmentTokenHash: sha256DigestFragment,
+          enrollmentExpiresAt: canonicalTimestampFragment,
+        },
+      ),
+      strictObject([...inviteCommonRequired, 'revokedAt'], {
+        ...inviteCommonProperties,
+        state: stringEnum(['revoked']),
+        revokedAt: canonicalTimestampFragment,
+      }),
+    ],
+  }),
+  api_enrollments: validator({
+    oneOf: [
+      strictObject(enrollmentCommonRequired, {
+        ...enrollmentCommonProperties,
+        state: stringEnum(['active']),
+      }),
+      strictObject(
+        [
+          ...enrollmentCommonRequired,
+          'completionHash',
+          'sessionTokenHash',
+          'deviceId',
+          'completedAt',
+        ],
+        {
+          ...enrollmentCommonProperties,
+          state: stringEnum(['completed']),
+          completionHash: sha256DigestFragment,
+          sessionTokenHash: sha256DigestFragment,
+          deviceId: opaqueIdentifierFragment,
+          completedAt: canonicalTimestampFragment,
+        },
+      ),
+    ],
+  }),
   api_rate_limits: validator(
     strictObject(['_id', 'count', 'windowStartedAt', 'expiresAt'], {
       _id: { bsonType: 'string', pattern: '^[a-f0-9]{64}:[0-9]+$' },
-      count: { bsonType: numberType, minimum: 1 },
+      count: safeInteger({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER }),
       windowStartedAt: { bsonType: 'date' },
       expiresAt: { bsonType: 'date' },
     }),
   ),
-  api_credential_claims: validator(
-    strictObject(['_id', 'kind', 'createdAt'], {
-      _id: digest,
-      kind: { enum: ['invite', 'enrollment', 'session'] },
-      parentHash: digest,
-      bootstrapHash: digest,
-      createdAt: timestamp,
-    }),
-  ),
+  api_credential_claims: validator({
+    oneOf: [
+      strictObject(['_id', 'kind', 'createdAt'], {
+        _id: sha256DigestFragment,
+        kind: stringEnum(['invite']),
+        createdAt: canonicalTimestampFragment,
+      }),
+      strictObject(['_id', 'kind', 'parentHash', 'createdAt'], {
+        _id: sha256DigestFragment,
+        kind: stringEnum(['enrollment']),
+        parentHash: sha256DigestFragment,
+        createdAt: canonicalTimestampFragment,
+      }),
+      strictObject(['_id', 'kind', 'parentHash', 'createdAt'], {
+        _id: sha256DigestFragment,
+        kind: stringEnum(['session']),
+        parentHash: sha256DigestFragment,
+        createdAt: canonicalTimestampFragment,
+      }),
+      strictObject(['_id', 'kind', 'bootstrapHash', 'createdAt'], {
+        _id: sha256DigestFragment,
+        kind: stringEnum(['session']),
+        bootstrapHash: sha256DigestFragment,
+        createdAt: canonicalTimestampFragment,
+      }),
+    ],
+  }),
 };
 
 export const mongoApiIndexes: Readonly<
@@ -457,22 +484,10 @@ export function deviceDocument(record: DeviceRecord): MongoApiDeviceDocument {
   });
 }
 
-function validator(schema: Document): CreateCollectionOptions {
+function validator(schema: MongoJsonSchema): CreateCollectionOptions {
   return {
-    validator: { $jsonSchema: schema },
+    validator: { $jsonSchema: schema as Document },
     validationLevel: 'strict',
     validationAction: 'error',
-  };
-}
-
-function strictObject(
-  required: readonly string[],
-  properties: Readonly<Record<string, unknown>>,
-): Document {
-  return {
-    bsonType: 'object',
-    additionalProperties: false,
-    required: [...required],
-    properties,
   };
 }
