@@ -251,7 +251,17 @@ export const enrollmentCompleteRequestSchema = z
     schemaVersion: supportedSchemaVersionSchema,
     encryptedLabel: encryptedDeviceLabelSchema.optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((request, context) => {
+    validateDeviceLabelBinding(
+      request.encryptedLabel,
+      request.vaultId,
+      request.deviceId,
+      request.schemaVersion,
+      context,
+      ['encryptedLabel', 'aad'],
+    );
+  });
 
 export const enrollmentCompleteResponseSchema = z
   .object({
@@ -311,6 +321,14 @@ export const vaultBootstrapRequestSchema = z
         message: 'The first device and vault schema versions must match',
       });
     }
+    validateDeviceLabelBinding(
+      request.device.encryptedLabel,
+      request.vault.id,
+      request.device.id,
+      request.device.schemaVersion,
+      context,
+      ['device', 'encryptedLabel', 'aad'],
+    );
   });
 
 export const vaultBootstrapResponseSchema = z
@@ -826,6 +844,28 @@ export type AttachmentChunkStageRequest = z.infer<
   typeof attachmentChunkStageRequestSchema
 >;
 export type AttachmentFinalizeRequest = z.infer<typeof attachmentFinalizeRequestSchema>;
+
+function validateDeviceLabelBinding(
+  encryptedLabel: z.infer<typeof encryptedDeviceLabelSchema> | undefined,
+  vaultId: string,
+  deviceId: string,
+  schemaVersion: number,
+  context: z.core.$RefinementCtx,
+  path: PropertyKey[],
+): void {
+  if (
+    encryptedLabel !== undefined &&
+    (encryptedLabel.aad.vaultId !== vaultId ||
+      encryptedLabel.aad.entityId !== deviceId ||
+      encryptedLabel.aad.schemaVersion !== schemaVersion)
+  ) {
+    context.addIssue({
+      code: 'custom',
+      path,
+      message: 'Encrypted device labels must match their containing request',
+    });
+  }
+}
 
 // This proves response self-consistency only. A route must still bind its
 // authenticated requested vault, including for an empty terminal page.

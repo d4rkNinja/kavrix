@@ -75,6 +75,30 @@ function rawJsonCursor(json: string): string {
   return Buffer.from(json, 'utf8').toString('base64url');
 }
 
+function deviceLabelEnvelope(
+  vaultId: string,
+  deviceId: string,
+  schemaVersion = 1,
+): Readonly<Record<string, unknown>> {
+  return {
+    version: 1,
+    algorithm: 'xchacha20-poly1305-ietf',
+    nonce: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+    ciphertext: 'AQID',
+    authenticationTag: 'AAAAAAAAAAAAAAAAAAAAAA',
+    aad: {
+      version: 1,
+      schemaVersion,
+      keyVersion: 1,
+      vaultId,
+      entityType: 'device-label',
+      entityId: deviceId,
+      purpose: 'device-label',
+    },
+    keyVersion: 1,
+  } as const;
+}
+
 describe('API wire contracts', () => {
   it('uses one strict health response contract', () => {
     expect(healthResponseSchema.parse({ status: 'ok' })).toEqual({ status: 'ok' });
@@ -176,23 +200,7 @@ describe('API wire contracts', () => {
   });
 
   it('pins enrollment and first-device bootstrap inputs to current schema labels', () => {
-    const label = {
-      version: 1,
-      algorithm: 'xchacha20-poly1305-ietf',
-      nonce: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
-      ciphertext: 'AQID',
-      authenticationTag: 'AAAAAAAAAAAAAAAAAAAAAA',
-      aad: {
-        version: 1,
-        schemaVersion: 1,
-        keyVersion: 1,
-        vaultId: 'vault.bootstrap',
-        entityType: 'device-label',
-        entityId: 'device.bootstrap',
-        purpose: 'device-label',
-      },
-      keyVersion: 1,
-    };
+    const label = deviceLabelEnvelope('vault.bootstrap', 'device.bootstrap');
     const enrollment = {
       vaultId: 'vault.bootstrap',
       deviceId: 'device.bootstrap',
@@ -240,6 +248,48 @@ describe('API wire contracts', () => {
             };
       expect(schema.safeParse(candidate).success).toBe(false);
     }
+  });
+
+  it.each([
+    ['vaultId', deviceLabelEnvelope('vault.label-other', 'device.label-binding')],
+    ['entityId', deviceLabelEnvelope('vault.label-binding', 'device.label-other')],
+    [
+      'schemaVersion',
+      deviceLabelEnvelope('vault.label-binding', 'device.label-binding', 2),
+    ],
+  ])('rejects enrollment labels with unbound %s AAD', (_dimension, encryptedLabel) => {
+    expect(
+      enrollmentCompleteRequestSchema.safeParse({
+        vaultId: 'vault.label-binding',
+        deviceId: 'device.label-binding',
+        schemaVersion: 1,
+        encryptedLabel,
+      }).success,
+    ).toBe(false);
+  });
+
+  it.each([
+    ['vaultId', deviceLabelEnvelope('vault.label-other', 'device.label-binding')],
+    ['entityId', deviceLabelEnvelope('vault.label-binding', 'device.label-other')],
+    [
+      'schemaVersion',
+      deviceLabelEnvelope('vault.label-binding', 'device.label-binding', 2),
+    ],
+  ])('rejects bootstrap labels with unbound %s AAD', (_dimension, encryptedLabel) => {
+    const vault = vaultRecordSchema.parse({
+      ...currentVaultRecord('vault.label-binding'),
+      revision: 0,
+    });
+    expect(
+      vaultBootstrapRequestSchema.safeParse({
+        vault,
+        device: {
+          id: 'device.label-binding',
+          schemaVersion: 1,
+          encryptedLabel,
+        },
+      }).success,
+    ).toBe(false);
   });
 
   it('strictly parses bounded control-list query strings', () => {

@@ -26,6 +26,7 @@ import { buildApi } from '../src/index.js';
 import {
   authHeader,
   createTestPorts,
+  deviceLabelEnvelope,
   digest,
   envelope,
   groupTombstone,
@@ -197,6 +198,73 @@ describe('zero-knowledge Fastify API', () => {
       payload,
     });
     expect(completion.statusCode).toBe(201);
+  });
+
+  it('rejects unbound enrollment device-label AAD without consuming the grant', async () => {
+    const fixture = await createTestPorts();
+    const app = tracked(buildApi({ ports: fixture.ports, environment: 'test' }));
+    const inviteToken = await issueInvite(app, fixture.token, 600);
+    const enrollmentToken = (await fixture.ports.tokens.issue()).token;
+    const redemption = await app.inject({
+      method: 'POST',
+      url: '/v1/invites/redeem',
+      headers: exchangeHeaders(inviteToken, enrollmentToken),
+    });
+    expect(redemption.statusCode).toBe(200);
+
+    const deviceId = 'device.label-binding';
+    const sessionToken = (await fixture.ports.tokens.issue()).token;
+    const labels = [
+      deviceLabelEnvelope(otherVaultId, deviceId),
+      deviceLabelEnvelope(vaultId, 'device.label-other'),
+      deviceLabelEnvelope(vaultId, deviceId, 2),
+    ];
+    const responses = [];
+    for (const encryptedLabel of labels) {
+      responses.push(
+        await app.inject({
+          method: 'POST',
+          url: '/v1/enrollments/complete',
+          headers: exchangeHeaders(enrollmentToken, sessionToken),
+          payload: {
+            vaultId,
+            deviceId,
+            schemaVersion: 1,
+            encryptedLabel,
+          },
+        }),
+      );
+    }
+
+    expect(responses.map(({ statusCode }) => statusCode)).toEqual([400, 400, 400]);
+    for (const response of responses) {
+      expect(response.json()).toEqual({
+        error: {
+          code: 'VALIDATION_FAILED',
+          message: 'Request validation failed',
+        },
+      });
+    }
+    expect(fixture.authorization.enrollments.size).toBe(1);
+    expect(fixture.authorization.completions.size).toBe(0);
+    expect(fixture.authorization.devices.size).toBe(1);
+    expect(fixture.authorization.sessions.size).toBe(1);
+
+    const valid = await app.inject({
+      method: 'POST',
+      url: '/v1/enrollments/complete',
+      headers: exchangeHeaders(enrollmentToken, sessionToken),
+      payload: {
+        vaultId,
+        deviceId,
+        schemaVersion: 1,
+        encryptedLabel: deviceLabelEnvelope(vaultId, deviceId),
+      },
+    });
+    expect(valid.statusCode).toBe(201);
+    expect(fixture.authorization.enrollments.size).toBe(0);
+    expect(fixture.authorization.completions.size).toBe(1);
+    expect(fixture.authorization.devices.has(deviceId)).toBe(true);
   });
 
   it('bounds exact exchange replay by the original authorization expiry', async () => {

@@ -6,7 +6,13 @@ import {
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { buildApi, NodeTokenPort } from '../src/index.js';
-import { authHeader, createTestPorts, deviceId, vaultFixture } from './helpers.js';
+import {
+  authHeader,
+  createTestPorts,
+  deviceId,
+  deviceLabelEnvelope,
+  vaultFixture,
+} from './helpers.js';
 
 const openApps: ReturnType<typeof buildApi>[] = [];
 
@@ -131,6 +137,71 @@ describe('initial vault bootstrap', () => {
     expect(deviceCollision.statusCode).toBe(401);
     expect(fixture.storage.vaults.has(freshVaultId)).toBe(false);
     expect(fixture.authorization.sessions.size).toBe(1);
+  });
+
+  it('rejects unbound bootstrap device-label AAD without persisting state', async () => {
+    const fixture = await createTestPorts();
+    const app = track(
+      buildApi({
+        ports: fixture.ports,
+        environment: 'test',
+        vaultBootstrapEnabled: true,
+      }),
+    );
+    const issued = await new NodeTokenPort().issue();
+    const targetVaultId = 'vault.bootstrap-label-binding';
+    const targetDeviceId = 'device.bootstrap-label-binding';
+    const body = bootstrapBody(targetVaultId, targetDeviceId);
+    const labels = [
+      deviceLabelEnvelope('vault.bootstrap-label-other', targetDeviceId),
+      deviceLabelEnvelope(targetVaultId, 'device.bootstrap-label-other'),
+      deviceLabelEnvelope(targetVaultId, targetDeviceId, 2),
+    ];
+    const responses = [];
+    for (const encryptedLabel of labels) {
+      responses.push(
+        await app.inject({
+          method: 'POST',
+          url: '/v1/vaults',
+          headers: authHeader(issued.token),
+          payload: {
+            ...body,
+            device: { ...body.device, encryptedLabel },
+          },
+        }),
+      );
+    }
+
+    expect(responses.map(({ statusCode }) => statusCode)).toEqual([400, 400, 400]);
+    for (const response of responses) {
+      expect(response.json()).toEqual({
+        error: {
+          code: 'VALIDATION_FAILED',
+          message: 'Request validation failed',
+        },
+      });
+    }
+    expect(fixture.storage.vaults.has(targetVaultId)).toBe(false);
+    expect(fixture.authorization.devices.has(targetDeviceId)).toBe(false);
+    expect(fixture.authorization.sessions.size).toBe(1);
+    expect(fixture.bootstrap.receipts.size).toBe(0);
+
+    const valid = await app.inject({
+      method: 'POST',
+      url: '/v1/vaults',
+      headers: authHeader(issued.token),
+      payload: {
+        ...body,
+        device: {
+          ...body.device,
+          encryptedLabel: deviceLabelEnvelope(targetVaultId, targetDeviceId),
+        },
+      },
+    });
+    expect(valid.statusCode).toBe(201);
+    expect(fixture.storage.vaults.has(targetVaultId)).toBe(true);
+    expect(fixture.authorization.devices.has(targetDeviceId)).toBe(true);
+    expect(fixture.bootstrap.receipts.size).toBe(1);
   });
 
   it('validates revision-zero input before claiming a session and rate limits by source', async () => {

@@ -886,6 +886,30 @@ export function envelope(
   });
 }
 
+export function deviceLabelEnvelope(
+  vaultValue: string,
+  deviceValue: string,
+  schemaVersion = 1,
+): Readonly<Record<string, unknown>> {
+  return {
+    version: 1,
+    algorithm: 'xchacha20-poly1305-ietf',
+    nonce: Buffer.alloc(24).toString('base64url'),
+    ciphertext: 'AQID',
+    authenticationTag: Buffer.alloc(16).toString('base64url'),
+    aad: {
+      version: 1,
+      schemaVersion,
+      keyVersion: 1,
+      vaultId: vaultValue,
+      entityType: 'device-label',
+      entityId: deviceValue,
+      purpose: 'device-label',
+    },
+    keyVersion: 1,
+  } as const;
+}
+
 export function digest(value: string): Sha256Digest {
   return sha256DigestSchema.parse(
     Buffer.from(value.padEnd(32, '0').slice(0, 32)).toString('base64url'),
