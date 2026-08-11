@@ -189,6 +189,45 @@ describe('API production dependency graph', () => {
     ]);
   });
 
+  it.each([
+    {
+      label: 'unscoped target',
+      specifier: 'workspace:xbridge@',
+      targetPackage: 'xbridge',
+    },
+    {
+      label: 'scoped target',
+      specifier: 'workspace:@bridge/xbridge@',
+      targetPackage: '@bridge/xbridge',
+    },
+  ])(
+    'normalizes an empty-range workspace alias for a $label',
+    ({ specifier, targetPackage }) => {
+      const manifests: readonly WorkspaceManifest[] = [
+        {
+          name: '@kavrix/api',
+          dependencies: { '@kavrix/core': specifier },
+        },
+        { name: '@kavrix/core', dependencies: {} },
+        {
+          name: targetPackage,
+          dependencies: { '@kavrix/crypto': 'workspace:*' },
+        },
+        { name: '@kavrix/crypto', dependencies: {} },
+      ];
+
+      expect(() =>
+        reachableProductionPackages(
+          manifests,
+          '@kavrix/api',
+          forbiddenApiProductionPackages,
+        ),
+      ).toThrow(
+        `Forbidden Kavrix production dependency path: @kavrix/api -> @kavrix/core -> ${targetPackage} -> @kavrix/crypto`,
+      );
+    },
+  );
+
   it('fails closed on an unknown unscoped workspace dependency', () => {
     const manifests: readonly WorkspaceManifest[] = [
       {
@@ -267,13 +306,39 @@ describe('API production dependency graph', () => {
   });
 
   it.each([
-    ['link:../packages/crypto', 'link: specifier'],
-    ['file:../packages/crypto', 'file: specifier'],
-    ['../packages/crypto', 'filesystem path'],
-    ['crypto.tgz', 'local tarball'],
+    {
+      description: 'link: specifier',
+      label: 'link protocol',
+      specifier: 'link:../packages/crypto',
+    },
+    {
+      description: 'file: specifier',
+      label: 'file protocol',
+      specifier: 'file:../packages/crypto',
+    },
+    {
+      description: 'filesystem path',
+      label: 'leading relative segment',
+      specifier: '../packages/crypto',
+    },
+    {
+      description: 'filesystem path',
+      label: 'Windows internal separators',
+      specifier: 'x\\..\\..\\..\\packages\\crypto',
+    },
+    {
+      description: 'filesystem path',
+      label: 'POSIX internal separators',
+      specifier: 'x/../../../packages/crypto',
+    },
+    {
+      description: 'local tarball',
+      label: 'tarball filename',
+      specifier: 'crypto.tgz',
+    },
   ])(
-    'fails closed on unresolved local production dependency %s',
-    (specifier, description) => {
+    'fails closed on unresolved local production dependency with $label',
+    ({ specifier, description }) => {
       const manifests: readonly WorkspaceManifest[] = [
         {
           name: '@kavrix/api',
@@ -293,4 +358,29 @@ describe('API production dependency graph', () => {
       );
     },
   );
+
+  it.each([
+    { label: 'HTTPS URL', specifier: 'https://example.invalid/package.tgz' },
+    {
+      label: 'Git URL',
+      specifier: 'git+https://github.com/example/package.git',
+    },
+    { label: 'Git host protocol', specifier: 'github:example/package' },
+    { label: 'SCP-style Git source', specifier: 'git@github.com:example/package' },
+  ])('keeps an explicit $label outside the workspace graph', ({ specifier }) => {
+    const manifests: readonly WorkspaceManifest[] = [
+      {
+        name: '@kavrix/api',
+        dependencies: { bridge: specifier },
+      },
+    ];
+
+    const reachable = reachableProductionPackages(
+      manifests,
+      '@kavrix/api',
+      forbiddenApiProductionPackages,
+    );
+
+    expect([...reachable]).toEqual(['@kavrix/api']);
+  });
 });

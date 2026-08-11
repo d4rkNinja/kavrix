@@ -21,7 +21,7 @@ function aliasRangeSeparator(value: string): number {
 
 function workspaceAliasTarget(selector: string): string | undefined {
   const separator = aliasRangeSeparator(selector);
-  if (separator <= 0 || separator === selector.length - 1) {
+  if (separator <= 0) {
     return undefined;
   }
 
@@ -72,7 +72,13 @@ function localDependencyDescription(specifier: string): string | undefined {
   if (/^(?:[./\\]|~[/\\]|[a-z]:)/iu.test(specifier)) {
     return 'filesystem path';
   }
-  if (!specifier.includes('://') && /\.(?:tgz|tar\.gz|tar)$/iu.test(specifier)) {
+
+  const hasExplicitExternalSource =
+    /^[a-z][a-z0-9+.-]*:/iu.test(specifier) || /^[^@\s]+@[^:\s]+:/u.test(specifier);
+  if (!hasExplicitExternalSource && /[/\\]/u.test(specifier)) {
+    return 'filesystem path';
+  }
+  if (!hasExplicitExternalSource && /\.(?:tgz|tar\.gz|tar)$/iu.test(specifier)) {
     return 'local tarball';
   }
   return undefined;
