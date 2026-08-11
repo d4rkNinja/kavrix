@@ -67,9 +67,12 @@ Status resolves exactly one profile before loading protected state. It reports
 only vault/device IDs, `locked`, `offline`, pending opaque mutation count, and an
 optional protected-state timestamp. It holds the global writer lease, closes
 the SQLite stores and protected backend before rendering, and never opens
-initialization/join journals or a clipboard. Zero/multiple profiles, corruption,
-wrong passphrases, and lease contention fail closed. This command is not an
-unlock, online-sync, credential-read, or native-keychain portability claim.
+initialization/join journals or a clipboard. A sealed backend authenticates and
+unseals only the local protected rollback metadata needed for that timestamp;
+status never obtains vault root/group/item keys or decrypts credential records.
+Zero/multiple profiles, corruption, wrong passphrases, and lease contention fail
+closed. This command is not an unlock, online-sync, credential-read, or
+native-keychain portability claim.
 
 The deterministic package build emits one ESM executable entry and
 content-hashed lazy chunks. Version, completion, public help, `status --help`,

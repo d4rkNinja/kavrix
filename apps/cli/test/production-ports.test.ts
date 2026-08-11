@@ -81,7 +81,7 @@ describe('production CLI ports', () => {
       vaultId: 'vault.primary',
       deviceId: 'device.primary',
       syncState: 'offline',
-      pendingChanges: 0,
+      pendingChanges: 2,
       lastSyncAt: '2026-08-10T01:02:03.000Z',
     });
   });
@@ -186,7 +186,7 @@ function productionOptions(
       openSyncStore: () => {
         events.push('open-store');
         return Promise.resolve({
-          listPendingMutations: () => Promise.resolve([]),
+          listPendingMutations: () => Promise.resolve([{} as never, {} as never]),
         } as never);
       },
       clipboard: {} as never,

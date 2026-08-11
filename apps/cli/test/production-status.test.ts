@@ -19,7 +19,12 @@ import {
   openSqliteSyncLocalStore,
   openSqliteVaultProfileStore,
 } from '@kavrix/local-store';
-import { protectedLocalDeviceStateSchema } from '@kavrix/schemas';
+import {
+  opaqueMutationSchema,
+  protectedLocalDeviceStateSchema,
+  type OpaqueMutation,
+  type VaultId,
+} from '@kavrix/schemas';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { CliUsageError } from '../src/errors.js';
@@ -69,7 +74,7 @@ describe('production status composition', () => {
       vaultId: fixture.profile.vaultId,
       deviceId: fixture.profile.deviceId,
       syncState: 'offline',
-      pendingChanges: 0,
+      pendingChanges: 1,
       lastSyncAt: UPDATED_AT,
     });
     expect(read).toHaveBeenCalledExactlyOnceWith({
@@ -350,7 +355,19 @@ async function statusFixture(): Promise<
   const sync = await openSqliteSyncLocalStore({
     path: paths.vaultStore(profile.vaultId),
   });
-  sync.close();
+  try {
+    await sync.enqueueMutation(profile.vaultId, statusMutation(profile.vaultId));
+  } finally {
+    sync.close();
+  }
+  const reopenedSync = await openSqliteSyncLocalStore({
+    path: paths.vaultStore(profile.vaultId),
+  });
+  try {
+    expect(await reopenedSync.listPendingMutations(profile.vaultId)).toHaveLength(1);
+  } finally {
+    reopenedSync.close();
+  }
 
   const store = new SealedSecretStore({
     directory: paths.sealedSecrets,
@@ -400,6 +417,56 @@ function profileRecord(suffix: string): VaultProfile {
     },
     sessionLocator: { version: 1, vaultId, deviceId, purpose: 'api-session' },
   });
+}
+
+function statusMutation(vaultId: VaultId): OpaqueMutation {
+  const groupId = 'group.pending.status';
+  return opaqueMutationSchema.parse({
+    entityType: 'group',
+    expectedRecordRevision: null,
+    idempotencyKey: 'status-mutation-0001',
+    record: {
+      id: groupId,
+      vaultId,
+      schemaVersion: 1,
+      wrappedGroupKey: statusEnvelope(
+        vaultId,
+        groupId,
+        'wrapped-group-key',
+        'group-key',
+      ),
+      encryptedPayload: statusEnvelope(vaultId, groupId, 'group', 'group-payload'),
+      templateVersion: 1,
+      recordRevision: 0,
+      createdAt: UPDATED_AT,
+      updatedAt: UPDATED_AT,
+    },
+  });
+}
+
+function statusEnvelope(
+  vaultId: VaultId,
+  entityId: string,
+  entityType: 'wrapped-group-key' | 'group',
+  purpose: 'group-key' | 'group-payload',
+): Readonly<Record<string, unknown>> {
+  return {
+    version: 1,
+    algorithm: 'xchacha20-poly1305-ietf',
+    nonce: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+    ciphertext: 'AQID',
+    authenticationTag: 'AAAAAAAAAAAAAAAAAAAAAA',
+    aad: {
+      version: 1,
+      schemaVersion: 1,
+      keyVersion: 1,
+      vaultId,
+      entityType,
+      entityId,
+      purpose,
+    },
+    keyVersion: 1,
+  };
 }
 
 function secretPort(value: string): Readonly<{

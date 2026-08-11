@@ -69,7 +69,9 @@ Status requires exactly one canonical profile in the resolved data home. It repo
 vault/device IDs, `locked` vault state, `offline` sync state, the opaque pending-mutation count,
 and the protected-state timestamp when present. It acquires the process-wide writer lease while
 reading the profile and SQLite queue, then releases every store, backend, and lease before
-rendering. It never unlocks or decrypts the vault, contacts the profile server, reads
+rendering. A sealed backend authenticates and unseals only the local protected rollback
+metadata needed for its timestamp; status never obtains vault root/group/item keys or decrypts
+credential records. It never unlocks the vault, contacts the profile server, reads
 `CREDS_SERVER_URL`, or opens initialization/join journals or the clipboard.
 
 The protected backend defaults to `native` and fails closed when the native adapter is

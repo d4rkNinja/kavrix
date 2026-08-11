@@ -51,10 +51,12 @@ version`, static Bash/Zsh/Fish/PowerShell completion, password and passphrase
 generation, TOTP generation, create-only portable key-file creation, and a
 locked local `creds status` diagnostic for one already-enrolled data home.
 Status reads only the canonical profile, opaque pending-mutation count, and
-protected rollback timestamp; it does not unlock, decrypt, contact the stored
-server, or open clipboard/lifecycle-journal resources. Public initialization,
-unlock, online sync, show, copy, and device workflows remain unavailable. See
-the [CLI Reference](./docs/cli-reference.md) and
+protected rollback timestamp. With `sealed-file`, it authenticates and unseals
+only that local protected rollback metadata; it never obtains vault
+root/group/item keys or decrypts credential records. It does not unlock, contact
+the stored server, or open clipboard/lifecycle-journal resources. Public
+initialization, unlock, online sync, show, copy, and device workflows remain
+unavailable. See the [CLI Reference](./docs/cli-reference.md) and
 [Public Release Process](./docs/release.md).
 
 The package is a deterministic ESM entry with content-hashed lazy chunks; local

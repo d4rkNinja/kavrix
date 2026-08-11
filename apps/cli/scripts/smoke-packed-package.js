@@ -25,7 +25,7 @@ import {
   openSqliteSyncLocalStore,
   openSqliteVaultProfileStore,
 } from '@kavrix/local-store';
-import { protectedLocalDeviceStateSchema } from '@kavrix/schemas';
+import { opaqueMutationSchema, protectedLocalDeviceStateSchema } from '@kavrix/schemas';
 
 const packageDirectory = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const manifest = JSON.parse(
@@ -43,6 +43,7 @@ const archiveDirectory = resolve(temporaryRoot, 'archive');
 const installDirectory = resolve(temporaryRoot, 'install');
 const suppliedArchive = process.argv[2];
 let ownedStatusPassphrase;
+let journalSentinels;
 
 try {
   await Promise.all([
@@ -176,7 +177,7 @@ try {
   if (productionChunkNames.length === 0) {
     throw new Error('The packed production-status chunk could not be identified.');
   }
-  const debugEnvironment = { ...process.env, NODE_DEBUG: 'esm' };
+  const debugEnvironment = cleanNodeWarningEnvironment({ NODE_DEBUG: 'esm' });
   for (const [arguments_, expectedStatus] of [
     [['--version'], 0],
     [['completion', 'bash'], 0],
@@ -216,21 +217,23 @@ try {
     ['generate', 'passphrase', '--stdout'],
     /^[a-z-]{23,}\n$/u,
   );
-  const totp = run(
-    process.execPath,
-    [
-      executable,
-      'totp',
-      '--secret-stdin',
-      '--algorithm',
-      'sha1',
-      '--digits',
-      '8',
-      '--time',
-      '59',
-      '--stdout',
-    ],
-    { input: 'GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ' },
+  const totp = await withOwnedChildInput('GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ', (input) =>
+    run(
+      process.execPath,
+      [
+        executable,
+        'totp',
+        '--secret-stdin',
+        '--algorithm',
+        'sha1',
+        '--digits',
+        '8',
+        '--time',
+        '59',
+        '--stdout',
+      ],
+      { input },
+    ),
   );
   if (totp.status !== 0 || totp.stdout !== '94287082\n' || totp.stderr !== '') {
     throw new Error('Packed CLI TOTP generation failed.');
@@ -293,14 +296,14 @@ try {
     statusHome,
     ownedStatusPassphrase,
   );
+  journalSentinels = await seedJournalSentinels(statusHome);
   // Node 24 still labels its built-in SQLite module experimental. Suppress only
   // that warning class in the child so stderr assertions remain about the CLI;
   // the status implementation and installed launcher are otherwise unchanged.
-  const statusEnvironment = {
-    ...process.env,
+  const statusEnvironment = cleanNodeWarningEnvironment({
     CREDS_HOME: statusHome,
     NODE_OPTIONS: '--disable-warning=ExperimentalWarning',
-  };
+  });
   const statusArguments = [
     'status',
     '--json',
@@ -314,12 +317,12 @@ try {
   ) {
     throw new Error('The packed status passphrase reached argv or environment.');
   }
-  const jsonInput = Buffer.from(ownedStatusPassphrase);
-  const jsonStatus = runCommandShim(shim, statusArguments, {
-    env: statusEnvironment,
-    input: jsonInput,
-  });
-  jsonInput.fill(0);
+  const jsonStatus = await withOwnedChildInput(ownedStatusPassphrase, (input) =>
+    runCommandShim(shim, statusArguments, {
+      env: statusEnvironment,
+      input,
+    }),
+  );
   const expectedJson = `${JSON.stringify(statusFixture.expected, undefined, 2)}\n`;
   if (
     jsonStatus.status !== 0 ||
@@ -329,15 +332,15 @@ try {
   ) {
     throw new Error('The installed creds launcher did not return canonical status.');
   }
-  await assertNoWriterLocks(statusHome);
+  await assertCompletedStatusResources(statusHome, journalSentinels);
 
-  const textInput = Buffer.from(ownedStatusPassphrase);
-  const textStatus = runCommandShim(
-    shim,
-    ['status', '--secret-backend', 'sealed-file', '--backend-passphrase-stdin'],
-    { env: statusEnvironment, input: textInput },
+  const textStatus = await withOwnedChildInput(ownedStatusPassphrase, (input) =>
+    runCommandShim(
+      shim,
+      ['status', '--secret-backend', 'sealed-file', '--backend-passphrase-stdin'],
+      { env: statusEnvironment, input },
+    ),
   );
-  textInput.fill(0);
   if (
     textStatus.status !== 0 ||
     textStatus.stdout !== statusFixture.expectedText ||
@@ -345,35 +348,45 @@ try {
   ) {
     throw new Error('The installed creds launcher did not return text status.');
   }
-  await assertNoWriterLocks(statusHome);
+  await assertCompletedStatusResources(statusHome, journalSentinels);
 
-  const wrongInput = Buffer.from(ownedStatusPassphrase);
-  wrongInput[0] = wrongInput[0] === 0x41 ? 0x42 : 0x41;
-  const wrongStatus = runCommandShim(shim, statusArguments, {
-    env: statusEnvironment,
-    input: wrongInput,
-  });
-  wrongInput.fill(0);
-  if (
-    wrongStatus.status !== 1 ||
-    wrongStatus.stdout !== '' ||
-    wrongStatus.stderr !==
-      'Error [UNEXPECTED_FAILURE]: The command failed without exposing internal details.\n'
-  ) {
-    throw new Error('The installed status command did not fail closed.');
-  }
-  await assertNoWriterLocks(statusHome);
+  const wrongStatus = await withOwnedChildInput(
+    ownedStatusPassphrase,
+    async (wrongInput) => {
+      wrongInput[0] = wrongInput[0] === 0x41 ? 0x42 : 0x41;
+      const result = runCommandShim(shim, statusArguments, {
+        env: statusEnvironment,
+        input: wrongInput,
+      });
+      if (
+        result.status !== 1 ||
+        result.stdout !== '' ||
+        result.stderr !==
+          'Error [UNEXPECTED_FAILURE]: The command failed without exposing internal details.\n'
+      ) {
+        throw new Error('The installed status command did not fail closed.');
+      }
+      if (stringsContainBytes([result.stdout, result.stderr], wrongInput)) {
+        throw new Error('The wrong status passphrase reached command output.');
+      }
+      if (await treeContains(statusHome, wrongInput)) {
+        throw new Error('The wrong status passphrase reached durable local state.');
+      }
+      return result;
+    },
+  );
+  await assertCompletedStatusResources(statusHome, journalSentinels);
 
   const heldLease = await acquireLocalWriterLease(
     resolve(statusHome, 'cli.writer.lock'),
   );
   try {
-    const blockedInput = Buffer.from(ownedStatusPassphrase);
     const blockedStatus = runCommandShim(shim, statusArguments, {
       env: statusEnvironment,
-      input: blockedInput,
+      // An eager passphrase read would turn this into a usage failure instead
+      // of the expected live-lease failure.
+      input: '',
     });
-    blockedInput.fill(0);
     if (
       blockedStatus.status !== 1 ||
       blockedStatus.stdout !== '' ||
@@ -387,17 +400,18 @@ try {
     ) {
       throw new Error('The installed status command bypassed the global writer lease.');
     }
+    await assertJournalsUntouched(journalSentinels);
   } finally {
     await heldLease.release();
   }
   await assertNoWriterLocks(statusHome);
 
-  const recoveredInput = Buffer.from(ownedStatusPassphrase);
-  const recoveredStatus = runCommandShim(shim, statusArguments, {
-    env: statusEnvironment,
-    input: recoveredInput,
-  });
-  recoveredInput.fill(0);
+  const recoveredStatus = await withOwnedChildInput(ownedStatusPassphrase, (input) =>
+    runCommandShim(shim, statusArguments, {
+      env: statusEnvironment,
+      input,
+    }),
+  );
   if (
     recoveredStatus.status !== 0 ||
     recoveredStatus.stdout !== expectedJson ||
@@ -405,15 +419,15 @@ try {
   ) {
     throw new Error('Status did not recover after the live lease was released.');
   }
-  await assertNoWriterLocks(statusHome);
+  await assertCompletedStatusResources(statusHome, journalSentinels);
 
-  const debugInput = Buffer.from(ownedStatusPassphrase);
-  const debugStatus = run(process.execPath, [executable, ...statusArguments], {
-    env: { ...statusEnvironment, NODE_DEBUG: 'esm' },
-    input: debugInput,
-    maxBuffer: 8 * 1_024 * 1_024,
-  });
-  debugInput.fill(0);
+  const debugStatus = await withOwnedChildInput(ownedStatusPassphrase, (input) =>
+    run(process.execPath, [executable, ...statusArguments], {
+      env: { ...statusEnvironment, NODE_DEBUG: 'esm' },
+      input,
+      maxBuffer: 8 * 1_024 * 1_024,
+    }),
+  );
   if (
     debugStatus.status !== 0 ||
     debugStatus.stdout !== expectedJson ||
@@ -421,7 +435,7 @@ try {
   ) {
     throw new Error('A real status invocation did not evaluate production code.');
   }
-  await assertNoWriterLocks(statusHome);
+  await assertCompletedStatusResources(statusHome, journalSentinels);
 
   for (const output of [
     jsonStatus,
@@ -437,18 +451,14 @@ try {
   if (await treeContains(statusHome, ownedStatusPassphrase)) {
     throw new Error('The packed status passphrase reached durable local state.');
   }
-  if (
-    existsSync(resolve(statusHome, 'init-journal.db')) ||
-    existsSync(resolve(statusHome, 'join-journal.db'))
-  ) {
-    throw new Error('Status opened an unrelated lifecycle journal.');
-  }
+  await assertJournalsUntouched(journalSentinels);
 
   process.stdout.write(
     `Verified dependency-free packed CLI ${archive.split(/[\\/]/u).at(-1)} on ${process.platform}.\n`,
   );
 } finally {
   ownedStatusPassphrase?.fill(0);
+  journalSentinels?.forEach(({ expected }) => expected.fill(0));
   await rm(temporaryRoot, { recursive: true, force: true });
 }
 
@@ -687,7 +697,21 @@ async function createPackedStatusFixture(home, passphrase) {
   const sync = await openSqliteSyncLocalStore({
     path: resolve(home, `vault-${vaultId}.db`),
   });
-  sync.close();
+  try {
+    await sync.enqueueMutation(vaultId, packedStatusMutation(vaultId, updatedAt));
+  } finally {
+    sync.close();
+  }
+  const reopenedSync = await openSqliteSyncLocalStore({
+    path: resolve(home, `vault-${vaultId}.db`),
+  });
+  try {
+    if ((await reopenedSync.listPendingMutations(vaultId)).length !== 1) {
+      throw new Error('The packed status mutation did not survive a normal reopen.');
+    }
+  } finally {
+    reopenedSync.close();
+  }
 
   const sealed = new SealedSecretStore({
     directory: resolve(home, 'sealed'),
@@ -713,10 +737,60 @@ async function createPackedStatusFixture(home, passphrase) {
       vaultId,
       deviceId,
       syncState: 'offline',
-      pendingChanges: 0,
+      pendingChanges: 1,
       lastSyncAt: updatedAt,
     },
-    expectedText: `Vault: locked\nVault ID: ${vaultId}\nDevice ID: ${deviceId}\nSync: offline\nPending changes: 0\nLast sync: ${updatedAt}\n`,
+    expectedText: `Vault: locked\nVault ID: ${vaultId}\nDevice ID: ${deviceId}\nSync: offline\nPending changes: 1\nLast sync: ${updatedAt}\n`,
+  };
+}
+
+function packedStatusMutation(vaultId, timestamp) {
+  const groupId = 'group.packed.status';
+  return opaqueMutationSchema.parse({
+    entityType: 'group',
+    expectedRecordRevision: null,
+    idempotencyKey: 'packed-status-mutation-0001',
+    record: {
+      id: groupId,
+      vaultId,
+      schemaVersion: 1,
+      wrappedGroupKey: packedStatusEnvelope(
+        vaultId,
+        groupId,
+        'wrapped-group-key',
+        'group-key',
+      ),
+      encryptedPayload: packedStatusEnvelope(
+        vaultId,
+        groupId,
+        'group',
+        'group-payload',
+      ),
+      templateVersion: 1,
+      recordRevision: 0,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    },
+  });
+}
+
+function packedStatusEnvelope(vaultId, entityId, entityType, purpose) {
+  return {
+    version: 1,
+    algorithm: 'xchacha20-poly1305-ietf',
+    nonce: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+    ciphertext: 'AQID',
+    authenticationTag: 'AAAAAAAAAAAAAAAAAAAAAA',
+    aad: {
+      version: 1,
+      schemaVersion: 1,
+      keyVersion: 1,
+      vaultId,
+      entityType,
+      entityId,
+      purpose,
+    },
+    keyVersion: 1,
   };
 }
 
@@ -740,9 +814,52 @@ async function assertNoWriterLocks(home) {
   }
 }
 
+async function seedJournalSentinels(home) {
+  const sentinels = [];
+  for (const name of ['init-journal.db', 'join-journal.db']) {
+    const expected = Buffer.alloc(48);
+    randomFillSync(expected);
+    expected.write('NOT-SQLITE-STATUS', 0, 'ascii');
+    const path = resolve(home, name);
+    await writeFile(path, expected);
+    sentinels.push({ path, expected });
+  }
+  return sentinels;
+}
+
+async function assertCompletedStatusResources(home, sentinels) {
+  await assertNoWriterLocks(home);
+  await assertJournalsUntouched(sentinels);
+}
+
+async function assertJournalsUntouched(sentinels) {
+  for (const { path, expected } of sentinels) {
+    let actual;
+    try {
+      actual = await readFile(path);
+      if (!actual.equals(expected)) {
+        throw new Error('Status modified an unrelated lifecycle journal.');
+      }
+    } finally {
+      actual?.fill(0);
+    }
+    for (const suffix of ['-wal', '-shm', '-journal']) {
+      if (existsSync(`${path}${suffix}`)) {
+        throw new Error('Status opened an unrelated lifecycle journal.');
+      }
+    }
+  }
+}
+
 async function treeContains(home, needle) {
   for (const path of await allRegularFiles(home)) {
-    if ((await readFile(path)).includes(needle)) return true;
+    let bytes;
+    try {
+      bytes = await readFile(path);
+      if (bytes.includes(needle)) return true;
+    } finally {
+      bytes?.fill(0);
+    }
   }
   return false;
 }
@@ -772,6 +889,29 @@ function stringsContainBytes(values, needle) {
     }
   }
   return false;
+}
+
+async function withOwnedChildInput(value, operation) {
+  const input = Buffer.from(value);
+  try {
+    return await operation(input);
+  } finally {
+    input.fill(0);
+  }
+}
+
+function cleanNodeWarningEnvironment(overrides = {}) {
+  const warningControls = new Set([
+    'NODE_OPTIONS',
+    'NODE_NO_WARNINGS',
+    'NODE_REDIRECT_WARNINGS',
+  ]);
+  const environment = Object.fromEntries(
+    Object.entries(process.env).filter(
+      ([key]) => !warningControls.has(key.toUpperCase()),
+    ),
+  );
+  return { ...environment, ...overrides };
 }
 
 function runNodeCli(cliPath, arguments_, options) {
