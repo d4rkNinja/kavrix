@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  CLIPBOARD_CLEANUP_RETRY_DEADLINE_MS,
   MAX_CLEAR_TIMEOUT_MS,
+  MAX_CLIPBOARD_CLEANUP_ATTEMPTS,
   MIN_CLEAR_TIMEOUT_MS,
   SecureClipboard,
 } from '../src/index.js';
@@ -166,19 +168,145 @@ describe('SecureClipboard', () => {
     await expect(clipboard.lock()).resolves.toBe(false);
   });
 
-  it('reports background expiry failures without unhandled rejection', async () => {
+  it('bounds repeated expiry failures, wipes ownership, and reports generically', async () => {
     const fixture = testRuntime('darwin', ['/usr/bin/pbcopy', '/usr/bin/pbpaste']);
     const clipboard = new SecureClipboard(fixture.runtime);
     await clipboard.copy(bytes('background-failure'), { clearAfterMs: 1_000 });
+    fixture.commands.failuresRemaining = 4;
+
+    await fixture.scheduler.run(0);
+    await fixture.scheduler.run(1);
+    await fixture.scheduler.run(2);
+    await fixture.scheduler.run(3);
+
+    expect(clipboard.takeBackgroundError()).toMatchObject({
+      code: 'CLIPBOARD_OPERATION_FAILED',
+      message: 'Clipboard operation failed.',
+    });
+    expect(clipboard.takeBackgroundError()).toBeNull();
+    await expect(clipboard.lock()).resolves.toBe(false);
+    expect(fixture.commands.clipboard).toEqual(bytes('background-failure'));
+    expect(fixture.scheduler.tasks).toHaveLength(4);
+    expect(fixture.scheduler.tasks.map(({ delayMs }) => delayMs)).toEqual([
+      1_000, 100, 200, 400,
+    ]);
+  });
+
+  it('retries a transient expiry failure and clears the still-owned secret', async () => {
+    const fixture = testRuntime('darwin', ['/usr/bin/pbcopy', '/usr/bin/pbpaste']);
+    const clipboard = new SecureClipboard(fixture.runtime);
+    await clipboard.copy(bytes('transient-expiry'), { clearAfterMs: 1_000 });
     fixture.commands.failNext = true;
 
     await fixture.scheduler.run(0);
 
+    expect(fixture.commands.clipboard).toEqual(bytes('transient-expiry'));
+    expect(clipboard.takeBackgroundError()).toBeNull();
+    expect(fixture.scheduler.tasks[1]?.delayMs).toBe(100);
+
+    await fixture.scheduler.run(1);
+
+    expect(fixture.commands.clipboard).toHaveLength(0);
+    expect(clipboard.takeBackgroundError()).toBeNull();
+  });
+
+  it('does not schedule another retry after the monotonic cleanup deadline', async () => {
+    const fixture = testRuntime('darwin', ['/usr/bin/pbcopy', '/usr/bin/pbpaste']);
+    const clipboard = new SecureClipboard(fixture.runtime);
+    await clipboard.copy(bytes('deadline-expiry'), { clearAfterMs: 1_000 });
+    fixture.commands.failNext = true;
+    await fixture.scheduler.run(0);
+    fixture.scheduler.nowMs = 1_700;
+    fixture.commands.failNext = true;
+
+    await fixture.scheduler.run(1);
+
+    expect(fixture.scheduler.tasks).toHaveLength(2);
     expect(clipboard.takeBackgroundError()).toMatchObject({
       code: 'CLIPBOARD_OPERATION_FAILED',
+      message: 'Clipboard operation failed.',
     });
+    await expect(clipboard.lock()).resolves.toBe(false);
+  });
+
+  it('re-reads on retry and preserves an external replacement', async () => {
+    const fixture = testRuntime('darwin', ['/usr/bin/pbcopy', '/usr/bin/pbpaste']);
+    const clipboard = new SecureClipboard(fixture.runtime);
+    await clipboard.copy(bytes('owned-before-retry'), { clearAfterMs: 1_000 });
+    fixture.commands.failNext = true;
+
+    await fixture.scheduler.run(0);
+    fixture.commands.clipboard = bytes('external-between-attempts');
+    await fixture.scheduler.run(1);
+
+    expect(fixture.commands.clipboard).toEqual(bytes('external-between-attempts'));
+    await expect(clipboard.lock()).resolves.toBe(false);
     expect(clipboard.takeBackgroundError()).toBeNull();
+  });
+
+  it('cancels an old expiry retry when a newer generation is copied', async () => {
+    const fixture = testRuntime('darwin', ['/usr/bin/pbcopy', '/usr/bin/pbpaste']);
+    const clipboard = new SecureClipboard(fixture.runtime);
+    await clipboard.copy(bytes('old-generation'), { clearAfterMs: 1_000 });
+    fixture.commands.failNext = true;
+    await fixture.scheduler.run(0);
+
+    await clipboard.copy(bytes('new-generation'), { clearAfterMs: 2_000 });
+
+    expect(fixture.scheduler.tasks[1]?.cancelled).toBe(true);
+    await fixture.scheduler.run(1, true);
+    expect(fixture.commands.clipboard).toEqual(bytes('new-generation'));
+    await fixture.scheduler.run(2);
+    expect(fixture.commands.clipboard).toHaveLength(0);
+  });
+
+  it('dispose cancels a pending expiry retry and clears ownership', async () => {
+    const fixture = testRuntime('darwin', ['/usr/bin/pbcopy', '/usr/bin/pbpaste']);
+    const clipboard = new SecureClipboard(fixture.runtime);
+    await clipboard.copy(bytes('dispose-during-retry'), { clearAfterMs: 1_000 });
+    fixture.commands.failNext = true;
+    await fixture.scheduler.run(0);
+
+    await expect(clipboard.dispose()).resolves.toBe(true);
+
+    expect(fixture.scheduler.tasks[1]?.cancelled).toBe(true);
+    await fixture.scheduler.run(1, true);
+    expect(fixture.commands.clipboard).toHaveLength(0);
+    await expect(clipboard.lock()).resolves.toBe(false);
+  });
+
+  it('an aborted lock invalidates a cancelled retry even if its handle fires', async () => {
+    const fixture = testRuntime('darwin', ['/usr/bin/pbcopy', '/usr/bin/pbpaste']);
+    const clipboard = new SecureClipboard(fixture.runtime);
+    await clipboard.copy(bytes('aborted-lock-retry'), { clearAfterMs: 1_000 });
+    fixture.commands.failNext = true;
+    await fixture.scheduler.run(0);
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(clipboard.lock(controller.signal)).rejects.toMatchObject({
+      code: 'CLIPBOARD_ABORTED',
+    });
+    expect(fixture.scheduler.tasks[1]?.cancelled).toBe(true);
+
+    await fixture.scheduler.run(1, true);
+
+    expect(fixture.commands.clipboard).toEqual(bytes('aborted-lock-retry'));
+    expect(fixture.scheduler.tasks).toHaveLength(2);
     await expect(clipboard.lock()).resolves.toBe(true);
+  });
+
+  it('reports requested clear time separately from the retry cleanup window', async () => {
+    const fixture = testRuntime('darwin', ['/usr/bin/pbcopy', '/usr/bin/pbpaste']);
+    const clipboard = new SecureClipboard(fixture.runtime);
+
+    await expect(
+      clipboard.copy(bytes('receipt-timing'), { clearAfterMs: 1_000 }),
+    ).resolves.toMatchObject({
+      requestedClearAfterMs: 1_000,
+      cleanupRetryDeadlineAfterMs: 1_000 + CLIPBOARD_CLEANUP_RETRY_DEADLINE_MS,
+      maxCleanupAttempts: MAX_CLIPBOARD_CLEANUP_ATTEMPTS,
+    });
   });
 
   it('clears the previous owned value when a replacement write fails', async () => {

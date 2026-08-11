@@ -89,6 +89,11 @@ interface ScheduledTask {
 
 export class MemoryScheduler implements ClipboardSchedulerPort {
   public readonly tasks: ScheduledTask[] = [];
+  public nowMs = 0;
+
+  public now(): number {
+    return this.nowMs;
+  }
 
   public set(delayMs: number, task: () => void): ScheduledTask {
     const scheduled = { task, delayMs, cancelled: false };
@@ -103,7 +108,10 @@ export class MemoryScheduler implements ClipboardSchedulerPort {
   public async run(index: number, includeCancelled = false): Promise<void> {
     const scheduled = this.tasks[index];
     if (scheduled === undefined) throw new Error('Missing scheduled task');
-    if (!scheduled.cancelled || includeCancelled) scheduled.task();
+    if (!scheduled.cancelled || includeCancelled) {
+      this.nowMs += scheduled.delayMs;
+      scheduled.task();
+    }
     await new Promise((resolve) => setImmediate(resolve));
     await new Promise((resolve) => setImmediate(resolve));
   }

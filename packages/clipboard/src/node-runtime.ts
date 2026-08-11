@@ -2,6 +2,7 @@ import { access } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { isAbsolute } from 'node:path';
+import { performance } from 'node:perf_hooks';
 
 import { ClipboardError } from './errors.js';
 import type {
@@ -155,6 +156,10 @@ export class NodeExecutableResolver implements ExecutableResolverPort {
 }
 
 export class NodeClipboardScheduler implements ClipboardSchedulerPort {
+  public now(): number {
+    return performance.now();
+  }
+
   public set(delayMs: number, task: () => void): NodeJS.Timeout {
     const handle = setTimeout(task, delayMs);
     handle.unref();

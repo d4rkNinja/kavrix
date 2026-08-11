@@ -13,6 +13,16 @@ and clear only the still-matching Kavrix generation. A newer Kavrix copy is
 protected by serialized operations and generation tokens. New external content
 observed during the comparison is preserved.
 
+`clearAfterMs` is the requested time of the first guarded clear attempt, not a
+guaranteed completion time. A transient native failure is retried at 100, 200,
+and 400 ms, with no more than four total attempts and no retry started after the
+700 ms monotonic cleanup deadline. Every retry re-reads and compares the
+clipboard; replacement content ends cleanup without being cleared. An in-flight
+native attempt may finish after the deadline, subject to its own command timeout.
+The copy receipt reports the requested delay, retry deadline, and attempt bound
+separately. If all attempts fail, retry state and fingerprints are wiped and a
+generic background error is available through `takeBackgroundError()`.
+
 ## Limitations
 
 - Clipboard managers, accessibility tools, remote-desktop software, malware,

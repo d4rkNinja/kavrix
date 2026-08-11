@@ -5,7 +5,9 @@ import { detectClipboardBackend, type ClipboardBackend } from './backends.js';
 import { ClipboardError } from './errors.js';
 import { createNodeClipboardRuntime } from './node-runtime.js';
 import {
+  CLIPBOARD_CLEANUP_RETRY_DEADLINE_MS,
   MAX_CLEAR_TIMEOUT_MS,
+  MAX_CLIPBOARD_CLEANUP_ATTEMPTS,
   MAX_CLIPBOARD_BYTES,
   MIN_CLEAR_TIMEOUT_MS,
   type ClipboardCopyOptions,
@@ -14,9 +16,13 @@ import {
   type SecureClipboardPort,
 } from './types.js';
 
+const INITIAL_EXPIRY_RETRY_DELAY_MS = 100;
+const MAX_EXPIRY_RETRY_DELAY_MS = 400;
+
 interface ActiveClipboard {
   readonly generation: number;
   readonly fingerprints: readonly Uint8Array[];
+  readonly cleanupRetryDeadline: number;
   timer: object | number | null;
 }
 
@@ -75,19 +81,31 @@ export class SecureClipboard implements SecureClipboardPort {
         const active: ActiveClipboard = {
           generation,
           fingerprints: [Uint8Array.from(expectedFingerprint)],
+          cleanupRetryDeadline:
+            this.#runtime.scheduler.now() +
+            options.clearAfterMs +
+            CLIPBOARD_CLEANUP_RETRY_DEADLINE_MS,
           timer: null,
         };
         try {
-          active.timer = this.#runtime.scheduler.set(options.clearAfterMs, () => {
-            void this.#expire(generation);
-          });
+          active.timer = this.#runtime.scheduler.set(
+            options.clearAfterMs,
+            this.#expiryTask(generation, 1),
+          );
         } catch (error) {
           wipeActive(active);
           throw error;
         }
         this.#active = active;
         wipeActive(previous);
-        return { generation, clearAfterMs: options.clearAfterMs };
+        return {
+          generation,
+          requestedClearAfterMs: options.clearAfterMs,
+          cleanupRetryDeadlineAfterMs:
+            options.clearAfterMs + CLIPBOARD_CLEANUP_RETRY_DEADLINE_MS,
+          maxCleanupAttempts: MAX_CLIPBOARD_CLEANUP_ATTEMPTS,
+          clearAfterMs: options.clearAfterMs,
+        };
       } catch (error) {
         const cleanupFingerprints = [
           ...(writeAttempted ? [expectedFingerprint] : []),
@@ -100,6 +118,7 @@ export class SecureClipboard implements SecureClipboardPort {
             this.#active = {
               generation,
               fingerprints: cleanupFingerprints.map((value) => Uint8Array.from(value)),
+              cleanupRetryDeadline: this.#runtime.scheduler.now(),
               timer: null,
             };
             wipeActive(previous);
@@ -153,22 +172,61 @@ export class SecureClipboard implements SecureClipboardPort {
     });
   }
 
-  async #expire(generation: number): Promise<void> {
-    try {
-      await this.#exclusive(async () => {
-        const active = this.#active;
-        if (active?.generation !== generation) return;
-        active.timer = null;
+  async #expire(generation: number, attempt: number): Promise<void> {
+    await this.#exclusive(async () => {
+      const active = this.#active;
+      if (active?.generation !== generation || this.#generation !== generation) return;
+      active.timer = null;
+      try {
         const backend = await this.#getBackend();
         await this.#clearMatching(backend, active.fingerprints);
-        if (this.#active === active) {
-          this.#active = null;
-          wipeActive(active);
+        this.#finishExpiry(active);
+      } catch {
+        if (this.#active !== active || active.generation !== generation) return;
+        const remainingRetryMs =
+          active.cleanupRetryDeadline - this.#runtime.scheduler.now();
+        if (attempt >= MAX_CLIPBOARD_CLEANUP_ATTEMPTS || remainingRetryMs <= 0) {
+          this.#finishExpiry(active);
+          this.#recordBackgroundFailure();
+          return;
         }
-      });
-    } catch (error) {
-      this.#backgroundError ??= normalizeFailure(error);
-    }
+        const retryDelayMs = Math.min(
+          INITIAL_EXPIRY_RETRY_DELAY_MS * 2 ** (attempt - 1),
+          MAX_EXPIRY_RETRY_DELAY_MS,
+          remainingRetryMs,
+        );
+        try {
+          active.timer = this.#runtime.scheduler.set(
+            retryDelayMs,
+            this.#expiryTask(generation, attempt + 1),
+          );
+        } catch {
+          this.#finishExpiry(active);
+          this.#recordBackgroundFailure();
+        }
+      }
+    }).catch(() => {
+      this.#recordBackgroundFailure();
+    });
+  }
+
+  #expiryTask(generation: number, attempt: number): () => void {
+    return () => {
+      void this.#expire(generation, attempt);
+    };
+  }
+
+  #finishExpiry(active: ActiveClipboard): void {
+    if (this.#active !== active) return;
+    this.#active = null;
+    wipeActive(active);
+  }
+
+  #recordBackgroundFailure(): void {
+    this.#backgroundError ??= new ClipboardError(
+      'CLIPBOARD_OPERATION_FAILED',
+      'Clipboard operation failed.',
+    );
   }
 
   async #clearMatching(

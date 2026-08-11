@@ -1,6 +1,8 @@
 export const MIN_CLEAR_TIMEOUT_MS = 250;
 export const MAX_CLEAR_TIMEOUT_MS = 5 * 60 * 1_000;
 export const MAX_CLIPBOARD_BYTES = 1024 * 1024;
+export const CLIPBOARD_CLEANUP_RETRY_DEADLINE_MS = 700;
+export const MAX_CLIPBOARD_CLEANUP_ATTEMPTS = 4;
 
 export interface ClipboardCopyOptions {
   /** Clear delay is bounded to 250 ms through five minutes. */
@@ -11,6 +13,13 @@ export interface ClipboardCopyOptions {
 export interface ClipboardCopyReceipt {
   /** Opaque in-process ownership generation; it is not a secret or identifier. */
   readonly generation: number;
+  /** Requested delay before the first guarded clear attempt. */
+  readonly requestedClearAfterMs?: number;
+  /** Latest retry-start deadline, measured from copy completion. */
+  readonly cleanupRetryDeadlineAfterMs?: number;
+  /** Maximum guarded clear attempts, including the first requested attempt. */
+  readonly maxCleanupAttempts?: number;
+  /** @deprecated Use requestedClearAfterMs, which distinguishes retry completion. */
   readonly clearAfterMs: number;
 }
 
@@ -53,6 +62,7 @@ export interface ExecutableResolverPort {
 }
 
 export interface ClipboardSchedulerPort {
+  now(): number;
   set(delayMs: number, task: () => void): object | number;
   clear(handle: object | number): void;
 }
