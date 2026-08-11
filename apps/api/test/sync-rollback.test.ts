@@ -23,6 +23,7 @@ describe('sync rollback HTTP outcome', () => {
     const logs: string[] = [];
     const causeCanary = 'rollback-cause-canary-93d7';
     const deviceCanary = 'rollback-device-canary-24a1';
+    const hostCanary = 'rollback-host-canary.invalid';
     const conflict = new SyncConflictError();
     Object.defineProperties(conflict, {
       cause: { value: new Error(causeCanary), enumerable: true },
@@ -42,7 +43,7 @@ describe('sync rollback HTTP outcome', () => {
     const response = await app.inject({
       method: 'GET',
       url: `/v1/vaults/${vaultId}/sync?serverSequence=654321&highestSeenVaultRevision=777777&limit=1`,
-      headers: authHeader(fixture.token),
+      headers: { ...authHeader(fixture.token), host: hostCanary },
     });
 
     expect(response.statusCode).toBe(409);
@@ -67,6 +68,7 @@ describe('sync rollback HTTP outcome', () => {
     expect(completeLogs).not.toContain('777777');
     expect(completeLogs).not.toContain(deviceCanary);
     expect(completeLogs).not.toContain(causeCanary);
+    expect(completeLogs).not.toContain(hostCanary);
   });
 
   it('keeps generic push conflicts as successful per-mutation outcomes', async () => {

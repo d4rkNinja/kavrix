@@ -40,6 +40,7 @@ describeMongo('sync rollback HTTP outcome against MongoDB rs0', () => {
       vaultId: vaultIdSchema.parse('vault.1'),
     });
     const logs: string[] = [];
+    const hostCanary = 'rollback-host-canary.invalid';
     const app = buildApi({
       ports: { ...fixture.ports, storage },
       environment: 'test',
@@ -50,7 +51,7 @@ describeMongo('sync rollback HTTP outcome against MongoDB rs0', () => {
       const response = await app.inject({
         method: 'GET',
         url: '/v1/vaults/vault.1/sync?serverSequence=1&highestSeenVaultRevision=999999&limit=1',
-        headers: authHeader(fixture.token),
+        headers: { ...authHeader(fixture.token), host: hostCanary },
       });
 
       expect(response.statusCode).toBe(409);
@@ -67,6 +68,7 @@ describeMongo('sync rollback HTTP outcome against MongoDB rs0', () => {
       expect(completeLogs).not.toContain('999999');
       expect(completeLogs).not.toContain('/sync?');
       expect(completeLogs).not.toContain('SyncConflictError');
+      expect(completeLogs).not.toContain(hostCanary);
     } finally {
       await app.close();
     }
