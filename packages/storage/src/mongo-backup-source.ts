@@ -6,6 +6,7 @@ import {
 import {
   canonicalJson,
   contentHashForRecord,
+  attachmentRecordHashMatchesCanonicalContent,
   encryptedBackupEntrySchema,
   vaultIdSchema,
   type EncryptedAttachmentRecord,
@@ -471,6 +472,7 @@ class MongoBackupSnapshotImpl implements MongoBackupSnapshot {
       fail();
     }
     const start = staging.input;
+    if (!attachmentRecordHashMatchesCanonicalContent(start.header)) fail();
     let progress = createAttachmentStagingProgress();
     yield this.#entry({ kind: 'attachment-header', record: start.header });
 
@@ -489,7 +491,8 @@ class MongoBackupSnapshotImpl implements MongoBackupSnapshot {
         chunk.record.vaultId !== this.vault.id ||
         chunk.record.groupId !== attachment.groupId ||
         chunk.record.itemId !== attachment.itemId ||
-        chunk.record.attachmentId !== attachment.id
+        chunk.record.attachmentId !== attachment.id ||
+        !attachmentRecordHashMatchesCanonicalContent(chunk)
       ) {
         fail();
       }

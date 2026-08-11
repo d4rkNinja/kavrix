@@ -65,6 +65,7 @@ import { OpaqueVaultSnapshot } from '@kavrix/client';
 import {
   MongoBackupRestoreStore,
   MongoVaultStorage,
+  hashCanonical,
   mongoStorageCollectionNames,
   toVaultDocument,
 } from '../src/index.js';
@@ -348,6 +349,128 @@ describe('authenticated encrypted-backup restore against a MongoDB replica set',
       await staged.abort();
     });
   });
+
+  it.each(['header', 'chunk'] as const)(
+    'rejects a direct restore-store %s hash mismatch without publishing vault state',
+    async (kind) => {
+      await withEmptyDatabase(client, async (database) => {
+        const store = new MongoBackupRestoreStore(client, database, {
+          now: () => new Date(CREATED_AT),
+        });
+        await store.initialize();
+        const staged = await store.open(fixture.summary.restoreSessionId, LIMITS);
+        const invalidHash = sha256DigestSchema.parse(
+          Buffer.alloc(32).toString('base64url'),
+        );
+
+        for (const entry of [
+          { kind: 'vault' as const, record: fixture.vault },
+          ...fixture.orderedRecords,
+        ]) {
+          const candidate =
+            kind === 'header' && entry.kind === 'attachment-header'
+              ? { ...entry, record: { ...entry.record, contentHash: invalidHash } }
+              : kind === 'chunk' && entry.kind === 'attachment-chunk'
+                ? {
+                    ...entry,
+                    record: { ...entry.record, ciphertextHash: invalidHash },
+                  }
+                : entry;
+          if (candidate === entry) {
+            await staged.write(candidate);
+          } else {
+            await expect(staged.write(candidate)).rejects.toThrow();
+            break;
+          }
+        }
+
+        for (const collectionName of [
+          mongoStorageCollectionNames.vaults,
+          mongoStorageCollectionNames.groups,
+          mongoStorageCollectionNames.items,
+          mongoStorageCollectionNames.attachments,
+          mongoStorageCollectionNames.attachmentStaging,
+          mongoStorageCollectionNames.attachmentStagingChunks,
+          mongoStorageCollectionNames.changes,
+          mongoStorageCollectionNames.counters,
+        ]) {
+          await expect(
+            database.collection(collectionName).countDocuments(),
+          ).resolves.toBe(0);
+        }
+        await expect(staged.status()).resolves.toBe('staging');
+        await staged.abort();
+      });
+    },
+  );
+
+  it.each(['header', 'chunk'] as const)(
+    'revalidates a staged %s hash at commit before publishing vault state',
+    async (kind) => {
+      await withEmptyDatabase(client, async (database) => {
+        const store = new MongoBackupRestoreStore(client, database, {
+          now: () => new Date(CREATED_AT),
+        });
+        await store.initialize();
+        const staged = await store.open(fixture.summary.restoreSessionId, LIMITS);
+        for (const entry of [
+          { kind: 'vault' as const, record: fixture.vault },
+          ...fixture.orderedRecords,
+        ]) {
+          await staged.write(entry);
+        }
+
+        const entriesCollection = database.collection(
+          mongoStorageCollectionNames.backupRestoreEntries,
+        );
+        const stored = await entriesCollection.findOne({
+          restoreSessionId: fixture.summary.restoreSessionId,
+          'entry.kind': kind === 'header' ? 'attachment-header' : 'attachment-chunk',
+        });
+        if (stored === null) throw new Error('Staged attachment entry is missing.');
+        const entry = stored['entry'] as EncryptedBackupEntry;
+        const invalidHash = sha256DigestSchema.parse(
+          Buffer.alloc(32).toString('base64url'),
+        );
+        const mutatedEntry =
+          entry.kind === 'attachment-header'
+            ? { ...entry, record: { ...entry.record, contentHash: invalidHash } }
+            : entry.kind === 'attachment-chunk'
+              ? { ...entry, record: { ...entry.record, ciphertextHash: invalidHash } }
+              : undefined;
+        if (mutatedEntry === undefined) {
+          throw new Error('Unexpected staged attachment entry kind.');
+        }
+        await entriesCollection.replaceOne(
+          { _id: stored._id },
+          {
+            ...stored,
+            entry: mutatedEntry,
+            entryHash: hashCanonical(mutatedEntry),
+          },
+        );
+
+        await expect(staged.commit(fixture.summary)).rejects.toThrow();
+        for (const collectionName of [
+          mongoStorageCollectionNames.vaults,
+          mongoStorageCollectionNames.groups,
+          mongoStorageCollectionNames.items,
+          mongoStorageCollectionNames.attachments,
+          mongoStorageCollectionNames.attachmentStaging,
+          mongoStorageCollectionNames.attachmentStagingChunks,
+          mongoStorageCollectionNames.changes,
+          mongoStorageCollectionNames.counters,
+        ]) {
+          await expect(
+            database.collection(collectionName).countDocuments(),
+          ).resolves.toBe(0);
+        }
+        await expect(staged.status()).resolves.toBe('staging');
+        await staged.abort();
+        await expect(staged.status()).resolves.toBe('aborted');
+      });
+    },
+  );
 });
 
 async function createFixture(prefix: string): Promise<BackupFixture> {

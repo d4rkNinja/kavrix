@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, timingSafeEqual } from 'node:crypto';
 
 import type {
   PersistedAttachmentChunkRecord,
@@ -76,5 +76,23 @@ export function attachmentHeaderContentHash(
     createHash('sha256')
       .update(canonicalJson(header.record), 'utf8')
       .digest('base64url'),
+  );
+}
+
+/** Constant-time comparison of an attachment record's advertised and canonical digest. */
+export function attachmentRecordHashMatchesCanonicalContent(
+  record: PersistedAttachmentHeaderRecord | PersistedAttachmentChunkRecord,
+): boolean {
+  const canonical =
+    record.entityType === 'attachment-header'
+      ? attachmentHeaderContentHash(record)
+      : attachmentChunkCiphertextHash(record);
+  const supplied =
+    record.entityType === 'attachment-header'
+      ? record.contentHash
+      : record.ciphertextHash;
+  return timingSafeEqual(
+    Buffer.from(canonical, 'base64url'),
+    Buffer.from(supplied, 'base64url'),
   );
 }

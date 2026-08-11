@@ -1,3 +1,5 @@
+import { createHash, createHmac, hkdfSync } from 'node:crypto';
+
 import {
   createPortableKeySlot,
   encryptPayload,
@@ -9,6 +11,8 @@ import {
 } from '@kavrix/crypto';
 import {
   associatedDataSchema,
+  attachmentChunkCiphertextHash,
+  attachmentHeaderContentHash,
   contentHashForRecord,
   encryptedAttachmentRecordSchema,
   encryptedGroupRecordSchema,
@@ -48,7 +52,7 @@ const OTHER_VAULT_ID = vaultIdSchema.parse('vault-2');
 const GROUP_ID = groupIdSchema.parse('group-1');
 const ITEM_ID = 'item-1';
 const ATTACHMENT_ID = 'attachment-1';
-const DIGEST = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
+const DIGEST = sha256DigestSchema.parse('AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA');
 const PLAINTEXT_CANARY = 'KAVRIX-BACKUP-PLAINTEXT-CANARY';
 
 describe('encrypted backup streaming format', () => {
@@ -305,7 +309,7 @@ describe('encrypted backup streaming format', () => {
             { kind: 'attachment', record: graph.attachment },
             {
               kind: 'attachment-header',
-              record: persistedAttachmentHeaderRecordSchema.parse({
+              record: withCanonicalHeaderHash({
                 ...graph.header,
                 record: { ...graph.header.record, keyVersion: 2 },
               }),
@@ -423,6 +427,139 @@ describe('encrypted backup streaming format', () => {
       zeroize(fixture.rootKey);
     }
   });
+
+  it.each(['header', 'chunk'] as const)(
+    'rejects a noncanonical attachment %s hash during creation before emitting a footer',
+    async (kind) => {
+      const fixture = await createFixture();
+      try {
+        const graph = createAttachmentGraph();
+        const invalidRecord =
+          kind === 'header'
+            ? {
+                kind: 'attachment-header' as const,
+                record: { ...graph.header, contentHash: DIGEST },
+              }
+            : {
+                kind: 'attachment-chunk' as const,
+                record: { ...graph.chunk, ciphertextHash: DIGEST },
+              };
+        const emitted: Uint8Array[] = [];
+        const archive = createEncryptedBackup(
+          {
+            vault: fixture.vault,
+            records: entries(
+              { kind: 'group', record: fixture.group },
+              { kind: 'item', record: graph.item },
+              { kind: 'attachment', record: graph.attachment },
+              ...(kind === 'header'
+                ? [
+                    invalidRecord,
+                    { kind: 'attachment-chunk' as const, record: graph.chunk },
+                  ]
+                : [
+                    { kind: 'attachment-header' as const, record: graph.header },
+                    invalidRecord,
+                  ]),
+            ),
+            createdAt: CREATED_AT,
+          },
+          fixture.rootKey,
+        );
+
+        const caught = await (async (): Promise<unknown> => {
+          try {
+            for await (const bytes of archive) emitted.push(bytes);
+            return undefined;
+          } catch (error) {
+            return error;
+          }
+        })();
+
+        expect(caught).toEqual(expect.objectContaining({ code: 'BACKUP_INVALID' }));
+        expect(Buffer.concat(emitted).toString('utf8')).not.toContain(
+          '"type":"footer"',
+        );
+      } finally {
+        zeroize(fixture.rootKey);
+      }
+    },
+  );
+
+  it.each(['header', 'chunk'] as const)(
+    'rejects an authenticated noncanonical attachment %s hash and aborts hidden staging',
+    async (kind) => {
+      const fixture = await createFixture();
+      try {
+        const graph = createAttachmentGraph();
+        const validBytes = await collect(
+          createEncryptedBackup(
+            {
+              vault: fixture.vault,
+              records: entries(
+                { kind: 'group', record: fixture.group },
+                { kind: 'item', record: graph.item },
+                { kind: 'attachment', record: graph.attachment },
+                { kind: 'attachment-header', record: graph.header },
+                { kind: 'attachment-chunk', record: graph.chunk },
+              ),
+              createdAt: CREATED_AT,
+            },
+            fixture.rootKey,
+          ),
+        );
+        const invalidBytes = authenticateMutatedArchive(
+          validBytes,
+          fixture.rootKey,
+          kind === 'header' ? 'attachment-header' : 'attachment-chunk',
+          (entry) => {
+            if (entry.kind === 'attachment-header') {
+              return { ...entry, record: { ...entry.record, contentHash: DIGEST } };
+            }
+            if (entry.kind === 'attachment-chunk') {
+              return { ...entry, record: { ...entry.record, ciphertextHash: DIGEST } };
+            }
+            return entry;
+          },
+        );
+
+        await expect(
+          verifyEncryptedBackup(chunks(invalidBytes), fixture.rootKey, VAULT_ID),
+        ).rejects.toMatchObject({ code: 'BACKUP_INVALID' });
+
+        const staged: EncryptedBackupEntry[] = [];
+        let state: 'staging' | 'committed' | 'aborted' = 'staging';
+        await expect(
+          restoreEncryptedBackup(
+            chunks(invalidBytes),
+            fixture.rootKey,
+            VAULT_ID,
+            storeFor({
+              write(entry): Promise<void> {
+                staged.push(entry);
+                return Promise.resolve();
+              },
+              commit(): Promise<void> {
+                state = 'committed';
+                return Promise.resolve();
+              },
+              status(): Promise<typeof state> {
+                return Promise.resolve(state);
+              },
+              abort(): Promise<void> {
+                state = 'aborted';
+                staged.length = 0;
+                return Promise.resolve();
+              },
+            }),
+          ),
+        ).rejects.toMatchObject({ code: 'BACKUP_INVALID' });
+        expect({ state, staged }).toEqual({ state: 'aborted', staged: [] });
+      } finally {
+        zeroize(fixture.rootKey);
+      }
+    },
+  );
 
   it('requires the exact active predecessor before a deleted tombstone', async () => {
     const fixture = await createFixture();
@@ -791,7 +928,7 @@ function createAttachmentGraph(): {
     itemId: ITEM_ID,
     attachmentId: ATTACHMENT_ID,
   } as const;
-  const header = persistedAttachmentHeaderRecordSchema.parse({
+  const headerBase = persistedAttachmentHeaderRecordSchema.parse({
     entityType: 'attachment-header',
     record: {
       ...identity,
@@ -803,7 +940,11 @@ function createAttachmentGraph(): {
     createdAt: CREATED_AT,
     updatedAt: CREATED_AT,
   });
-  const chunk = persistedAttachmentChunkRecordSchema.parse({
+  const header = persistedAttachmentHeaderRecordSchema.parse({
+    ...headerBase,
+    contentHash: attachmentHeaderContentHash(headerBase),
+  });
+  const chunkBase = persistedAttachmentChunkRecordSchema.parse({
     entityType: 'attachment-chunk',
     record: {
       ...identity,
@@ -817,6 +958,10 @@ function createAttachmentGraph(): {
     ciphertextHash: DIGEST,
     createdAt: CREATED_AT,
     updatedAt: CREATED_AT,
+  });
+  const chunk = persistedAttachmentChunkRecordSchema.parse({
+    ...chunkBase,
+    ciphertextHash: attachmentChunkCiphertextHash(chunkBase),
   });
   return { item, attachment, header, chunk };
 }
@@ -852,6 +997,14 @@ function opaqueEnvelope(
     },
     keyVersion: 1,
   };
+}
+
+function withCanonicalHeaderHash(value: unknown): PersistedAttachmentHeaderRecord {
+  const parsed = persistedAttachmentHeaderRecordSchema.parse(value);
+  return persistedAttachmentHeaderRecordSchema.parse({
+    ...parsed,
+    contentHash: attachmentHeaderContentHash(parsed),
+  });
 }
 
 async function collect(source: AsyncIterable<Uint8Array>): Promise<Buffer> {
@@ -900,4 +1053,55 @@ function replaceFooterTag(bytes: Buffer): Buffer {
   );
   lines[lines.length - 1] = JSON.stringify(footer);
   return Buffer.from(`${lines.join('\n')}\n`, 'utf8');
+}
+
+function authenticateMutatedArchive(
+  bytes: Buffer,
+  rootKey: Uint8Array,
+  targetKind: EncryptedBackupEntry['kind'],
+  mutate: (entry: EncryptedBackupEntry) => EncryptedBackupEntry,
+): Buffer {
+  const lines = bytes.toString('utf8').trimEnd().split('\n');
+  const header = JSON.parse(lines[0] ?? '') as {
+    authentication: { salt: string };
+  };
+  const targetIndex = lines.findIndex((line) => {
+    const value = JSON.parse(line) as { kind?: string };
+    return value.kind === targetKind;
+  });
+  if (targetIndex < 1) throw new Error(`Missing ${targetKind} backup entry.`);
+  lines[targetIndex] = JSON.stringify(
+    mutate(JSON.parse(lines[targetIndex] ?? '') as EncryptedBackupEntry),
+  );
+
+  const salt = Buffer.from(header.authentication.salt, 'base64url');
+  const authenticationKey = new Uint8Array(
+    hkdfSync(
+      'sha256',
+      rootKey,
+      salt,
+      Buffer.from('credvault/backup-authentication/v1', 'ascii'),
+      32,
+    ),
+  );
+  try {
+    const digest = createHash('sha256');
+    const authentication = createHmac('sha256', authenticationKey);
+    for (const line of lines.slice(0, -1)) {
+      const encoded = Buffer.from(line, 'utf8');
+      const length = Buffer.allocUnsafe(4);
+      length.writeUInt32BE(encoded.byteLength);
+      digest.update(length).update(encoded);
+      authentication.update(length).update(encoded);
+      length.fill(0);
+    }
+    const footer = JSON.parse(lines.at(-1) ?? '') as Record<string, unknown>;
+    footer['transcriptSha256'] = digest.digest('base64url');
+    footer['authenticationTag'] = authentication.digest('base64url');
+    lines[lines.length - 1] = JSON.stringify(footer);
+    return Buffer.from(`${lines.join('\n')}\n`, 'utf8');
+  } finally {
+    zeroize(authenticationKey);
+    salt.fill(0);
+  }
 }

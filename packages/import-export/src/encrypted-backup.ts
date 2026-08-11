@@ -16,6 +16,7 @@ import {
 import {
   DEFAULT_MAX_BACKUP_RECORDS,
   MAX_SUPPORTED_BACKUP_BYTES,
+  attachmentRecordHashMatchesCanonicalContent,
   contentHashForRecord,
   sha256DigestSchema,
   vaultIdSchema,
@@ -384,6 +385,7 @@ class BackupRecordSet {
         'The encrypted backup contains too many records.',
       );
     }
+    assertCanonicalAttachmentHash(entry);
     if (!this.#sawVault && entry.kind !== 'vault') {
       throw new BackupError(
         'BACKUP_INVALID',
@@ -617,6 +619,19 @@ class BackupRecordSet {
       );
     }
     return attachment;
+  }
+}
+
+function assertCanonicalAttachmentHash(entry: EncryptedBackupEntry): void {
+  const matches =
+    entry.kind === 'attachment-header' || entry.kind === 'attachment-chunk'
+      ? attachmentRecordHashMatchesCanonicalContent(entry.record)
+      : true;
+  if (!matches) {
+    throw new BackupError(
+      'BACKUP_INVALID',
+      'An attachment backup record has a noncanonical content hash.',
+    );
   }
 }
 

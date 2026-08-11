@@ -7,6 +7,7 @@ import {
 import {
   DEFAULT_MAX_BACKUP_RECORDS,
   MAX_SUPPORTED_BACKUP_BYTES,
+  attachmentRecordHashMatchesCanonicalContent,
   canonicalJson,
   changeRecordSchema,
   contentHashForRecord,
@@ -163,6 +164,7 @@ export class MongoBackupRestoreStore implements BackupRestoreStore {
     entryInput: EncryptedBackupEntry,
   ): Promise<void> {
     const entry = parseRestoreEntry(entryInput);
+    assertCanonicalAttachmentHash(entry);
     const entryBytes = Buffer.byteLength(canonicalJson(entry), 'utf8') + 1;
     if (entryBytes > MAX_MONGO_RESTORE_ENTRY_BYTES) {
       throw new ValidationError('A restore entry exceeds the Mongo staging limit.');
@@ -495,6 +497,17 @@ export class MongoBackupRestoreStore implements BackupRestoreStore {
   }
 }
 
+function assertCanonicalAttachmentHash(entry: EncryptedBackupEntry): void {
+  if (
+    (entry.kind === 'attachment-header' || entry.kind === 'attachment-chunk') &&
+    !attachmentRecordHashMatchesCanonicalContent(entry.record)
+  ) {
+    throw new ValidationError(
+      'A restore entry contains a noncanonical attachment hash.',
+    );
+  }
+}
+
 class MongoBackupRestoreStager implements BackupRestoreStager {
   readonly #store: MongoBackupRestoreStore;
   readonly #restoreSessionId: Sha256Digest;
@@ -573,6 +586,7 @@ function buildPublication(
     if (backupEntryVaultId(entry) !== summary.header.vaultId) {
       throw new ValidationError('A staged restore record belongs to another vault.');
     }
+    assertCanonicalAttachmentHash(entry);
     switch (entry.kind) {
       case 'vault':
         if (expectedOrdinal !== 0 || vault !== undefined) {

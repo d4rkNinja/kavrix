@@ -8,6 +8,7 @@ import {
 } from '@kavrix/import-export';
 import {
   aeadEnvelopeSchema,
+  attachmentChunkCiphertextHash,
   attachmentHeaderContentHash,
   canonicalJson,
   contentHashForRecord,
@@ -18,6 +19,7 @@ import {
   encryptedItemRecordSchema,
   persistedAttachmentChunkRecordSchema,
   persistedAttachmentHeaderRecordSchema,
+  sha256DigestSchema,
   tombstoneRecordSchema,
   vaultIdSchema,
   vaultRecordSchema,
@@ -274,6 +276,63 @@ describe('MongoBackupSource against a replica-set snapshot', () => {
       );
     });
   });
+
+  it.each(['header', 'chunk'] as const)(
+    'fails before a footer when raw MongoDB contains a noncanonical attachment %s hash',
+    async (kind) => {
+      await withRestoredFixture(client, fixture, async (database) => {
+        const invalidHash = sha256DigestSchema.parse(
+          Buffer.alloc(32).toString('base64url'),
+        );
+        if (kind === 'header') {
+          await database
+            .collection(mongoStorageCollectionNames.attachmentStaging)
+            .updateOne(
+              { attachmentId: fixture.attachment.id },
+              { $set: { 'input.header.contentHash': invalidHash } },
+            );
+        } else {
+          await database
+            .collection(mongoStorageCollectionNames.attachmentStagingChunks)
+            .updateOne(
+              { attachmentId: fixture.attachment.id, chunkIndex: 0 },
+              { $set: { 'record.ciphertextHash': invalidHash } },
+            );
+        }
+
+        const snapshot = await new MongoBackupSource(client, database).open(
+          fixture.vaultId,
+          LIMITS,
+        );
+        const emitted: Uint8Array[] = [];
+        const caught = await (async (): Promise<unknown> => {
+          try {
+            for await (const bytes of createEncryptedBackup(
+              {
+                vault: snapshot.vault,
+                records: snapshot.records,
+                createdAt: CREATED_AT,
+                limits: LIMITS,
+              },
+              fixture.rootKey,
+            )) {
+              emitted.push(bytes);
+            }
+            return undefined;
+          } catch (error) {
+            return error;
+          }
+        })();
+
+        expect(caught).toEqual(
+          expect.objectContaining({ code: 'BACKUP_SOURCE_FAILED' }),
+        );
+        expect(Buffer.concat(emitted).toString('utf8')).not.toContain(
+          '"type":"footer"',
+        );
+      });
+    },
+  );
 
   it('rejects orphan records and same-staging chunks with a foreign identity', async () => {
     await withRestoredFixture(client, fixture, async (database) => {
@@ -792,7 +851,7 @@ function attachmentChunk(
 ): PersistedAttachmentChunkRecord {
   const plaintext = Buffer.from(`${CANARIES[4]}:${String(index)}`);
   const ciphertext = Buffer.concat([plaintext, Buffer.alloc(17, index + 1)]);
-  return persistedAttachmentChunkRecordSchema.parse({
+  const base = persistedAttachmentChunkRecordSchema.parse({
     entityType: 'attachment-chunk',
     record: {
       version: 1,
@@ -814,6 +873,10 @@ function attachmentChunk(
     ciphertextHash: digest(ciphertext),
     createdAt: CREATED_AT,
     updatedAt: CREATED_AT,
+  });
+  return persistedAttachmentChunkRecordSchema.parse({
+    ...base,
+    ciphertextHash: attachmentChunkCiphertextHash(base),
   });
 }
 
