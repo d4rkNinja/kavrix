@@ -43,6 +43,7 @@ const archiveDirectory = resolve(temporaryRoot, 'archive');
 const installDirectory = resolve(temporaryRoot, 'install');
 const suppliedArchive = process.argv[2];
 let ownedStatusPassphrase;
+let ownedHiddenCommandCanary;
 let journalSentinels;
 
 try {
@@ -287,6 +288,26 @@ try {
   ) {
     throw new Error('The installed creds launcher did not run on this platform.');
   }
+  assertInstalledPublicCommandCatalog(shim);
+
+  const hiddenHome = resolve(temporaryRoot, 'hidden-command-home');
+  await mkdir(hiddenHome);
+  await writeFile(
+    resolve(hiddenHome, 'existing-state-sentinel'),
+    'packed-hidden-home-sentinel\n',
+    'utf8',
+  );
+  ownedHiddenCommandCanary = Buffer.from(
+    'packed-hidden-command-input-canary\n',
+    'utf8',
+  );
+  await assertInstalledInternalCommandsRemainUnavailable({
+    shim,
+    home: hiddenHome,
+    inputCanary: ownedHiddenCommandCanary,
+    cryptoChunkNames,
+    productionChunkNames,
+  });
 
   const statusHome = resolve(temporaryRoot, 'status-home');
   await mkdir(statusHome);
@@ -457,9 +478,122 @@ try {
     `Verified dependency-free packed CLI ${archive.split(/[\\/]/u).at(-1)} on ${process.platform}.\n`,
   );
 } finally {
+  ownedHiddenCommandCanary?.fill(0);
   ownedStatusPassphrase?.fill(0);
   journalSentinels?.forEach(({ expected }) => expected.fill(0));
   await rm(temporaryRoot, { recursive: true, force: true });
+}
+
+function assertInstalledPublicCommandCatalog(shim) {
+  const publishedCommands = [
+    'version',
+    'generate',
+    'totp',
+    'key',
+    'status',
+    'completion',
+  ];
+  const help = runCommandShim(shim, ['--help']);
+  const actualCommands = [
+    ...help.stdout.matchAll(/^ {2}([a-z][a-z-]*)(?:\s|$)/gmu),
+  ].map((match) => match[1]);
+  if (
+    help.status !== 0 ||
+    help.stderr !== '' ||
+    JSON.stringify(actualCommands) !== JSON.stringify(publishedCommands)
+  ) {
+    throw new Error('The installed creds launcher changed the public command set.');
+  }
+
+  const commandWords = publishedCommands.join(' ');
+  const expectedCompletions = {
+    bash: `_creds_complete() { COMPREPLY=( $(compgen -W '${commandWords}' -- "\${COMP_WORDS[COMP_CWORD]}") ); }\ncomplete -F _creds_complete creds\n`,
+    zsh: `#compdef creds\n_arguments '1:command:(${commandWords})'\n`,
+    fish: `complete -c creds -f -n '__fish_use_subcommand' -a '${commandWords}'\n`,
+    powershell: `Register-ArgumentCompleter -Native -CommandName creds -ScriptBlock { param($wordToComplete) '${commandWords}'.Split(' ') | Where-Object { $_ -like "$wordToComplete*" } }\n`,
+  };
+  for (const [shell, expected] of Object.entries(expectedCompletions)) {
+    const completion = runCommandShim(shim, ['completion', shell]);
+    if (
+      completion.status !== 0 ||
+      completion.stdout !== expected ||
+      completion.stderr !== ''
+    ) {
+      throw new Error(
+        'The installed creds launcher changed the public completion catalog.',
+      );
+    }
+  }
+}
+
+async function assertInstalledInternalCommandsRemainUnavailable({
+  shim,
+  home,
+  inputCanary,
+  cryptoChunkNames,
+  productionChunkNames,
+}) {
+  const invocations = [
+    ['init'],
+    ['lock'],
+    ['show', 'group.canary', 'credential.canary'],
+    ['copy', 'group.canary', 'credential.canary', 'field.canary'],
+    ['device', 'invite', 'list', '--vault', 'vault.canary'],
+  ];
+  const expectedUsage =
+    "Error [CLI_USAGE]: Invalid command usage. Run 'creds --help'.\n";
+  const cleanEnvironment = cleanNodeWarningEnvironment({ CREDS_HOME: home });
+  const debugEnvironment = { ...cleanEnvironment, NODE_DEBUG: 'esm' };
+  const initialState = await snapshotDirectoryTree(home);
+
+  for (const arguments_ of invocations) {
+    const result = await withOwnedChildInput(inputCanary, (input) =>
+      runCommandShim(shim, arguments_, {
+        env: cleanEnvironment,
+        input,
+      }),
+    );
+    if (
+      result.status !== 2 ||
+      result.stdout !== '' ||
+      result.stderr !== expectedUsage ||
+      stringsContainBytes([result.stdout, result.stderr], inputCanary)
+    ) {
+      throw new Error(
+        'The installed creds launcher exposed a repository-only command.',
+      );
+    }
+
+    const debugResult = await withOwnedChildInput(inputCanary, (input) =>
+      runCommandShim(shim, arguments_, {
+        env: debugEnvironment,
+        input,
+        maxBuffer: 8 * 1_024 * 1_024,
+      }),
+    );
+    if (
+      debugResult.status !== 2 ||
+      debugResult.stdout !== '' ||
+      !debugResult.stderr.endsWith(expectedUsage) ||
+      cryptoChunkNames.some((name) => debugResult.stderr.includes(name)) ||
+      productionChunkNames.some((name) => debugResult.stderr.includes(name)) ||
+      debugResult.stderr.includes('(input hidden):') ||
+      stringsContainBytes([debugResult.stdout, debugResult.stderr], inputCanary)
+    ) {
+      throw new Error(
+        'A repository-only command reached prompt or lazy production behavior.',
+      );
+    }
+
+    if (
+      (await snapshotDirectoryTree(home)) !== initialState ||
+      (await treeContains(home, inputCanary))
+    ) {
+      throw new Error(
+        'A repository-only command changed local state or persisted its input.',
+      );
+    }
+  }
 }
 
 async function assertInstalledFileAllowlist(installedPackageDirectory) {
@@ -721,6 +855,7 @@ async function createPackedStatusFixture(home, passphrase) {
     const protectedState = new NativeProtectedSyncState(sealedEntryFactory(sealed));
     await protectedState.save(
       protectedLocalDeviceStateSchema.parse({
+        version: 2,
         vaultId,
         deviceId,
         highestSeenVaultRevision: 9,
@@ -806,6 +941,34 @@ async function allRegularFiles(root) {
   };
   await visit(root);
   return files.sort((left, right) => left.localeCompare(right, 'en'));
+}
+
+async function snapshotDirectoryTree(root) {
+  const entries = [];
+  const visit = async (directory) => {
+    for (const entry of await readdir(directory, { withFileTypes: true })) {
+      const path = resolve(directory, entry.name);
+      const relativePath = relative(root, path).replaceAll('\\', '/');
+      if (entry.isDirectory()) {
+        entries.push(`directory:${relativePath}`);
+        await visit(path);
+      } else if (entry.isFile()) {
+        let bytes;
+        try {
+          bytes = await readFile(path);
+          entries.push(
+            `file:${relativePath}:${createHash('sha256').update(bytes).digest('hex')}`,
+          );
+        } finally {
+          bytes?.fill(0);
+        }
+      } else {
+        throw new Error('The hidden-command home contains a non-regular entry.');
+      }
+    }
+  };
+  await visit(root);
+  return entries.sort((left, right) => left.localeCompare(right, 'en')).join('\n');
 }
 
 async function assertNoWriterLocks(home) {

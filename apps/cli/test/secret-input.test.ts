@@ -1,5 +1,5 @@
 import { PassThrough, Writable } from 'node:stream';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { CliUsageError, NodeSecretInput, SECRET_INPUT_OPTIONS } from '../src/index.js';
 
@@ -59,6 +59,103 @@ describe('secure secret acquisition', () => {
     await expect(pending).rejects.toThrow('cancelled');
     expect(output.value()).not.toContain('secret');
     expect(input.rawTransitions).toEqual([true, false]);
+  });
+
+  it('fails closed and detaches listeners when raw-mode entry throws', async () => {
+    const input = new FakeTty({ throwOnRawMode: true });
+    const output = capture();
+    const pending = new NodeSecretInput(input, output.stream).read({
+      kind: 'passphrase',
+      fromStdin: false,
+    });
+
+    await expectGenericSecretFailure(pending, 'private raw-mode true detail');
+    expect(input.rawTransitions).toEqual([true, false]);
+    expect(input.pauseCalls).toBe(1);
+    expectMaskedListenersRemoved(input);
+    expect(output.value()).toBe('Enter passphrase (input hidden): \n');
+
+    input.write('later\r');
+    input.emit('end');
+    input.on('error', () => undefined);
+    input.emit('error', new Error('later private stream detail'));
+    expect(input.rawTransitions).toEqual([true, false]);
+    expect(input.pauseCalls).toBe(1);
+  });
+
+  it('aggregates completion cleanup failures, wipes bytes, and settles once', async () => {
+    const input = new FakeTty({ throwOnRawMode: false, throwOnPause: true });
+    const output = capture({ throwOnWrite: 2 });
+    let ownedResult: Uint8Array<ArrayBuffer> | undefined;
+    const from = vi.spyOn(Uint8Array, 'from').mockImplementation(((
+      values: Iterable<number>,
+    ) => {
+      ownedResult = new Uint8Array([...values]);
+      return ownedResult;
+    }) as typeof Uint8Array.from);
+    const pending = new NodeSecretInput(input, output.stream).read({
+      kind: 'portable-key',
+      fromStdin: false,
+    });
+
+    input.write('private-cleanup-canary\r');
+    const error = await expectGenericSecretFailure(pending, [
+      'private-cleanup-canary',
+      'private raw-mode false detail',
+      'private pause detail',
+      'private output failure detail',
+    ]);
+    expect(error).toBeInstanceOf(AggregateError);
+    expect(input.rawTransitions).toEqual([true, false]);
+    expect(input.pauseCalls).toBe(1);
+    expect(output.writeCalls()).toBe(2);
+    expectMaskedListenersRemoved(input);
+    expect(ownedResult).toBeDefined();
+    if (ownedResult === undefined) throw new Error('Missing owned result buffer.');
+    expect([...ownedResult]).toEqual(
+      Array.from({ length: ownedResult.byteLength }, () => 0),
+    );
+
+    input.write('later\r');
+    input.emit('end');
+    expect(input.rawTransitions).toEqual([true, false]);
+    expect(input.pauseCalls).toBe(1);
+    expect(output.writeCalls()).toBe(2);
+    from.mockRestore();
+  });
+
+  it('restores raw mode when pausing fails and rejects without secret detail', async () => {
+    const input = new FakeTty({ throwOnPause: true });
+    const output = capture();
+    const pending = new NodeSecretInput(input, output.stream).read({
+      kind: 'invite',
+      fromStdin: false,
+    });
+
+    input.write('private-pause-detail\r');
+    await expectGenericSecretFailure(pending, [
+      'private-pause-detail',
+      'private pause detail',
+    ]);
+    expect(input.rawTransitions).toEqual([true, false]);
+    expect(input.pauseCalls).toBe(1);
+    expectMaskedListenersRemoved(input);
+    expect(output.value()).toBe('Enter invite (input hidden): \n');
+  });
+
+  it('fails closed when initial prompt output throws', async () => {
+    const input = new FakeTty();
+    const output = capture({ throwOnWrite: 1 });
+    const pending = new NodeSecretInput(input, output.stream).read({
+      kind: 'passphrase',
+      fromStdin: false,
+    });
+
+    await expectGenericSecretFailure(pending, 'private output failure detail');
+    expect(input.rawTransitions).toEqual([false]);
+    expect(input.pauseCalls).toBe(1);
+    expectMaskedListenersRemoved(input);
+    expect(output.writeCalls()).toBe(2);
   });
 
   it('fails closed on terminal end, stream errors, empty input, and oversized input', async () => {
@@ -164,22 +261,86 @@ class FakeTty extends PassThrough {
   public readonly isTTY = true;
   public isRaw = false;
   public readonly rawTransitions: boolean[] = [];
+  public pauseCalls = 0;
+  readonly #throwOnRawMode: boolean | undefined;
+  readonly #throwOnPause: boolean;
+
+  constructor(
+    options: {
+      throwOnRawMode?: boolean;
+      throwOnPause?: boolean;
+    } = {},
+  ) {
+    super();
+    this.#throwOnRawMode = options.throwOnRawMode;
+    this.#throwOnPause = options.throwOnPause ?? false;
+  }
 
   public setRawMode(enabled: boolean): void {
     this.isRaw = enabled;
     this.rawTransitions.push(enabled);
+    if (enabled === this.#throwOnRawMode) {
+      throw new Error(`private raw-mode ${String(enabled)} detail`);
+    }
+  }
+
+  public override pause(): this {
+    this.pauseCalls += 1;
+    if (this.#throwOnPause) throw new Error('private pause detail');
+    return super.pause();
   }
 }
 
-type CapturedWritable = Readonly<{ stream: Writable; value: () => string }>;
+type CapturedWritable = Readonly<{
+  stream: Writable;
+  value: () => string;
+  writeCalls: () => number;
+}>;
 
-function capture(): CapturedWritable {
+function capture(options: { throwOnWrite?: number } = {}): CapturedWritable {
   let content = '';
+  let writeCalls = 0;
   const stream = new Writable({
     write(chunk, _encoding, callback) {
       content += Buffer.from(chunk).toString('utf8');
       callback();
     },
   });
-  return { stream, value: () => content };
+  const write = stream.write.bind(stream);
+  stream.write = ((...arguments_: Parameters<Writable['write']>) => {
+    writeCalls += 1;
+    if (writeCalls === options.throwOnWrite) {
+      throw new Error('private output failure detail');
+    }
+    return write(...arguments_);
+  }) as Writable['write'];
+  return { stream, value: () => content, writeCalls: () => writeCalls };
+}
+
+function expectMaskedListenersRemoved(input: FakeTty): void {
+  expect(input.listenerCount('data')).toBe(0);
+  expect(input.listenerCount('end')).toBe(0);
+  expect(input.listenerCount('error')).toBe(0);
+}
+
+async function expectGenericSecretFailure(
+  pending: Promise<unknown>,
+  privateDetails: string | readonly string[],
+): Promise<unknown> {
+  const error = await pending.catch((caught: unknown) => caught);
+  const text = collectErrorText(error);
+  expect(error).toBeInstanceOf(Error);
+  for (const privateDetail of typeof privateDetails === 'string'
+    ? [privateDetails]
+    : privateDetails) {
+    expect(text).not.toContain(privateDetail);
+  }
+  expect(text).toContain('Secret input');
+  return error;
+}
+
+function collectErrorText(error: unknown): string {
+  if (!(error instanceof Error)) return String(error);
+  const nested = error instanceof AggregateError ? error.errors : [];
+  return [error.name, error.message, ...nested.map(collectErrorText)].join('\n');
 }

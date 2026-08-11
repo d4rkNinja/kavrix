@@ -341,17 +341,50 @@ function readMasked(
     const wasRaw = input.isRaw === true;
     let settled = false;
     const finish = (result: Uint8Array | Error): void => {
-      if (settled) return;
+      if (settled) {
+        if (!(result instanceof Error)) result.fill(0);
+        bytes.fill(0);
+        return;
+      }
       settled = true;
-      input.off('data', onData);
-      input.off('end', onEnd);
-      input.off('error', onError);
-      input.setRawMode?.(wasRaw);
-      input.pause();
-      output.write('\n');
-      bytes.fill(0);
-      if (result instanceof Error) reject(result);
-      else resolve(result);
+      const cleanupFailures: Error[] = [];
+      const attemptCleanup = (operation: () => void): void => {
+        try {
+          operation();
+        } catch {
+          cleanupFailures.push(
+            new CliUsageError('Secret input terminal cleanup failed.'),
+          );
+        }
+      };
+      try {
+        attemptCleanup(() => input.off('data', onData));
+        attemptCleanup(() => input.off('end', onEnd));
+        attemptCleanup(() => input.off('error', onError));
+        attemptCleanup(() => input.setRawMode?.(wasRaw));
+        attemptCleanup(() => input.pause());
+        attemptCleanup(() => {
+          output.write('\n');
+        });
+
+        if (cleanupFailures.length === 0) {
+          if (result instanceof Error) reject(result);
+          else resolve(result);
+          return;
+        }
+
+        if (!(result instanceof Error)) result.fill(0);
+        const failures =
+          result instanceof Error ? [result, ...cleanupFailures] : cleanupFailures;
+        const failure = failures[0];
+        reject(
+          failures.length === 1 && failure !== undefined
+            ? failure
+            : new AggregateError(failures, 'Secret input terminal cleanup failed.'),
+        );
+      } finally {
+        bytes.fill(0);
+      }
     };
     const onEnd = (): void => {
       finish(new CliUsageError('Secret input ended before a value was entered.'));
@@ -385,12 +418,16 @@ function readMasked(
         incoming.fill(0);
       }
     };
-    output.write(`Enter ${label} (input hidden): `);
-    input.setRawMode?.(true);
-    input.on('data', onData);
-    input.once('end', onEnd);
-    input.once('error', onError);
-    input.resume();
+    try {
+      output.write(`Enter ${label} (input hidden): `);
+      input.setRawMode?.(true);
+      input.on('data', onData);
+      input.once('end', onEnd);
+      input.once('error', onError);
+      input.resume();
+    } catch {
+      finish(new CliUsageError('Secret input terminal preparation failed.'));
+    }
   });
 }
 
