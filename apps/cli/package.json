@@ -38,7 +38,7 @@
     "dist/*.cdx.json"
   ],
   "engines": {
-    "node": ">=24.19.0 <25"
+    "node": ">=24.12.0 <25 || >=25.1.0"
   },
   "scripts": {
     "build": "tsc -b tsconfig.build.json --pretty false && node scripts/build-package.js",

@@ -673,20 +673,20 @@ async function main(): Promise<void> {
 }
 
 function assertSupportedNode(): void {
-  const parts = process.versions.node.split('.').map(Number);
-  const major = parts[0];
-  const minor = parts[1];
-  const patch = parts[2];
-  if (
-    major !== 24 ||
-    minor === undefined ||
-    patch === undefined ||
-    !Number.isSafeInteger(minor) ||
-    minor < 19 ||
-    !Number.isSafeInteger(patch) ||
-    patch < 0
-  ) {
-    throw new BenchmarkFailure('Unsupported Node runtime. Use Node >=24.19.0 and <25.');
+  // Mirrors apps/cli/src/runtime-preflight.ts: crypto.argon2 lands in 24.7.0 and
+  // DatabaseSync.enableDefensive in 25.1.0 backported to 24.12.0, leaving 25.0.x
+  // as a genuine gap. No upper bound, so a newer Node can still run the harness.
+  const match = /^(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/u.exec(process.versions.node);
+  const major = match === null ? Number.NaN : Number(match[1]);
+  const minor = match === null ? Number.NaN : Number(match[2]);
+  const supported =
+    Number.isSafeInteger(major) &&
+    Number.isSafeInteger(minor) &&
+    (major === 24 ? minor >= 12 : major === 25 ? minor >= 1 : major > 25);
+  if (!supported) {
+    throw new BenchmarkFailure(
+      `Unsupported Node runtime v${process.versions.node}. Use Node >=24.12.0 <25 || >=25.1.0.`,
+    );
   }
 }
 

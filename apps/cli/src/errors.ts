@@ -1,5 +1,7 @@
 import { DomainError } from '@kavrix/core';
 
+import { CliUnsupportedRuntimeError } from './runtime-preflight.js';
+
 export const CLI_EXIT_CODES = Object.freeze({
   success: 0,
   failure: 1,
@@ -63,6 +65,13 @@ export type CliErrorPresentation = Readonly<{
 export function presentCliError(error: unknown): CliErrorPresentation {
   if (error instanceof CliUsageError) {
     return { exitCode: CLI_EXIT_CODES.usage, code: error.code, message: error.message };
+  }
+  if (error instanceof CliUnsupportedRuntimeError) {
+    return {
+      exitCode: CLI_EXIT_CODES.unavailable,
+      code: error.code,
+      message: error.message,
+    };
   }
   if (error instanceof CliUnavailableError) {
     return {

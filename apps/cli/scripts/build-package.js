@@ -68,7 +68,9 @@ const bundle = await build({
   sourcemap: 'inline',
   sourcesContent: false,
   splitting: true,
-  target: ['node24.19'],
+  // Must track the engines floor, not the newest supported runtime: emitted
+  // syntax has to parse on the oldest Node the manifest admits.
+  target: ['node24.12'],
   treeShaking: true,
 });
 

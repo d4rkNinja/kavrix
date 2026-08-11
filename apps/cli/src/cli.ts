@@ -11,6 +11,7 @@ import {
 import type { CliUseCasePorts } from './contracts.js';
 import { CLI_EXIT_CODES, presentCliCommandError } from './errors.js';
 import type { CliInitializationDependencies } from './initialization.js';
+import { assertSupportedRuntime } from './runtime-preflight.js';
 import { NodeSecretInput, type SecretInputPort } from './secret-input.js';
 import { sanitizeTerminalOutput, sanitizeTerminalText } from './terminal.js';
 import { CLI_VERSION } from './version.js';
@@ -96,6 +97,9 @@ async function runProgram(
   catalog: readonly CliCommandDescriptor[],
 ): Promise<number> {
   try {
+    // Runs before parsing so an unsupported runtime is reported as itself,
+    // rather than surfacing later as a TypeError from a missing primitive.
+    assertSupportedRuntime();
     await createProgram(dependencies, catalog).parseAsync([...arguments_], {
       from: 'user',
     });

@@ -22,7 +22,14 @@ const packageSchema = z
       z.literal('dist/**/*.d.ts'),
       z.literal('dist/*.cdx.json'),
     ]),
-    engines: z.object({ node: z.literal('>=24.19.0 <25') }).strict(),
+    // The floor is the highest runtime API this package actually needs, not a
+    // preference: `DatabaseSync.enableDefensive` landed on main in v25.1.0 and
+    // was backported to v24.12.0, so 25.0.x is the one gap in the range. An open
+    // upper bound is deliberate — `crypto.argon2` and `node:sqlite` are both
+    // release candidates, so a missing or changed primitive is caught by the
+    // runtime preflight, which fails closed with an actionable error, rather
+    // than by an engine ceiling that would block install on every newer Node.
+    engines: z.object({ node: z.literal('>=24.12.0 <25 || >=25.1.0') }).strict(),
     license: z.literal('MIT'),
     repository: z.object({
       type: z.literal('git'),

@@ -243,6 +243,22 @@ try {
     throw new Error('The packed executable exposed unsupported production behavior.');
   }
 
+  // Everything above runs the bundle through `node dist/bin.js`. The launcher
+  // npm links into node_modules/.bin is what a real install actually puts on
+  // PATH, and it is the one published artifact whose shape differs per
+  // operating system: a symlink to the shebang script on POSIX, a generated
+  // batch launcher on Windows. Exercising it is how this smoke test can claim
+  // `creds` works on the platform it just ran on.
+  const shim = await resolveInstalledCommandShim(installDirectory);
+  const launched = runCommandShim(shim, ['--version']);
+  if (
+    launched.status !== 0 ||
+    launched.stdout !== `${manifest.version}\n` ||
+    launched.stderr !== ''
+  ) {
+    throw new Error('The installed creds launcher did not run on this platform.');
+  }
+
   process.stdout.write(
     `Verified dependency-free packed CLI ${archive.split(/[\\/]/u).at(-1)} on ${process.platform}.\n`,
   );
@@ -477,4 +493,32 @@ function resolveNpmCli() {
   if (candidate === undefined)
     throw new Error('Could not locate npm-cli.js for package smoke.');
   return candidate;
+}
+
+async function resolveInstalledCommandShim(installDirectory) {
+  if (process.platform !== 'win32') {
+    return resolve(installDirectory, 'node_modules/.bin/creds');
+  }
+  // npm writes the batch launcher as `creds.cmd`; pnpm's .bin stores
+  // `creds.CMD`. Match case-insensitively so either toolchain passes.
+  const binDirectory = resolve(installDirectory, 'node_modules/.bin');
+  const entries = await readdir(binDirectory);
+  const shim = entries.find(
+    (name) => name.toLowerCase() === 'creds.cmd' || name.toLowerCase() === 'creds.bat',
+  );
+  if (shim === undefined) {
+    throw new Error('npm did not create a creds batch launcher for this install.');
+  }
+  return resolve(binDirectory, shim);
+}
+
+function runCommandShim(shim, arguments_) {
+  if (process.platform !== 'win32') return run(shim, arguments_);
+  // A .cmd launcher can only be executed by cmd.exe: Node refuses to spawn one
+  // without a shell since the CVE-2024-27980 hardening, returning EINVAL. The
+  // interpreter is therefore named explicitly, by absolute path rather than via
+  // ComSpec or PATH, and the launcher is passed as one element of the argument
+  // array — so shell stays false and no command string is ever assembled.
+  const cmd = String.raw`C:\Windows\System32\cmd.exe`;
+  return run(cmd, ['/d', '/s', '/c', shim, ...arguments_]);
 }
