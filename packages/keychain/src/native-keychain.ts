@@ -1,3 +1,5 @@
+import { createRequire } from 'node:module';
+
 import type { KeychainPort, SessionCredentialPort } from '@kavrix/core';
 import type { AsyncEntry as AsyncEntryInstance } from '@napi-rs/keyring';
 import {
@@ -627,15 +629,53 @@ function corruptedProtectedState(): KeychainError {
   );
 }
 
-export async function loadNativeEntryFactory(): Promise<NativeEntryFactory> {
-  let AsyncEntry: AsyncEntryConstructor;
+/**
+ * Assembled at runtime so a bundler cannot statically follow it. The published
+ * package is dependency-free and must not inline the adapter's `.node` binary,
+ * but the adapter must still load when a host installation provides it.
+ */
+const NATIVE_KEYRING_SPECIFIER = ['@napi-rs', 'keyring'].join('/');
+
+type NativeKeyringModule = Readonly<{ AsyncEntry: AsyncEntryConstructor }>;
+
+/**
+ * Resolution is synchronous, but the published contract stays promise-based so
+ * every caller has a single failure channel: an unavailable or malformed
+ * adapter rejects instead of throwing while the call is being evaluated.
+ */
+export function loadNativeEntryFactory(): Promise<NativeEntryFactory> {
+  return Promise.resolve().then(() => {
+    let AsyncEntry: AsyncEntryConstructor;
+    try {
+      // Anchored to this module, never the working directory, so an untrusted CWD
+      // cannot substitute the native library that unlocks the vault.
+      const resolveFromHere = createRequire(import.meta.url);
+      ({ AsyncEntry } = resolveFromHere(
+        NATIVE_KEYRING_SPECIFIER,
+      ) as NativeKeyringModule);
+    } catch {
+      throw new KeychainError(
+        'KEYCHAIN_UNAVAILABLE',
+        'No supported native operating-system credential store is available.',
+      );
+    }
+    if (typeof AsyncEntry !== 'function') {
+      throw new KeychainError(
+        'KEYCHAIN_UNAVAILABLE',
+        'No supported native operating-system credential store is available.',
+      );
+    }
+    return (service, account) => new AsyncEntry(service, account);
+  });
+}
+
+export async function tryLoadNativeEntryFactory(): Promise<NativeEntryFactory | null> {
   try {
-    ({ AsyncEntry } = await import('@napi-rs/keyring'));
-  } catch {
-    throw new KeychainError(
-      'KEYCHAIN_UNAVAILABLE',
-      'No supported native operating-system credential store is available.',
-    );
+    return await loadNativeEntryFactory();
+  } catch (error) {
+    if (error instanceof KeychainError && error.code === 'KEYCHAIN_UNAVAILABLE') {
+      return null;
+    }
+    throw error;
   }
-  return (service, account) => new AsyncEntry(service, account);
 }

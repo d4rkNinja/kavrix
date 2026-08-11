@@ -118,6 +118,25 @@ export class SqliteVaultProfileStore
     });
   }
 
+  /**
+   * Full-table read mirroring the open-time row verification, so a caller can
+   * resolve which vault this installation is enrolled in without being told.
+   */
+  public listProfiles(): Promise<readonly VaultProfile[]> {
+    return this.exclusive(() => {
+      const rows = this.database
+        .prepare(
+          `SELECT vault_id, device_id, profile_json, serialized_bytes,
+                  device_locator_json, session_locator_json
+             FROM vault_profiles ORDER BY vault_id ASC, device_id ASC`,
+        )
+        .all() as unknown as VaultProfileRow[];
+      return Promise.resolve(
+        rows.map((row) => parseProfileRow(row, this.limits.maxSerializedBytes)),
+      );
+    });
+  }
+
   public store(profileInput: VaultProfile): Promise<void> {
     return this.exclusive(async () => {
       const profile = parseProfile(profileInput);

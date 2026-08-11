@@ -23,6 +23,10 @@
     "test": "vitest run --root ../.. packages/key-files"
   },
   "dependencies": {
-    "@kavrix/crypto": "workspace:*"
+    "@kavrix/crypto": "workspace:*",
+    "libsodium-wrappers": "catalog:"
+  },
+  "devDependencies": {
+    "@kavrix/keychain": "workspace:*"
   }
 }

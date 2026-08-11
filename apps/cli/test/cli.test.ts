@@ -23,6 +23,9 @@ import { NOTE_CANARY, PUBLIC_CANARY, SECRET_CANARY, showFixture } from './fixtur
 
 const TOKEN = apiBearerTokenSchema.parse('A'.repeat(43));
 const ACQUIRED_TOKEN = acquiredSecretSchema.parse(TOKEN);
+// Clearly fake key material; only its round-trip through the command matters.
+const PORTABLE_KEY = 'B'.repeat(43);
+const ACQUIRED_PORTABLE_KEY = acquiredSecretSchema.parse(PORTABLE_KEY);
 
 describe('CLI command shell', () => {
   it('provides the static version command without operational dependencies', async () => {
@@ -280,21 +283,32 @@ describe('CLI command shell', () => {
     expect(revokeInvite).toHaveBeenCalledWith('vault.primary', 'invite.primary');
   });
 
-  it('shapes join input from a masked prompt or explicit stdin and never prints tokens', async () => {
+  it('shapes join input from a masked prompt or explicit stdin and never prints secrets', async () => {
     const reads: boolean[] = [];
     const secrets: SecretInputPort = {
-      read: ({ fromStdin }) => {
+      read: () => Promise.reject(new Error('Unexpected single secret read')),
+      // Redemption needs the invite token and the portable key together, so the
+      // command reads one framed batch rather than two independent secrets.
+      readBatch: ({ kinds, fromStdin, requireEnd }) => {
+        expect(kinds).toEqual(['invite', 'portable-key']);
+        expect(requireEnd).toBe(fromStdin);
         reads.push(fromStdin);
-        return Promise.resolve(ACQUIRED_TOKEN);
+        return Promise.resolve([ACQUIRED_TOKEN, ACQUIRED_PORTABLE_KEY]);
       },
-      readBatch: () => Promise.reject(new Error('Unexpected secret batch read')),
     };
     const joinInvite = vi.fn(
-      (request: Parameters<CliUseCasePorts['joinInvite']>[0]) => {
+      (
+        request: Parameters<CliUseCasePorts['joinInvite']>[0],
+        portableKey: Parameters<CliUseCasePorts['joinInvite']>[1],
+      ) => {
         expect(request).toEqual({
           inviteToken: TOKEN,
-          device: { deviceId: 'device.new', schemaVersion: 1 },
+          vaultId: 'vault.primary',
+          schemaVersion: 1,
         });
+        // The key that unlocks the redeemed vault travels beside the validated
+        // request and never becomes part of it.
+        expect(portableKey).toBe(PORTABLE_KEY);
         return Promise.resolve({
           vaultId: vaultIdSchema.parse('vault.primary'),
           deviceId: deviceIdSchema.parse('device.new'),
@@ -302,7 +316,7 @@ describe('CLI command shell', () => {
       },
     );
     const prompt = await execute(
-      ['device', 'invite', 'join', '--device', 'device.new'],
+      ['device', 'invite', 'join', '--vault', 'vault.primary'],
       { joinInvite },
       secrets,
     );
@@ -311,8 +325,8 @@ describe('CLI command shell', () => {
         'device',
         'invite',
         'join',
-        '--device',
-        'device.new',
+        '--vault',
+        'vault.primary',
         '--invite-stdin',
         '--json',
       ],
@@ -325,9 +339,9 @@ describe('CLI command shell', () => {
       vaultId: 'vault.primary',
       deviceId: 'device.new',
     });
-    expect(
-      `${prompt.stdout}${stdin.stdout}${prompt.stderr}${stdin.stderr}`,
-    ).not.toContain(TOKEN);
+    const emitted = `${prompt.stdout}${stdin.stdout}${prompt.stderr}${stdin.stderr}`;
+    expect(emitted).not.toContain(TOKEN);
+    expect(emitted).not.toContain(PORTABLE_KEY);
   });
 
   it('keeps help and completions static and free of runtime values', async () => {
