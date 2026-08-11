@@ -1,5 +1,6 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
 
+import type { EncryptedBackupEntry } from './backup.js';
 import type {
   PersistedAttachmentChunkRecord,
   PersistedAttachmentHeaderRecord,
@@ -12,6 +13,66 @@ import { sha256DigestSchema, type Sha256Digest } from './primitives.js';
 
 export type HashableOpaqueRecord =
   VaultRecord | EncryptedGroupRecord | EncryptedItemRecord | EncryptedAttachmentRecord;
+
+export const MAX_CANONICAL_BACKUP_ENTRY_BYTES = 0xffff_ffff;
+const BACKUP_STAGED_ENTRIES_DOMAIN = Buffer.from(
+  'kavrix/backup-staged-entries/v1',
+  'utf8',
+);
+
+export type BackupStagedEntryCommitment = Readonly<{
+  update(entry: EncryptedBackupEntry): void;
+  finalize(): Sha256Digest;
+}>;
+
+/**
+ * Ordered canonical commitment used to bind entries after strict backup-schema
+ * parsing. Callers must pass the parsed value, not the untrusted input object.
+ */
+export function createBackupStagedEntryCommitment(options?: {
+  readonly maximumEntryBytes?: number;
+}): BackupStagedEntryCommitment {
+  const maximumEntryBytes =
+    options?.maximumEntryBytes ?? MAX_CANONICAL_BACKUP_ENTRY_BYTES;
+  if (
+    !Number.isSafeInteger(maximumEntryBytes) ||
+    maximumEntryBytes < 1 ||
+    maximumEntryBytes > MAX_CANONICAL_BACKUP_ENTRY_BYTES
+  ) {
+    throw new RangeError(
+      'Canonical backup entry limit is outside the supported range.',
+    );
+  }
+
+  const hash = createHash('sha256').update(BACKUP_STAGED_ENTRIES_DOMAIN);
+  let finalized = false;
+  return {
+    update(entryInput): void {
+      if (finalized) {
+        throw new Error('Backup staged-entry commitment is already finalized.');
+      }
+      const bytes = Buffer.from(canonicalJson(entryInput), 'utf8');
+      if (bytes.byteLength > maximumEntryBytes) {
+        throw new RangeError('Canonical backup entry exceeds the supported limit.');
+      }
+      const length = Buffer.allocUnsafe(4);
+      try {
+        length.writeUInt32BE(bytes.byteLength);
+        hash.update(length).update(bytes);
+      } finally {
+        length.fill(0);
+        bytes.fill(0);
+      }
+    },
+    finalize(): Sha256Digest {
+      if (finalized) {
+        throw new Error('Backup staged-entry commitment is already finalized.');
+      }
+      finalized = true;
+      return sha256DigestSchema.parse(hash.digest('base64url'));
+    },
+  };
+}
 
 /**
  * Deterministic JSON used only for canonical wire-contract digests. Inputs must
