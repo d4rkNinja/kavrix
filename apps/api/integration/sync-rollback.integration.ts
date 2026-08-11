@@ -35,7 +35,7 @@ describeMongo('sync rollback HTTP outcome against MongoDB rs0', () => {
     );
     const principal = fixture.authorization.sessions.get(tokenHash);
     if (principal === undefined) throw new Error('Missing authorization fixture');
-    fixture.authorization.sessions.set(tokenHash, {
+    fixture.authorization.seedSession(tokenHash, {
       ...principal,
       vaultId: vaultIdSchema.parse('vault.1'),
     });

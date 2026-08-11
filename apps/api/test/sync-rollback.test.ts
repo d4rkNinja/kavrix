@@ -126,7 +126,7 @@ describe('sync rollback HTTP outcome', () => {
     );
     const principal = fixture.authorization.sessions.get(tokenHash);
     if (principal === undefined) throw new Error('Missing authorization fixture');
-    fixture.authorization.sessions.set(tokenHash, {
+    fixture.authorization.seedSession(tokenHash, {
       ...principal,
       vaultId: templateVaultId,
     });

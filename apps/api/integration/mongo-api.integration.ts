@@ -263,6 +263,84 @@ describeMongo('Mongo API adapters against a transaction-capable replica set', ()
     ).resolves.not.toBeNull();
   });
 
+  it('binds sessions to the current canonical device and fails closed on divergence', async () => {
+    const control = await enrolledSession('binding-control');
+    await expect(
+      authorization.findSession(control.sessionHash, baseTime),
+    ).resolves.toEqual({
+      vaultId,
+      deviceId: control.deviceId,
+      scopes: allScopes,
+    });
+
+    const reordered = await enrolledSession('binding-reordered-scopes');
+    await expect(
+      database
+        .collection<RawMongoDocument>(mongoApiCollectionNames.devices)
+        .updateOne(
+          { _id: reordered.deviceId },
+          { $set: { 'record.scopes': [...allScopes].reverse() } },
+        ),
+    ).resolves.toMatchObject({ modifiedCount: 1 });
+    await expect(
+      authorization.findSession(reordered.sessionHash, baseTime),
+    ).resolves.toMatchObject({ deviceId: reordered.deviceId, scopes: allScopes });
+
+    const replacementToken = await tokenPort.issue();
+    const hashMismatch = await enrolledSession('binding-device-hash');
+    await expect(
+      database
+        .collection<RawMongoDocument>(mongoApiCollectionNames.devices)
+        .updateOne(
+          { _id: hashMismatch.deviceId },
+          { $set: { 'record.tokenHash': replacementToken.hash } },
+        ),
+    ).resolves.toMatchObject({ modifiedCount: 1 });
+    await expect(
+      authorization.findSession(hashMismatch.sessionHash, baseTime),
+    ).resolves.toBeNull();
+
+    const deviceScopeMismatch = await enrolledSession('binding-device-scopes');
+    await expect(
+      database
+        .collection<RawMongoDocument>(mongoApiCollectionNames.devices)
+        .updateOne(
+          { _id: deviceScopeMismatch.deviceId },
+          { $set: { 'record.scopes': ['sync:read'] } },
+        ),
+    ).resolves.toMatchObject({ modifiedCount: 1 });
+    await expect(
+      authorization.findSession(deviceScopeMismatch.sessionHash, baseTime),
+    ).resolves.toBeNull();
+
+    const sessionScopeMismatch = await enrolledSession('binding-session-scopes');
+    await expect(
+      database
+        .collection<RawMongoDocument>(mongoApiCollectionNames.sessions)
+        .updateOne(
+          { _id: sessionScopeMismatch.sessionHash },
+          { $set: { scopes: ['sync:read'] } },
+        ),
+    ).resolves.toMatchObject({ modifiedCount: 1 });
+    await expect(
+      authorization.findSession(sessionScopeMismatch.sessionHash, baseTime),
+    ).resolves.toBeNull();
+
+    const unsupportedVersion = await enrolledSession('binding-device-version');
+    await expect(
+      database
+        .collection<RawMongoDocument>(mongoApiCollectionNames.devices)
+        .updateOne(
+          { _id: unsupportedVersion.deviceId },
+          { $set: { 'record.tokenVersion': 2 } },
+          { bypassDocumentValidation: true },
+        ),
+    ).resolves.toMatchObject({ modifiedCount: 1 });
+    await expect(
+      authorization.findSession(unsupportedVersion.sessionHash, baseTime),
+    ).resolves.toBeNull();
+  });
+
   it('linearizes exact completion replay against device revocation', async () => {
     const invite = await tokenPort.issue();
     const enrollment = await tokenPort.issue();

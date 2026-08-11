@@ -1,6 +1,7 @@
 import {
   deviceIdSchema,
   vaultIdSchema,
+  type Sha256Digest,
   type VaultBootstrapRequest,
 } from '@kavrix/schemas';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -104,6 +105,86 @@ describe('initial vault bootstrap', () => {
     });
     expect(incompatible.statusCode).toBe(401);
     expect(fixture.storage.vaults.has('vault.bootstrap-incompatible')).toBe(false);
+  });
+
+  it('fails closed when bootstrap replay authorization records diverge', async () => {
+    const mutations: readonly ((
+      fixture: Awaited<ReturnType<typeof createTestPorts>>,
+      sessionHash: Sha256Digest,
+      bootstrapDeviceId: ReturnType<typeof deviceIdSchema.parse>,
+    ) => void)[] = [
+      (fixture, _sessionHash, bootstrapDeviceId) => {
+        const device = fixture.authorization.devices.get(bootstrapDeviceId);
+        const otherDevice = fixture.authorization.devices.get(deviceId);
+        if (device === undefined || otherDevice === undefined) {
+          throw new Error('Missing bootstrap device fixture');
+        }
+        fixture.authorization.devices.set(bootstrapDeviceId, {
+          ...device,
+          tokenHash: otherDevice.tokenHash,
+        });
+      },
+      (fixture, _sessionHash, bootstrapDeviceId) => {
+        const device = fixture.authorization.devices.get(bootstrapDeviceId);
+        if (device === undefined) throw new Error('Missing bootstrap device fixture');
+        fixture.authorization.devices.set(bootstrapDeviceId, {
+          ...device,
+          scopes: ['sync:read'],
+        });
+      },
+      (fixture, sessionHash) => {
+        const session = fixture.authorization.sessions.get(sessionHash);
+        if (session === undefined) throw new Error('Missing bootstrap session fixture');
+        fixture.authorization.sessions.set(sessionHash, {
+          ...session,
+          scopes: ['sync:read'],
+        });
+      },
+      (fixture, _sessionHash, bootstrapDeviceId) => {
+        const device = fixture.authorization.devices.get(bootstrapDeviceId);
+        if (device === undefined) throw new Error('Missing bootstrap device fixture');
+        fixture.authorization.devices.set(bootstrapDeviceId, {
+          ...device,
+          tokenVersion: 2,
+        } as never);
+      },
+    ];
+
+    for (const [index, mutate] of mutations.entries()) {
+      const fixture = await createTestPorts();
+      const app = track(
+        buildApi({
+          ports: fixture.ports,
+          environment: 'test',
+          vaultBootstrapEnabled: true,
+        }),
+      );
+      const issued = await new NodeTokenPort().issue();
+      const body = bootstrapBody(
+        `vault.bootstrap-binding-${String(index)}`,
+        `device.bootstrap-binding-${String(index)}`,
+      );
+      await expect(
+        app.inject({
+          method: 'POST',
+          url: '/v1/vaults',
+          headers: authHeader(issued.token),
+          payload: body,
+        }),
+      ).resolves.toMatchObject({ statusCode: 201 });
+      mutate(fixture, issued.hash, body.device.id);
+
+      const replay = await app.inject({
+        method: 'POST',
+        url: '/v1/vaults',
+        headers: authHeader(issued.token),
+        payload: body,
+      });
+      expect(replay.statusCode).toBe(401);
+      expect(replay.json()).toEqual({
+        error: { code: 'AUTHENTICATION_FAILED', message: 'Authentication failed' },
+      });
+    }
   });
 
   it('does not partially create state on vault, device, or credential collisions', async () => {

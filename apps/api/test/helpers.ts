@@ -86,6 +86,7 @@ import {
   type VaultBootstrapInput,
   type VaultBootstrapPort,
 } from '../src/index.js';
+import { bindSessionToDevice } from '../src/session-device-binding.js';
 
 export const vaultId = vaultIdSchema.parse('vault-1');
 export const otherVaultId = vaultIdSchema.parse('vault-2');
@@ -133,7 +134,18 @@ export class MemoryAuthorization implements AuthorizationPort {
     now: Date,
   ): Promise<SessionPrincipal | null> {
     void now;
-    return Promise.resolve(this.sessions.get(tokenHash) ?? null);
+    const session = this.sessions.get(tokenHash);
+    const device =
+      session === undefined ? undefined : this.devices.get(session.deviceId);
+    if (session === undefined || device === undefined) return Promise.resolve(null);
+    return Promise.resolve(
+      bindSessionToDevice({
+        presentedTokenHash: tokenHash,
+        sessionTokenHash: tokenHash,
+        session,
+        device,
+      }),
+    );
   }
 
   public createInvite(grant: InviteGrant): Promise<void> {
@@ -282,12 +294,12 @@ export class MemoryAuthorization implements AuthorizationPort {
         device !== undefined &&
         session !== undefined &&
         device.revokedAt === undefined &&
-        device.vaultId === completion.vaultId &&
-        device.tokenHash === completion.sessionTokenHash &&
-        session.vaultId === completion.vaultId &&
-        session.deviceId === completion.deviceId &&
-        session.scopes.length === device.scopes.length &&
-        device.scopes.every((scope) => session.scopes.includes(scope));
+        bindSessionToDevice({
+          presentedTokenHash: completion.sessionTokenHash,
+          sessionTokenHash: completion.sessionTokenHash,
+          session,
+          device,
+        }) !== null;
       return Promise.resolve(
         isDeepStrictEqual(previous.input, completion) &&
           Date.parse(previous.expiresAt) > now.getTime() &&
@@ -793,9 +805,19 @@ export class MemoryBootstrap implements VaultBootstrapPort {
   public bootstrap(input: VaultBootstrapInput): Promise<VaultBootstrapResponse | null> {
     const previous = this.receipts.get(input.sessionTokenHash);
     if (previous !== undefined) {
+      const session = this.authorization.sessions.get(input.sessionTokenHash);
+      const device = this.authorization.devices.get(input.device.id);
       return Promise.resolve(
         isDeepStrictEqual(previous.input, input) &&
-          this.authorization.sessions.has(input.sessionTokenHash)
+          session !== undefined &&
+          device !== undefined &&
+          device.revokedAt === undefined &&
+          bindSessionToDevice({
+            presentedTokenHash: input.sessionTokenHash,
+            sessionTokenHash: input.sessionTokenHash,
+            session,
+            device,
+          }) !== null
           ? structuredClone(previous.receipt)
           : null,
       );

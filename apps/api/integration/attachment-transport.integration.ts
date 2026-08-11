@@ -376,7 +376,7 @@ async function apiFixture(
   );
   const principal = fixture.authorization.sessions.get(hash);
   if (principal === undefined) throw new Error('Missing authorization fixture');
-  fixture.authorization.sessions.set(hash, {
+  fixture.authorization.seedSession(hash, {
     ...principal,
     vaultId: vaultIdSchema.parse('vault.1'),
   });

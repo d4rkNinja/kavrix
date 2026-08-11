@@ -21,6 +21,7 @@ import {
   timestampSchema,
   vaultRecordSchema,
   type VaultRecord,
+  type Sha256Digest,
   type TemplateMigrationPublicationRequest,
 } from '@kavrix/schemas';
 import type { FastifyInstance } from 'fastify';
@@ -29,6 +30,7 @@ import { buildApi } from '../src/index.js';
 import {
   authHeader,
   createTestPorts,
+  deviceId,
   deviceLabelEnvelope,
   digest,
   envelope,
@@ -128,6 +130,96 @@ describe('zero-knowledge Fastify API', () => {
       payload: '{',
     });
     expect(malformedJson.statusCode).toBe(400);
+  });
+
+  it('fails closed before storage when a session diverges from its canonical device', async () => {
+    const mutations: readonly ((
+      fixture: Awaited<ReturnType<typeof createTestPorts>>,
+      tokenHash: Sha256Digest,
+    ) => void)[] = [
+      (fixture) => {
+        const device = fixture.authorization.devices.get(deviceId);
+        if (device === undefined) throw new Error('Missing canonical device fixture');
+        fixture.authorization.devices.set(
+          deviceId,
+          deviceRecordSchema.parse({
+            ...device,
+            tokenHash: digest('other-device-token'),
+          }),
+        );
+      },
+      (fixture) => {
+        const device = fixture.authorization.devices.get(deviceId);
+        if (device === undefined) throw new Error('Missing canonical device fixture');
+        fixture.authorization.devices.set(
+          deviceId,
+          deviceRecordSchema.parse({ ...device, scopes: ['sync:read'] }),
+        );
+      },
+      (fixture, tokenHash) => {
+        const session = fixture.authorization.sessions.get(tokenHash);
+        if (session === undefined) throw new Error('Missing session fixture');
+        fixture.authorization.sessions.set(tokenHash, {
+          ...session,
+          scopes: ['sync:read'],
+        });
+      },
+      (fixture) => {
+        const device = fixture.authorization.devices.get(deviceId);
+        if (device === undefined) throw new Error('Missing canonical device fixture');
+        fixture.authorization.devices.set(deviceId, {
+          ...device,
+          tokenVersion: 2,
+        } as never);
+      },
+    ];
+
+    for (const mutate of mutations) {
+      const fixture = await createTestPorts();
+      const canonicalDevice = fixture.authorization.devices.get(deviceId);
+      if (canonicalDevice === undefined) throw new Error('Missing canonical device');
+      const tokenHash = canonicalDevice.tokenHash;
+      const storageCanary = 'session-device-storage-canary';
+      const getVault = vi
+        .spyOn(fixture.storage, 'getVault')
+        .mockRejectedValue(new Error(storageCanary));
+      mutate(fixture, tokenHash);
+      const app = tracked(buildApi({ ports: fixture.ports, environment: 'test' }));
+
+      const response = await app.inject({
+        method: 'GET',
+        url: `/v1/vaults/${vaultId}`,
+        headers: authHeader(fixture.token),
+      });
+
+      expect(response.statusCode).toBe(401);
+      expect(response.json()).toEqual({
+        error: { code: 'AUTHENTICATION_FAILED', message: 'Authentication failed' },
+      });
+      expect(response.body).not.toContain(storageCanary);
+      expect(response.body).not.toContain(tokenHash);
+      expect(getVault).not.toHaveBeenCalled();
+    }
+
+    const control = await createTestPorts();
+    const controlDevice = control.authorization.devices.get(deviceId);
+    if (controlDevice === undefined) throw new Error('Missing control device');
+    control.authorization.devices.set(
+      deviceId,
+      deviceRecordSchema.parse({
+        ...controlDevice,
+        scopes: [...controlDevice.scopes].reverse(),
+      }),
+    );
+    const controlStorage = vi.spyOn(control.storage, 'getVault');
+    const app = tracked(buildApi({ ports: control.ports, environment: 'test' }));
+    const response = await app.inject({
+      method: 'GET',
+      url: `/v1/vaults/${vaultId}`,
+      headers: authHeader(control.token),
+    });
+    expect(response.statusCode).toBe(200);
+    expect(controlStorage).toHaveBeenCalledOnce();
   });
 
   it('requires an independent canonical successor credential for exchanges', async () => {

@@ -1,5 +1,4 @@
 import {
-  apiSessionResponseSchema,
   changeRecordSchema,
   controlListPageOptionsSchema,
   decodeControlListCursor,
@@ -63,6 +62,7 @@ import {
   type MongoApiInviteDocument,
   type MongoApiSessionDocument,
 } from './mongo-documents.js';
+import { bindSessionToDevice } from './session-device-binding.js';
 import type {
   AuthorizationPort,
   AuthorizationDevicePage,
@@ -271,14 +271,27 @@ export class MongoVaultBootstrapPort implements VaultBootstrapPort {
       return false;
     }
     fromVaultDocument(vaultValue);
-    const storedDevice = mongoApiDeviceDocumentSchema.parse(deviceValue).record;
-    const storedSession = mongoApiSessionDocumentSchema.parse(sessionValue);
+    const deviceDocumentResult = mongoApiDeviceDocumentSchema.safeParse(deviceValue);
+    const storedSession = mongoApiSessionDocumentSchema.safeParse(sessionValue);
+    if (!deviceDocumentResult.success || !storedSession.success) return false;
+    const storedDevice = deviceDocumentResult.data.record;
+    const principal = bindSessionToDevice({
+      presentedTokenHash: sessionTokenHash,
+      sessionTokenHash: storedSession.data._id,
+      session: {
+        vaultId: storedSession.data.vaultId,
+        deviceId: storedSession.data.deviceId,
+        scopes: storedSession.data.scopes,
+      },
+      device: storedDevice,
+    });
     return (
+      principal !== null &&
       storedDevice.tokenHash === expectedDevice.tokenHash &&
       storedDevice.vaultId === expectedDevice.vaultId &&
       storedDevice.id === expectedDevice.id &&
-      storedSession.scopes.length === bootstrapScopes.length &&
-      bootstrapScopes.every((scope) => storedSession.scopes.includes(scope))
+      principal.scopes.length === bootstrapScopes.length &&
+      bootstrapScopes.every((scope) => principal.scopes.includes(scope))
     );
   }
 
@@ -333,24 +346,38 @@ export class MongoAuthorizationPort implements AuthorizationPort {
       revokedAt: { $exists: false },
     });
     if (value === null) return null;
-    const session = mongoApiSessionDocumentSchema.parse(value);
+    const session = mongoApiSessionDocumentSchema.safeParse(value);
+    if (!session.success) return null;
     const claimValue = await this.#credentialClaims().findOne({
       _id: tokenHash,
       kind: 'session',
     });
     if (claimValue === null) return null;
-    mongoApiCredentialClaimDocumentSchema.parse(claimValue);
+    const claim = mongoApiCredentialClaimDocumentSchema.safeParse(claimValue);
+    if (
+      !claim.success ||
+      claim.data._id !== tokenHash ||
+      claim.data.kind !== 'session'
+    ) {
+      return null;
+    }
     const deviceValue = await this.#devices().findOne({
-      _id: session.deviceId,
-      vaultId: session.vaultId,
+      _id: session.data.deviceId,
+      vaultId: session.data.vaultId,
       'record.revokedAt': { $exists: false },
     });
     if (deviceValue === null) return null;
-    mongoApiDeviceDocumentSchema.parse(deviceValue);
-    return apiSessionResponseSchema.parse({
-      vaultId: session.vaultId,
-      deviceId: session.deviceId,
-      scopes: session.scopes,
+    const device = mongoApiDeviceDocumentSchema.safeParse(deviceValue);
+    if (!device.success) return null;
+    return bindSessionToDevice({
+      presentedTokenHash: tokenHash,
+      sessionTokenHash: session.data._id,
+      session: {
+        vaultId: session.data.vaultId,
+        deviceId: session.data.deviceId,
+        scopes: session.data.scopes,
+      },
+      device: device.data.record,
     });
   }
 
@@ -771,16 +798,22 @@ export class MongoAuthorizationPort implements AuthorizationPort {
       { session },
     );
     if (deviceValue === null || sessionValue === null) return null;
-    const device = mongoApiDeviceDocumentSchema.parse(deviceValue).record;
-    const activeSession = mongoApiSessionDocumentSchema.parse(sessionValue);
-    if (
-      device.tokenHash !== sessionTokenHash ||
-      device.scopes.length !== activeSession.scopes.length ||
-      !device.scopes.every((scope) => activeSession.scopes.includes(scope))
-    ) {
-      return null;
-    }
-    return device;
+    const deviceDocumentResult = mongoApiDeviceDocumentSchema.safeParse(deviceValue);
+    const activeSession = mongoApiSessionDocumentSchema.safeParse(sessionValue);
+    if (!deviceDocumentResult.success || !activeSession.success) return null;
+    const device = deviceDocumentResult.data.record;
+    return bindSessionToDevice({
+      presentedTokenHash: sessionTokenHash,
+      sessionTokenHash: activeSession.data._id,
+      session: {
+        vaultId: activeSession.data.vaultId,
+        deviceId: activeSession.data.deviceId,
+        scopes: activeSession.data.scopes,
+      },
+      device,
+    }) === null
+      ? null
+      : device;
   }
 
   async #withTransaction<Result>(

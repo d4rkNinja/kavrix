@@ -150,6 +150,38 @@ describeMongo('Mongo initial-vault bootstrap', () => {
     expect(recovery.statusCode).toBe(201);
   });
 
+  it('rejects bootstrap replay when the canonical device scopes diverge', async () => {
+    const issued = await tokens.issue();
+    const body = bootstrapBody(
+      'vault.mongo-bootstrap-binding',
+      'device.mongo-bootstrap-binding',
+    );
+    await expect(bootstrap(issued.token, body)).resolves.toMatchObject({
+      statusCode: 201,
+    });
+    const database = inspectionClient.db(databaseName);
+    await expect(
+      database
+        .collection(mongoApiCollectionNames.devices)
+        .updateOne(
+          { _id: body.device.id },
+          { $set: { 'record.scopes': ['sync:read'] } },
+        ),
+    ).resolves.toMatchObject({ modifiedCount: 1 });
+
+    const replay = await bootstrap(issued.token, body);
+
+    expect(replay.statusCode).toBe(401);
+    expect(replay.json()).toEqual({
+      error: { code: 'AUTHENTICATION_FAILED', message: 'Authentication failed' },
+    });
+    await expect(
+      database
+        .collection(mongoApiCollectionNames.devices)
+        .findOne({ _id: body.device.id }, { projection: { 'record.scopes': 1 } }),
+    ).resolves.toMatchObject({ record: { scopes: ['sync:read'] } });
+  });
+
   it('rejects incompatible credential and cross-vault device reuse without partial state', async () => {
     const original = await tokens.issue();
     const originalBody = bootstrapBody(
