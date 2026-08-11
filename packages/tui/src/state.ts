@@ -8,6 +8,8 @@ import {
   type ActiveFieldValue,
   type FieldDefinition,
   type FieldScalarValue,
+  type FieldValueElementId,
+  type FieldValueElementLifecycle,
   type GroupPayload,
   type ItemPayload,
   type RecordRevision,
@@ -41,6 +43,8 @@ interface PendingOperation {
   readonly kind: 'groups' | 'items' | 'copy' | 'reveal' | 'save' | 'lock';
   readonly itemId?: ItemPayload['id'];
   readonly fieldId?: FieldDefinition['id'];
+  readonly elementIndex?: number;
+  readonly elementId?: FieldValueElementId;
 }
 
 export interface TuiConflictState {
@@ -48,10 +52,28 @@ export interface TuiConflictState {
   readonly remote: ItemPayload;
 }
 
-interface FieldEditorState {
+interface ScalarFieldEditorState {
+  readonly kind: 'single';
   readonly fieldId: FieldDefinition['id'];
   readonly input: string;
 }
+
+interface RepeatableEditorElement {
+  readonly id: FieldValueElementId;
+  readonly input: string;
+  readonly lifecycle: FieldValueElementLifecycle;
+}
+
+interface RepeatableFieldEditorState {
+  readonly kind: 'repeatable';
+  readonly fieldId: FieldDefinition['id'];
+  readonly elements: readonly RepeatableEditorElement[];
+  readonly selectedElementId: FieldValueElementId | null;
+  /** Includes removed IDs so add never reuses identity within this edit session. */
+  readonly reservedElementIds: readonly FieldValueElementId[];
+}
+
+type FieldEditorState = ScalarFieldEditorState | RepeatableFieldEditorState;
 
 export interface TuiState {
   readonly screen: 'loading' | 'browser' | 'locked' | 'error';
@@ -63,6 +85,8 @@ export interface TuiState {
   readonly selectedGroup: number;
   readonly selectedItem: number;
   readonly selectedField: number;
+  /** One-based element selection for a present repeatable field. */
+  readonly selectedElement: number;
   readonly activePane: TuiPane;
   readonly query: string;
   readonly overlay: TuiOverlay;
@@ -72,7 +96,11 @@ export interface TuiState {
   readonly editor: FieldEditorState | null;
   readonly conflict: TuiConflictState | null;
   readonly copyConfirmationFieldId: FieldDefinition['id'] | null;
+  readonly copyConfirmationElementIndex: number | null;
+  readonly copyConfirmationElementId: FieldValueElementId | null;
   readonly revealConfirmationFieldId: FieldDefinition['id'] | null;
+  readonly revealConfirmationElementIndex: number | null;
+  readonly revealConfirmationElementId: FieldValueElementId | null;
   readonly pending: PendingOperation | null;
   readonly nextRequestId: number;
   readonly nextElementId: number;
@@ -92,12 +120,15 @@ export type TuiEffect =
       requestId: number;
       itemId: ItemPayload['id'];
       fieldId: FieldDefinition['id'];
+      elementIndex?: number;
     }>
   | Readonly<{
       kind: 'authorize-reveal';
       requestId: number;
       itemId: ItemPayload['id'];
       fieldId: FieldDefinition['id'];
+      elementIndex?: number;
+      elementId?: FieldValueElementId;
       expiresAt: number;
     }>
   | Readonly<{
@@ -133,6 +164,8 @@ export type TuiAction =
       requestId: number;
       itemId: ItemPayload['id'];
       fieldId: FieldDefinition['id'];
+      elementIndex?: number;
+      elementId?: FieldValueElementId;
       expiresAt: number;
     }>
   | Readonly<{
@@ -160,6 +193,7 @@ export function createInitialTuiState(
     selectedGroup: 0,
     selectedItem: 0,
     selectedField: 0,
+    selectedElement: 1,
     activePane: 'groups',
     query: '',
     overlay: 'none',
@@ -169,7 +203,11 @@ export function createInitialTuiState(
     editor: null,
     conflict: null,
     copyConfirmationFieldId: null,
+    copyConfirmationElementIndex: null,
+    copyConfirmationElementId: null,
     revealConfirmationFieldId: null,
+    revealConfirmationElementIndex: null,
+    revealConfirmationElementId: null,
     pending: null,
     nextRequestId: 1,
     nextElementId: 1,
@@ -209,8 +247,12 @@ export function transitionTui(state: TuiState, action: TuiAction): TuiTransition
         state.pending.kind !== 'reveal' ||
         state.pending.itemId !== action.itemId ||
         state.pending.fieldId !== action.fieldId ||
+        state.pending.elementIndex !== action.elementIndex ||
+        state.pending.elementId !== action.elementId ||
         state.items[state.selectedItem]?.id !== action.itemId ||
-        state.draft?.id !== action.itemId
+        state.draft?.id !== action.itemId ||
+        state.dirty ||
+        !revealTargetStillSelected(state, action)
       )
         return unchanged(state);
       return unchanged({
@@ -218,7 +260,8 @@ export function transitionTui(state: TuiState, action: TuiAction): TuiTransition
         pending: null,
         revealedUntil: {
           ...state.revealedUntil,
-          [revealGrantKey(action.itemId, action.fieldId)]: action.expiresAt,
+          [revealGrantKey(action.itemId, action.fieldId, action.elementId)]:
+            action.expiresAt,
         },
         message: 'Revealed temporarily; press lock to clear immediately.',
       });
@@ -269,6 +312,8 @@ export function keyboardTransition(
   if (key.text === '/') return unchanged({ ...state, overlay: 'search', query: '' });
   if (key.text?.toLowerCase() === 'a')
     return unchanged({ ...state, ascii: !state.ascii });
+  if (key.text === '[') return moveElementSelection(state, -1);
+  if (key.text === ']') return moveElementSelection(state, 1);
   if (key.text?.toLowerCase() === 'e') return openEditor(state);
   if (key.text?.toLowerCase() === 'r') return revealSelectedField(state, nowMs);
   if (key.text?.toLowerCase() === 'c') return copySelectedField(state);
@@ -315,6 +360,7 @@ function itemsLoaded(
     items,
     selectedItem: 0,
     selectedField: 0,
+    selectedElement: 1,
     draft: items[0] ?? null,
     dirty: false,
     pending: null,
@@ -366,13 +412,18 @@ function moveSelection(state: TuiState, offset: number): TuiTransition {
       items: [],
       selectedItem: 0,
       selectedField: 0,
+      selectedElement: 1,
       draft: null,
       dirty: false,
       editor: null,
       conflict: null,
       revealedUntil: {},
       copyConfirmationFieldId: null,
+      copyConfirmationElementIndex: null,
+      copyConfirmationElementId: null,
       revealConfirmationFieldId: null,
+      revealConfirmationElementIndex: null,
+      revealConfirmationElementId: null,
       message: null,
     };
     return request(base, 'items', (requestId) => ({
@@ -393,6 +444,7 @@ function moveSelection(state: TuiState, offset: number): TuiTransition {
   return unchanged({
     ...state,
     selectedField: clamp(state.selectedField + offset, selectedFields(state).length),
+    selectedElement: 1,
   });
 }
 
@@ -427,7 +479,13 @@ function overlayKey(state: TuiState, key: TuiKey, nowMs: number): TuiTransition 
   if (state.overlay === 'confirm-copy') {
     if (key.text?.toLowerCase() === 'y') return confirmedCopy(state);
     if (key.text?.toLowerCase() === 'n' || key.name === 'escape') {
-      return unchanged({ ...state, overlay: 'none', copyConfirmationFieldId: null });
+      return unchanged({
+        ...state,
+        overlay: 'none',
+        copyConfirmationFieldId: null,
+        copyConfirmationElementIndex: null,
+        copyConfirmationElementId: null,
+      });
     }
     return unchanged(state);
   }
@@ -438,6 +496,8 @@ function overlayKey(state: TuiState, key: TuiKey, nowMs: number): TuiTransition 
         ...state,
         overlay: 'none',
         revealConfirmationFieldId: null,
+        revealConfirmationElementIndex: null,
+        revealConfirmationElementId: null,
       });
     }
     return unchanged(state);
@@ -464,6 +524,7 @@ function editorKey(state: TuiState, key: TuiKey): TuiTransition {
       editor: null,
       message: 'Edit cancelled.',
     });
+  if (editor.kind === 'repeatable') return repeatableEditorKey(state, editor, key);
   if (key.name === 'backspace')
     return unchanged({
       ...state,
@@ -473,6 +534,136 @@ function editorKey(state: TuiState, key: TuiKey): TuiTransition {
   if (key.name === 'return' && key.shift === true) return appendEditorText(state, '\n');
   if (isPrintable(key.text)) return appendEditorText(state, key.text);
   return unchanged(state);
+}
+
+function repeatableEditorKey(
+  state: TuiState,
+  editor: RepeatableFieldEditorState,
+  key: TuiKey,
+): TuiTransition {
+  if (key.ctrl === true && key.text?.toLowerCase() === 'a') {
+    const allocation = nextAvailableElementId(state, editor.reservedElementIds);
+    const { id } = allocation;
+    return unchanged({
+      ...state,
+      editor: {
+        ...editor,
+        elements: [
+          ...editor.elements,
+          { id, input: '', lifecycle: { version: 1, status: 'available' } },
+        ],
+        selectedElementId: id,
+        reservedElementIds: [...editor.reservedElementIds, id],
+      },
+      nextElementId: allocation.nextElementId,
+    });
+  }
+  if (key.ctrl === true && key.text?.toLowerCase() === 'd') {
+    if (editor.elements.length === 0) return unchanged(state);
+    const selectedIndex = selectedEditorElementIndex(editor);
+    if (selectedIndex < 0) return unchanged(state);
+    const elements = editor.elements.filter(
+      ({ id }) => id !== editor.selectedElementId,
+    );
+    return unchanged({
+      ...state,
+      editor: {
+        ...editor,
+        elements,
+        selectedElementId: elements[clamp(selectedIndex, elements.length)]?.id ?? null,
+      },
+    });
+  }
+  if (key.name === 'up' || key.name === 'down') {
+    const offset = key.name === 'up' ? -1 : 1;
+    if (key.shift === true) return reorderEditorElement(state, editor, offset);
+    return unchanged({
+      ...state,
+      editor: {
+        ...editor,
+        selectedElementId:
+          editor.elements[
+            clamp(selectedEditorElementIndex(editor) + offset, editor.elements.length)
+          ]?.id ?? null,
+      },
+    });
+  }
+  if (key.name === 'return') return commitEditor(state);
+  if (key.name === 'backspace')
+    return updateSelectedEditorElement(state, editor, (input) =>
+      removeLastGlyph(input),
+    );
+  if (isPrintable(key.text)) {
+    const text = key.text;
+    return updateSelectedEditorElement(state, editor, (input) => `${input}${text}`);
+  }
+  return unchanged(state);
+}
+
+function nextAvailableElementId(
+  state: TuiState,
+  reservedElementIds: readonly FieldValueElementId[],
+): Readonly<{ id: FieldValueElementId; nextElementId: number }> {
+  const usedIds = new Set(reservedElementIds);
+  let candidate = state.nextElementId;
+  while (usedIds.has(`tui.${String(candidate)}` as FieldValueElementId)) candidate += 1;
+  return {
+    id: fieldValueElementIdSchema.parse(`tui.${String(candidate)}`),
+    nextElementId: candidate + 1,
+  };
+}
+
+function reorderEditorElement(
+  state: TuiState,
+  editor: RepeatableFieldEditorState,
+  offset: number,
+): TuiTransition {
+  const selectedIndex = selectedEditorElementIndex(editor);
+  const target = selectedIndex + offset;
+  if (target < 0 || target >= editor.elements.length) return unchanged(state);
+  const elements = [...editor.elements];
+  const selected = elements[selectedIndex];
+  const replaced = elements[target];
+  if (selected === undefined || replaced === undefined) return unchanged(state);
+  elements[target] = selected;
+  elements[selectedIndex] = replaced;
+  return unchanged({
+    ...state,
+    editor: { ...editor, elements, selectedElementId: selected.id },
+  });
+}
+
+function selectedEditorElementIndex(editor: RepeatableFieldEditorState): number {
+  return editor.elements.findIndex(({ id }) => id === editor.selectedElementId);
+}
+
+function updateSelectedEditorElement(
+  state: TuiState,
+  editor: RepeatableFieldEditorState,
+  update: (input: string) => string,
+): TuiTransition {
+  const selectedIndex = selectedEditorElementIndex(editor);
+  const selected = editor.elements[selectedIndex];
+  if (selected === undefined) return unchanged(state);
+  const input = update(selected.input);
+  const currentBytes = editor.elements.reduce(
+    (total, element) => total + Buffer.byteLength(element.input),
+    0,
+  );
+  if (
+    currentBytes - Buffer.byteLength(selected.input) + Buffer.byteLength(input) >
+    1_048_576
+  )
+    return unchanged(state);
+  return unchanged({
+    ...state,
+    editor: {
+      ...editor,
+      elements: editor.elements.map((element, index) =>
+        index === selectedIndex ? { ...element, input } : element,
+      ),
+    },
+  });
 }
 
 function conflictKey(state: TuiState, key: TuiKey): TuiTransition {
@@ -505,16 +696,50 @@ function conflictKey(state: TuiState, key: TuiKey): TuiTransition {
 }
 
 function openEditor(state: TuiState): TuiTransition {
+  if (state.pending !== null)
+    return unchanged({ ...state, message: 'Wait for the active operation to finish.' });
   const field = selectedFields(state)[state.selectedField];
   const draft = state.draft;
   if (field === undefined || draft === null) return unchanged(state);
   const stored = [...draft.templateValues, ...draft.itemValues].find(
     (value) => value.fieldId === field.id,
   );
+  const descriptor = describeFieldEditor(field);
+  const multiple = field.repeatable || descriptor.supportsMultiple;
+  if (multiple) {
+    const elements =
+      stored?.value.state === 'present' &&
+      stored.value.content.cardinality === 'multiple'
+        ? stored.value.content.elements.map((element) => ({
+            id: element.id,
+            input: editableScalarValue(element.value),
+            lifecycle: element.lifecycle,
+          }))
+        : [];
+    return unchanged({
+      ...state,
+      overlay: 'editor',
+      editor: {
+        kind: 'repeatable',
+        fieldId: field.id,
+        elements,
+        selectedElementId:
+          elements[clamp(state.selectedElement - 1, elements.length)]?.id ?? null,
+        reservedElementIds: elements.map(({ id }) => id),
+      },
+      revealedUntil: {},
+      message: null,
+    });
+  }
+  const input =
+    stored?.value.state === 'present' && stored.value.content.cardinality === 'single'
+      ? editableScalarValue(stored.value.content.value)
+      : '';
   return unchanged({
     ...state,
     overlay: 'editor',
-    editor: { fieldId: field.id, input: editableValue(stored?.value) },
+    editor: { kind: 'single', fieldId: field.id, input },
+    revealedUntil: {},
     message: null,
   });
 }
@@ -529,13 +754,7 @@ function commitEditor(state: TuiState): TuiTransition {
   );
   if (field === undefined)
     return unchanged({ ...state, overlay: 'none', editor: null });
-  const updated = updateDraftValue(
-    draft,
-    group,
-    field,
-    editor.input,
-    state.nextElementId,
-  );
+  const updated = updateDraftValue(draft, group, field, editor);
   if (updated === null) {
     return unchanged({ ...state, message: 'Value does not satisfy the field policy.' });
   }
@@ -545,7 +764,10 @@ function commitEditor(state: TuiState): TuiTransition {
     dirty: true,
     overlay: 'none',
     editor: null,
-    nextElementId: state.nextElementId + 10_001,
+    selectedElement:
+      editor.kind === 'repeatable'
+        ? Math.max(1, selectedEditorElementIndex(editor) + 1)
+        : state.selectedElement,
     message: 'Local changes are not saved.',
   });
 }
@@ -554,44 +776,48 @@ function updateDraftValue(
   item: ItemPayload,
   group: GroupPayload,
   field: FieldDefinition,
-  input: string,
-  idSeed: number,
+  editor: FieldEditorState,
 ): ItemPayload | null {
   const descriptor = describeFieldEditor(field);
   const multiple = field.repeatable || descriptor.supportsMultiple;
-  const lines = multiple
-    ? input.split('\n').filter((line) => line.length > 0)
-    : [input];
   let value: ActiveFieldValue;
-  if (input.length === 0 || lines.length === 0) {
+  if (
+    (editor.kind === 'single' && editor.input.length === 0) ||
+    (editor.kind === 'repeatable' && editor.elements.length === 0)
+  ) {
     value = { version: 1, state: 'empty' };
   } else {
-    const parsedScalars = lines.map((line) => scalarFromInput(field, line));
+    if (multiple !== (editor.kind === 'repeatable')) return null;
+    const inputs =
+      editor.kind === 'repeatable'
+        ? editor.elements.map(({ input }) => input)
+        : [editor.input];
+    const parsedScalars = inputs.map((input) => scalarFromInput(field, input));
     const scalars = parsedScalars.filter(
       (candidate): candidate is FieldScalarValue => candidate !== null,
     );
     if (scalars.length !== parsedScalars.length) return null;
     if (multiple) {
-      const prior = [...item.templateValues, ...item.itemValues].find(
-        ({ fieldId }) => fieldId === field.id,
-      );
-      const priorIds =
-        prior?.value.state === 'present' &&
-        prior.value.content.cardinality === 'multiple'
-          ? prior.value.content.elements.map(({ id }) => id)
-          : [];
+      if (editor.kind !== 'repeatable') return null;
+      const elements = scalars.flatMap((scalar, index) => {
+        const original = editor.elements[index];
+        return original === undefined
+          ? []
+          : [
+              {
+                id: original.id,
+                value: scalar,
+                lifecycle: original.lifecycle,
+              },
+            ];
+      });
+      if (elements.length !== editor.elements.length) return null;
       value = {
         version: 1,
         state: 'present',
         content: {
           cardinality: 'multiple',
-          elements: scalars.map((scalar, index) => ({
-            id:
-              priorIds[index] ??
-              fieldValueElementIdSchema.parse(`tui.${String(idSeed + index)}`),
-            value: scalar,
-            lifecycle: { version: 1, status: 'available' },
-          })),
+          elements,
         },
       };
     } else {
@@ -670,28 +896,19 @@ function scalarFromInput(
   }
 }
 
-function editableValue(value: ActiveFieldValue | undefined): string {
-  if (value?.state !== 'present') return '';
-  const values =
-    value.content.cardinality === 'single'
-      ? [value.content.value]
-      : value.content.elements.map(({ value: scalar }) => scalar);
-  return values
-    .map((scalar) => {
-      if (scalar.kind === 'text' || scalar.kind === 'secret') return scalar.value;
-      if (scalar.kind === 'number' || scalar.kind === 'boolean')
-        return String(scalar.value);
-      if (scalar.kind === 'item-reference') return scalar.itemId;
-      if (scalar.kind === 'attachment-reference') return scalar.attachmentId;
-      return `${scalar.key}=${scalar.value.value}`;
-    })
-    .join('\n');
+function editableScalarValue(scalar: FieldScalarValue): string {
+  if (scalar.kind === 'text' || scalar.kind === 'secret') return scalar.value;
+  if (scalar.kind === 'number' || scalar.kind === 'boolean')
+    return String(scalar.value);
+  if (scalar.kind === 'item-reference') return scalar.itemId;
+  if (scalar.kind === 'attachment-reference') return scalar.attachmentId;
+  return `${scalar.key}=${scalar.value.value}`;
 }
 
 function appendEditorText(state: TuiState, text: string): TuiTransition {
   const editor = state.editor;
   if (
-    editor === null ||
+    editor?.kind !== 'single' ||
     Buffer.byteLength(editor.input) + Buffer.byteLength(text) > 1_048_576
   )
     return unchanged(state);
@@ -711,11 +928,16 @@ function revealSelectedField(state: TuiState, nowMs: number): TuiTransition {
     field.revealPolicy === 'never'
   )
     return unchanged(state);
+  if (state.dirty) return requireSavedDraft(state, 'revealing');
+  const target = selectedActionTarget(state, field.id);
+  if (target?.lifecycle.status === 'used') return rejectUsedElement(state);
   if (field.revealPolicy === 'confirm') {
     return unchanged({
       ...state,
       overlay: 'confirm-reveal',
       revealConfirmationFieldId: field.id,
+      revealConfirmationElementIndex: target?.elementIndex ?? null,
+      revealConfirmationElementId: target?.elementId ?? null,
     });
   }
   return request(
@@ -726,29 +948,58 @@ function revealSelectedField(state: TuiState, nowMs: number): TuiTransition {
       requestId,
       itemId: item.id,
       fieldId: field.id,
+      ...(target?.elementIndex === undefined
+        ? {}
+        : { elementIndex: target.elementIndex }),
+      ...(target?.elementId === undefined ? {} : { elementId: target.elementId }),
       expiresAt: nowMs + 15_000,
     }),
-    { itemId: item.id, fieldId: field.id },
+    {
+      itemId: item.id,
+      fieldId: field.id,
+      ...(target?.elementIndex === undefined
+        ? {}
+        : { elementIndex: target.elementIndex }),
+      ...(target?.elementId === undefined ? {} : { elementId: target.elementId }),
+    },
   );
 }
 
 function confirmedReveal(state: TuiState, nowMs: number): TuiTransition {
   const item = state.draft;
   const fieldId = state.revealConfirmationFieldId;
+  const elementIndex = state.revealConfirmationElementIndex ?? undefined;
+  const elementId = state.revealConfirmationElementId ?? undefined;
   if (item === null || fieldId === null) {
     return unchanged({ ...state, overlay: 'none' });
   }
+  if (!confirmationTargetMatches(state, fieldId, elementIndex, elementId)) {
+    return rejectStaleConfirmation(state, 'reveal');
+  }
   return request(
-    { ...state, overlay: 'none', revealConfirmationFieldId: null },
+    {
+      ...state,
+      overlay: 'none',
+      revealConfirmationFieldId: null,
+      revealConfirmationElementIndex: null,
+      revealConfirmationElementId: null,
+    },
     'reveal',
     (requestId) => ({
       kind: 'authorize-reveal',
       requestId,
       itemId: item.id,
       fieldId,
+      ...(elementIndex === undefined ? {} : { elementIndex }),
+      ...(elementId === undefined ? {} : { elementId }),
       expiresAt: nowMs + 15_000,
     }),
-    { itemId: item.id, fieldId },
+    {
+      itemId: item.id,
+      fieldId,
+      ...(elementIndex === undefined ? {} : { elementIndex }),
+      ...(elementId === undefined ? {} : { elementId }),
+    },
   );
 }
 
@@ -762,11 +1013,16 @@ function copySelectedField(state: TuiState): TuiTransition {
     field.copyPolicy === 'never'
   )
     return unchanged(state);
+  if (state.dirty) return requireSavedDraft(state, 'copying');
+  const target = selectedActionTarget(state, field.id);
+  if (target?.lifecycle.status === 'used') return rejectUsedElement(state);
   if (field.copyPolicy === 'confirm') {
     return unchanged({
       ...state,
       overlay: 'confirm-copy',
       copyConfirmationFieldId: field.id,
+      copyConfirmationElementIndex: target?.elementIndex ?? null,
+      copyConfirmationElementId: target?.elementId ?? null,
     });
   }
   return request(state, 'copy', (requestId) => ({
@@ -774,23 +1030,165 @@ function copySelectedField(state: TuiState): TuiTransition {
     requestId,
     itemId: item.id,
     fieldId: field.id,
+    ...(target?.elementIndex === undefined
+      ? {}
+      : { elementIndex: target.elementIndex }),
   }));
 }
 
 function confirmedCopy(state: TuiState): TuiTransition {
   const item = state.draft;
   const fieldId = state.copyConfirmationFieldId;
+  const elementIndex = state.copyConfirmationElementIndex ?? undefined;
+  const elementId = state.copyConfirmationElementId ?? undefined;
   if (item === null || fieldId === null)
     return unchanged({ ...state, overlay: 'none' });
+  if (!confirmationTargetMatches(state, fieldId, elementIndex, elementId)) {
+    return rejectStaleConfirmation(state, 'copy');
+  }
   return request(
-    { ...state, overlay: 'none', copyConfirmationFieldId: null },
+    {
+      ...state,
+      overlay: 'none',
+      copyConfirmationFieldId: null,
+      copyConfirmationElementIndex: null,
+      copyConfirmationElementId: null,
+    },
     'copy',
     (requestId) => ({
       kind: 'copy-field',
       requestId,
       itemId: item.id,
       fieldId,
+      ...(elementIndex === undefined ? {} : { elementIndex }),
     }),
+  );
+}
+
+function confirmationTargetMatches(
+  state: TuiState,
+  fieldId: FieldDefinition['id'],
+  elementIndex: number | undefined,
+  elementId: FieldValueElementId | undefined,
+): boolean {
+  if (elementIndex === undefined) return elementId === undefined;
+  const target = selectedActionTarget(state, fieldId);
+  return (
+    target?.elementIndex === elementIndex &&
+    target.elementId === elementId &&
+    target.lifecycle.status !== 'used'
+  );
+}
+
+function rejectStaleConfirmation(
+  state: TuiState,
+  action: 'copy' | 'reveal',
+): TuiTransition {
+  return unchanged({
+    ...state,
+    overlay: 'none',
+    copyConfirmationFieldId: null,
+    copyConfirmationElementIndex: null,
+    copyConfirmationElementId: null,
+    revealConfirmationFieldId: null,
+    revealConfirmationElementIndex: null,
+    revealConfirmationElementId: null,
+    message: `The selected element changed before ${action}; try again.`,
+  });
+}
+
+function requireSavedDraft(state: TuiState, action: string): TuiTransition {
+  return unchanged({
+    ...state,
+    message: `Save local changes before ${action}.`,
+  });
+}
+
+function rejectUsedElement(state: TuiState): TuiTransition {
+  return unchanged({
+    ...state,
+    message: 'The selected element is no longer available.',
+  });
+}
+
+function selectedActionTarget(
+  state: TuiState,
+  fieldId: FieldDefinition['id'],
+):
+  | Readonly<{
+      elementIndex: number;
+      elementId: FieldValueElementId;
+      lifecycle: FieldValueElementLifecycle;
+    }>
+  | undefined {
+  const item = state.draft;
+  const stored =
+    item === null
+      ? undefined
+      : [...item.templateValues, ...item.itemValues].find(
+          (value) => value.fieldId === fieldId,
+        );
+  if (
+    stored?.value.state !== 'present' ||
+    stored.value.content.cardinality !== 'multiple'
+  )
+    return undefined;
+  const elementIndex = clamp(
+    state.selectedElement - 1,
+    stored.value.content.elements.length,
+  );
+  const element = stored.value.content.elements[elementIndex];
+  return element === undefined
+    ? undefined
+    : {
+        elementIndex: elementIndex + 1,
+        elementId: element.id,
+        lifecycle: element.lifecycle,
+      };
+}
+
+function moveElementSelection(state: TuiState, offset: number): TuiTransition {
+  if (state.activePane !== 'details') return unchanged(state);
+  const field = selectedFields(state)[state.selectedField];
+  if (field === undefined) return unchanged(state);
+  const target = selectedActionTarget(state, field.id);
+  if (target === undefined) return unchanged(state);
+  const stored =
+    state.draft === null
+      ? undefined
+      : [...state.draft.templateValues, ...state.draft.itemValues].find(
+          ({ fieldId }) => fieldId === field.id,
+        );
+  if (
+    stored?.value.state !== 'present' ||
+    stored.value.content.cardinality !== 'multiple'
+  )
+    return unchanged(state);
+  const selectedElement =
+    clamp(target.elementIndex - 1 + offset, stored.value.content.elements.length) + 1;
+  const abortReveal =
+    state.pending?.kind === 'reveal' && selectedElement !== state.selectedElement;
+  return {
+    state: {
+      ...state,
+      selectedElement,
+      pending: abortReveal ? null : state.pending,
+      message: null,
+    },
+    effects: abortReveal ? [{ kind: 'abort-active' }] : [],
+  };
+}
+
+function revealTargetStillSelected(
+  state: TuiState,
+  action: Extract<TuiAction, { type: 'reveal-authorized' }>,
+): boolean {
+  if (action.elementIndex === undefined) return action.elementId === undefined;
+  const target = selectedActionTarget(state, action.fieldId);
+  return (
+    state.selectedElement === action.elementIndex &&
+    target?.elementIndex === action.elementIndex &&
+    target.elementId === action.elementId
   );
 }
 
@@ -816,6 +1214,7 @@ function clearForLock(state: TuiState): TuiState {
     selectedGroup: 0,
     selectedItem: 0,
     selectedField: 0,
+    selectedElement: 1,
     draft: null,
     dirty: false,
     editor: null,
@@ -824,7 +1223,11 @@ function clearForLock(state: TuiState): TuiState {
     query: '',
     overlay: 'none',
     revealConfirmationFieldId: null,
+    revealConfirmationElementIndex: null,
+    revealConfirmationElementId: null,
     copyConfirmationFieldId: null,
+    copyConfirmationElementIndex: null,
+    copyConfirmationElementId: null,
     pending: null,
     message: 'Vault locked.',
   };
@@ -861,8 +1264,9 @@ export function selectedItem(state: TuiState): ItemPayload | undefined {
 export function revealGrantKey(
   itemId: ItemPayload['id'],
   fieldId: FieldDefinition['id'],
+  elementId?: FieldValueElementId,
 ): string {
-  return JSON.stringify([itemId, fieldId]);
+  return JSON.stringify([itemId, fieldId, elementId ?? null]);
 }
 
 export function selectedFields(state: TuiState): readonly FieldDefinition[] {
@@ -915,12 +1319,17 @@ function selectItem(state: TuiState, selectedItemIndex: number): TuiTransition {
       ...state,
       selectedItem: selectedItemIndex,
       selectedField: 0,
+      selectedElement: 1,
       draft: nextItem,
       dirty: false,
       editor: null,
       conflict: null,
       copyConfirmationFieldId: null,
+      copyConfirmationElementIndex: null,
+      copyConfirmationElementId: null,
       revealConfirmationFieldId: null,
+      revealConfirmationElementIndex: null,
+      revealConfirmationElementId: null,
       pending: abortReveal ? null : state.pending,
       revealedUntil: {},
       message: null,
@@ -936,6 +1345,8 @@ function request(
   target?: Readonly<{
     itemId: ItemPayload['id'];
     fieldId: FieldDefinition['id'];
+    elementIndex?: number;
+    elementId?: FieldValueElementId;
   }>,
 ): TuiTransition {
   const requestId = state.nextRequestId;

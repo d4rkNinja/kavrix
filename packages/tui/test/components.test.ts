@@ -1,5 +1,6 @@
 import { PassThrough } from 'node:stream';
 
+import { fieldDefinitionSchema, groupPayloadSchema } from '@kavrix/schemas';
 import { createElement } from 'react';
 import { render, renderToString } from 'ink';
 import { describe, expect, it, vi } from 'vitest';
@@ -13,6 +14,7 @@ import {
 import type { TuiUseCasePort } from '../src/contracts.js';
 import { createInitialTuiState, transitionTui, type TuiState } from '../src/state.js';
 import {
+  backupCodesField,
   browserState,
   group,
   item,
@@ -166,6 +168,7 @@ describe('Ink components', () => {
       expect(authorizeReveal).toHaveBeenCalledWith(
         item.id,
         passwordField.id,
+        {},
         expect.any(AbortSignal),
       );
     });
@@ -176,9 +179,36 @@ describe('Ink components', () => {
       expect(copyField).toHaveBeenCalledWith(
         item.id,
         usernameField.id,
+        {},
         expect.any(AbortSignal),
       );
     });
+
+    for (const key of ['j', 'j', ']', 'c', 'y']) {
+      stdin.write(key);
+      await instance.waitUntilRenderFlush();
+    }
+    await vi.waitFor(() => {
+      expect(copyField).toHaveBeenCalledWith(
+        item.id,
+        backupCodesField.id,
+        { index: 2 },
+        expect.any(AbortSignal),
+      );
+    });
+    stdin.write('r');
+    await vi.waitFor(() => {
+      expect(authorizeReveal).toHaveBeenCalledWith(
+        item.id,
+        backupCodesField.id,
+        { index: 2 },
+        expect.any(AbortSignal),
+      );
+    });
+    for (const key of ['k', 'k']) {
+      stdin.write(key);
+      await instance.waitUntilRenderFlush();
+    }
 
     for (const key of ['e', 'x', '\r', 's']) {
       stdin.write(key);
@@ -203,6 +233,75 @@ describe('Ink components', () => {
     const lockedFrame = output.lastIndexOf('CredVault \u00b7 LOCKED');
     expect(lockedFrame).toBeGreaterThanOrEqual(0);
     expect(output.slice(lockedFrame)).not.toContain('PASSWORD-CANARY');
+  });
+
+  it('completes a confirm-policy repeatable reveal for only the selected element', async () => {
+    const confirmField = fieldDefinitionSchema.parse({
+      ...backupCodesField,
+      revealPolicy: 'confirm',
+    });
+    const confirmGroup = groupPayloadSchema.parse({
+      ...group,
+      template: {
+        ...group.template,
+        fields: group.template.fields.map((field) =>
+          field.id === confirmField.id ? confirmField : field,
+        ),
+      },
+    });
+    const stdout = new TestOutput();
+    stdout.columns = 160;
+    const stdin = new TestInput();
+    const chunks: Buffer[] = [];
+    stdout.on('data', (chunk: Buffer) => chunks.push(chunk));
+    const authorizeReveal = vi
+      .fn<TuiUseCasePort['authorizeReveal']>()
+      .mockResolvedValue();
+    const lock = vi.fn<TuiUseCasePort['lock']>().mockResolvedValue();
+    const listItems = vi.fn<TuiUseCasePort['listItems']>().mockResolvedValue([item]);
+    const useCases: TuiUseCasePort = {
+      listGroups: vi
+        .fn<TuiUseCasePort['listGroups']>()
+        .mockResolvedValue([confirmGroup]),
+      listItems,
+      copyField: vi.fn<TuiUseCasePort['copyField']>().mockResolvedValue(),
+      authorizeReveal,
+      saveItem: vi.fn<TuiUseCasePort['saveItem']>(),
+      lock,
+    };
+    const instance = render(createElement(VaultTui, { useCases, now: () => 1_000 }), {
+      stdout: stdout as unknown as NodeJS.WriteStream,
+      stdin: stdin as unknown as NodeJS.ReadStream,
+      interactive: true,
+      exitOnCtrlC: false,
+      patchConsole: false,
+      maxFps: 1_000,
+    });
+
+    await vi.waitFor(() => {
+      expect(listItems).toHaveBeenCalledWith(confirmGroup.id, expect.any(AbortSignal));
+    });
+    await instance.waitUntilRenderFlush();
+    for (const key of ['\t', '\t', 'j', 'j', ']', 'r', 'y']) {
+      stdin.write(key);
+      await instance.waitUntilRenderFlush();
+    }
+    await vi.waitFor(() => {
+      expect(authorizeReveal).toHaveBeenCalledWith(
+        item.id,
+        backupCodesField.id,
+        { index: 2 },
+        expect.any(AbortSignal),
+      );
+    });
+    await instance.waitUntilRenderFlush();
+    const output = Buffer.concat(chunks).toString('utf8');
+    expect(output).toContain('[2]: code-b');
+    expect(output).not.toContain('code-a');
+
+    stdin.write('\u0003');
+    await instance.waitUntilExit();
+    expect(lock).toHaveBeenCalledOnce();
   });
 
   it('carries item identity through a deferred reveal completion', async () => {
@@ -248,6 +347,7 @@ describe('Ink components', () => {
         1,
         item.id,
         passwordField.id,
+        {},
         expect.any(AbortSignal),
       );
     });
@@ -273,6 +373,7 @@ describe('Ink components', () => {
       2,
       secondItem.id,
       passwordField.id,
+      {},
       expect.any(AbortSignal),
     );
     expect(Buffer.concat(chunks).toString('utf8')).toContain('PASSWORD-CANARY');

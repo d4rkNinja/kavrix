@@ -241,6 +241,7 @@ function overlayPane(state: TuiState, nowMs: number, height: number): TuiPaneMod
         'j / k         move selection',
         '/             search locally',
         'e             edit selected field',
+        '[ / ]         select repeatable element',
         'r             reveal for 15 seconds',
         'c             copy without printing',
         's             save local changes',
@@ -267,26 +268,49 @@ function overlayPane(state: TuiState, nowMs: number, height: number): TuiPaneMod
         ({ id }) => id === state.editor?.fieldId,
       );
       const descriptor = field === undefined ? null : describeFieldEditor(field);
+      const editor = state.editor;
       const input =
-        field?.sensitive === true
-          ? secretMask(state.ascii)
-          : safe(state.editor?.input ?? '', state.ascii);
+        editor?.kind === 'single'
+          ? field?.sensitive === true
+            ? secretMask(state.ascii)
+            : safe(editor.input, state.ascii)
+          : '';
+      const repeatableLines =
+        editor?.kind === 'repeatable'
+          ? editor.elements.map((element, index) => {
+              const marker = element.id === editor.selectedElementId ? '>' : ' ';
+              const rendered =
+                field?.sensitive === true
+                  ? secretMask(state.ascii)
+                  : safe(element.input, state.ascii);
+              return `${marker} ${String(index + 1)}: ${rendered} (${element.lifecycle.status})`;
+            })
+          : [];
       return makeOverlay('Dynamic field editor', width, height, [
         `Field: ${field === undefined ? 'Unavailable' : safe(field.label, state.ascii)}`,
         `Type: ${field?.type ?? '-'} | Input: ${descriptor?.inputMode ?? '-'}`,
-        `Value: ${input}`,
-        descriptor?.supportsMultiple === true ? 'One value per line' : 'Single value',
-        'Enter apply | Shift+Enter newline | Esc cancel',
+        ...(editor?.kind === 'repeatable'
+          ? [
+              ...repeatableLines,
+              'Up/Down select | Shift+Up/Down reorder',
+              'Ctrl+A add | Ctrl+D remove | type to edit',
+              'Enter apply | Esc cancel',
+            ]
+          : [
+              `Value: ${input}`,
+              'Single value',
+              'Enter apply | Shift+Enter newline | Esc cancel',
+            ]),
       ]);
     }
     case 'confirm-copy':
       return makeOverlay('Confirm copy', width, height, [
-        'Copy this protected field? y / n',
+        `Copy this protected field${state.copyConfirmationElementIndex === null ? '' : ` element ${String(state.copyConfirmationElementIndex)}`}? y / n`,
         'The value will not be rendered.',
       ]);
     case 'confirm-reveal':
       return makeOverlay('Confirm reveal', width, height, [
-        'Reveal this protected field temporarily? y / n',
+        `Reveal this protected field${state.revealConfirmationElementIndex === null ? '' : ` element ${String(state.revealConfirmationElementIndex)}`} temporarily? y / n`,
         'Reauthentication policy is enforced before display.',
       ]);
     case 'confirm-lock':
@@ -332,18 +356,31 @@ function renderFieldValue(
   if (value.state === 'empty') return '<empty>';
   if (value.state === 'inapplicable') return '<not applicable>';
   if (value.state === 'unreadable') return '<unreadable>';
-  if (
-    field.sensitive &&
-    (itemId === undefined ||
-      (state.revealedUntil[revealGrantKey(itemId, field.id)] ?? 0) <= nowMs)
-  )
-    return secretMask(state.ascii);
   const parts =
     value.content.cardinality === 'single'
-      ? [renderScalar(value.content.value, state.ascii)]
-      : value.content.elements.map((element) => {
-          const rendered = renderScalar(element.value, state.ascii);
-          return element.lifecycle.status === 'used' ? `${rendered} (used)` : rendered;
+      ? [
+          field.sensitive &&
+          (itemId === undefined ||
+            (state.revealedUntil[revealGrantKey(itemId, field.id)] ?? 0) <= nowMs)
+            ? secretMask(state.ascii)
+            : renderScalar(value.content.value, state.ascii),
+        ]
+      : value.content.elements.map((element, index) => {
+          const elementIndex = index + 1;
+          const isRevealed =
+            itemId !== undefined &&
+            (state.revealedUntil[revealGrantKey(itemId, field.id, element.id)] ?? 0) >
+              nowMs;
+          const rendered =
+            field.sensitive && !isRevealed
+              ? secretMask(state.ascii)
+              : renderScalar(element.value, state.ascii);
+          const selected =
+            state.selectedField ===
+              selectedFields(state).findIndex(({ id }) => id === field.id) &&
+            state.selectedElement === elementIndex;
+          const indexed = `${selected ? '[' : ''}${String(elementIndex)}${selected ? ']' : ''}: ${rendered}`;
+          return element.lifecycle.status === 'used' ? `${indexed} (used)` : indexed;
         });
   return parts.join(state.ascii ? ' | ' : ' \u00b7 ');
 }

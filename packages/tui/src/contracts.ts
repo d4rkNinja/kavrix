@@ -24,12 +24,14 @@ export interface TuiUseCasePort {
   copyField(
     itemId: ItemId,
     fieldId: FieldDefinition['id'],
+    options: Readonly<{ index?: number }>,
     signal: AbortSignal,
   ): Promise<void>;
   /** Enforces the field's reveal and reauthentication policy without returning data. */
   authorizeReveal(
     itemId: ItemId,
     fieldId: FieldDefinition['id'],
+    options: Readonly<{ index?: number }>,
     signal: AbortSignal,
   ): Promise<void>;
   /** Persists a canonical item draft with optimistic concurrency. */

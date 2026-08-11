@@ -179,16 +179,34 @@ function dynamicItem(): ItemPayload {
 }
 
 function editField(state: TuiState, field: FieldDefinition, input: string): TuiState {
-  return keyboardTransition(
+  let editing = keyboardTransition(
     {
       ...state,
-      overlay: 'editor',
-      editor: { fieldId: field.id, input },
       selectedField: selectedFields(state).findIndex(({ id }) => id === field.id),
     },
-    { name: 'return' },
+    { text: 'e' },
     0,
   ).state;
+  if (editing.editor?.kind === 'repeatable') {
+    while (
+      editing.editor?.kind === 'repeatable' &&
+      editing.editor.elements.length > 0
+    ) {
+      editing = keyboardTransition(editing, { ctrl: true, text: 'd' }, 0).state;
+    }
+    for (const value of input.split('\n')) {
+      editing = keyboardTransition(editing, { ctrl: true, text: 'a' }, 0).state;
+      for (const character of value) {
+        editing = keyboardTransition(editing, { text: character }, 0).state;
+      }
+    }
+  } else {
+    editing = {
+      ...editing,
+      editor: { kind: 'single', fieldId: field.id, input },
+    };
+  }
+  return keyboardTransition(editing, { name: 'return' }, 0).state;
 }
 
 describe('state edge behavior', () => {
@@ -344,7 +362,7 @@ describe('state edge behavior', () => {
     state = editField(state, attachmentField, 'attachment.certificate');
     state = editField(state, environmentField, 'TOKEN=new\nSECOND=two');
     expect(itemPayloadSchema.parse(state.draft).itemValues).toHaveLength(6);
-    expect(state.nextElementId).toBeGreaterThan(40_000);
+    expect(state.nextElementId).toBeGreaterThan(2);
 
     const invalidNumber = editField(state, numberField, 'not-a-number');
     expect(invalidNumber.message).toContain('does not satisfy');
@@ -356,7 +374,11 @@ describe('state edge behavior', () => {
     expect(invalidEnvironment.message).toContain('does not satisfy');
 
     state = keyboardTransition(
-      { ...state, overlay: 'editor', editor: { fieldId: numberField.id, input: '4' } },
+      {
+        ...state,
+        overlay: 'editor',
+        editor: { kind: 'single', fieldId: numberField.id, input: '4' },
+      },
       { name: 'escape' },
       0,
     ).state;

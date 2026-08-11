@@ -163,20 +163,36 @@ export function VaultTui({
         return;
       case 'copy-field':
         void useCasesRef.current
-          .copyField(effect.itemId, effect.fieldId, controller.signal)
+          .copyField(
+            effect.itemId,
+            effect.fieldId,
+            effect.elementIndex === undefined ? {} : { index: effect.elementIndex },
+            controller.signal,
+          )
           .then(() => {
             complete({ type: 'copy-finished', requestId: effect.requestId });
           }, failed);
         return;
       case 'authorize-reveal':
         void useCasesRef.current
-          .authorizeReveal(effect.itemId, effect.fieldId, controller.signal)
+          .authorizeReveal(
+            effect.itemId,
+            effect.fieldId,
+            effect.elementIndex === undefined ? {} : { index: effect.elementIndex },
+            controller.signal,
+          )
           .then(() => {
             complete({
               type: 'reveal-authorized',
               requestId: effect.requestId,
               itemId: effect.itemId,
               fieldId: effect.fieldId,
+              ...(effect.elementIndex === undefined
+                ? {}
+                : { elementIndex: effect.elementIndex }),
+              ...(effect.elementId === undefined
+                ? {}
+                : { elementId: effect.elementId }),
               expiresAt: effect.expiresAt,
             });
           }, failed);
