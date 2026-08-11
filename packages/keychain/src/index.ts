@@ -10,6 +10,8 @@ export {
   NativeKeychain,
   NativeProtectedSyncState,
   NativeSessionCredentials,
+  loadNativeEntryFactory,
+  tryLoadNativeEntryFactory,
   type NativeEntryFactory,
 } from './native-keychain.js';
 export type { JoinActiveJournalRecord, LifecycleOperationId } from '@kavrix/client';

@@ -147,19 +147,27 @@ try {
     throw new Error('The packed SBOM does not cover every JavaScript artifact.');
   }
 
-  const cryptoChunks = javascriptArtifacts.filter(({ bytes }) =>
-    bytes.includes('crypto_aead_xchacha20poly1305_ietf_encrypt_detached'),
-  );
-  if (cryptoChunks.length !== 1) {
+  // Every chunk that reaches the AEAD primitive must stay off the metadata-only
+  // path. Code splitting decides how many such chunks exist, so this asserts the
+  // property that matters — none of them is evaluated — rather than a chunk count
+  // that changes whenever a new caller of the primitive is added.
+  const cryptoChunkNames = javascriptArtifacts
+    .filter(({ bytes }) =>
+      bytes.includes('crypto_aead_xchacha20poly1305_ietf_encrypt_detached'),
+    )
+    .map(({ path }) => path.split('/').at(-1));
+  if (cryptoChunkNames.length === 0) {
     throw new Error('The packed portable-key crypto chunk could not be identified.');
   }
-  const cryptoChunkName = cryptoChunks[0].path.split('/').at(-1);
   const debugEnvironment = { ...process.env, NODE_DEBUG: 'esm' };
   for (const arguments_ of [['--version'], ['completion', 'bash']]) {
     const lazyResult = run(process.execPath, [executable, ...arguments_], {
       env: debugEnvironment,
     });
-    if (lazyResult.status !== 0 || lazyResult.stderr.includes(cryptoChunkName)) {
+    if (
+      lazyResult.status !== 0 ||
+      cryptoChunkNames.some((name) => lazyResult.stderr.includes(name))
+    ) {
       throw new Error(
         'A metadata-only command evaluated the portable-key crypto chunk.',
       );
@@ -216,7 +224,9 @@ try {
   if (
     keyCreation.status !== 0 ||
     keyCreation.stdout !== 'Portable key file created.\n' ||
-    !keyCreation.stderr.includes(cryptoChunkName) ||
+    // The counterpart to the laziness check above: a command that really needs
+    // the AEAD primitive must pull at least one of those chunks in on demand.
+    !cryptoChunkNames.some((name) => keyCreation.stderr.includes(name)) ||
     !keyFile.includes('Version: 1') ||
     !keyFile.includes('Binding: unbound') ||
     keyCreation.stdout.includes('Key:')

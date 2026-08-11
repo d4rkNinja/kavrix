@@ -198,6 +198,13 @@ importers:
       '@kavrix/crypto':
         specifier: workspace:*
         version: link:../crypto
+      libsodium-wrappers:
+        specifier: 'catalog:'
+        version: 0.8.4
+    devDependencies:
+      '@kavrix/keychain':
+        specifier: workspace:*
+        version: link:../keychain
 
   packages/keychain:
     dependencies:

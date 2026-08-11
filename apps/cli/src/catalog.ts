@@ -15,7 +15,11 @@ import {
   executePasswordGeneration,
   executeTotpGeneration,
 } from './public-security-tools.js';
-import { SECRET_INPUT_OPTIONS, type SecretInputPort } from './secret-input.js';
+import {
+  SECRET_INPUT_OPTIONS,
+  type AcquiredSecret,
+  type SecretInputPort,
+} from './secret-input.js';
 import { safeJson } from './terminal.js';
 import { CLI_VERSION } from './version.js';
 
@@ -452,8 +456,8 @@ export const CLI_COMMAND_CATALOG: readonly CliCommandDescriptor[] = Object.freez
             description: 'Redeem an invite without placing its token in argv.',
             options: [
               {
-                flags: '--device <device-id>',
-                description: 'Enroll this opaque device ID.',
+                flags: '--vault <vault-id>',
+                description: 'Join this opaque vault ID, as named by the invite.',
               },
               {
                 flags: '--schema-version <version>',
@@ -469,26 +473,36 @@ export const CLI_COMMAND_CATALOG: readonly CliCommandDescriptor[] = Object.freez
             execute: async (context, _arguments, options) => {
               const { parseJoinResult, shapeInviteJoinRequest } =
                 await import('./contracts.js');
-              const deviceId = requiredOption(options, 'device', 'device ID');
+              const vaultId = requiredOption(options, 'vault', 'vault ID');
               const schemaVersion = parseInput(
                 schemaVersionOptionSchema,
                 requiredOption(options, 'schemaVersion', 'schema version'),
                 'schema version',
               );
-              const inviteToken = await secretInput(context, 'device invite join').read(
+              // Redemption needs the invite token and the portable key that
+              // unlocks the redeemed vault. Over stdin they arrive as one
+              // framed batch; interactively they are two masked prompts.
+              const fromStdin = optionBoolean(options, 'inviteStdin');
+              const frames = await secretInput(context, 'device invite join').readBatch(
                 {
-                  kind: 'invite',
-                  fromStdin: optionBoolean(options, 'inviteStdin'),
+                  kinds: ['invite', 'portable-key'],
+                  fromStdin,
+                  requireEnd: fromStdin,
                 },
               );
+              const inviteToken = requiredSecretFrame(frames, 0);
+              const portableKey = requiredSecretFrame(frames, 1);
               const request = parseInputValue(
-                [inviteToken, deviceId, schemaVersion] as const,
+                [inviteToken, vaultId, schemaVersion] as const,
                 'invite enrollment request',
-                ([token, device, version]) =>
-                  shapeInviteJoinRequest(token, device, version),
+                ([token, vault, version]) =>
+                  shapeInviteJoinRequest(token, vault, version),
               );
               const result = parseJoinResult(
-                await useCases(context, 'device invite join').joinInvite(request),
+                await useCases(context, 'device invite join').joinInvite(
+                  request,
+                  portableKey,
+                ),
               );
               const safe = { vaultId: result.vaultId, deviceId: result.deviceId };
               context.stdout.write(
@@ -596,6 +610,16 @@ function requiredOption(
 function useCases(context: CliCommandContext, feature: CliFeature): CliUseCasePorts {
   if (context.ports === undefined) throw new CliUnavailableError(feature);
   return context.ports;
+}
+
+function requiredSecretFrame(
+  frames: readonly AcquiredSecret[],
+  index: number,
+): AcquiredSecret {
+  const frame = frames[index];
+  if (frame === undefined)
+    throw new CliUsageError('Secret input used invalid framing.');
+  return frame;
 }
 
 function secretInput(context: CliCommandContext, feature: CliFeature): SecretInputPort {

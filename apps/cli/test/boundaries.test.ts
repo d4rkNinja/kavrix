@@ -85,11 +85,12 @@ describe('CLI runtime boundaries', () => {
         pendingChanges: 0,
       }),
     ).toThrow();
-    expect(shapeInviteJoinRequest('A'.repeat(43), 'device.new', 2)).toEqual({
+    expect(shapeInviteJoinRequest('A'.repeat(43), 'vault.primary', 2)).toEqual({
       inviteToken: 'A'.repeat(43),
-      device: { deviceId: 'device.new', schemaVersion: 2 },
+      vaultId: 'vault.primary',
+      schemaVersion: 2,
     });
-    expect(() => shapeInviteJoinRequest('raw-invite', 'device.new', 1)).toThrow();
+    expect(() => shapeInviteJoinRequest('raw-invite', 'vault.primary', 1)).toThrow();
   });
 
   it('renders absent status metadata and invite lifecycle fields deterministically', () => {

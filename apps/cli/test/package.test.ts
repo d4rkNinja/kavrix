@@ -69,10 +69,18 @@ describe('public package', () => {
   });
 
   it('packs only metadata and compiled dist artifacts', () => {
+    // pnpm colorizes its notices whenever FORCE_COLOR is set, even into a pipe,
+    // which would wrap the `[WARN]` prefixes in escape codes and defeat the
+    // preamble check below. This asks for the machine-readable form explicitly
+    // so the report parses identically regardless of the caller's terminal.
     const output = execFileSync(
       process.execPath,
       [resolvePnpmEntrypoint(), 'pack', '--dry-run', '--json'],
-      { cwd: packageDirectory, encoding: 'utf8' },
+      {
+        cwd: packageDirectory,
+        encoding: 'utf8',
+        env: { ...process.env, FORCE_COLOR: '0' },
+      },
     );
     const pack = packOutputSchema.parse(JSON.parse(extractJsonDocument(output)));
     const paths = pack.files.map(({ path }) => path);

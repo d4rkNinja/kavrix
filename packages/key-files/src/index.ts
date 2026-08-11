@@ -1,5 +1,11 @@
 export * from './errors.js';
 export {
+  SealedSecretStore,
+  sealedEntryFactory,
+  type SealedSecretStoreOptions,
+} from './sealed-secret-store.js';
+export { setWindowsUserOnlyAcl } from './windows-acl.js';
+export {
   readPortableKeyFile,
   writePortableKeyFile,
   type ParsedPortableKeyFile,
