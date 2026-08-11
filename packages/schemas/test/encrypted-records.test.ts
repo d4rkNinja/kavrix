@@ -495,6 +495,15 @@ describe('Argon2id metadata', () => {
     };
 
     expect(passphraseDerivationSchema.safeParse(metadata).success).toBe(true);
+    // Profile v1 pins Argon2 v=0x13 semantics; 0x13 is not a profile number.
+    for (const unsupportedProfileVersion of [2, 0x13]) {
+      expect(
+        passphraseDerivationSchema.safeParse({
+          ...metadata,
+          version: unsupportedProfileVersion,
+        }).success,
+      ).toBe(false);
+    }
     expect(
       passphraseDerivationSchema.safeParse({
         ...metadata,

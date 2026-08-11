@@ -1,4 +1,4 @@
-import { argon2, createHash, hkdfSync, randomFillSync } from 'node:crypto';
+import { createHash, hkdfSync, randomFillSync } from 'node:crypto';
 
 import {
   passphraseDerivationSchema,
@@ -16,6 +16,7 @@ import {
   requireByteLength,
   zeroize,
 } from './bytes.js';
+import { deriveArgon2id } from './argon2id.js';
 import { CryptoInputError } from './errors.js';
 
 const KEY_BYTES = 32;
@@ -240,25 +241,13 @@ export async function derivePassphraseKek(
   validatePassphraseDerivation(parsed);
   const salt = decodeBase64Url(parsed.salt, { exactBytes: 16 });
   try {
-    const result = await new Promise<Buffer>((resolve, reject) => {
-      argon2(
-        'argon2id',
-        {
-          message: passphrase,
-          nonce: salt,
-          parallelism: parsed.parallelism,
-          tagLength: parsed.outputLength,
-          memory: parsed.memoryKiB,
-          passes: parsed.passes,
-        },
-        (error, derivedKey) => {
-          if (error !== null) {
-            reject(error);
-            return;
-          }
-          resolve(derivedKey);
-        },
-      );
+    const result = await deriveArgon2id({
+      message: passphrase,
+      nonce: salt,
+      parallelism: parsed.parallelism,
+      tagLength: parsed.outputLength,
+      memoryKiB: parsed.memoryKiB,
+      passes: parsed.passes,
     });
     try {
       return copyBytes(result) as KeyEncryptionKey;

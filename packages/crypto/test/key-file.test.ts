@@ -103,6 +103,7 @@ describe('portable key files', () => {
     const file = await serializeProtectedPortableKeyFile(key, passphrase, binding);
     const serialized = Buffer.from(file).toString('ascii');
     expect(serialized).toContain('Protection: argon2id+xchacha20-poly1305-ietf');
+    expect(serialized).toContain('\nKDF-Version: 1\n');
     expect(serialized).toContain('KDF-Memory-KiB: 65536');
     expect(serialized).not.toContain(copyForm);
 
@@ -123,6 +124,20 @@ describe('portable key files', () => {
     await expect(
       parseProtectedPortableKeyFile(moved, passphrase),
     ).rejects.toBeInstanceOf(AuthenticationError);
+
+    // KDF-Version is the Kavrix profile number, never the raw Argon2 version.
+    for (const unsupportedProfileVersion of [2, 0x13]) {
+      const tamperedProfile = Buffer.from(
+        serialized.replace(
+          'KDF-Version: 1',
+          `KDF-Version: ${String(unsupportedProfileVersion)}`,
+        ),
+        'ascii',
+      );
+      await expect(
+        parseProtectedPortableKeyFile(tamperedProfile, passphrase, binding),
+      ).rejects.toEqual(new AuthenticationError());
+    }
   });
 
   it('rejects hostile persisted Argon2 parameters before allocating them', async () => {

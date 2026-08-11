@@ -1,3 +1,6 @@
+import { hkdfSync } from 'node:crypto';
+
+import { passphraseDerivationSchema } from '@kavrix/schemas';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -20,6 +23,7 @@ import {
   parseRecoveryKey,
   zeroize,
 } from '../src/index.js';
+import { deriveArgon2id } from '../src/argon2id.js';
 
 describe('copy-form keys and KDFs', () => {
   it('uses deterministic canonical portable and recovery formats', () => {
@@ -60,18 +64,59 @@ describe('copy-form keys and KDFs', () => {
     );
   });
 
-  it('serializes and honors the Argon2id floor deterministically', async () => {
+  it('matches RFC 5869 Appendix A.1 for HKDF-SHA-256', () => {
+    const ikm = Buffer.alloc(22, 0x0b);
+    const salt = Buffer.from('000102030405060708090a0b0c', 'hex');
+    const info = Buffer.from('f0f1f2f3f4f5f6f7f8f9', 'hex');
+    const okm = hkdfSync('sha256', ikm, salt, info, 42);
+
+    expect(Buffer.from(okm).toString('hex')).toBe(
+      '3cb25f25faacd57a90434f64d0362f2a2d2d0a90cf1a5a4c5db02d56ecc4c5bf34007208d5b887185865',
+    );
+  });
+
+  it('matches RFC 9106 section 5.3 through the asynchronous Argon2id adapter', async () => {
+    const pending = deriveArgon2id({
+      message: Buffer.alloc(32, 0x01),
+      nonce: Buffer.alloc(16, 0x02),
+      secret: Buffer.alloc(8, 0x03),
+      associatedData: Buffer.alloc(12, 0x04),
+      memoryKiB: 32,
+      passes: 3,
+      parallelism: 4,
+      tagLength: 32,
+    });
+
+    expect(pending).toBeInstanceOf(Promise);
+    const tag = await pending;
+    try {
+      expect(tag.toString('hex')).toBe(
+        '0d640df58d78766c08c037a34a8b53c9d01ef0452d75b65eb52520e96b01e659',
+      );
+    } finally {
+      zeroize(tag);
+    }
+  });
+
+  it('round-trips and honors the complete Argon2id profile v1 deterministically', async () => {
     const derivation = createPassphraseDerivation({
       salt: Uint8Array.from({ length: 16 }, (_, index) => index),
     });
-    expect(derivation).toMatchObject({
+    expect(derivation).toEqual({
+      algorithm: 'argon2id',
+      version: 1,
+      salt: 'AAECAwQFBgcICQoLDA0ODw',
       memoryKiB: ARGON2ID_MINIMUM_MEMORY_KIB,
       passes: ARGON2ID_MINIMUM_PASSES,
       parallelism: ARGON2ID_MINIMUM_PARALLELISM,
       outputLength: 32,
     });
+    const serialized: unknown = JSON.parse(JSON.stringify(derivation));
+    const roundTripped = passphraseDerivationSchema.parse(serialized);
+    expect(roundTripped).toEqual(derivation);
+
     const passphrase = Buffer.from('correct horse battery staple', 'utf8');
-    const kek = await derivePassphraseKek(passphrase, derivation);
+    const kek = await derivePassphraseKek(passphrase, roundTripped);
     expect(Buffer.from(kek).toString('hex')).toBe(
       '853b272a44db1421c02962669a55eb0994f3cab385ed1c4c79253eee19bab49e',
     );
