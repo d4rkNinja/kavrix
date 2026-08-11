@@ -194,7 +194,7 @@ function editField(state: TuiState, field: FieldDefinition, input: string): TuiS
 describe('state edge behavior', () => {
   it('handles stale, empty, failed, completed, and locked operations deterministically', () => {
     const initial = createInitialTuiState();
-    expect(keyboardTransition(initial, { text: 'l' }, 0).state).toBe(initial);
+    expect(keyboardTransition(initial, { text: 'l' }, 0).effects[0]?.kind).toBe('lock');
 
     let state = transitionTui(initial, { type: 'start' }).state;
     expect(
@@ -204,6 +204,10 @@ describe('state edge behavior', () => {
     state = transitionTui(state, { type: 'operation-failed', requestId: 1 }).state;
     expect(state.screen).toBe('error');
     expect(state.message).not.toContain('PRIVATE');
+    expect(keyboardTransition(state, { text: 'l' }, 0).effects[0]?.kind).toBe('lock');
+    expect(
+      keyboardTransition(state, { text: 'c', ctrl: true }, 0).effects[0]?.kind,
+    ).toBe('lock');
 
     let empty = transitionTui(createInitialTuiState(), { type: 'start' }).state;
     empty = transitionTui(empty, {

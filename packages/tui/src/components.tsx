@@ -96,6 +96,8 @@ export interface VaultTuiProps {
   readonly ascii?: boolean;
   readonly now?: () => number;
   readonly onLocked?: () => void;
+  /** Receives a generic signal when best-effort unmount locking fails. */
+  readonly onCleanupLockFailed?: () => void;
 }
 
 /**
@@ -107,6 +109,7 @@ export function VaultTui({
   ascii = false,
   now = Date.now,
   onLocked,
+  onCleanupLockFailed,
 }: VaultTuiProps): ReactElement {
   const { stdout } = useStdout();
   const { exit } = useApp();
@@ -114,16 +117,23 @@ export function VaultTui({
   const [state, setState] = useState(initial);
   const stateRef = useRef(state);
   const activeController = useRef<AbortController | null>(null);
+  const lockConfirmed = useRef(false);
   const dispatchRef = useRef<(action: TuiAction) => void>(() => undefined);
   const useCasesRef = useRef(useCases);
   const onLockedRef = useRef(onLocked);
+  const onCleanupLockFailedRef = useRef(onCleanupLockFailed ?? failClosedCleanupLock);
   const exitRef = useRef(exit);
   useCasesRef.current = useCases;
   onLockedRef.current = onLocked;
+  onCleanupLockFailedRef.current = onCleanupLockFailed ?? failClosedCleanupLock;
   exitRef.current = exit;
 
   const runEffect = useCallback((effect: TuiEffect): void => {
     activeController.current?.abort();
+    if (effect.kind === 'abort-active') {
+      activeController.current = null;
+      return;
+    }
     const controller = new AbortController();
     activeController.current = controller;
     const complete = (action: TuiAction): void => {
@@ -165,6 +175,7 @@ export function VaultTui({
             complete({
               type: 'reveal-authorized',
               requestId: effect.requestId,
+              itemId: effect.itemId,
               fieldId: effect.fieldId,
               expiresAt: effect.expiresAt,
             });
@@ -179,6 +190,7 @@ export function VaultTui({
         return;
       case 'lock':
         void useCasesRef.current.lock(controller.signal).then(() => {
+          lockConfirmed.current = true;
           complete({ type: 'lock-finished', requestId: effect.requestId });
         }, failed);
     }
@@ -199,6 +211,16 @@ export function VaultTui({
     dispatch({ type: 'start' });
     return () => {
       activeController.current?.abort();
+      if (lockConfirmed.current) return;
+      try {
+        void Promise.resolve(
+          useCasesRef.current.lock(new AbortController().signal),
+        ).catch(() => {
+          onCleanupLockFailedRef.current();
+        });
+      } catch {
+        onCleanupLockFailedRef.current();
+      }
     };
   }, [dispatch]);
 
@@ -240,6 +262,10 @@ export function VaultTui({
   });
 
   return <TuiScreen state={state} nowMs={now()} />;
+}
+
+function failClosedCleanupLock(): never {
+  throw new Error('Vault cleanup failed safely.');
 }
 
 function mapInkInput(

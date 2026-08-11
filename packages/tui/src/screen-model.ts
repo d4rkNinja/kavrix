@@ -8,6 +8,7 @@ import type {
 import { describeFieldEditor, scalarDisplayValue } from './field-registry.js';
 import {
   filteredItemIndexes,
+  revealGrantKey,
   selectedFields,
   selectedGroup,
   selectedItem,
@@ -326,11 +327,16 @@ function renderFieldValue(
   nowMs: number,
 ): string {
   const value = stored?.value;
+  const itemId = selectedItem(state)?.id;
   if (value === undefined || value.state === 'missing') return '<missing>';
   if (value.state === 'empty') return '<empty>';
   if (value.state === 'inapplicable') return '<not applicable>';
   if (value.state === 'unreadable') return '<unreadable>';
-  if (field.sensitive && (state.revealedUntil[field.id] ?? 0) <= nowMs)
+  if (
+    field.sensitive &&
+    (itemId === undefined ||
+      (state.revealedUntil[revealGrantKey(itemId, field.id)] ?? 0) <= nowMs)
+  )
     return secretMask(state.ascii);
   const parts =
     value.content.cardinality === 'single'

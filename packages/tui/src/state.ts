@@ -39,6 +39,8 @@ export interface TuiKey {
 interface PendingOperation {
   readonly requestId: number;
   readonly kind: 'groups' | 'items' | 'copy' | 'reveal' | 'save' | 'lock';
+  readonly itemId?: ItemPayload['id'];
+  readonly fieldId?: FieldDefinition['id'];
 }
 
 export interface TuiConflictState {
@@ -78,6 +80,7 @@ export interface TuiState {
 }
 
 export type TuiEffect =
+  | Readonly<{ kind: 'abort-active' }>
   | Readonly<{ kind: 'load-groups'; requestId: number }>
   | Readonly<{
       kind: 'load-items';
@@ -128,6 +131,7 @@ export type TuiAction =
   | Readonly<{
       type: 'reveal-authorized';
       requestId: number;
+      itemId: ItemPayload['id'];
       fieldId: FieldDefinition['id'];
       expiresAt: number;
     }>
@@ -200,13 +204,21 @@ export function transitionTui(state: TuiState, action: TuiAction): TuiTransition
         message: 'Copied; clipboard expiry is active.',
       });
     case 'reveal-authorized':
-      if (state.pending?.requestId !== action.requestId) return unchanged(state);
+      if (
+        state.pending?.requestId !== action.requestId ||
+        state.pending.kind !== 'reveal' ||
+        state.pending.itemId !== action.itemId ||
+        state.pending.fieldId !== action.fieldId ||
+        state.items[state.selectedItem]?.id !== action.itemId ||
+        state.draft?.id !== action.itemId
+      )
+        return unchanged(state);
       return unchanged({
         ...state,
         pending: null,
         revealedUntil: {
           ...state.revealedUntil,
-          [action.fieldId]: action.expiresAt,
+          [revealGrantKey(action.itemId, action.fieldId)]: action.expiresAt,
         },
         message: 'Revealed temporarily; press lock to clear immediately.',
       });
@@ -233,8 +245,13 @@ export function keyboardTransition(
   key: TuiKey,
   nowMs: number,
 ): TuiTransition {
-  if (state.screen !== 'browser') return unchanged(state);
   if (key.ctrl === true && key.text?.toLowerCase() === 'c') return requestLock(state);
+  if (
+    (state.screen === 'loading' || state.screen === 'error') &&
+    key.text?.toLowerCase() === 'l'
+  )
+    return requestLock(state);
+  if (state.screen !== 'browser') return unchanged(state);
   if (state.overlay !== 'none') return overlayKey(state, key, nowMs);
 
   if (key.name === 'tab')
@@ -350,7 +367,12 @@ function moveSelection(state: TuiState, offset: number): TuiTransition {
       selectedItem: 0,
       selectedField: 0,
       draft: null,
+      dirty: false,
+      editor: null,
+      conflict: null,
       revealedUntil: {},
+      copyConfirmationFieldId: null,
+      revealConfirmationFieldId: null,
       message: null,
     };
     return request(base, 'items', (requestId) => ({
@@ -366,14 +388,7 @@ function moveSelection(state: TuiState, offset: number): TuiTransition {
     const currentVisible = Math.max(0, visible.indexOf(state.selectedItem));
     const nextVisible = clamp(currentVisible + offset, visible.length);
     const selectedItemIndex = visible[nextVisible] ?? state.selectedItem;
-    return unchanged({
-      ...state,
-      selectedItem: selectedItemIndex,
-      selectedField: 0,
-      draft: state.items[selectedItemIndex] ?? null,
-      revealedUntil: {},
-      message: null,
-    });
+    return selectItem(state, selectedItemIndex);
   }
   return unchanged({
     ...state,
@@ -401,11 +416,7 @@ function overlayKey(state: TuiState, key: TuiKey, nowMs: number): TuiTransition 
     if (key.name === 'escape')
       return unchanged({ ...state, overlay: 'none', query: '' });
     if (key.name === 'return')
-      return unchanged({
-        ...state,
-        overlay: 'none',
-        selectedItem: firstFilteredItem(state),
-      });
+      return selectItem({ ...state, overlay: 'none' }, firstFilteredItem(state));
     if (key.name === 'backspace')
       return unchanged({ ...state, query: removeLastGlyph(state.query) });
     if (isPrintable(key.text))
@@ -707,13 +718,18 @@ function revealSelectedField(state: TuiState, nowMs: number): TuiTransition {
       revealConfirmationFieldId: field.id,
     });
   }
-  return request(state, 'reveal', (requestId) => ({
-    kind: 'authorize-reveal',
-    requestId,
-    itemId: item.id,
-    fieldId: field.id,
-    expiresAt: nowMs + 15_000,
-  }));
+  return request(
+    state,
+    'reveal',
+    (requestId) => ({
+      kind: 'authorize-reveal',
+      requestId,
+      itemId: item.id,
+      fieldId: field.id,
+      expiresAt: nowMs + 15_000,
+    }),
+    { itemId: item.id, fieldId: field.id },
+  );
 }
 
 function confirmedReveal(state: TuiState, nowMs: number): TuiTransition {
@@ -732,6 +748,7 @@ function confirmedReveal(state: TuiState, nowMs: number): TuiTransition {
       fieldId,
       expiresAt: nowMs + 15_000,
     }),
+    { itemId: item.id, fieldId },
   );
 }
 
@@ -780,7 +797,8 @@ function confirmedCopy(state: TuiState): TuiTransition {
 function saveDraft(state: TuiState): TuiTransition {
   const draft = state.draft;
   const original = state.items[state.selectedItem];
-  if (!state.dirty || draft === null || original === undefined) return unchanged(state);
+  if (!state.dirty || draft === null || draft.id !== original?.id)
+    return unchanged(state);
   return request(state, 'save', (requestId) => ({
     kind: 'save-item',
     requestId,
@@ -795,6 +813,9 @@ function clearForLock(state: TuiState): TuiState {
     screen: 'locked',
     groups: [],
     items: [],
+    selectedGroup: 0,
+    selectedItem: 0,
+    selectedField: 0,
     draft: null,
     dirty: false,
     editor: null,
@@ -803,16 +824,21 @@ function clearForLock(state: TuiState): TuiState {
     query: '',
     overlay: 'none',
     revealConfirmationFieldId: null,
+    copyConfirmationFieldId: null,
     pending: null,
     message: 'Vault locked.',
   };
 }
 
 function requestLock(state: TuiState): TuiTransition {
-  return request(clearForLock(state), 'lock', (requestId) => ({
-    kind: 'lock',
-    requestId,
-  }));
+  return request(
+    { ...clearForLock(state), screen: 'loading' },
+    'lock',
+    (requestId) => ({
+      kind: 'lock',
+      requestId,
+    }),
+  );
 }
 
 function expireReveals(state: TuiState, nowMs: number): TuiState {
@@ -828,7 +854,15 @@ export function selectedGroup(state: TuiState): GroupPayload | undefined {
 }
 
 export function selectedItem(state: TuiState): ItemPayload | undefined {
-  return state.draft ?? state.items[state.selectedItem];
+  const item = state.items[state.selectedItem];
+  return state.draft !== null && state.draft.id === item?.id ? state.draft : item;
+}
+
+export function revealGrantKey(
+  itemId: ItemPayload['id'],
+  fieldId: FieldDefinition['id'],
+): string {
+  return JSON.stringify([itemId, fieldId]);
 }
 
 export function selectedFields(state: TuiState): readonly FieldDefinition[] {
@@ -864,16 +898,52 @@ function firstFilteredItem(state: TuiState): number {
   return filteredItemIndexes(state)[0] ?? state.selectedItem;
 }
 
+function selectItem(state: TuiState, selectedItemIndex: number): TuiTransition {
+  const nextItem = state.items[selectedItemIndex];
+  if (nextItem === undefined || selectedItemIndex === state.selectedItem) {
+    return unchanged(state);
+  }
+  if (state.dirty) {
+    return unchanged({
+      ...state,
+      message: 'Save or discard local changes first.',
+    });
+  }
+  const abortReveal = state.pending?.kind === 'reveal';
+  return {
+    state: {
+      ...state,
+      selectedItem: selectedItemIndex,
+      selectedField: 0,
+      draft: nextItem,
+      dirty: false,
+      editor: null,
+      conflict: null,
+      copyConfirmationFieldId: null,
+      revealConfirmationFieldId: null,
+      pending: abortReveal ? null : state.pending,
+      revealedUntil: {},
+      message: null,
+    },
+    effects: abortReveal ? [{ kind: 'abort-active' }] : [],
+  };
+}
+
 function request(
   state: TuiState,
   kind: PendingOperation['kind'],
   createEffect: (requestId: number) => TuiEffect,
+  target?: Readonly<{
+    itemId: ItemPayload['id'];
+    fieldId: FieldDefinition['id'];
+  }>,
 ): TuiTransition {
   const requestId = state.nextRequestId;
   return {
     state: {
       ...state,
-      pending: { requestId, kind },
+      pending:
+        target === undefined ? { requestId, kind } : { requestId, kind, ...target },
       nextRequestId: requestId + 1,
       message: null,
     },

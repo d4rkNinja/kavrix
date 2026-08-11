@@ -18,6 +18,7 @@ import {
   item,
   itemNotes,
   passwordField,
+  secondItem,
   usernameField,
 } from './fixtures.js';
 
@@ -58,6 +59,20 @@ function hydratedState(): TuiState {
     groupId: group.id,
     items: browserState().items,
   }).state;
+}
+
+function deferred(): Readonly<{
+  promise: Promise<void>;
+  resolve: () => void;
+}> {
+  let resolvePromise: (() => void) | undefined;
+  const promise = new Promise<void>((resolve) => {
+    resolvePromise = resolve;
+  });
+  return {
+    promise,
+    resolve: () => resolvePromise?.(),
+  };
 }
 
 describe('Ink components', () => {
@@ -190,19 +205,217 @@ describe('Ink components', () => {
     expect(output.slice(lockedFrame)).not.toContain('PASSWORD-CANARY');
   });
 
+  it('carries item identity through a deferred reveal completion', async () => {
+    const stdout = new TestOutput();
+    const stdin = new TestInput();
+    const chunks: Buffer[] = [];
+    stdout.on('data', (chunk: Buffer) => chunks.push(chunk));
+    const firstReveal = deferred();
+    const authorizeReveal = vi
+      .fn<TuiUseCasePort['authorizeReveal']>()
+      .mockImplementationOnce(() => firstReveal.promise)
+      .mockResolvedValueOnce();
+    const lock = vi.fn<TuiUseCasePort['lock']>().mockResolvedValue();
+    const listItems = vi
+      .fn<TuiUseCasePort['listItems']>()
+      .mockResolvedValue([item, secondItem]);
+    const useCases: TuiUseCasePort = {
+      listGroups: vi.fn<TuiUseCasePort['listGroups']>().mockResolvedValue([group]),
+      listItems,
+      copyField: vi.fn<TuiUseCasePort['copyField']>(),
+      authorizeReveal,
+      saveItem: vi.fn<TuiUseCasePort['saveItem']>(),
+      lock,
+    };
+    const instance = render(createElement(VaultTui, { useCases, now: () => 1_000 }), {
+      stdout: stdout as unknown as NodeJS.WriteStream,
+      stdin: stdin as unknown as NodeJS.ReadStream,
+      interactive: true,
+      exitOnCtrlC: false,
+      patchConsole: false,
+      maxFps: 1_000,
+    });
+    await vi.waitFor(() => {
+      expect(listItems).toHaveBeenCalledOnce();
+    });
+
+    for (const key of ['\t', '\t', 'j', 'r']) {
+      stdin.write(key);
+      await instance.waitUntilRenderFlush();
+    }
+    await vi.waitFor(() => {
+      expect(authorizeReveal).toHaveBeenNthCalledWith(
+        1,
+        item.id,
+        passwordField.id,
+        expect.any(AbortSignal),
+      );
+    });
+
+    for (const key of ['\t', '\t', 'j']) {
+      stdin.write(key);
+      await instance.waitUntilRenderFlush();
+    }
+    firstReveal.resolve();
+    await instance.waitUntilRenderFlush();
+    expect(Buffer.concat(chunks).toString('utf8')).not.toContain('PASSWORD-CANARY');
+
+    stdin.write('\t');
+    await instance.waitUntilRenderFlush();
+    stdin.write('j');
+    await instance.waitUntilRenderFlush();
+    stdin.write('r');
+    await vi.waitFor(() => {
+      expect(authorizeReveal).toHaveBeenCalledTimes(2);
+    });
+    await instance.waitUntilRenderFlush();
+    expect(authorizeReveal).toHaveBeenNthCalledWith(
+      2,
+      secondItem.id,
+      passwordField.id,
+      expect.any(AbortSignal),
+    );
+    expect(Buffer.concat(chunks).toString('utf8')).toContain('PASSWORD-CANARY');
+
+    stdin.write('l');
+    await instance.waitUntilExit();
+    expect(lock).toHaveBeenCalledOnce();
+  });
+
+  it('does not exit after a failed lock and exits once after a confirmed retry', async () => {
+    const stdout = new TestOutput();
+    const stdin = new TestInput();
+    const chunks: Buffer[] = [];
+    stdout.on('data', (chunk: Buffer) => chunks.push(chunk));
+    const lock = vi
+      .fn<TuiUseCasePort['lock']>()
+      .mockRejectedValueOnce(new Error('PRIVATE-LOCK-ERROR'))
+      .mockResolvedValueOnce();
+    const onLocked = vi.fn<() => void>();
+    const listItems = vi.fn<TuiUseCasePort['listItems']>().mockResolvedValue([item]);
+    const useCases: TuiUseCasePort = {
+      listGroups: vi.fn<TuiUseCasePort['listGroups']>().mockResolvedValue([group]),
+      listItems,
+      copyField: vi.fn<TuiUseCasePort['copyField']>(),
+      authorizeReveal: vi.fn<TuiUseCasePort['authorizeReveal']>(),
+      saveItem: vi.fn<TuiUseCasePort['saveItem']>(),
+      lock,
+    };
+    const instance = render(createElement(VaultTui, { useCases, onLocked }), {
+      stdout: stdout as unknown as NodeJS.WriteStream,
+      stdin: stdin as unknown as NodeJS.ReadStream,
+      interactive: true,
+      exitOnCtrlC: false,
+      patchConsole: false,
+      maxFps: 1_000,
+    });
+    await vi.waitFor(() => {
+      expect(listItems).toHaveBeenCalledOnce();
+    });
+
+    stdin.write('l');
+    await vi.waitFor(() => {
+      expect(lock).toHaveBeenCalledTimes(1);
+    });
+    await vi.waitFor(() => {
+      expect(Buffer.concat(chunks).toString('utf8')).toContain(
+        'Operation failed safely',
+      );
+    });
+    expect(onLocked).not.toHaveBeenCalled();
+    expect(Buffer.concat(chunks).toString('utf8')).not.toContain('PRIVATE-LOCK-ERROR');
+
+    stdin.write('\x03');
+    await instance.waitUntilExit();
+    expect(lock).toHaveBeenCalledTimes(2);
+    expect(onLocked).toHaveBeenCalledOnce();
+  });
+
+  it('locks from an initial-load error and on caller-driven unmount', async () => {
+    const stdout = new TestOutput();
+    const stdin = new TestInput();
+    const lockAfterLoadFailure = vi.fn<TuiUseCasePort['lock']>().mockResolvedValue();
+    const failingListGroups = vi
+      .fn<TuiUseCasePort['listGroups']>()
+      .mockRejectedValue(new Error('PRIVATE-LOAD-ERROR'));
+    const failingUseCases: TuiUseCasePort = {
+      listGroups: failingListGroups,
+      listItems: vi.fn<TuiUseCasePort['listItems']>(),
+      copyField: vi.fn<TuiUseCasePort['copyField']>(),
+      authorizeReveal: vi.fn<TuiUseCasePort['authorizeReveal']>(),
+      saveItem: vi.fn<TuiUseCasePort['saveItem']>(),
+      lock: lockAfterLoadFailure,
+    };
+    const failedInstance = render(
+      createElement(VaultTui, { useCases: failingUseCases }),
+      {
+        stdout: stdout as unknown as NodeJS.WriteStream,
+        stdin: stdin as unknown as NodeJS.ReadStream,
+        interactive: true,
+        exitOnCtrlC: false,
+        patchConsole: false,
+        maxFps: 1_000,
+      },
+    );
+    await vi.waitFor(() => {
+      expect(failingListGroups).toHaveBeenCalledOnce();
+    });
+    stdin.write('\x03');
+    await failedInstance.waitUntilExit();
+    expect(lockAfterLoadFailure).toHaveBeenCalledOnce();
+
+    const unmountLock = vi
+      .fn<TuiUseCasePort['lock']>()
+      .mockRejectedValue(new Error('PRIVATE-UNMOUNT-LOCK-ERROR'));
+    const onCleanupLockFailed = vi.fn<() => void>();
+    const unmountListItems = vi
+      .fn<TuiUseCasePort['listItems']>()
+      .mockResolvedValue([item]);
+    const unmountUseCases: TuiUseCasePort = {
+      ...failingUseCases,
+      listGroups: vi.fn<TuiUseCasePort['listGroups']>().mockResolvedValue([group]),
+      listItems: unmountListItems,
+      lock: unmountLock,
+    };
+    const unmounted = render(
+      createElement(VaultTui, { useCases: unmountUseCases, onCleanupLockFailed }),
+      {
+        stdout: new TestOutput() as unknown as NodeJS.WriteStream,
+        stdin: new TestInput() as unknown as NodeJS.ReadStream,
+        interactive: true,
+        exitOnCtrlC: false,
+        patchConsole: false,
+      },
+    );
+    await vi.waitFor(() => {
+      expect(unmountListItems).toHaveBeenCalledOnce();
+    });
+    unmounted.unmount();
+    await unmounted.waitUntilExit();
+    await vi.waitFor(() => {
+      expect(unmountLock).toHaveBeenCalledOnce();
+    });
+    await vi.waitFor(() => {
+      expect(onCleanupLockFailed).toHaveBeenCalledOnce();
+    });
+    expect(onCleanupLockFailed).toHaveBeenCalledWith();
+    expect(JSON.stringify(onCleanupLockFailed.mock.calls)).not.toContain('PRIVATE');
+  });
+
   it('renders a generic safe failure instead of an adapter error', async () => {
     const stdout = new TestOutput();
     const stdin = new TestInput();
     const failingListGroups = vi
       .fn<TuiUseCasePort['listGroups']>()
       .mockRejectedValue(new Error('PRIVATE-ADAPTER-ERROR'));
+    const lock = vi.fn<TuiUseCasePort['lock']>().mockResolvedValue();
     const useCases: TuiUseCasePort = {
       listGroups: failingListGroups,
       listItems: vi.fn<TuiUseCasePort['listItems']>(),
       copyField: vi.fn<TuiUseCasePort['copyField']>(),
       authorizeReveal: vi.fn<TuiUseCasePort['authorizeReveal']>(),
       saveItem: vi.fn<TuiUseCasePort['saveItem']>(),
-      lock: vi.fn<TuiUseCasePort['lock']>(),
+      lock,
     };
     const instance = render(createElement(VaultTui, { useCases }), {
       stdout: stdout as unknown as NodeJS.WriteStream,
@@ -216,5 +429,8 @@ describe('Ink components', () => {
     });
     instance.unmount();
     await instance.waitUntilExit();
+    await vi.waitFor(() => {
+      expect(lock).toHaveBeenCalledOnce();
+    });
   });
 });

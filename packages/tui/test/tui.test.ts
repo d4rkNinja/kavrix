@@ -6,6 +6,8 @@ import { buildTuiScreenModel, renderTuiScreenText } from '../src/screen-model.js
 import {
   createInitialTuiState,
   keyboardTransition,
+  revealGrantKey,
+  selectedItem,
   transitionTui,
   type TuiState,
 } from '../src/state.js';
@@ -133,6 +135,7 @@ describe('dynamic field and keyboard behavior', () => {
     state = transitionTui(state, {
       type: 'reveal-authorized',
       requestId: 3,
+      itemId: item.id,
       fieldId: passwordField.id,
       expiresAt: 16_000,
     }).state;
@@ -147,6 +150,107 @@ describe('dynamic field and keyboard behavior', () => {
     expect(renderTuiScreenText(buildTuiScreenModel(state, 16_001))).not.toContain(
       'PASSWORD-CANARY',
     );
+  });
+
+  it('binds reveal authorization to the pending item and invalidates it on item navigation', () => {
+    const secondCanaryItem = itemPayloadSchema.parse({
+      ...secondItem,
+      templateValues: secondItem.templateValues.map((stored) =>
+        stored.fieldId === passwordField.id
+          ? {
+              ...stored,
+              value: {
+                version: 1,
+                state: 'present',
+                content: {
+                  cardinality: 'single',
+                  value: {
+                    kind: 'secret',
+                    value: 'SECOND-PASSWORD-CANARY',
+                  },
+                },
+              },
+            }
+          : stored,
+      ),
+    });
+    let state = detailState({
+      ...hydrate(),
+      items: [item, secondCanaryItem],
+      draft: item,
+    });
+    state = keyboardTransition(state, { name: 'down' }, 1_000).state;
+    const revealingFirst = keyboardTransition(state, { text: 'r' }, 1_000);
+    expect(revealingFirst.effects[0]).toMatchObject({
+      kind: 'authorize-reveal',
+      itemId: item.id,
+      fieldId: passwordField.id,
+    });
+
+    const navigated = keyboardTransition(
+      { ...revealingFirst.state, activePane: 'items' },
+      { name: 'down' },
+      1_001,
+    );
+    expect(navigated.effects).toEqual([{ kind: 'abort-active' }]);
+    state = navigated.state;
+    expect(state.pending).toBeNull();
+    expect(state.draft?.id).toBe(secondCanaryItem.id);
+    state = transitionTui(state, {
+      type: 'reveal-authorized',
+      requestId: 3,
+      itemId: item.id,
+      fieldId: passwordField.id,
+      expiresAt: 16_000,
+    }).state;
+    expect(state.revealedUntil).toEqual({});
+    expect(renderTuiScreenText(buildTuiScreenModel(state, 1_002))).not.toContain(
+      'SECOND-PASSWORD-CANARY',
+    );
+
+    state = keyboardTransition(
+      { ...state, activePane: 'details', selectedField: 1 },
+      { text: 'r' },
+      2_000,
+    ).state;
+    const staleReverse = transitionTui(state, {
+      type: 'reveal-authorized',
+      requestId: 4,
+      itemId: item.id,
+      fieldId: passwordField.id,
+      expiresAt: 17_000,
+    }).state;
+    expect(staleReverse.pending).toEqual(state.pending);
+    expect(renderTuiScreenText(buildTuiScreenModel(staleReverse, 2_001))).not.toContain(
+      'SECOND-PASSWORD-CANARY',
+    );
+
+    state = transitionTui(state, {
+      type: 'reveal-authorized',
+      requestId: 4,
+      itemId: secondCanaryItem.id,
+      fieldId: passwordField.id,
+      expiresAt: 17_000,
+    }).state;
+    expect(Object.keys(state.revealedUntil)).toEqual([
+      revealGrantKey(secondCanaryItem.id, passwordField.id),
+    ]);
+    expect(renderTuiScreenText(buildTuiScreenModel(state, 2_001))).toContain(
+      'SECOND-PASSWORD-CANARY',
+    );
+    state = transitionTui(state, { type: 'tick', nowMs: 17_001 }).state;
+    expect(state.revealedUntil).toEqual({});
+    const locking = keyboardTransition(
+      {
+        ...state,
+        revealedUntil: {
+          [revealGrantKey(secondCanaryItem.id, passwordField.id)]: 30_000,
+        },
+      },
+      { text: 'l' },
+      17_002,
+    );
+    expect(locking.state.revealedUntil).toEqual({});
   });
 
   it('emits a confirmed copy intent without putting a secret in the effect', () => {
@@ -199,13 +303,48 @@ describe('dynamic field and keyboard behavior', () => {
   });
 
   it('supports search, palette, help, ASCII toggle, and stable pane navigation', () => {
-    let state = hydrate();
+    let state: TuiState = {
+      ...hydrate(),
+      selectedField: 2,
+      revealedUntil: { stale: 99_999 },
+      copyConfirmationFieldId: passwordField.id,
+      revealConfirmationFieldId: passwordField.id,
+    };
     state = keyboardTransition(state, { text: '/' }, 0).state;
     for (const character of 'outlook')
       state = keyboardTransition(state, { text: character }, 0).state;
     expect(buildTuiScreenModel(state, 0).panes[0]?.title).toBe('Search');
     state = keyboardTransition(state, { name: 'return' }, 0).state;
     expect(state.selectedItem).toBe(1);
+    expect(state.draft?.id).toBe(secondItem.id);
+    expect(selectedItem(state)?.id).toBe(secondItem.id);
+    expect(state.selectedField).toBe(0);
+    expect(state.revealedUntil).toEqual({});
+    expect(state.copyConfirmationFieldId).toBeNull();
+    expect(state.revealConfirmationFieldId).toBeNull();
+    expect(buildTuiScreenModel(state, 0).panes[2]?.title).toBe(secondItem.title);
+
+    const reveal = keyboardTransition(
+      { ...state, activePane: 'details', selectedField: 1 },
+      { text: 'r' },
+      1_000,
+    );
+    expect(reveal.effects[0]).toMatchObject({
+      kind: 'authorize-reveal',
+      itemId: secondItem.id,
+      fieldId: passwordField.id,
+    });
+    const confirmCopy = keyboardTransition(
+      { ...state, activePane: 'details', selectedField: 1 },
+      { text: 'c' },
+      1_000,
+    );
+    const copy = keyboardTransition(confirmCopy.state, { text: 'y' }, 1_000);
+    expect(copy.effects[0]).toMatchObject({
+      kind: 'copy-field',
+      itemId: secondItem.id,
+      fieldId: passwordField.id,
+    });
 
     state = keyboardTransition(state, { ctrl: true, text: 'p' }, 0).state;
     expect(state.overlay).toBe('palette');
@@ -216,6 +355,32 @@ describe('dynamic field and keyboard behavior', () => {
     expect(state.overlay).toBe('help');
     state = keyboardTransition(state, { name: 'escape' }, 0).state;
     expect(state.overlay).toBe('none');
+  });
+
+  it('keeps search selection atomic and refuses to cross a dirty draft identity', () => {
+    let state = detailState(hydrate());
+    state = keyboardTransition(state, { text: 'e' }, 0).state;
+    state = keyboardTransition(state, { text: 'x' }, 0).state;
+    state = keyboardTransition(state, { name: 'return' }, 0).state;
+    expect(state.dirty).toBe(true);
+    expect(state.draft?.id).toBe(item.id);
+
+    state = keyboardTransition(state, { text: '/' }, 0).state;
+    for (const character of 'outlook') {
+      state = keyboardTransition(state, { text: character }, 0).state;
+    }
+    state = keyboardTransition(state, { name: 'return' }, 0).state;
+    expect(state.selectedItem).toBe(0);
+    expect(state.draft?.id).toBe(item.id);
+    expect(selectedItem(state)?.id).toBe(item.id);
+    expect(state.message).toContain('Save');
+
+    const saving = keyboardTransition(state, { text: 's' }, 0);
+    expect(saving.effects[0]).toMatchObject({
+      kind: 'save-item',
+      item: { id: item.id },
+      expectedRevision: item.revision,
+    });
   });
 
   it('keeps a conflict explicit until local or remote is chosen', () => {
@@ -256,6 +421,7 @@ describe('dynamic field and keyboard behavior', () => {
 
     const locking = keyboardTransition(state, { text: 'y' }, 0);
     expect(locking.effects).toEqual([{ kind: 'lock', requestId: 3 }]);
+    expect(locking.state.screen).toBe('loading');
     const locked = transitionTui(locking.state, {
       type: 'lock-finished',
       requestId: 3,
