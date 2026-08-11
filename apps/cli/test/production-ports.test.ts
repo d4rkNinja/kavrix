@@ -97,6 +97,7 @@ describe('production CLI ports', () => {
   it('uses the extracted status reader without changing its locked projection', async () => {
     const options = productionOptions();
     const protectedState = protectedLocalDeviceStateSchema.parse({
+      version: 2,
       vaultId: options.profile.vaultId,
       deviceId: options.profile.deviceId,
       highestSeenVaultRevision: 4,

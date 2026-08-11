@@ -134,6 +134,7 @@ describe('protected secret backend policy', () => {
     const vaultId = 'vault.primary';
     const deviceId = 'device.primary';
     const state = protectedLocalDeviceStateSchema.parse({
+      version: 2,
       vaultId,
       deviceId,
       highestSeenVaultRevision: 7,

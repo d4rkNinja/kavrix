@@ -657,6 +657,7 @@ describe('canonical public encodings', () => {
     ).toBe(false);
     expect(
       protectedLocalDeviceStateSchema.safeParse({
+        version: 2,
         vaultId: 'vault.1',
         deviceId: 'device.1',
         highestSeenVaultRevision: 5,

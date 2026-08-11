@@ -376,6 +376,7 @@ async function statusFixture(): Promise<
   const protectedState = new NativeProtectedSyncState(sealedEntryFactory(store));
   await protectedState.save(
     protectedLocalDeviceStateSchema.parse({
+      version: 2,
       vaultId: profile.vaultId,
       deviceId: profile.deviceId,
       highestSeenVaultRevision: 7,

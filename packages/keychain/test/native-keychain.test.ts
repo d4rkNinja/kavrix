@@ -2,11 +2,17 @@ import { describe, expect, expectTypeOf, it } from 'vitest';
 import {
   deviceUnlockSecretSchema,
   keychainLocatorSchema,
+  outboundObservationSchema,
   protectedLocalDeviceStateSchema,
   sessionCredentialLocatorSchema,
   sessionCredentialSecretSchema,
 } from '@kavrix/schemas';
-import type { DeviceUnlockSecret, SessionCredentialSecret } from '@kavrix/schemas';
+import type {
+  DeviceUnlockSecret,
+  OutboundObservation,
+  SessionCredentialSecret,
+} from '@kavrix/schemas';
+import { computeOutboundObservationId } from '@kavrix/sync';
 
 import {
   createNativeKeychain,
@@ -18,6 +24,7 @@ import {
   NativeSessionCredentials,
 } from '../src/index.js';
 import type { NativeEntryFactory } from '../src/index.js';
+import { protectedStateQueueSize } from '../src/protected-state-queue.js';
 
 const KEY = keychainLocatorSchema.parse({
   version: 1,
@@ -32,10 +39,34 @@ const SESSION_KEY = sessionCredentialLocatorSchema.parse({
   purpose: 'api-session',
 });
 const PROTECTED_STATE = protectedLocalDeviceStateSchema.parse({
+  version: 2,
   vaultId: KEY.vaultId,
   deviceId: KEY.deviceId,
   highestSeenVaultRevision: 5,
   updatedAt: '2026-08-10T00:00:00.000Z',
+});
+
+function observation(overrides: Record<string, unknown> = {}): OutboundObservation {
+  const content = {
+    version: 1,
+    kind: 'generic-push',
+    batchIdempotencyKey: 'batch-key-0000001',
+    requestHash: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+    responseHash: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+    responseVaultRevision: 5,
+    replayFromServerSequence: 3,
+    requiredThroughServerSequence: 5,
+    ...overrides,
+  } as const;
+  return outboundObservationSchema.parse({
+    ...content,
+    observationId: computeOutboundObservationId(KEY.vaultId, KEY.deviceId, content),
+  });
+}
+
+const PENDING_STATE = protectedLocalDeviceStateSchema.parse({
+  ...PROTECTED_STATE,
+  outboundObservation: observation(),
 });
 
 function secret(fill: number): DeviceUnlockSecret {
@@ -73,6 +104,11 @@ function memoryEntries(): {
     },
   };
 }
+
+const LEGACY_PROTECTED_STATE_V1 = Buffer.from(
+  'S1NTVAEgdmF1bHRfMDFKVEVTVDAwMDAwMDAwMDAwMDAwMDAwMDAgZGV2aWNlXzAxSlRFU1QwMDAwMDAwMDAwMDAwMDAwMDAAAAAAAAAABQAAAZ_o-BQA',
+  'base64url',
+);
 
 describe('NativeKeychain', () => {
   it('keeps session credentials distinct from device-unlock secrets in types', () => {
@@ -387,6 +423,334 @@ describe('NativeProtectedSyncState', () => {
     expect(Buffer.from(encoded ?? new Uint8Array()).toString('utf8')).not.toContain(
       'highestSeenVaultRevision',
     );
+    expect(encoded?.[4]).toBe(2);
+  });
+
+  it('loads the exact legacy binary v1 shape as runtime v2 and writes v2 next', async () => {
+    const memory = memoryEntries();
+    const protectedState = new NativeProtectedSyncState(memory.createEntry);
+    await protectedState.save(PROTECTED_STATE);
+    const entry = [...memory.values.keys()].find((key) =>
+      key.includes('v1:protected-sync-state:'),
+    );
+    expect(entry).toBeDefined();
+    memory.values.set(entry ?? '', Uint8Array.from(LEGACY_PROTECTED_STATE_V1));
+
+    await expect(protectedState.load(KEY.vaultId, KEY.deviceId)).resolves.toEqual(
+      PROTECTED_STATE,
+    );
+    await protectedState.save(
+      protectedLocalDeviceStateSchema.parse({
+        ...PROTECTED_STATE,
+        highestSeenVaultRevision: 6,
+      }),
+    );
+    expect(memory.values.get(entry ?? '')?.[4]).toBe(2);
+  });
+
+  it('enforces begin, identical advance, exact completion, and idempotent clear', async () => {
+    const memory = memoryEntries();
+    let writes = 0;
+    const createEntry: NativeEntryFactory = (service, account) => {
+      const entry = memory.createEntry(service, account);
+      return {
+        ...entry,
+        async setSecret(value): Promise<void> {
+          writes += 1;
+          await entry.setSecret(value);
+        },
+      };
+    };
+    const protectedState = new NativeProtectedSyncState(createEntry);
+    await protectedState.save(PROTECTED_STATE);
+    await protectedState.save(PENDING_STATE);
+    await protectedState.save(
+      protectedLocalDeviceStateSchema.parse({
+        ...PENDING_STATE,
+        highestSeenVaultRevision: 8,
+        updatedAt: '2026-08-09T00:00:00.000Z',
+      }),
+    );
+    await protectedState.completeObservation(
+      KEY.vaultId,
+      KEY.deviceId,
+      PENDING_STATE.outboundObservation?.observationId as never,
+      8 as never,
+      '2026-08-09T00:00:00.000Z',
+    );
+    const completed = await protectedState.load(KEY.vaultId, KEY.deviceId);
+    expect(completed).toEqual({
+      version: 2,
+      vaultId: KEY.vaultId,
+      deviceId: KEY.deviceId,
+      highestSeenVaultRevision: 8,
+      updatedAt: PROTECTED_STATE.updatedAt,
+      lastCompletedObservationId: PENDING_STATE.outboundObservation?.observationId,
+    });
+    const writesBeforeRetry = writes;
+    await protectedState.completeObservation(
+      KEY.vaultId,
+      KEY.deviceId,
+      PENDING_STATE.outboundObservation?.observationId as never,
+      9 as never,
+      '2026-08-11T00:00:00.000Z',
+    );
+    expect(writes).toBe(writesBeforeRetry + 1);
+    expect(await protectedState.load(KEY.vaultId, KEY.deviceId)).toEqual({
+      ...completed,
+      highestSeenVaultRevision: 9,
+      updatedAt: '2026-08-11T00:00:00.000Z',
+    });
+    const writesAfterAdvance = writes;
+    await protectedState.completeObservation(
+      KEY.vaultId,
+      KEY.deviceId,
+      PENDING_STATE.outboundObservation?.observationId as never,
+      9 as never,
+      '2026-08-10T12:00:00.000Z',
+    );
+    expect(writes).toBe(writesAfterAdvance);
+  });
+
+  it('converges after commit-then-throw on begin, advance, and clear', async () => {
+    const memory = memoryEntries();
+    let failAfterWrite = false;
+    let writes = 0;
+    const factory: NativeEntryFactory = (service, account) => {
+      const entry = memory.createEntry(service, account);
+      return {
+        ...entry,
+        async setSecret(value): Promise<void> {
+          writes += 1;
+          await entry.setSecret(value);
+          if (failAfterWrite) {
+            failAfterWrite = false;
+            throw new Error('ambiguous-native-write');
+          }
+        },
+      };
+    };
+    const state = new NativeProtectedSyncState(factory);
+    await state.save(PROTECTED_STATE);
+
+    failAfterWrite = true;
+    await expect(state.save(PENDING_STATE)).rejects.toMatchObject({
+      code: 'KEYCHAIN_OPERATION_FAILED',
+    });
+    const afterBeginFailure = writes;
+    await expect(state.save(PENDING_STATE)).resolves.toBeUndefined();
+    expect(writes).toBe(afterBeginFailure);
+
+    const advanced = protectedLocalDeviceStateSchema.parse({
+      ...PENDING_STATE,
+      highestSeenVaultRevision: 8,
+    });
+    failAfterWrite = true;
+    await expect(state.save(advanced)).rejects.toMatchObject({
+      code: 'KEYCHAIN_OPERATION_FAILED',
+    });
+    const afterAdvanceFailure = writes;
+    await expect(state.save(advanced)).resolves.toBeUndefined();
+    expect(writes).toBe(afterAdvanceFailure);
+
+    failAfterWrite = true;
+    await expect(
+      state.completeObservation(
+        KEY.vaultId,
+        KEY.deviceId,
+        advanced.outboundObservation?.observationId as never,
+        8 as never,
+        advanced.updatedAt,
+      ),
+    ).rejects.toMatchObject({ code: 'KEYCHAIN_OPERATION_FAILED' });
+    const afterClearFailure = writes;
+    await expect(
+      state.completeObservation(
+        KEY.vaultId,
+        KEY.deviceId,
+        advanced.outboundObservation?.observationId as never,
+        8 as never,
+        advanced.updatedAt,
+      ),
+    ).resolves.toBeUndefined();
+    expect(writes).toBe(afterClearFailure);
+  });
+
+  it('does not serialize unrelated accounts and cleans settled queue entries', async () => {
+    const memory = memoryEntries();
+    let releaseFirst!: () => void;
+    let markFirstStarted!: () => void;
+    const firstStarted = new Promise<void>((resolve) => {
+      markFirstStarted = resolve;
+    });
+    const firstGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const firstAccountNeedle = `${KEY.vaultId}:${KEY.deviceId}`;
+    const factory: NativeEntryFactory = (service, account) => {
+      const entry = memory.createEntry(service, account);
+      return {
+        ...entry,
+        async setSecret(value): Promise<void> {
+          if (account.includes(firstAccountNeedle)) {
+            markFirstStarted();
+            await firstGate;
+          }
+          await entry.setSecret(value);
+        },
+      };
+    };
+    const first = new NativeProtectedSyncState(factory);
+    const second = new NativeProtectedSyncState(factory);
+    const blocked = first.save(PROTECTED_STATE);
+    await firstStarted;
+    const other = protectedLocalDeviceStateSchema.parse({
+      ...PROTECTED_STATE,
+      vaultId: 'vault.other',
+    });
+    await expect(second.save(other)).resolves.toBeUndefined();
+    releaseFirst();
+    await expect(blocked).resolves.toBeUndefined();
+    expect(protectedStateQueueSize()).toBe(0);
+  });
+
+  it('releases the same-account queue after failure and removes its tail', async () => {
+    const memory = memoryEntries();
+    let failNextGet = true;
+    const factory: NativeEntryFactory = (service, account) => {
+      const entry = memory.createEntry(service, account);
+      return {
+        ...entry,
+        getSecret(): Promise<unknown> {
+          if (failNextGet) {
+            failNextGet = false;
+            return Promise.reject(new Error('native-failure'));
+          }
+          return entry.getSecret();
+        },
+      };
+    };
+    const first = new NativeProtectedSyncState(factory);
+    const second = new NativeProtectedSyncState(factory);
+    const [failed, succeeded] = await Promise.allSettled([
+      first.load(KEY.vaultId, KEY.deviceId),
+      second.save(PROTECTED_STATE),
+    ]);
+    expect(failed.status).toBe('rejected');
+    expect(succeeded.status).toBe('fulfilled');
+    expect(protectedStateQueueSize()).toBe(0);
+  });
+
+  it('rejects stale first observations, replacement, save-clear, and mismatched clear', async () => {
+    const memory = memoryEntries();
+    const protectedState = new NativeProtectedSyncState(memory.createEntry);
+    await protectedState.save(
+      protectedLocalDeviceStateSchema.parse({
+        ...PROTECTED_STATE,
+        highestSeenVaultRevision: 6,
+      }),
+    );
+    await expect(protectedState.save(PENDING_STATE)).rejects.toBeInstanceOf(Error);
+
+    const fresh = protectedLocalDeviceStateSchema.parse({
+      ...PENDING_STATE,
+      highestSeenVaultRevision: 6,
+      outboundObservation: observation({ responseVaultRevision: 6 }),
+    });
+    await protectedState.save(fresh);
+    await expect(
+      protectedState.delete(KEY.vaultId, KEY.deviceId),
+    ).rejects.toBeInstanceOf(Error);
+    const replacement = protectedLocalDeviceStateSchema.parse({
+      ...fresh,
+      outboundObservation: observation({
+        responseVaultRevision: 6,
+        responseHash: Buffer.alloc(32, 1).toString('base64url'),
+      }),
+    });
+    await expect(protectedState.save(replacement)).rejects.toBeInstanceOf(Error);
+    await expect(
+      protectedState.save({ ...fresh, outboundObservation: undefined }),
+    ).rejects.toBeInstanceOf(Error);
+    await expect(
+      protectedState.completeObservation(
+        KEY.vaultId,
+        KEY.deviceId,
+        Buffer.alloc(32, 2).toString('base64url') as never,
+        6 as never,
+        PROTECTED_STATE.updatedAt,
+      ),
+    ).rejects.toBeInstanceOf(Error);
+    await expect(
+      protectedState.save({ ...PROTECTED_STATE, version: 1 } as never),
+    ).rejects.toMatchObject({ name: 'SyncLocalStateError' });
+    await expect(protectedState.load('' as never, KEY.deviceId)).rejects.toMatchObject({
+      name: 'SyncLocalStateError',
+    });
+  });
+
+  it('accepts an exact 1,024-byte v2 value and rejects 1,025 bytes', async () => {
+    const vaultId = 'v'.repeat(128);
+    const deviceId = 'd'.repeat(128);
+    const content = {
+      version: 1,
+      kind: 'generic-push',
+      batchIdempotencyKey: '界'.repeat(206),
+      requestHash: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+      responseHash: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+      responseVaultRevision: 5,
+      replayFromServerSequence: 3,
+      requiredThroughServerSequence: 5,
+    } as const;
+    const exact = protectedLocalDeviceStateSchema.parse({
+      version: 2,
+      vaultId,
+      deviceId,
+      highestSeenVaultRevision: 5,
+      updatedAt: PROTECTED_STATE.updatedAt,
+      outboundObservation: {
+        ...content,
+        observationId: computeOutboundObservationId(vaultId, deviceId, content),
+      },
+    });
+    const memory = memoryEntries();
+    const protectedState = new NativeProtectedSyncState(memory.createEntry);
+    await protectedState.save(exact);
+    const entry = [...memory.values.keys()].find((key) =>
+      key.includes('v1:protected-sync-state:'),
+    );
+    const encoded = memory.values.get(entry ?? '');
+    expect(encoded?.byteLength).toBe(1_024);
+    await expect(
+      protectedState.load(vaultId as never, deviceId as never),
+    ).resolves.toEqual(exact);
+    const oversizedContent = {
+      ...content,
+      batchIdempotencyKey: `${content.batchIdempotencyKey}a`,
+    };
+    const oversized = protectedLocalDeviceStateSchema.parse({
+      ...exact,
+      outboundObservation: {
+        ...oversizedContent,
+        observationId: computeOutboundObservationId(
+          vaultId,
+          deviceId,
+          oversizedContent,
+        ),
+      },
+    });
+    const oversizedMemory = memoryEntries();
+    await expect(
+      new NativeProtectedSyncState(oversizedMemory.createEntry).save(oversized),
+    ).rejects.toMatchObject({ name: 'SyncLocalStateError' });
+    expect(oversizedMemory.values.size).toBe(0);
+    memory.values.set(
+      entry ?? '',
+      Uint8Array.from([...(encoded ?? new Uint8Array()), 0]),
+    );
+    await expect(
+      protectedState.load(vaultId as never, deviceId as never),
+    ).rejects.toMatchObject({ code: 'KEYCHAIN_CORRUPTED' });
   });
 
   it('rejects revision and timestamp rollback while allowing monotonic updates', async () => {
@@ -394,26 +758,34 @@ describe('NativeProtectedSyncState', () => {
     const protectedState = new NativeProtectedSyncState(memory.createEntry);
     await protectedState.save(PROTECTED_STATE);
 
-    for (const candidate of [
-      { ...PROTECTED_STATE, highestSeenVaultRevision: 4 },
-      { ...PROTECTED_STATE, updatedAt: '2026-08-09T23:59:59.000Z' },
-    ]) {
-      await expect(protectedState.save(candidate as never)).rejects.toMatchObject({
-        name: 'SyncLocalStateError',
-      });
-    }
+    await expect(
+      protectedState.save({
+        ...PROTECTED_STATE,
+        highestSeenVaultRevision: 4,
+      } as never),
+    ).rejects.toMatchObject({ name: 'SyncLocalStateError' });
+    await expect(
+      protectedState.save({
+        ...PROTECTED_STATE,
+        updatedAt: '2026-08-09T23:59:59.000Z',
+      }),
+    ).resolves.toBeUndefined();
     const advanced = protectedLocalDeviceStateSchema.parse({
       ...PROTECTED_STATE,
       highestSeenVaultRevision: 6,
       updatedAt: '2026-08-09T23:59:59.000Z',
     });
     await expect(protectedState.save(advanced)).resolves.toBeUndefined();
-    expect(await protectedState.load(KEY.vaultId, KEY.deviceId)).toEqual(advanced);
+    expect(await protectedState.load(KEY.vaultId, KEY.deviceId)).toEqual({
+      ...advanced,
+      updatedAt: PROTECTED_STATE.updatedAt,
+    });
   });
 
-  it('serializes monotonic saves within one adapter instance', async () => {
+  it('serializes monotonic saves across adapter instances for one account', async () => {
     const memory = memoryEntries();
-    const protectedState = new NativeProtectedSyncState(memory.createEntry);
+    const firstState = new NativeProtectedSyncState(memory.createEntry);
+    const secondState = new NativeProtectedSyncState(memory.createEntry);
     const higher = protectedLocalDeviceStateSchema.parse({
       ...PROTECTED_STATE,
       highestSeenVaultRevision: 8,
@@ -421,8 +793,8 @@ describe('NativeProtectedSyncState', () => {
     });
 
     const [first, second] = await Promise.allSettled([
-      protectedState.save(higher),
-      protectedState.save(PROTECTED_STATE),
+      firstState.save(higher),
+      secondState.save(PROTECTED_STATE),
     ]);
 
     expect(first.status).toBe('fulfilled');
@@ -430,7 +802,7 @@ describe('NativeProtectedSyncState', () => {
       status: 'rejected',
       reason: { name: 'SyncLocalStateError' },
     });
-    expect(await protectedState.load(KEY.vaultId, KEY.deviceId)).toEqual(higher);
+    expect(await firstState.load(KEY.vaultId, KEY.deviceId)).toEqual(higher);
   });
 
   it('detects corrupt and cross-locator protected state', async () => {
@@ -441,7 +813,14 @@ describe('NativeProtectedSyncState', () => {
       key.includes('v1:protected-sync-state:'),
     );
     expect(primaryEntry).toBeDefined();
-    memory.values.set(primaryEntry ?? '', Uint8Array.of(0x4b, 0x53, 0x53, 0x54, 9));
+    const valid = Uint8Array.from(memory.values.get(primaryEntry ?? '') ?? []);
+    const unknownVersion = Uint8Array.from(valid);
+    unknownVersion[4] = 9;
+    memory.values.set(primaryEntry ?? '', unknownVersion);
+    await expect(protectedState.load(KEY.vaultId, KEY.deviceId)).rejects.toMatchObject({
+      code: 'KEYCHAIN_CORRUPTED',
+    });
+    memory.values.set(primaryEntry ?? '', Uint8Array.from([...valid, 0]));
     await expect(protectedState.load(KEY.vaultId, KEY.deviceId)).rejects.toMatchObject({
       code: 'KEYCHAIN_CORRUPTED',
     });
@@ -526,5 +905,23 @@ describe('NativeProtectedSyncState', () => {
       PROTECTED_STATE,
     );
     expect(returned.every((value) => value === 0)).toBe(true);
+
+    const corruptReturned = Uint8Array.from(stored ?? []);
+    corruptReturned[4] = 9;
+    const corruptReader = new NativeProtectedSyncState(() => ({
+      setSecret(): Promise<void> {
+        return Promise.resolve();
+      },
+      getSecret(): Promise<Uint8Array> {
+        return Promise.resolve(corruptReturned);
+      },
+      deleteCredential(): Promise<void> {
+        return Promise.resolve();
+      },
+    }));
+    await expect(corruptReader.load(KEY.vaultId, KEY.deviceId)).rejects.toMatchObject({
+      code: 'KEYCHAIN_CORRUPTED',
+    });
+    expect(corruptReturned.every((value) => value === 0)).toBe(true);
   });
 });

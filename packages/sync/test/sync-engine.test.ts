@@ -110,6 +110,7 @@ describe('SyncEngine pull', () => {
   it('rejects rollback below protected highest-seen vault revision', async () => {
     const protectedState = new FakeProtectedState();
     protectedState.value = protectedLocalDeviceStateSchema.parse({
+      version: 2,
       vaultId,
       deviceId,
       highestSeenVaultRevision: 5,
@@ -462,6 +463,7 @@ describe('SyncEngine atomic template migration publication', () => {
     const local = new FakeLocalStore([], publication);
     const protectedState = new FakeProtectedState();
     protectedState.value = protectedLocalDeviceStateSchema.parse({
+      version: 2,
       vaultId,
       deviceId,
       highestSeenVaultRevision: 4,
@@ -721,6 +723,10 @@ class FakeProtectedState implements ProtectedSyncStatePort {
   save(state: ProtectedLocalDeviceState): Promise<void> {
     this.value = state;
     return Promise.resolve();
+  }
+
+  completeObservation(): Promise<void> {
+    return Promise.reject(new Error('Unexpected observation completion'));
   }
 }
 

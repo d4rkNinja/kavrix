@@ -12,6 +12,7 @@ import {
   sessionCredentialLocatorSchema,
   sessionCredentialSecretSchema,
 } from '@kavrix/schemas';
+import { computeOutboundObservationId } from '@kavrix/sync';
 
 import {
   createNativeJoinJournalSecrets,
@@ -69,27 +70,69 @@ describe.runIf(runNativeIntegration)('native operating-system keychain', () => {
     await expect(sessions.load(key, AbortSignal.timeout(5_000))).resolves.toBeNull();
   }, 30_000);
 
-  it('round-trips a monotonic protected sync rollback anchor', async () => {
-    const protectedState = await createNativeProtectedSyncState(
-      'dev.kavrix.integration',
-    );
+  it('round-trips protected begin, advance, clear, reopen, and cleanup', async () => {
+    const service = 'dev.kavrix.integration';
+    let protectedState = await createNativeProtectedSyncState(service);
     const vaultId = `vault_${randomUUID()}` as never;
     const deviceId = `device_${randomUUID()}` as never;
     const state = protectedLocalDeviceStateSchema.parse({
+      version: 2,
       vaultId,
       deviceId,
       highestSeenVaultRevision: 7,
       updatedAt: new Date().toISOString(),
     });
+    const content = {
+      version: 1,
+      kind: 'generic-push',
+      batchIdempotencyKey: 'native-integration-batch-0001',
+      requestHash: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+      responseHash: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+      responseVaultRevision: 7,
+      replayFromServerSequence: 3,
+      requiredThroughServerSequence: 5,
+    } as const;
+    const pending = protectedLocalDeviceStateSchema.parse({
+      ...state,
+      outboundObservation: {
+        ...content,
+        observationId: computeOutboundObservationId(vaultId, deviceId, content),
+      },
+    });
 
     try {
       await protectedState.save(state);
+      await protectedState.save(pending);
+      protectedState = await createNativeProtectedSyncState(service);
       await expect(protectedState.load(state.vaultId, state.deviceId)).resolves.toEqual(
-        state,
+        pending,
       );
+      await protectedState.save(
+        protectedLocalDeviceStateSchema.parse({
+          ...pending,
+          highestSeenVaultRevision: 9,
+        }),
+      );
+      await protectedState.completeObservation(
+        state.vaultId,
+        state.deviceId,
+        pending.outboundObservation?.observationId as never,
+        9 as never,
+        state.updatedAt,
+      );
+      protectedState = await createNativeProtectedSyncState(service);
+      await expect(
+        protectedState.load(state.vaultId, state.deviceId),
+      ).resolves.toMatchObject({
+        highestSeenVaultRevision: 9,
+        lastCompletedObservationId: pending.outboundObservation?.observationId,
+      });
     } finally {
       await protectedState.delete(state.vaultId, state.deviceId);
     }
+    await expect(
+      protectedState.load(state.vaultId, state.deviceId),
+    ).resolves.toBeNull();
   }, 30_000);
 
   it('round-trips and removes a protected join recovery record', async () => {

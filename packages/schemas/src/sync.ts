@@ -136,14 +136,73 @@ export const deviceRecordSchema = publicDeviceRecordObjectSchema
   .extend({ tokenHash: sha256DigestSchema })
   .superRefine(validateDeviceBinding);
 
+export const outboundObservationKindSchema = z.enum([
+  'generic-push',
+  'template-publication',
+]);
+
+const outboundObservationContentObjectSchema = z
+  .object({
+    version: z.literal(1),
+    kind: outboundObservationKindSchema,
+    batchIdempotencyKey: z
+      .string()
+      .min(MIN_IDEMPOTENCY_KEY_CHARS)
+      .max(MAX_IDEMPOTENCY_KEY_CHARS),
+    requestHash: sha256DigestSchema,
+    responseHash: sha256DigestSchema,
+    responseVaultRevision: vaultRevisionSchema,
+    replayFromServerSequence: changeSequenceSchema,
+    requiredThroughServerSequence: changeSequenceSchema,
+  })
+  .strict();
+
+function validateObservationSequence(
+  observation: z.infer<typeof outboundObservationContentObjectSchema>,
+  context: z.RefinementCtx,
+): void {
+  if (
+    observation.requiredThroughServerSequence < observation.replayFromServerSequence
+  ) {
+    context.addIssue({
+      code: 'custom',
+      message: 'The required sequence cannot precede the replay start',
+      path: ['requiredThroughServerSequence'],
+    });
+  }
+}
+
+export const outboundObservationContentSchema =
+  outboundObservationContentObjectSchema.superRefine(validateObservationSequence);
+
+export const outboundObservationSchema = outboundObservationContentObjectSchema
+  .extend({ observationId: sha256DigestSchema })
+  .strict()
+  .superRefine(validateObservationSequence);
+
 export const protectedLocalDeviceStateSchema = z
   .object({
+    version: z.literal(2),
     vaultId: vaultIdSchema,
     deviceId: deviceIdSchema,
     highestSeenVaultRevision: vaultRevisionSchema,
     updatedAt: timestampSchema,
+    outboundObservation: outboundObservationSchema.optional(),
+    lastCompletedObservationId: sha256DigestSchema.optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((state, context) => {
+    if (
+      state.outboundObservation !== undefined &&
+      state.outboundObservation.responseVaultRevision > state.highestSeenVaultRevision
+    ) {
+      context.addIssue({
+        code: 'custom',
+        message: 'The protected anchor must include the observed response revision',
+        path: ['highestSeenVaultRevision'],
+      });
+    }
+  });
 
 const tombstoneRecordBaseSchema = z
   .object({
@@ -402,6 +461,11 @@ export const syncStateSchema = z.enum([
 export type ChangeRecord = z.infer<typeof changeRecordSchema>;
 export type DeviceRecord = z.infer<typeof deviceRecordSchema>;
 export type ProtectedLocalDeviceState = z.infer<typeof protectedLocalDeviceStateSchema>;
+export type OutboundObservation = z.infer<typeof outboundObservationSchema>;
+export type OutboundObservationContent = z.infer<
+  typeof outboundObservationContentSchema
+>;
+export type OutboundObservationKind = z.infer<typeof outboundObservationKindSchema>;
 export type TombstoneRecord = z.infer<typeof tombstoneRecordSchema>;
 export type OpaqueMutation = z.infer<typeof opaqueMutationSchema>;
 export type AttachmentStreamStartInput = z.infer<

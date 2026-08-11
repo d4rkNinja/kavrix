@@ -970,6 +970,8 @@ function syncOptions(): Omit<SyncEngineOptions, 'transport' | 'local'> {
       protectedState.set(`${state.vaultId}:${state.deviceId}`, state);
       return Promise.resolve();
     },
+    completeObservation: () =>
+      Promise.reject(new Error('Unexpected observation completion')),
   };
   const status: SyncStatusPort = {
     set() {

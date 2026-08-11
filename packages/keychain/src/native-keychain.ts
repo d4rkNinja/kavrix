@@ -7,26 +7,40 @@ import {
   deviceUnlockSecretSchema,
   keychainLocatorSchema,
   protectedLocalDeviceStateSchema,
+  sha256DigestSchema,
   sessionCredentialLocatorSchema,
   sessionCredentialSecretSchema,
   vaultIdSchema,
+  vaultRevisionSchema,
   type DeviceId,
   type DeviceUnlockSecret,
   type KeychainLocator,
   type ProtectedLocalDeviceState,
+  type Sha256Digest,
   type SessionCredentialLocator,
   type SessionCredentialSecret,
   type VaultId,
 } from '@kavrix/schemas';
-import { SyncLocalStateError, type ProtectedSyncStatePort } from '@kavrix/sync';
+import {
+  SyncLocalStateError,
+  validateOutboundObservationBinding,
+  type ProtectedSyncStatePort,
+} from '@kavrix/sync';
 
 import { KeychainError } from './errors.js';
+import { withProtectedStateQueue } from './protected-state-queue.js';
 
 export const DEFAULT_KEYCHAIN_SERVICE = 'dev.kavrix.credentials';
 const SAFE_SERVICE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u;
 const PROTECTED_STATE_MAGIC = Uint8Array.of(0x4b, 0x53, 0x53, 0x54);
-const PROTECTED_STATE_VERSION = 1;
-const PROTECTED_STATE_TRAILER_BYTES = 16;
+const PROTECTED_STATE_VERSION_V1 = 1;
+const PROTECTED_STATE_VERSION_V2 = 2;
+const PROTECTED_STATE_V1_TRAILER_BYTES = 16;
+const PROTECTED_STATE_MAX_BYTES = 1_024;
+const PROTECTED_STATE_FLAG_OBSERVATION = 1 << 0;
+const PROTECTED_STATE_FLAG_LAST_COMPLETED = 1 << 1;
+const PROTECTED_STATE_KNOWN_FLAGS =
+  PROTECTED_STATE_FLAG_OBSERVATION | PROTECTED_STATE_FLAG_LAST_COMPLETED;
 
 type NativeEntry = Readonly<{
   setSecret(secret: Uint8Array, signal?: AbortSignal): Promise<unknown>;
@@ -362,7 +376,6 @@ export class NativeSessionCredentials implements SessionCredentialPort {
 export class NativeProtectedSyncState implements ProtectedSyncStatePort {
   readonly #createEntry: NativeEntryFactory;
   readonly #service: string;
-  #tail: Promise<void> = Promise.resolve();
 
   public constructor(
     createEntry: NativeEntryFactory,
@@ -373,46 +386,90 @@ export class NativeProtectedSyncState implements ProtectedSyncStatePort {
     this.#service = service;
   }
 
-  public load(
+  public async load(
     vaultId: VaultId,
     deviceId: DeviceId,
   ): Promise<ProtectedLocalDeviceState | null> {
-    return this.#exclusive(() => this.#load(vaultId, deviceId));
+    const account = protectedStateAccountFor(vaultId, deviceId);
+    return withProtectedStateQueue(this.#service, account, () =>
+      this.#load(account, vaultId, deviceId),
+    );
   }
 
-  public save(stateInput: ProtectedLocalDeviceState): Promise<void> {
-    return this.#exclusive(async () => {
-      const state = parseProtectedState(stateInput);
-      const existing = await this.#load(state.vaultId, state.deviceId);
-      if (
-        existing !== null &&
-        (state.highestSeenVaultRevision < existing.highestSeenVaultRevision ||
-          (state.highestSeenVaultRevision === existing.highestSeenVaultRevision &&
-            Date.parse(state.updatedAt) < Date.parse(existing.updatedAt)))
-      ) {
-        throw new SyncLocalStateError();
-      }
-      const encoded = encodeProtectedState(state);
-      try {
-        await this.#createEntry(
-          this.#service,
-          protectedStateAccountFor(state.vaultId, state.deviceId),
-        ).setSecret(encoded);
-      } catch (error) {
-        throw classifyNativeFailure(error);
-      } finally {
-        encoded.fill(0);
-      }
+  public async save(stateInput: ProtectedLocalDeviceState): Promise<void> {
+    const state = parseProtectedState(stateInput);
+    const account = protectedStateAccountFor(state.vaultId, state.deviceId);
+    return withProtectedStateQueue(this.#service, account, async () => {
+      const existing = await this.#load(account, state.vaultId, state.deviceId);
+      const transition = transitionForSave(existing, state);
+      if (transition === null) return;
+      await this.#write(account, transition);
     });
   }
 
-  public delete(vaultId: VaultId, deviceId: DeviceId): Promise<void> {
-    return this.#exclusive(async () => {
+  public async completeObservation(
+    vaultId: VaultId,
+    deviceId: DeviceId,
+    expectedObservationId: Sha256Digest,
+    candidateRevision: ProtectedLocalDeviceState['highestSeenVaultRevision'],
+    updatedAt: ProtectedLocalDeviceState['updatedAt'],
+  ): Promise<void> {
+    const account = protectedStateAccountFor(vaultId, deviceId);
+    const observationId = sha256DigestSchema.safeParse(expectedObservationId);
+    const parsedRevision = vaultRevisionSchema.safeParse(candidateRevision);
+    const parsedTimestamp = canonicalTimestamp(updatedAt);
+    if (!observationId.success || !parsedRevision.success || parsedTimestamp === null) {
+      throw new SyncLocalStateError();
+    }
+    return withProtectedStateQueue(this.#service, account, async () => {
+      const existing = await this.#load(account, vaultId, deviceId);
+      if (
+        existing === null ||
+        parsedRevision.data < existing.highestSeenVaultRevision
+      ) {
+        throw new SyncLocalStateError();
+      }
+      const pending = existing.outboundObservation;
+      if (pending === undefined) {
+        if (existing.lastCompletedObservationId !== observationId.data) {
+          throw new SyncLocalStateError();
+        }
+        const higherRevision = parsedRevision.data > existing.highestSeenVaultRevision;
+        const newerTimestamp = parsedTimestamp > Date.parse(existing.updatedAt);
+        if (!higherRevision && !newerTimestamp) return;
+        await this.#write(
+          account,
+          parseProtectedState({
+            ...existing,
+            highestSeenVaultRevision: parsedRevision.data,
+            updatedAt: maximumTimestamp(existing.updatedAt, updatedAt),
+          }),
+        );
+        return;
+      } else if (pending.observationId !== observationId.data) {
+        throw new SyncLocalStateError();
+      }
+      const completed = parseProtectedState({
+        version: 2,
+        vaultId,
+        deviceId,
+        highestSeenVaultRevision: parsedRevision.data,
+        updatedAt: maximumTimestamp(existing.updatedAt, updatedAt),
+        lastCompletedObservationId: observationId.data,
+      });
+      await this.#write(account, completed);
+    });
+  }
+
+  public async delete(vaultId: VaultId, deviceId: DeviceId): Promise<void> {
+    const account = protectedStateAccountFor(vaultId, deviceId);
+    return withProtectedStateQueue(this.#service, account, async () => {
+      const existing = await this.#load(account, vaultId, deviceId);
+      if (existing?.outboundObservation !== undefined) {
+        throw new SyncLocalStateError();
+      }
       try {
-        await this.#createEntry(
-          this.#service,
-          protectedStateAccountFor(vaultId, deviceId),
-        ).deleteCredential();
+        await this.#createEntry(this.#service, account).deleteCredential();
       } catch (error) {
         const code = nativeErrorCode(error);
         if (code.includes('noentry') || code.includes('notfound')) return;
@@ -422,10 +479,10 @@ export class NativeProtectedSyncState implements ProtectedSyncStatePort {
   }
 
   async #load(
+    account: string,
     vaultIdInput: VaultId,
     deviceIdInput: DeviceId,
   ): Promise<ProtectedLocalDeviceState | null> {
-    const account = protectedStateAccountFor(vaultIdInput, deviceIdInput);
     let nativeValue: unknown;
     try {
       nativeValue = await this.#createEntry(this.#service, account).getSecret();
@@ -441,13 +498,15 @@ export class NativeProtectedSyncState implements ProtectedSyncStatePort {
     }
   }
 
-  #exclusive<Result>(operation: () => Promise<Result>): Promise<Result> {
-    const predecessor = this.#tail;
-    let release: (() => void) | undefined;
-    this.#tail = new Promise((resolve) => {
-      release = resolve;
-    });
-    return predecessor.then(operation).finally(() => release?.());
+  async #write(account: string, state: ProtectedLocalDeviceState): Promise<void> {
+    const encoded = encodeProtectedState(state);
+    try {
+      await this.#createEntry(this.#service, account).setSecret(encoded);
+    } catch (error) {
+      throw classifyNativeFailure(error);
+    } finally {
+      encoded.fill(0);
+    }
   }
 }
 
@@ -475,63 +534,144 @@ export async function createNativeProtectedSyncState(
 function parseProtectedState(
   input: ProtectedLocalDeviceState,
 ): ProtectedLocalDeviceState {
-  const parsed = protectedLocalDeviceStateSchema.safeParse(input);
-  if (!parsed.success || canonicalTimestamp(parsed.data.updatedAt) === null) {
+  let parsed: ProtectedLocalDeviceState;
+  try {
+    parsed = validateOutboundObservationBinding(input);
+  } catch {
     throw new SyncLocalStateError();
   }
-  return parsed.data;
+  if (canonicalTimestamp(parsed.updatedAt) === null) throw new SyncLocalStateError();
+  return parsed;
 }
 
 function encodeProtectedState(state: ProtectedLocalDeviceState): Uint8Array {
   const vault = new TextEncoder().encode(state.vaultId);
   const device = new TextEncoder().encode(state.deviceId);
+  const batch =
+    state.outboundObservation === undefined
+      ? new Uint8Array()
+      : new TextEncoder().encode(state.outboundObservation.batchIdempotencyKey);
+  const digests = [
+    ...(state.outboundObservation === undefined
+      ? []
+      : [
+          decodeDigest(state.outboundObservation.requestHash),
+          decodeDigest(state.outboundObservation.responseHash),
+          decodeDigest(state.outboundObservation.observationId),
+        ]),
+    ...(state.lastCompletedObservationId === undefined
+      ? []
+      : [decodeDigest(state.lastCompletedObservationId)]),
+  ];
   const updatedAt = canonicalTimestamp(state.updatedAt);
   if (
     vault.byteLength < 1 ||
-    vault.byteLength > 128 ||
+    vault.byteLength > 0xffff ||
     device.byteLength < 1 ||
-    device.byteLength > 128 ||
+    device.byteLength > 0xffff ||
+    batch.byteLength > 0xffff ||
     updatedAt === null
   ) {
-    vault.fill(0);
-    device.fill(0);
+    wipeAll(vault, device, batch, ...digests);
     throw new SyncLocalStateError();
   }
-  const encoded = new Uint8Array(
+  const observationBytes =
+    state.outboundObservation === undefined ? 0 : 1 + 1 + 2 + batch.byteLength + 120;
+  const completedBytes = state.lastCompletedObservationId === undefined ? 0 : 32;
+  const encodedLength =
     PROTECTED_STATE_MAGIC.byteLength +
-      1 +
-      1 +
-      vault.byteLength +
-      1 +
-      device.byteLength +
-      PROTECTED_STATE_TRAILER_BYTES,
-  );
+    1 +
+    1 +
+    2 +
+    vault.byteLength +
+    2 +
+    device.byteLength +
+    16 +
+    observationBytes +
+    completedBytes;
+  if (encodedLength > PROTECTED_STATE_MAX_BYTES) {
+    wipeAll(vault, device, batch, ...digests);
+    throw new SyncLocalStateError();
+  }
+  const encoded = new Uint8Array(encodedLength);
   try {
     let offset = 0;
     encoded.set(PROTECTED_STATE_MAGIC, offset);
     offset += PROTECTED_STATE_MAGIC.byteLength;
-    encoded[offset] = PROTECTED_STATE_VERSION;
+    encoded[offset] = PROTECTED_STATE_VERSION_V2;
     offset += 1;
-    encoded[offset] = vault.byteLength;
+    let flags = 0;
+    if (state.outboundObservation !== undefined) {
+      flags |= PROTECTED_STATE_FLAG_OBSERVATION;
+    }
+    if (state.lastCompletedObservationId !== undefined) {
+      flags |= PROTECTED_STATE_FLAG_LAST_COMPLETED;
+    }
+    encoded[offset] = flags;
     offset += 1;
+    const view = new DataView(encoded.buffer, encoded.byteOffset, encoded.byteLength);
+    view.setUint16(offset, vault.byteLength, false);
+    offset += 2;
     encoded.set(vault, offset);
     offset += vault.byteLength;
-    encoded[offset] = device.byteLength;
-    offset += 1;
+    view.setUint16(offset, device.byteLength, false);
+    offset += 2;
     encoded.set(device, offset);
     offset += device.byteLength;
-    const view = new DataView(encoded.buffer, encoded.byteOffset, encoded.byteLength);
     view.setBigUint64(offset, BigInt(state.highestSeenVaultRevision), false);
     offset += 8;
     view.setBigInt64(offset, BigInt(updatedAt), false);
+    offset += 8;
+    if (state.outboundObservation !== undefined) {
+      encoded[offset] = state.outboundObservation.version;
+      offset += 1;
+      encoded[offset] = state.outboundObservation.kind === 'generic-push' ? 1 : 2;
+      offset += 1;
+      view.setUint16(offset, batch.byteLength, false);
+      offset += 2;
+      encoded.set(batch, offset);
+      offset += batch.byteLength;
+      for (const digest of digests.slice(0, 2)) {
+        encoded.set(digest, offset);
+        offset += digest.byteLength;
+      }
+      view.setBigUint64(
+        offset,
+        BigInt(state.outboundObservation.responseVaultRevision),
+        false,
+      );
+      offset += 8;
+      view.setBigUint64(
+        offset,
+        BigInt(state.outboundObservation.replayFromServerSequence),
+        false,
+      );
+      offset += 8;
+      view.setBigUint64(
+        offset,
+        BigInt(state.outboundObservation.requiredThroughServerSequence),
+        false,
+      );
+      offset += 8;
+      const observationId = digests[2];
+      if (observationId === undefined) throw new SyncLocalStateError();
+      encoded.set(observationId, offset);
+      offset += observationId.byteLength;
+    }
+    if (state.lastCompletedObservationId !== undefined) {
+      const digest = digests.at(-1);
+      if (digest === undefined) throw new SyncLocalStateError();
+      encoded.set(digest, offset);
+      offset += digest.byteLength;
+    }
+    if (offset !== encoded.byteLength) throw new SyncLocalStateError();
     return encoded;
   } catch (error) {
     encoded.fill(0);
     if (error instanceof SyncLocalStateError) throw error;
     throw new SyncLocalStateError();
   } finally {
-    vault.fill(0);
-    device.fill(0);
+    wipeAll(vault, device, batch, ...digests);
   }
 }
 
@@ -541,10 +681,17 @@ function decodeProtectedState(
   expectedDeviceId: DeviceId,
 ): ProtectedLocalDeviceState {
   try {
+    if (encoded.byteLength > PROTECTED_STATE_MAX_BYTES) {
+      throw corruptedProtectedState();
+    }
     let offset = 0;
     if (
       encoded.byteLength <
-        PROTECTED_STATE_MAGIC.byteLength + 1 + 1 + 1 + PROTECTED_STATE_TRAILER_BYTES ||
+        PROTECTED_STATE_MAGIC.byteLength +
+          1 +
+          1 +
+          1 +
+          PROTECTED_STATE_V1_TRAILER_BYTES ||
       !PROTECTED_STATE_MAGIC.every((value, index) => encoded[index] === value)
     ) {
       throw new KeychainError(
@@ -553,8 +700,27 @@ function decodeProtectedState(
       );
     }
     offset += PROTECTED_STATE_MAGIC.byteLength;
-    if (encoded[offset] !== PROTECTED_STATE_VERSION) throw corruptedProtectedState();
+    const version = encoded[offset];
     offset += 1;
+    if (version === PROTECTED_STATE_VERSION_V1) {
+      return decodeProtectedStateV1(encoded, offset, expectedVaultId, expectedDeviceId);
+    }
+    if (version !== PROTECTED_STATE_VERSION_V2) throw corruptedProtectedState();
+    return decodeProtectedStateV2(encoded, offset, expectedVaultId, expectedDeviceId);
+  } catch (error) {
+    if (error instanceof KeychainError) throw error;
+    throw corruptedProtectedState();
+  }
+}
+
+function decodeProtectedStateV1(
+  encoded: Uint8Array,
+  initialOffset: number,
+  expectedVaultId: VaultId,
+  expectedDeviceId: DeviceId,
+): ProtectedLocalDeviceState {
+  let offset = initialOffset;
+  try {
     const vaultLength = encoded[offset];
     if (vaultLength === undefined || vaultLength < 1 || vaultLength > 128) {
       throw corruptedProtectedState();
@@ -572,7 +738,7 @@ function decodeProtectedState(
     }
     offset += 1;
     const deviceEnd = offset + deviceLength;
-    if (deviceEnd + PROTECTED_STATE_TRAILER_BYTES !== encoded.byteLength) {
+    if (deviceEnd + PROTECTED_STATE_V1_TRAILER_BYTES !== encoded.byteLength) {
       throw corruptedProtectedState();
     }
     const deviceId = new TextDecoder('utf-8', { fatal: true }).decode(
@@ -592,6 +758,7 @@ function decodeProtectedState(
     }
     const updatedAt = new Date(Number(updatedAtMilliseconds)).toISOString();
     const parsed = protectedLocalDeviceStateSchema.safeParse({
+      version: 2,
       vaultId,
       deviceId,
       highestSeenVaultRevision: Number(revision),
@@ -605,10 +772,223 @@ function decodeProtectedState(
       throw corruptedProtectedState();
     }
     return parsed.data;
-  } catch (error) {
-    if (error instanceof KeychainError) throw error;
+  } catch {
     throw corruptedProtectedState();
   }
+}
+
+function decodeProtectedStateV2(
+  encoded: Uint8Array,
+  initialOffset: number,
+  expectedVaultId: VaultId,
+  expectedDeviceId: DeviceId,
+): ProtectedLocalDeviceState {
+  let offset = initialOffset;
+  const view = new DataView(encoded.buffer, encoded.byteOffset, encoded.byteLength);
+  const flags = readUint8(encoded, offset);
+  offset += 1;
+  if ((flags & ~PROTECTED_STATE_KNOWN_FLAGS) !== 0) throw corruptedProtectedState();
+  const vault = readText16(encoded, view, offset);
+  offset = vault.offset;
+  const device = readText16(encoded, view, offset);
+  offset = device.offset;
+  const highestSeenVaultRevision = readSafeUint64(view, offset);
+  offset += 8;
+  const updatedAtMilliseconds = readSafeInt64(view, offset);
+  offset += 8;
+  let outboundObservation: ProtectedLocalDeviceState['outboundObservation'];
+  if ((flags & PROTECTED_STATE_FLAG_OBSERVATION) !== 0) {
+    if (readUint8(encoded, offset) !== 1) throw corruptedProtectedState();
+    offset += 1;
+    const kindByte = readUint8(encoded, offset);
+    offset += 1;
+    if (kindByte !== 1 && kindByte !== 2) throw corruptedProtectedState();
+    const batch = readText16(encoded, view, offset);
+    offset = batch.offset;
+    const requestHash = readDigest(encoded, offset);
+    offset += 32;
+    const responseHash = readDigest(encoded, offset);
+    offset += 32;
+    const responseVaultRevision = readSafeUint64(view, offset);
+    offset += 8;
+    const replayFromServerSequence = readSafeUint64(view, offset);
+    offset += 8;
+    const requiredThroughServerSequence = readSafeUint64(view, offset);
+    offset += 8;
+    const observationId = readDigest(encoded, offset);
+    offset += 32;
+    outboundObservation = {
+      version: 1,
+      observationId,
+      kind: kindByte === 1 ? 'generic-push' : 'template-publication',
+      batchIdempotencyKey: batch.value,
+      requestHash,
+      responseHash,
+      responseVaultRevision,
+      replayFromServerSequence,
+      requiredThroughServerSequence,
+    } as ProtectedLocalDeviceState['outboundObservation'];
+  }
+  let lastCompletedObservationId: Sha256Digest | undefined;
+  if ((flags & PROTECTED_STATE_FLAG_LAST_COMPLETED) !== 0) {
+    lastCompletedObservationId = readDigest(encoded, offset);
+    offset += 32;
+  }
+  if (offset !== encoded.byteLength) throw corruptedProtectedState();
+  const parsed = protectedLocalDeviceStateSchema.safeParse({
+    version: 2,
+    vaultId: vault.value,
+    deviceId: device.value,
+    highestSeenVaultRevision,
+    updatedAt: new Date(updatedAtMilliseconds).toISOString(),
+    ...(outboundObservation === undefined ? {} : { outboundObservation }),
+    ...(lastCompletedObservationId === undefined ? {} : { lastCompletedObservationId }),
+  });
+  if (
+    !parsed.success ||
+    parsed.data.vaultId !== expectedVaultId ||
+    parsed.data.deviceId !== expectedDeviceId
+  ) {
+    throw corruptedProtectedState();
+  }
+  try {
+    return validateOutboundObservationBinding(parsed.data);
+  } catch {
+    throw corruptedProtectedState();
+  }
+}
+
+function transitionForSave(
+  existing: ProtectedLocalDeviceState | null,
+  candidate: ProtectedLocalDeviceState,
+): ProtectedLocalDeviceState | null {
+  if (existing === null) {
+    if (candidate.lastCompletedObservationId !== undefined) {
+      throw new SyncLocalStateError();
+    }
+    return candidate;
+  }
+  if (candidate.highestSeenVaultRevision < existing.highestSeenVaultRevision) {
+    throw new SyncLocalStateError();
+  }
+  if (candidate.lastCompletedObservationId !== existing.lastCompletedObservationId) {
+    throw new SyncLocalStateError();
+  }
+  const existingObservation = existing.outboundObservation;
+  const candidateObservation = candidate.outboundObservation;
+  if (existingObservation !== undefined) {
+    if (
+      candidateObservation === undefined ||
+      !observationsEqual(existingObservation, candidateObservation)
+    ) {
+      throw new SyncLocalStateError();
+    }
+  }
+  const semanticBegin =
+    existingObservation === undefined && candidateObservation !== undefined;
+  if (
+    semanticBegin &&
+    candidateObservation.responseVaultRevision < existing.highestSeenVaultRevision
+  ) {
+    throw new SyncLocalStateError();
+  }
+  const higherRevision =
+    candidate.highestSeenVaultRevision > existing.highestSeenVaultRevision;
+  const newerTimestamp =
+    Date.parse(candidate.updatedAt) > Date.parse(existing.updatedAt);
+  if (!semanticBegin && !higherRevision && !newerTimestamp) return null;
+  return parseProtectedState({
+    ...candidate,
+    updatedAt: maximumTimestamp(existing.updatedAt, candidate.updatedAt),
+  });
+}
+
+function observationsEqual(
+  left: NonNullable<ProtectedLocalDeviceState['outboundObservation']>,
+  right: NonNullable<ProtectedLocalDeviceState['outboundObservation']>,
+): boolean {
+  return (
+    left.observationId === right.observationId &&
+    left.kind === right.kind &&
+    left.batchIdempotencyKey === right.batchIdempotencyKey &&
+    left.requestHash === right.requestHash &&
+    left.responseHash === right.responseHash &&
+    left.responseVaultRevision === right.responseVaultRevision &&
+    left.replayFromServerSequence === right.replayFromServerSequence &&
+    left.requiredThroughServerSequence === right.requiredThroughServerSequence
+  );
+}
+
+function maximumTimestamp(left: string, right: string): string {
+  return Date.parse(left) >= Date.parse(right) ? left : right;
+}
+
+function decodeDigest(value: Sha256Digest): Uint8Array {
+  const decoded = Buffer.from(value, 'base64url');
+  if (decoded.byteLength !== 32) {
+    decoded.fill(0);
+    throw new SyncLocalStateError();
+  }
+  return decoded;
+}
+
+function readUint8(encoded: Uint8Array, offset: number): number {
+  const value = encoded[offset];
+  if (value === undefined) throw corruptedProtectedState();
+  return value;
+}
+
+function readText16(
+  encoded: Uint8Array,
+  view: DataView,
+  offset: number,
+): { value: string; offset: number } {
+  const length = view.getUint16(offset, false);
+  offset += 2;
+  if (length < 1 || offset + length > encoded.byteLength) {
+    throw corruptedProtectedState();
+  }
+  const end = offset + length;
+  return {
+    value: new TextDecoder('utf-8', { fatal: true }).decode(
+      encoded.subarray(offset, end),
+    ),
+    offset: end,
+  };
+}
+
+function readSafeUint64(view: DataView, offset: number): number {
+  const value = view.getBigUint64(offset, false);
+  if (value > BigInt(Number.MAX_SAFE_INTEGER)) throw corruptedProtectedState();
+  return Number(value);
+}
+
+function readSafeInt64(view: DataView, offset: number): number {
+  const value = view.getBigInt64(offset, false);
+  if (
+    value < BigInt(Number.MIN_SAFE_INTEGER) ||
+    value > BigInt(Number.MAX_SAFE_INTEGER)
+  ) {
+    throw corruptedProtectedState();
+  }
+  return Number(value);
+}
+
+function readDigest(encoded: Uint8Array, offset: number): Sha256Digest {
+  const end = offset + 32;
+  if (end > encoded.byteLength) throw corruptedProtectedState();
+  const owned = Buffer.from(encoded.subarray(offset, end));
+  try {
+    const parsed = sha256DigestSchema.safeParse(owned.toString('base64url'));
+    if (!parsed.success) throw corruptedProtectedState();
+    return parsed.data;
+  } finally {
+    owned.fill(0);
+  }
+}
+
+function wipeAll(...values: Uint8Array[]): void {
+  for (const value of values) value.fill(0);
 }
 
 function canonicalTimestamp(value: string): number | null {

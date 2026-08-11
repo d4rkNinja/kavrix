@@ -1,8 +1,11 @@
 import type {
   DeviceId,
+  Sha256Digest,
   TemplateMigrationPublicationRequest,
   TemplateMigrationPublicationResponse,
+  Timestamp,
   VaultId,
+  VaultRevision,
 } from '@kavrix/schemas';
 
 import type {
@@ -60,6 +63,13 @@ export interface SyncLocalStorePort {
 export interface ProtectedSyncStatePort {
   load(vaultId: VaultId, deviceId: DeviceId): Promise<ProtectedLocalDeviceState | null>;
   save(state: ProtectedLocalDeviceState): Promise<void>;
+  completeObservation(
+    vaultId: VaultId,
+    deviceId: DeviceId,
+    expectedObservationId: Sha256Digest,
+    candidateRevision: VaultRevision,
+    updatedAt: Timestamp,
+  ): Promise<void>;
 }
 
 export interface SyncStatusPort {

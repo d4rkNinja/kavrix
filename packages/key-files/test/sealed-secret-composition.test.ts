@@ -36,6 +36,7 @@ it('satisfies the native keychain port contract over the sealed backend', async 
 
     const anchors = new NativeProtectedSyncState(factory);
     await anchors.save({
+      version: 2,
       vaultId,
       deviceId,
       highestSeenVaultRevision: 7,
@@ -47,5 +48,91 @@ it('satisfies the native keychain port contract over the sealed backend', async 
     await store.close();
   } finally {
     await rm(dir, { recursive: true, force: true });
+  }
+}, 180_000);
+
+it('preserves protected observation transitions across sealed-store reopen', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'kavrix-observation-compose-'));
+  const vaultId = 'vault-1';
+  const deviceId = 'device-1';
+  const passphrase = (): Promise<Uint8Array> =>
+    Promise.resolve(Buffer.from('pw', 'utf8'));
+  const content = {
+    version: 1,
+    kind: 'generic-push',
+    batchIdempotencyKey: 'batch-key-0000001',
+    requestHash: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+    responseHash: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+    responseVaultRevision: 7,
+    replayFromServerSequence: 3,
+    requiredThroughServerSequence: 5,
+  } as const;
+  const observation = {
+    ...content,
+    observationId: 'cLY5-qRBq_DupwZ-KwYazMN1fGM7owLxwct2_ZyKF0c',
+  } as const;
+  const pending = {
+    version: 2,
+    vaultId,
+    deviceId,
+    highestSeenVaultRevision: 7,
+    updatedAt: new Date(0).toISOString(),
+    outboundObservation: observation,
+  } as const;
+  let store: SealedSecretStore | undefined;
+  try {
+    store = new SealedSecretStore({ directory: dir, passphrase });
+    let anchors = new NativeProtectedSyncState(sealedEntryFactory(store));
+    await anchors.save(pending as never);
+    await store.close();
+
+    store = new SealedSecretStore({ directory: dir, passphrase });
+    anchors = new NativeProtectedSyncState(sealedEntryFactory(store));
+    expect(await anchors.load(vaultId as never, deviceId as never)).toEqual(pending);
+    await anchors.save({
+      ...pending,
+      highestSeenVaultRevision: 9,
+      updatedAt: '1969-12-31T23:59:59.000Z',
+    } as never);
+    await store.close();
+
+    store = new SealedSecretStore({ directory: dir, passphrase });
+    anchors = new NativeProtectedSyncState(sealedEntryFactory(store));
+    await anchors.completeObservation(
+      vaultId as never,
+      deviceId as never,
+      observation.observationId as never,
+      9 as never,
+      '1969-12-31T23:59:59.000Z',
+    );
+    await store.close();
+
+    store = new SealedSecretStore({ directory: dir, passphrase });
+    anchors = new NativeProtectedSyncState(sealedEntryFactory(store));
+    const completed = await anchors.load(vaultId as never, deviceId as never);
+    expect(completed).toEqual({
+      version: 2,
+      vaultId,
+      deviceId,
+      highestSeenVaultRevision: 9,
+      updatedAt: pending.updatedAt,
+      lastCompletedObservationId: observation.observationId,
+    });
+    await expect(
+      anchors.completeObservation(
+        vaultId as never,
+        deviceId as never,
+        observation.observationId as never,
+        9 as never,
+        pending.updatedAt,
+      ),
+    ).resolves.toBeUndefined();
+    await store.close();
+  } finally {
+    try {
+      await store?.close();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   }
 }, 180_000);

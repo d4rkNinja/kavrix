@@ -353,6 +353,7 @@ export class SyncEngine {
   async #saveProtected(input: SyncRunInput, revision: VaultRevision): Promise<void> {
     await this.#protectedState.save(
       protectedLocalDeviceStateSchema.parse({
+        version: 2,
         vaultId: input.vaultId,
         deviceId: input.deviceId,
         highestSeenVaultRevision: revision,
