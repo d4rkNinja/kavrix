@@ -14,7 +14,7 @@ import {
   MAX_ATTACHMENT_STREAM_CIPHERTEXT_BYTES,
   MAX_ATTACHMENT_STREAM_PLAINTEXT_BYTES,
   SECRETSTREAM_CHUNK_OVERHEAD_BYTES,
-  aeadEnvelopeSchema,
+  encryptedDeviceLabelSchema,
   encryptedAttachmentRecordSchema,
   encryptedGroupRecordSchema,
   encryptedItemRecordSchema,
@@ -24,10 +24,10 @@ import {
 import {
   changeSequenceSchema,
   recordRevisionSchema,
-  schemaVersionSchema,
   sha256DigestSchema,
+  supportedSchemaVersionSchema,
+  supportedTokenVersionSchema,
   timestampSchema,
-  tokenVersionSchema,
   vaultRevisionSchema,
 } from './primitives.js';
 import { attachmentHeaderContentHash } from './content-hash.js';
@@ -94,9 +94,9 @@ const publicDeviceRecordObjectSchema = z
   .object({
     id: deviceIdSchema,
     vaultId: vaultIdSchema,
-    schemaVersion: schemaVersionSchema,
-    tokenVersion: tokenVersionSchema,
-    encryptedLabel: aeadEnvelopeSchema.optional(),
+    schemaVersion: supportedSchemaVersionSchema,
+    tokenVersion: supportedTokenVersionSchema,
+    encryptedLabel: encryptedDeviceLabelSchema.optional(),
     scopes: z
       .array(z.enum(['sync:read', 'sync:write', 'device:manage']))
       .min(1)

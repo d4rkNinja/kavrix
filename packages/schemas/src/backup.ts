@@ -13,8 +13,8 @@ import {
 import { vaultIdSchema } from './identifiers.js';
 import {
   base64UrlSchema,
-  schemaVersionSchema,
   sha256DigestSchema,
+  supportedSchemaVersionSchema,
   timestampSchema,
 } from './primitives.js';
 import { tombstoneRecordSchema } from './sync.js';
@@ -46,7 +46,7 @@ export const encryptedBackupHeaderSchema = z
     format: z.literal('kavrix-encrypted-backup'),
     version: z.literal(1),
     vaultId: vaultIdSchema,
-    schemaVersion: schemaVersionSchema,
+    schemaVersion: supportedSchemaVersionSchema,
     createdAt: timestampSchema,
     authentication: backupAuthenticationSchema,
   })

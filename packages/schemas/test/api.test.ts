@@ -3,14 +3,28 @@ import { describe, expect, it } from 'vitest';
 import {
   aeadEnvelopeSchema,
   apiBearerTokenSchema,
+  canonicalJson,
   changeRecordSchema,
+  CONTROL_LIST_CURSOR_VERSION,
+  controlListCursorPayloadSchema,
+  controlListCursorSchema,
+  controlListPageQuerySchema,
+  decodeControlListCursor,
+  DEFAULT_CONTROL_LIST_PAGE_SIZE,
+  deviceListPageResponseSchema,
   deviceListResponseSchema,
+  encodeControlListCursor,
+  enrollmentCompleteRequestSchema,
   encryptedGroupRecordSchema,
   encryptedItemRecordSchema,
   healthResponseSchema,
   inviteIssueRequestSchema,
   inviteIssueResponseSchema,
+  inviteListPageResponseSchema,
   inviteRedeemResponseSchema,
+  MAX_CONTROL_LIST_CURSOR_CHARS,
+  MAX_CONTROL_LIST_PAGE_SIZE,
+  publicDeviceRecordSchema,
   publicInviteRecordSchema,
   opaqueMutationSchema,
   syncPullQuerySchema,
@@ -20,9 +34,46 @@ import {
   timestampSchema,
   templateMigrationPublicationRequestSchema,
   templateMigrationPublicationResponseSchema,
+  vaultBootstrapRequestSchema,
   vaultIdSchema,
   vaultRecordSchema,
 } from '../src/index.js';
+
+const inviteCursorGolden =
+  'eyJjcmVhdGVkQXQiOiIyMDI2LTA4LTExVDAwOjAwOjAwLjAwMFoiLCJpZCI6Imludml0ZS4xIiwicmVzb3VyY2UiOiJpbnZpdGVzIiwidmF1bHRJZCI6InZhdWx0LjEiLCJ2ZXJzaW9uIjoxfQ';
+
+function publicInvite(
+  index: number,
+  vaultId = 'vault.1',
+): ReturnType<typeof publicInviteRecordSchema.parse> {
+  return publicInviteRecordSchema.parse({
+    id: `invite.${String(index)}`,
+    vaultId,
+    issuedByDeviceId: 'device.issuer',
+    scopes: ['sync:read'],
+    state: 'active',
+    createdAt: '2026-08-11T00:00:00.000Z',
+    expiresAt: '2026-08-12T00:00:00.000Z',
+  });
+}
+
+function publicDevice(
+  index: number,
+  vaultId = 'vault.1',
+): ReturnType<typeof publicDeviceRecordSchema.parse> {
+  return publicDeviceRecordSchema.parse({
+    id: `device.${String(index)}`,
+    vaultId,
+    schemaVersion: 1,
+    tokenVersion: 1,
+    scopes: ['sync:read'],
+    createdAt: '2026-08-11T00:00:00.000Z',
+  });
+}
+
+function rawJsonCursor(json: string): string {
+  return Buffer.from(json, 'utf8').toString('base64url');
+}
 
 describe('API wire contracts', () => {
   it('uses one strict health response contract', () => {
@@ -120,6 +171,346 @@ describe('API wire contracts', () => {
             tokenHash: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
           },
         ],
+      }).success,
+    ).toBe(false);
+  });
+
+  it('pins enrollment and first-device bootstrap inputs to current schema labels', () => {
+    const label = {
+      version: 1,
+      algorithm: 'xchacha20-poly1305-ietf',
+      nonce: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+      ciphertext: 'AQID',
+      authenticationTag: 'AAAAAAAAAAAAAAAAAAAAAA',
+      aad: {
+        version: 1,
+        schemaVersion: 1,
+        keyVersion: 1,
+        vaultId: 'vault.bootstrap',
+        entityType: 'device-label',
+        entityId: 'device.bootstrap',
+        purpose: 'device-label',
+      },
+      keyVersion: 1,
+    };
+    const enrollment = {
+      vaultId: 'vault.bootstrap',
+      deviceId: 'device.bootstrap',
+      schemaVersion: 1,
+      encryptedLabel: label,
+    };
+    const initialVault = vaultRecordSchema.parse({
+      ...currentVaultRecord('vault.bootstrap'),
+      revision: 0,
+    });
+    const bootstrap = {
+      vault: initialVault,
+      device: {
+        id: 'device.bootstrap',
+        schemaVersion: 1,
+        encryptedLabel: label,
+      },
+    };
+
+    expect(enrollmentCompleteRequestSchema.safeParse(enrollment).success).toBe(true);
+    expect(
+      enrollmentCompleteRequestSchema.safeParse({
+        ...enrollment,
+        schemaVersion: 2,
+      }).success,
+    ).toBe(false);
+    expect(vaultBootstrapRequestSchema.safeParse(bootstrap).success).toBe(true);
+    expect(
+      vaultBootstrapRequestSchema.safeParse({
+        ...bootstrap,
+        device: { ...bootstrap.device, schemaVersion: 2 },
+      }).success,
+    ).toBe(false);
+    for (const schema of [
+      enrollmentCompleteRequestSchema,
+      vaultBootstrapRequestSchema,
+    ]) {
+      const oversizedLabel = { ...label, ciphertext: 'A'.repeat(4_098) };
+      const candidate =
+        schema === enrollmentCompleteRequestSchema
+          ? { ...enrollment, encryptedLabel: oversizedLabel }
+          : {
+              ...bootstrap,
+              device: { ...bootstrap.device, encryptedLabel: oversizedLabel },
+            };
+      expect(schema.safeParse(candidate).success).toBe(false);
+    }
+  });
+
+  it('strictly parses bounded control-list query strings', () => {
+    expect(controlListPageQuerySchema.parse({})).toEqual({
+      limit: DEFAULT_CONTROL_LIST_PAGE_SIZE,
+    });
+    expect(controlListPageQuerySchema.parse({ limit: '1' })).toEqual({ limit: 1 });
+    expect(controlListPageQuerySchema.parse({ limit: '200' })).toEqual({ limit: 200 });
+    expect(CONTROL_LIST_CURSOR_VERSION).toBe(1);
+    expect(MAX_CONTROL_LIST_PAGE_SIZE).toBe(200);
+    expect(MAX_CONTROL_LIST_CURSOR_CHARS).toBe(512);
+
+    for (const limit of [
+      '0',
+      '201',
+      '01',
+      '+1',
+      '-1',
+      ' 1',
+      '1 ',
+      '1.0',
+      '1e2',
+      '',
+      1,
+    ]) {
+      expect(controlListPageQuerySchema.safeParse({ limit }).success).toBe(false);
+    }
+    expect(controlListPageQuerySchema.safeParse({ cursor: '' }).success).toBe(false);
+    expect(controlListPageQuerySchema.safeParse({ cursor: 'AA' }).success).toBe(false);
+    expect(
+      controlListPageQuerySchema.safeParse({ limit: '1', unexpected: 'value' }).success,
+    ).toBe(false);
+
+    const maximumCursor = encodeControlListCursor({
+      version: 1,
+      resource: 'invites',
+      vaultId: `v${'a'.repeat(127)}`,
+      createdAt: `2026-08-11T00:00:00.${'0'.repeat(37)}Z`,
+      id: `i${'a'.repeat(127)}`,
+    });
+    expect(maximumCursor).toHaveLength(MAX_CONTROL_LIST_CURSOR_CHARS);
+    expect(controlListCursorSchema.safeParse(maximumCursor).success).toBe(true);
+    expect(controlListPageQuerySchema.parse({ cursor: maximumCursor })).toEqual({
+      limit: DEFAULT_CONTROL_LIST_PAGE_SIZE,
+      cursor: maximumCursor,
+    });
+    expect(() =>
+      encodeControlListCursor({
+        version: 1,
+        resource: 'invites',
+        vaultId: `v${'a'.repeat(127)}`,
+        createdAt: `2026-08-11T00:00:00.${'0'.repeat(38)}Z`,
+        id: `i${'a'.repeat(127)}`,
+      }),
+    ).toThrow();
+  });
+
+  it('round-trips deterministic invite and device cursors with a literal golden', () => {
+    const invitePayload = controlListCursorPayloadSchema.parse({
+      version: CONTROL_LIST_CURSOR_VERSION,
+      resource: 'invites',
+      vaultId: 'vault.1',
+      createdAt: '2026-08-11T00:00:00.000Z',
+      id: 'invite.1',
+    });
+    const inviteCursor = encodeControlListCursor(invitePayload);
+
+    expect(inviteCursor).toBe(inviteCursorGolden);
+    expect(decodeControlListCursor(inviteCursor)).toEqual(invitePayload);
+    expect(encodeControlListCursor(decodeControlListCursor(inviteCursor))).toBe(
+      inviteCursor,
+    );
+
+    const devicePayload = controlListCursorPayloadSchema.parse({
+      version: CONTROL_LIST_CURSOR_VERSION,
+      resource: 'devices',
+      vaultId: 'vault.1',
+      createdAt: '2026-08-11T00:00:00.000Z',
+      id: 'device.1',
+    });
+    const deviceCursor = encodeControlListCursor(devicePayload);
+    expect(decodeControlListCursor(deviceCursor)).toEqual(devicePayload);
+    expect(encodeControlListCursor(devicePayload)).toBe(deviceCursor);
+  });
+
+  it('rejects malformed, unsupported, and noncanonical cursor payloads', () => {
+    const canonicalPayload = {
+      version: 1,
+      resource: 'invites',
+      vaultId: 'vault.1',
+      createdAt: '2026-08-11T00:00:00.000Z',
+      id: 'invite.1',
+    };
+    const canonicalText = Buffer.from(inviteCursorGolden, 'base64url').toString('utf8');
+    const invalidCursors = [
+      `${inviteCursorGolden}=`,
+      rawJsonCursor(` ${canonicalText}`),
+      rawJsonCursor(JSON.stringify(canonicalPayload)),
+      rawJsonCursor(
+        '{"createdAt":"2026-08-11T00:00:00.000Z","id":"invite.1","resource":"invites","vaultId":"vault.1","version":1,"version":1}',
+      ),
+      rawJsonCursor(canonicalJson({ ...canonicalPayload, extra: true })),
+      rawJsonCursor(canonicalJson({ ...canonicalPayload, version: 2 })),
+      rawJsonCursor(canonicalJson({ ...canonicalPayload, resource: 'groups' })),
+      rawJsonCursor('{'),
+      Buffer.from([0xc3, 0x28]).toString('base64url'),
+      'AB',
+    ];
+
+    for (const cursor of invalidCursors) {
+      expect(() => decodeControlListCursor(cursor)).toThrow();
+      expect(() => controlListCursorSchema.safeParse(cursor)).not.toThrow();
+      expect(controlListCursorSchema.safeParse(cursor).success).toBe(false);
+    }
+
+    const canary = 'cursor-error-canary-7f9d';
+    const canaryCursor = rawJsonCursor(
+      canonicalJson({ ...canonicalPayload, unexpected: canary }),
+    );
+    let caught: unknown;
+    try {
+      decodeControlListCursor(canaryCursor);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(TypeError);
+    if (!(caught instanceof TypeError)) {
+      throw new Error('Expected a generic cursor TypeError');
+    }
+    expect(caught.message).toBe('Invalid control-list cursor');
+    expect(caught.message).not.toContain(canary);
+    expect(caught.message).not.toContain(canaryCursor);
+    expect(Object.hasOwn(caught, 'cause')).toBe(false);
+  });
+
+  it('bounds additive invite and device page response sizes', () => {
+    for (const size of [0, 1, MAX_CONTROL_LIST_PAGE_SIZE]) {
+      expect(
+        inviteListPageResponseSchema.safeParse({
+          invites: Array.from({ length: size }, (_, index) => publicInvite(index)),
+          nextCursor: null,
+        }).success,
+      ).toBe(true);
+      expect(
+        deviceListPageResponseSchema.safeParse({
+          devices: Array.from({ length: size }, (_, index) => publicDevice(index)),
+          nextCursor: null,
+        }).success,
+      ).toBe(true);
+    }
+    expect(
+      inviteListPageResponseSchema.safeParse({
+        invites: Array.from({ length: MAX_CONTROL_LIST_PAGE_SIZE + 1 }, (_, index) =>
+          publicInvite(index),
+        ),
+        nextCursor: null,
+      }).success,
+    ).toBe(false);
+    expect(
+      deviceListPageResponseSchema.safeParse({
+        devices: Array.from({ length: MAX_CONTROL_LIST_PAGE_SIZE + 1 }, (_, index) =>
+          publicDevice(index),
+        ),
+        nextCursor: null,
+      }).success,
+    ).toBe(false);
+  });
+
+  it('binds page cursors to the final row resource, vault, time, and ID', () => {
+    const invites = [publicInvite(1), publicInvite(2)];
+    const devices = [publicDevice(1), publicDevice(2)];
+    const firstInvite = invites[0];
+    const finalInvite = invites.at(-1);
+    const finalDevice = devices.at(-1);
+    if (
+      firstInvite === undefined ||
+      finalInvite === undefined ||
+      finalDevice === undefined
+    ) {
+      throw new Error('Expected nonempty control-list fixtures');
+    }
+    const inviteCursor = encodeControlListCursor(
+      controlListCursorPayloadSchema.parse({
+        version: 1,
+        resource: 'invites',
+        vaultId: finalInvite.vaultId,
+        createdAt: finalInvite.createdAt,
+        id: finalInvite.id,
+      }),
+    );
+    const deviceCursor = encodeControlListCursor(
+      controlListCursorPayloadSchema.parse({
+        version: 1,
+        resource: 'devices',
+        vaultId: finalDevice.vaultId,
+        createdAt: finalDevice.createdAt,
+        id: finalDevice.id,
+      }),
+    );
+    const cursorForFirstInvite = encodeControlListCursor(
+      controlListCursorPayloadSchema.parse({
+        version: 1,
+        resource: 'invites',
+        vaultId: firstInvite.vaultId,
+        createdAt: firstInvite.createdAt,
+        id: firstInvite.id,
+      }),
+    );
+
+    expect(
+      inviteListPageResponseSchema.safeParse({ invites, nextCursor: inviteCursor })
+        .success,
+    ).toBe(true);
+    expect(
+      deviceListPageResponseSchema.safeParse({ devices, nextCursor: deviceCursor })
+        .success,
+    ).toBe(true);
+    expect(inviteListPageResponseSchema.safeParse({ invites }).success).toBe(false);
+    expect(
+      inviteListPageResponseSchema.safeParse({
+        invites,
+        nextCursor: null,
+        unexpected: true,
+      }).success,
+    ).toBe(false);
+    expect(
+      inviteListPageResponseSchema.safeParse({ invites, nextCursor: 'AA' }).success,
+    ).toBe(false);
+    expect(
+      inviteListPageResponseSchema.safeParse({
+        invites,
+        nextCursor: cursorForFirstInvite,
+      }).success,
+    ).toBe(false);
+    expect(
+      inviteListPageResponseSchema.safeParse({ invites, nextCursor: deviceCursor })
+        .success,
+    ).toBe(false);
+    for (const mismatch of [
+      { vaultId: 'vault.other' },
+      { createdAt: '2026-08-11T00:00:00Z' },
+    ]) {
+      const mismatchedCursor = encodeControlListCursor({
+        version: 1,
+        resource: 'invites',
+        vaultId: finalInvite.vaultId,
+        createdAt: finalInvite.createdAt,
+        id: finalInvite.id,
+        ...mismatch,
+      });
+      expect(
+        inviteListPageResponseSchema.safeParse({
+          invites,
+          nextCursor: mismatchedCursor,
+        }).success,
+      ).toBe(false);
+    }
+    expect(
+      deviceListPageResponseSchema.safeParse({ devices, nextCursor: inviteCursor })
+        .success,
+    ).toBe(false);
+    expect(
+      inviteListPageResponseSchema.safeParse({
+        invites: [invites[0], publicInvite(2, 'vault.other')],
+        nextCursor: null,
+      }).success,
+    ).toBe(false);
+    expect(
+      inviteListPageResponseSchema.safeParse({
+        invites: [],
+        nextCursor: inviteCursor,
       }).success,
     ).toBe(false);
   });

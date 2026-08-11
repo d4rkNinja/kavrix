@@ -11,20 +11,22 @@ import {
 } from './identifiers.js';
 import {
   MAX_ATTACHMENT_CHUNKS,
-  aeadEnvelopeSchema,
   encryptedAttachmentRecordSchema,
+  encryptedDeviceLabelSchema,
   encryptedGroupRecordSchema,
   encryptedItemRecordSchema,
   persistedAttachmentChunkRecordSchema,
   vaultRecordSchema,
 } from './encrypted-records.js';
 import {
+  base64UrlSchema,
   changeSequenceSchema,
   recordRevisionSchema,
-  schemaVersionSchema,
+  supportedSchemaVersionSchema,
   timestampSchema,
   vaultRevisionSchema,
 } from './primitives.js';
+import { canonicalJson } from './content-hash.js';
 import {
   attachmentStreamFinalizeInputSchema,
   attachmentStreamProgressSchema,
@@ -39,6 +41,88 @@ import {
 export const apiScopeSchema = z.enum(['sync:read', 'sync:write', 'device:manage']);
 
 export const healthResponseSchema = z.object({ status: z.literal('ok') }).strict();
+
+export const CONTROL_LIST_CURSOR_VERSION = 1;
+export const DEFAULT_CONTROL_LIST_PAGE_SIZE = 50;
+export const MAX_CONTROL_LIST_PAGE_SIZE = 200;
+export const MAX_CONTROL_LIST_CURSOR_CHARS = 512;
+
+/** Unsigned navigation hint. Authenticated routes must bind it to their resource/vault. */
+const controlListCursorPayloadBaseSchema = z
+  .object({
+    version: z.literal(CONTROL_LIST_CURSOR_VERSION),
+    vaultId: vaultIdSchema,
+    createdAt: timestampSchema,
+  })
+  .strict();
+
+export const controlListCursorPayloadSchema = z.discriminatedUnion('resource', [
+  controlListCursorPayloadBaseSchema
+    .extend({
+      resource: z.literal('invites'),
+      id: inviteIdSchema,
+    })
+    .strict(),
+  controlListCursorPayloadBaseSchema
+    .extend({
+      resource: z.literal('devices'),
+      id: deviceIdSchema,
+    })
+    .strict(),
+]);
+
+const boundedControlListCursorSchema = z
+  .string()
+  .min(1)
+  .max(MAX_CONTROL_LIST_CURSOR_CHARS)
+  .pipe(base64UrlSchema)
+  .brand<'ControlListCursor'>();
+
+export function encodeControlListCursor(
+  payload: z.input<typeof controlListCursorPayloadSchema>,
+): z.infer<typeof boundedControlListCursorSchema> {
+  const parsedPayload = controlListCursorPayloadSchema.parse(payload);
+  return boundedControlListCursorSchema.parse(
+    Buffer.from(canonicalJson(parsedPayload), 'utf8').toString('base64url'),
+  );
+}
+
+function decodeCanonicalControlListCursor(
+  cursor: unknown,
+): z.infer<typeof controlListCursorPayloadSchema> {
+  try {
+    const parsedCursor = boundedControlListCursorSchema.parse(cursor);
+    const json = new TextDecoder('utf-8', { fatal: true }).decode(
+      Buffer.from(parsedCursor, 'base64url'),
+    );
+    const payload = controlListCursorPayloadSchema.parse(JSON.parse(json) as unknown);
+    if (encodeControlListCursor(payload) !== parsedCursor) {
+      throw new TypeError('Noncanonical control-list cursor');
+    }
+    return payload;
+  } catch {
+    throw new TypeError('Invalid control-list cursor');
+  }
+}
+
+export function decodeControlListCursor(
+  cursor: string,
+): z.infer<typeof controlListCursorPayloadSchema> {
+  return decodeCanonicalControlListCursor(cursor);
+}
+
+export const controlListCursorSchema = boundedControlListCursorSchema.superRefine(
+  (cursor, context) => {
+    try {
+      decodeCanonicalControlListCursor(cursor);
+    } catch {
+      context.addIssue({
+        code: 'custom',
+        message: 'Control-list cursor is malformed or noncanonical',
+      });
+    }
+  },
+);
 
 export const apiBearerTokenSchema = z
   .string()
@@ -134,6 +218,16 @@ export const inviteListResponseSchema = z
   .object({ invites: z.array(publicInviteRecordSchema).max(10_000) })
   .strict();
 
+export const inviteListPageResponseSchema = z
+  .object({
+    invites: z.array(publicInviteRecordSchema).max(MAX_CONTROL_LIST_PAGE_SIZE),
+    nextCursor: controlListCursorSchema.nullable(),
+  })
+  .strict()
+  .superRefine((page, context) => {
+    validateControlListPage('invites', page.invites, page.nextCursor, context);
+  });
+
 export const vaultInvitePathSchema = z
   .object({ vaultId: vaultIdSchema, inviteId: inviteIdSchema })
   .strict();
@@ -154,8 +248,8 @@ export const enrollmentCompleteRequestSchema = z
   .object({
     vaultId: vaultIdSchema,
     deviceId: deviceIdSchema,
-    schemaVersion: schemaVersionSchema,
-    encryptedLabel: aeadEnvelopeSchema.optional(),
+    schemaVersion: supportedSchemaVersionSchema,
+    encryptedLabel: encryptedDeviceLabelSchema.optional(),
   })
   .strict();
 
@@ -189,8 +283,8 @@ export const vaultBootstrapRequestSchema = z
     device: z
       .object({
         id: deviceIdSchema,
-        schemaVersion: schemaVersionSchema,
-        encryptedLabel: aeadEnvelopeSchema.optional(),
+        schemaVersion: supportedSchemaVersionSchema,
+        encryptedLabel: encryptedDeviceLabelSchema.optional(),
       })
       .strict(),
   })
@@ -232,6 +326,16 @@ export const deviceListResponseSchema = z
   .object({ devices: z.array(publicDeviceRecordSchema).max(10_000) })
   .strict();
 
+export const deviceListPageResponseSchema = z
+  .object({
+    devices: z.array(publicDeviceRecordSchema).max(MAX_CONTROL_LIST_PAGE_SIZE),
+    nextCursor: controlListCursorSchema.nullable(),
+  })
+  .strict()
+  .superRefine((page, context) => {
+    validateControlListPage('devices', page.devices, page.nextCursor, context);
+  });
+
 export const vaultPathSchema = z.object({ vaultId: vaultIdSchema }).strict();
 export const vaultDevicePathSchema = z
   .object({ vaultId: vaultIdSchema, deviceId: deviceIdSchema })
@@ -266,6 +370,17 @@ const decimalIntegerQuerySchema = z
     }
     return parsed;
   });
+
+const controlListPageLimitSchema = decimalIntegerQuerySchema.pipe(
+  z.number().int().min(1).max(MAX_CONTROL_LIST_PAGE_SIZE),
+);
+
+export const controlListPageQuerySchema = z
+  .object({
+    limit: controlListPageLimitSchema.default(DEFAULT_CONTROL_LIST_PAGE_SIZE),
+    cursor: controlListCursorSchema.optional(),
+  })
+  .strict();
 
 export const attachmentTransferPathSchema = z
   .object({
@@ -677,6 +792,11 @@ export const opaqueMutationRequestSchema = opaqueMutationSchema;
 export type ApiScope = z.infer<typeof apiScopeSchema>;
 export type HealthResponse = z.infer<typeof healthResponseSchema>;
 export type ApiBearerToken = z.infer<typeof apiBearerTokenSchema>;
+export type ControlListCursor = z.infer<typeof controlListCursorSchema>;
+export type ControlListCursorPayload = z.infer<typeof controlListCursorPayloadSchema>;
+export type ControlListPageQuery = z.infer<typeof controlListPageQuerySchema>;
+export type InviteListPageResponse = z.infer<typeof inviteListPageResponseSchema>;
+export type DeviceListPageResponse = z.infer<typeof deviceListPageResponseSchema>;
 export type ApiSessionResponse = z.infer<typeof apiSessionResponseSchema>;
 export type VaultBootstrapRequest = z.infer<typeof vaultBootstrapRequestSchema>;
 export type VaultBootstrapResponse = z.infer<typeof vaultBootstrapResponseSchema>;
@@ -706,6 +826,59 @@ export type AttachmentChunkStageRequest = z.infer<
   typeof attachmentChunkStageRequestSchema
 >;
 export type AttachmentFinalizeRequest = z.infer<typeof attachmentFinalizeRequestSchema>;
+
+// This proves response self-consistency only. A route must still bind its
+// authenticated requested vault, including for an empty terminal page.
+function validateControlListPage(
+  resource: 'invites' | 'devices',
+  rows: readonly Readonly<{ id: string; vaultId: string; createdAt: string }>[],
+  nextCursor: z.infer<typeof controlListCursorSchema> | null,
+  context: z.core.$RefinementCtx,
+): void {
+  const firstRow = rows[0];
+  if (firstRow !== undefined && rows.some((row) => row.vaultId !== firstRow.vaultId)) {
+    context.addIssue({
+      code: 'custom',
+      message: 'Every control-list page row must belong to one vault',
+      path: [resource],
+    });
+  }
+  if (nextCursor === null) return;
+
+  const finalRow = rows.at(-1);
+  if (finalRow === undefined) {
+    context.addIssue({
+      code: 'custom',
+      message: 'An empty control-list page cannot carry a next cursor',
+      path: ['nextCursor'],
+    });
+    return;
+  }
+
+  let cursorPayload: z.infer<typeof controlListCursorPayloadSchema>;
+  try {
+    cursorPayload = decodeControlListCursor(nextCursor);
+  } catch {
+    context.addIssue({
+      code: 'custom',
+      message: 'Control-list page carries an invalid next cursor',
+      path: ['nextCursor'],
+    });
+    return;
+  }
+  if (
+    cursorPayload.resource !== resource ||
+    cursorPayload.vaultId !== finalRow.vaultId ||
+    cursorPayload.createdAt !== finalRow.createdAt ||
+    cursorPayload.id !== finalRow.id
+  ) {
+    context.addIssue({
+      code: 'custom',
+      message: 'Next cursor must identify the final control-list page row',
+      path: ['nextCursor'],
+    });
+  }
+}
 
 function validateAttachmentTransportIdentity(
   start: z.infer<typeof attachmentStreamStartInputSchema>,

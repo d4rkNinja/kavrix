@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   aeadEnvelopeSchema,
+  associatedDataSchema,
   attachmentChunkCiphertextSchema,
   attachmentHeaderContentHash,
   attachmentSecretStreamManifestSchema,
@@ -10,12 +11,16 @@ import {
   attachmentStreamProgressSchema,
   attachmentStreamStartInputSchema,
   base64UrlSchema,
+  CANONICAL_BASE64URL_PATTERN_SOURCE,
   deviceRecordSchema,
   deviceKeyDerivationSchema,
+  encryptedBackupHeaderSchema,
+  encryptedDeviceLabelSchema,
   encryptedAttachmentRecordSchema,
   encryptedItemRecordSchema,
   keySlotSchema,
   MAX_ATTACHMENT_CHUNK_CIPHERTEXT_BYTES,
+  MAX_ENCRYPTED_DEVICE_LABEL_CIPHERTEXT_CHARS,
   opaqueMutationSchema,
   passphraseDerivationSchema,
   persistedAttachmentChunkRecordSchema,
@@ -430,6 +435,53 @@ describe('opaque persisted records', () => {
     ).toBe(false);
   });
 
+  it('keeps standalone AAD values broad while current envelopes fail closed', () => {
+    const futureEnvelope = envelope('group', 'group.1');
+    const futureAad = {
+      ...(futureEnvelope['aad'] as Record<string, unknown>),
+      schemaVersion: 2,
+    };
+
+    expect(associatedDataSchema.safeParse(futureAad).success).toBe(true);
+    expect(
+      aeadEnvelopeSchema.safeParse({ ...futureEnvelope, aad: futureAad }).success,
+    ).toBe(false);
+  });
+
+  it('bounds only encrypted device-label ciphertexts to 4,096 characters', () => {
+    const label = envelope('device-label', 'device.1');
+    const maximum = 'A'.repeat(MAX_ENCRYPTED_DEVICE_LABEL_CIPHERTEXT_CHARS);
+    const nextCanonicalLength = 'A'.repeat(
+      MAX_ENCRYPTED_DEVICE_LABEL_CIPHERTEXT_CHARS + 2,
+    );
+
+    expect(
+      encryptedDeviceLabelSchema.safeParse({ ...label, ciphertext: maximum }).success,
+    ).toBe(true);
+    expect(
+      encryptedDeviceLabelSchema.safeParse({
+        ...label,
+        ciphertext: nextCanonicalLength,
+      }).success,
+    ).toBe(false);
+    expect(
+      aeadEnvelopeSchema.safeParse({ ...label, ciphertext: nextCanonicalLength })
+        .success,
+    ).toBe(true);
+    expect(
+      encryptedDeviceLabelSchema.safeParse(envelope('group', 'group.1')).success,
+    ).toBe(false);
+    expect(
+      encryptedDeviceLabelSchema.safeParse({
+        ...label,
+        aad: {
+          ...(label['aad'] as Record<string, unknown>),
+          purpose: 'audit-event',
+        },
+      }).success,
+    ).toBe(false);
+  });
+
   it('rejects unknown algorithms and mismatched payload purposes', () => {
     const valid = envelope('group', 'group.1');
     expect(
@@ -446,8 +498,13 @@ describe('opaque persisted records', () => {
 
 describe('canonical public encodings', () => {
   it('rejects non-canonical base64url and non-UTC timestamps', () => {
+    expect(CANONICAL_BASE64URL_PATTERN_SOURCE).toBe(
+      '^(?:[A-Za-z0-9_-]{4})*(?:[A-Za-z0-9_-][AQgw]|[A-Za-z0-9_-]{2}[AEIMQUYcgkosw048])?$',
+    );
     expect(base64UrlSchema.safeParse('AA').success).toBe(true);
     expect(base64UrlSchema.safeParse('AB').success).toBe(false);
+    expect(base64UrlSchema.safeParse('AAA').success).toBe(true);
+    expect(base64UrlSchema.safeParse('AAB').success).toBe(false);
     expect(sha256DigestSchema.safeParse(digest).success).toBe(true);
     expect(sha256DigestSchema.safeParse(`${digest.slice(0, -1)}B`).success).toBe(false);
     expect(timestampSchema.safeParse(timestamp).success).toBe(true);
@@ -479,6 +536,132 @@ describe('canonical public encodings', () => {
         updatedAt: timestamp,
       }).success,
     ).toBe(true);
+  });
+
+  it('rejects unknown backup and persisted attachment-stream schema versions', () => {
+    const header = {
+      type: 'header',
+      format: 'kavrix-encrypted-backup',
+      version: 1,
+      vaultId: 'vault.1',
+      schemaVersion: 1,
+      createdAt: timestamp,
+      authentication: {
+        algorithm: 'hkdf-sha256+hmac-sha256',
+        salt: digest,
+      },
+    };
+    const streamHeader = {
+      version: 1,
+      algorithm: 'secretstream-xchacha20-poly1305',
+      streamVersion: 1,
+      schemaVersion: 1,
+      keyVersion: 1,
+      vaultId: 'vault.1',
+      groupId: 'group.1',
+      itemId: 'item.1',
+      attachmentId: 'attachment.1',
+      recordType: 'header',
+      header: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+    };
+    const streamChunk = {
+      version: streamHeader.version,
+      algorithm: streamHeader.algorithm,
+      streamVersion: streamHeader.streamVersion,
+      schemaVersion: streamHeader.schemaVersion,
+      keyVersion: streamHeader.keyVersion,
+      vaultId: streamHeader.vaultId,
+      groupId: streamHeader.groupId,
+      itemId: streamHeader.itemId,
+      attachmentId: streamHeader.attachmentId,
+      recordType: 'chunk',
+      index: 0,
+      ciphertext: 'AAAAAAAAAAAAAAAAAAAAAAA',
+      tag: 'final',
+    };
+    const streamManifest = {
+      version: streamHeader.version,
+      algorithm: streamHeader.algorithm,
+      streamVersion: streamHeader.streamVersion,
+      schemaVersion: streamHeader.schemaVersion,
+      keyVersion: streamHeader.keyVersion,
+      vaultId: streamHeader.vaultId,
+      groupId: streamHeader.groupId,
+      itemId: streamHeader.itemId,
+      attachmentId: streamHeader.attachmentId,
+      manifestVersion: 1,
+      header: streamHeader.header,
+      chunkCount: 1,
+      totalPlaintextBytes: 0,
+      plaintextSha256: digest,
+    };
+    const persistedHeader = {
+      entityType: 'attachment-header',
+      record: streamHeader,
+      recordRevision: 0,
+      contentHash: digest,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
+    const persistedChunk = {
+      entityType: 'attachment-chunk',
+      record: streamChunk,
+      plaintextBytes: 0,
+      recordRevision: 0,
+      ciphertextHash: digest,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
+
+    expect(encryptedBackupHeaderSchema.safeParse(header).success).toBe(true);
+    expect(
+      encryptedBackupHeaderSchema.safeParse({ ...header, schemaVersion: 2 }).success,
+    ).toBe(false);
+    expect(attachmentSecretStreamRecordSchema.safeParse(streamHeader).success).toBe(
+      true,
+    );
+    expect(
+      attachmentSecretStreamRecordSchema.safeParse({
+        ...streamHeader,
+        schemaVersion: 2,
+      }).success,
+    ).toBe(false);
+    expect(attachmentSecretStreamRecordSchema.safeParse(streamChunk).success).toBe(
+      true,
+    );
+    expect(
+      attachmentSecretStreamRecordSchema.safeParse({
+        ...streamChunk,
+        schemaVersion: 2,
+      }).success,
+    ).toBe(false);
+    expect(attachmentSecretStreamManifestSchema.safeParse(streamManifest).success).toBe(
+      true,
+    );
+    expect(
+      attachmentSecretStreamManifestSchema.safeParse({
+        ...streamManifest,
+        schemaVersion: 2,
+      }).success,
+    ).toBe(false);
+    expect(
+      persistedAttachmentHeaderRecordSchema.safeParse(persistedHeader).success,
+    ).toBe(true);
+    expect(
+      persistedAttachmentHeaderRecordSchema.safeParse({
+        ...persistedHeader,
+        record: { ...streamHeader, schemaVersion: 2 },
+      }).success,
+    ).toBe(false);
+    expect(persistedAttachmentChunkRecordSchema.safeParse(persistedChunk).success).toBe(
+      true,
+    );
+    expect(
+      persistedAttachmentChunkRecordSchema.safeParse({
+        ...persistedChunk,
+        record: { ...streamChunk, schemaVersion: 2 },
+      }).success,
+    ).toBe(false);
   });
 });
 

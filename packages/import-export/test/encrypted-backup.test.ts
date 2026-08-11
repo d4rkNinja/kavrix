@@ -297,31 +297,40 @@ describe('encrypted backup streaming format', () => {
         ),
       ).resolves.toBeInstanceOf(Buffer);
 
-      for (const records of [
+      for (const [records, expectedError] of [
         [
-          { kind: 'group', record: fixture.group },
-          { kind: 'item', record: graph.item },
-          { kind: 'attachment', record: graph.attachment },
-          {
-            kind: 'attachment-header',
-            record: persistedAttachmentHeaderRecordSchema.parse({
-              ...graph.header,
-              record: { ...graph.header.record, keyVersion: 2 },
-            }),
-          },
-          { kind: 'attachment-chunk', record: graph.chunk },
+          [
+            { kind: 'group', record: fixture.group },
+            { kind: 'item', record: graph.item },
+            { kind: 'attachment', record: graph.attachment },
+            {
+              kind: 'attachment-header',
+              record: persistedAttachmentHeaderRecordSchema.parse({
+                ...graph.header,
+                record: { ...graph.header.record, keyVersion: 2 },
+              }),
+            },
+            { kind: 'attachment-chunk', record: graph.chunk },
+          ],
+          { code: 'BACKUP_INCOMPLETE' },
         ],
         [
-          { kind: 'group', record: fixture.group },
-          { kind: 'item', record: graph.item },
-          { kind: 'attachment', record: graph.attachment },
-          { kind: 'attachment-header', record: graph.header },
+          [
+            { kind: 'group', record: fixture.group },
+            { kind: 'item', record: graph.item },
+            { kind: 'attachment', record: graph.attachment },
+            { kind: 'attachment-header', record: graph.header },
+            {
+              kind: 'attachment-chunk',
+              record: {
+                ...graph.chunk,
+                record: { ...graph.chunk.record, schemaVersion: 2 },
+              } as unknown as PersistedAttachmentChunkRecord,
+            },
+          ],
           {
-            kind: 'attachment-chunk',
-            record: persistedAttachmentChunkRecordSchema.parse({
-              ...graph.chunk,
-              record: { ...graph.chunk.record, schemaVersion: 2 },
-            }),
+            code: 'BACKUP_INVALID',
+            message: 'The encrypted backup is malformed.',
           },
         ],
       ] as const) {
@@ -336,7 +345,7 @@ describe('encrypted backup streaming format', () => {
               fixture.rootKey,
             ),
           ),
-        ).rejects.toMatchObject({ code: 'BACKUP_INCOMPLETE' });
+        ).rejects.toMatchObject(expectedError);
       }
     } finally {
       zeroize(fixture.rootKey);

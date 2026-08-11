@@ -2,6 +2,35 @@ import { z } from 'zod';
 
 export const MAX_TEXT_BYTES = 1_048_576;
 export const MAX_CIPHERTEXT_CHARS = 22_369_632;
+export const MAX_SEMANTIC_VERSION = 0xffff_ffff;
+export const MAX_SEMANTIC_REVISION = Number.MAX_SAFE_INTEGER;
+
+export const CURRENT_SCHEMA_VERSION = 1;
+export const SUPPORTED_SCHEMA_VERSIONS = Object.freeze([
+  CURRENT_SCHEMA_VERSION,
+] as const);
+export const CURRENT_CRYPTOGRAPHIC_VERSION = 1;
+export const SUPPORTED_CRYPTOGRAPHIC_VERSIONS = Object.freeze([
+  CURRENT_CRYPTOGRAPHIC_VERSION,
+] as const);
+export const CURRENT_TOKEN_VERSION = 1;
+export const SUPPORTED_TOKEN_VERSIONS = Object.freeze([CURRENT_TOKEN_VERSION] as const);
+
+export const CANONICAL_BASE64URL_PATTERN_SOURCE =
+  '^(?:[A-Za-z0-9_-]{4})*(?:[A-Za-z0-9_-][AQgw]|[A-Za-z0-9_-]{2}[AEIMQUYcgkosw048])?$';
+
+const canonicalBase64UrlPattern = new RegExp(CANONICAL_BASE64URL_PATTERN_SOURCE);
+
+function hasCanonicalBase64UrlTerminalBits(value: string): boolean {
+  if (value.length === 0) return false;
+  const remainder = value.length % 4;
+  if (remainder === 1) return false;
+  // Applying the grouped pattern to multi-megabyte ciphertexts can overflow
+  // the JavaScript regexp engine. The full alphabet is checked separately, so
+  // one aligned suffix is sufficient to enforce the exact terminal-bit rule.
+  const tailLength = remainder === 0 ? Math.min(value.length, 4) : remainder;
+  return canonicalBase64UrlPattern.test(value.slice(-tailLength));
+}
 
 export const timestampSchema = z.iso.datetime({ offset: false });
 export const revisionSchema = z.number().int().nonnegative().brand<'Revision'>();
@@ -9,21 +38,39 @@ export const positiveVersionSchema = z
   .number()
   .int()
   .positive()
-  .max(0xff_ff_ff_ff)
+  .max(MAX_SEMANTIC_VERSION)
   .brand<'PositiveVersion'>();
-const semanticVersionSchema = z.number().int().positive().max(0xff_ff_ff_ff);
+const semanticVersionSchema = z.number().int().positive().max(MAX_SEMANTIC_VERSION);
 const semanticRevisionSchema = z
   .number()
   .int()
   .nonnegative()
-  .max(Number.MAX_SAFE_INTEGER);
+  .max(MAX_SEMANTIC_REVISION);
 
+/**
+ * Broad schema-version value for canonical encoding and migration evidence.
+ * Representability does not grant current-record support.
+ */
 export const schemaVersionSchema = semanticVersionSchema.brand<'SchemaVersion'>();
 export const keyVersionSchema = semanticVersionSchema.brand<'KeyVersion'>();
 export const templateVersionSchema = semanticVersionSchema.brand<'TemplateVersion'>();
+/** Broad token-version value; representability is not current wire support. */
 export const tokenVersionSchema = semanticVersionSchema.brand<'TokenVersion'>();
+/** Broad crypto-version value; representability is not current persisted support. */
 export const cryptographicVersionSchema =
   semanticVersionSchema.brand<'CryptographicVersion'>();
+export const supportedSchemaVersionSchema = schemaVersionSchema.refine(
+  (value) => SUPPORTED_SCHEMA_VERSIONS.some((supported) => value === supported),
+  { error: 'Unsupported schema version' },
+);
+export const supportedCryptographicVersionSchema = cryptographicVersionSchema.refine(
+  (value) => SUPPORTED_CRYPTOGRAPHIC_VERSIONS.some((supported) => value === supported),
+  { error: 'Unsupported cryptographic version' },
+);
+export const supportedTokenVersionSchema = tokenVersionSchema.refine(
+  (value) => SUPPORTED_TOKEN_VERSIONS.some((supported) => value === supported),
+  { error: 'Unsupported token version' },
+);
 export const recordRevisionSchema = semanticRevisionSchema.brand<'RecordRevision'>();
 export const vaultRevisionSchema = semanticRevisionSchema.brand<'VaultRevision'>();
 export const changeSequenceSchema = semanticRevisionSchema.brand<'ChangeSequence'>();
@@ -48,12 +95,12 @@ export const base64UrlSchema = z
   .min(1)
   .max(MAX_CIPHERTEXT_CHARS)
   .regex(/^[A-Za-z0-9_-]+$/, 'Must use unpadded base64url encoding')
-  .refine(
-    (value) =>
-      value.length % 4 !== 1 &&
-      Buffer.from(value, 'base64url').toString('base64url') === value,
-    { error: 'Must use canonical unpadded base64url encoding' },
-  );
+  .refine(hasCanonicalBase64UrlTerminalBits, {
+    error: 'Must use canonical unpadded base64url encoding',
+  })
+  .refine((value) => Buffer.from(value, 'base64url').toString('base64url') === value, {
+    error: 'Must use canonical unpadded base64url encoding',
+  });
 
 export const sha256DigestSchema = base64UrlSchema
   .length(43)

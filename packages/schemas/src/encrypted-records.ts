@@ -13,12 +13,13 @@ import {
 import {
   base64UrlSchema,
   associatedDataVersionSchema,
-  cryptographicVersionSchema,
   keyVersionSchema,
   keySlotVersionSchema,
   recordRevisionSchema,
   schemaVersionSchema,
   sha256DigestSchema,
+  supportedCryptographicVersionSchema,
+  supportedSchemaVersionSchema,
   templateVersionSchema,
   timestampSchema,
   vaultRevisionSchema,
@@ -69,6 +70,10 @@ const unboundAssociatedData = {
   parentId: z.undefined().optional(),
 };
 
+/**
+ * Standalone AAD encoding/migration primitive. Its broad schema-version value
+ * is not permission to decrypt, persist, or overwrite an unknown record format.
+ */
 export const associatedDataSchema = z.discriminatedUnion('entityType', [
   associatedDataBaseSchema.extend({
     entityType: z.literal('vault-preferences'),
@@ -150,6 +155,18 @@ export const associatedDataSchema = z.discriminatedUnion('entityType', [
   }),
 ]);
 
+const currentAssociatedDataSchema = associatedDataSchema.superRefine(
+  (associatedData, context) => {
+    if (!supportedSchemaVersionSchema.safeParse(associatedData.schemaVersion).success) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Current envelopes require a supported schema version',
+        path: ['schemaVersion'],
+      });
+    }
+  },
+);
+
 export const aeadEnvelopeSchema = z
   .object({
     version: envelopeVersionSchema,
@@ -157,7 +174,7 @@ export const aeadEnvelopeSchema = z
     nonce: base64UrlSchema,
     ciphertext: base64UrlSchema,
     authenticationTag: base64UrlSchema,
-    aad: associatedDataSchema,
+    aad: currentAssociatedDataSchema,
     keyVersion: keyVersionSchema,
   })
   .strict()
@@ -184,6 +201,27 @@ export const aeadEnvelopeSchema = z
       });
     }
   });
+
+export const MAX_ENCRYPTED_DEVICE_LABEL_CIPHERTEXT_CHARS = 4_096;
+
+export const encryptedDeviceLabelSchema = aeadEnvelopeSchema.superRefine(
+  (envelope, context) => {
+    if (envelope.ciphertext.length > MAX_ENCRYPTED_DEVICE_LABEL_CIPHERTEXT_CHARS) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Encrypted device-label ciphertext exceeds the canonical bound',
+        path: ['ciphertext'],
+      });
+    }
+    if (envelope.aad.entityType !== 'device-label') {
+      context.addIssue({
+        code: 'custom',
+        message: 'Encrypted device labels require device-label associated data',
+        path: ['aad'],
+      });
+    }
+  },
+);
 
 export const MAX_ATTACHMENT_CHUNK_PLAINTEXT_BYTES = 8 * 1024 * 1024;
 export const SECRETSTREAM_CHUNK_OVERHEAD_BYTES = 17;
@@ -218,7 +256,7 @@ const attachmentSecretStreamIdentitySchema = z.object({
   version: z.literal(1),
   algorithm: z.literal('secretstream-xchacha20-poly1305'),
   streamVersion: z.literal(1),
-  schemaVersion: schemaVersionSchema,
+  schemaVersion: supportedSchemaVersionSchema,
   keyVersion: keyVersionSchema,
   vaultId: vaultIdSchema,
   groupId: groupIdSchema,
@@ -441,8 +479,8 @@ export const keySlotSchema = z
 export const vaultRecordSchema = z
   .object({
     id: vaultIdSchema,
-    schemaVersion: schemaVersionSchema,
-    cryptographicVersion: cryptographicVersionSchema,
+    schemaVersion: supportedSchemaVersionSchema,
+    cryptographicVersion: supportedCryptographicVersionSchema,
     keySlots: z.array(keySlotSchema).min(1).max(128),
     currentKeyVersion: keyVersionSchema,
     revision: vaultRevisionSchema,
@@ -514,7 +552,7 @@ export const encryptedGroupRecordSchema = z
   .object({
     id: groupIdSchema,
     vaultId: vaultIdSchema,
-    schemaVersion: schemaVersionSchema,
+    schemaVersion: supportedSchemaVersionSchema,
     wrappedGroupKey: aeadEnvelopeSchema,
     encryptedPayload: aeadEnvelopeSchema,
     templateVersion: templateVersionSchema,
@@ -548,7 +586,7 @@ export const encryptedItemRecordSchema = z
     id: itemIdSchema,
     vaultId: vaultIdSchema,
     groupId: groupIdSchema,
-    schemaVersion: schemaVersionSchema,
+    schemaVersion: supportedSchemaVersionSchema,
     wrappedItemKey: aeadEnvelopeSchema,
     encryptedPayload: aeadEnvelopeSchema,
     recordRevision: recordRevisionSchema,
@@ -585,7 +623,7 @@ export const encryptedAttachmentRecordSchema = z
     vaultId: vaultIdSchema,
     groupId: groupIdSchema,
     itemId: itemIdSchema,
-    schemaVersion: schemaVersionSchema,
+    schemaVersion: supportedSchemaVersionSchema,
     wrappedAttachmentKey: aeadEnvelopeSchema,
     encryptedManifest: aeadEnvelopeSchema,
     chunkCount: z.number().int().positive().max(MAX_ATTACHMENT_CHUNKS),
@@ -622,7 +660,7 @@ export const encryptedAuditRecordSchema = z
   .object({
     id: auditEventIdSchema,
     vaultId: vaultIdSchema,
-    schemaVersion: schemaVersionSchema,
+    schemaVersion: supportedSchemaVersionSchema,
     encryptedPayload: aeadEnvelopeSchema,
     recordRevision: recordRevisionSchema,
     createdAt: timestampSchema,
@@ -645,7 +683,7 @@ export const encryptedHistoryRecordSchema = z
     vaultId: vaultIdSchema,
     groupId: groupIdSchema,
     itemId: itemIdSchema,
-    schemaVersion: schemaVersionSchema,
+    schemaVersion: supportedSchemaVersionSchema,
     encryptedPayload: aeadEnvelopeSchema,
     itemRecordRevision: recordRevisionSchema,
     ciphertextHash: sha256DigestSchema,

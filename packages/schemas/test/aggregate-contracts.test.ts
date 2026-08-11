@@ -1,31 +1,60 @@
 import { describe, expect, expectTypeOf, it } from 'vitest';
 
 import {
+  changeSequenceSchema,
   changeRecordSchema,
+  CURRENT_CRYPTOGRAPHIC_VERSION,
+  CURRENT_SCHEMA_VERSION,
+  CURRENT_TOKEN_VERSION,
+  cryptographicVersionSchema,
   deviceRecordSchema,
   fieldDefinitionSchema,
   groupTemplateSchema,
   itemPayloadSchema,
+  keyVersionSchema,
   noteCollectionSchema,
   noteSchema,
+  recordRevisionSchema,
+  schemaVersionSchema,
+  SUPPORTED_CRYPTOGRAPHIC_VERSIONS,
+  SUPPORTED_SCHEMA_VERSIONS,
+  SUPPORTED_TOKEN_VERSIONS,
+  supportedCryptographicVersionSchema,
+  supportedSchemaVersionSchema,
+  supportedTokenVersionSchema,
   templateMigrationPlanSchema,
   templateMigrationStepSchema,
+  templateVersionSchema,
+  tokenVersionSchema,
   tombstoneRecordSchema,
+  vaultRevisionSchema,
+  type AeadEnvelope,
   type AttachmentId,
+  type AttachmentSecretStreamRecord,
   type ChangeRecord,
   type ChangeSequence,
+  type CryptographicVersion,
   type DeviceRecord,
+  type EncryptedAttachmentRecord,
+  type EncryptedAuditRecord,
+  type EncryptedBackupHeader,
+  type EncryptedGroupRecord,
+  type EncryptedHistoryRecord,
+  type EncryptedItemRecord,
+  type EnrollmentCompleteRequest,
   type GroupId,
   type GroupTemplate,
   type ItemId,
   type ItemPayload,
   type KeyVersion,
+  type PublicDeviceRecord,
   type RecordRevision,
   type SchemaVersion,
   type TemplateVersion,
   type TombstoneRecord,
   type TokenVersion,
   type VaultId,
+  type VaultBootstrapRequest,
   type VaultRecord,
   type VaultRevision,
 } from '../src/index.js';
@@ -373,6 +402,78 @@ describe('sync metadata invariants', () => {
     expectTypeOf<GroupTemplate['version']>().toEqualTypeOf<TemplateVersion>();
     expectTypeOf<ItemPayload['revision']>().toEqualTypeOf<RecordRevision>();
     expectTypeOf<DeviceRecord['tokenVersion']>().toEqualTypeOf<TokenVersion>();
+    expectTypeOf<
+      VaultRecord['cryptographicVersion']
+    >().toEqualTypeOf<CryptographicVersion>();
+    expectTypeOf<
+      ReturnType<typeof supportedSchemaVersionSchema.parse>
+    >().toEqualTypeOf<SchemaVersion>();
+    expectTypeOf<
+      ReturnType<typeof supportedCryptographicVersionSchema.parse>
+    >().toEqualTypeOf<CryptographicVersion>();
+    expectTypeOf<
+      ReturnType<typeof supportedTokenVersionSchema.parse>
+    >().toEqualTypeOf<TokenVersion>();
+    expectTypeOf<AeadEnvelope['aad']['schemaVersion']>().toEqualTypeOf<SchemaVersion>();
+    expectTypeOf<
+      AttachmentSecretStreamRecord['schemaVersion']
+    >().toEqualTypeOf<SchemaVersion>();
+    expectTypeOf<
+      EncryptedBackupHeader['schemaVersion']
+    >().toEqualTypeOf<SchemaVersion>();
+    expectTypeOf<
+      EncryptedGroupRecord['schemaVersion']
+    >().toEqualTypeOf<SchemaVersion>();
+    expectTypeOf<EncryptedItemRecord['schemaVersion']>().toEqualTypeOf<SchemaVersion>();
+    expectTypeOf<
+      EncryptedAttachmentRecord['schemaVersion']
+    >().toEqualTypeOf<SchemaVersion>();
+    expectTypeOf<
+      EncryptedAuditRecord['schemaVersion']
+    >().toEqualTypeOf<SchemaVersion>();
+    expectTypeOf<
+      EncryptedHistoryRecord['schemaVersion']
+    >().toEqualTypeOf<SchemaVersion>();
+    expectTypeOf<PublicDeviceRecord['schemaVersion']>().toEqualTypeOf<SchemaVersion>();
+    expectTypeOf<PublicDeviceRecord['tokenVersion']>().toEqualTypeOf<TokenVersion>();
+    expectTypeOf<
+      Exclude<PublicDeviceRecord['encryptedLabel'], undefined>
+    >().toEqualTypeOf<AeadEnvelope>();
+    expectTypeOf<
+      EnrollmentCompleteRequest['schemaVersion']
+    >().toEqualTypeOf<SchemaVersion>();
+    expectTypeOf<
+      VaultBootstrapRequest['device']['schemaVersion']
+    >().toEqualTypeOf<SchemaVersion>();
+  });
+
+  it('separates broad format values from current support without pinning counters', () => {
+    expect([
+      CURRENT_SCHEMA_VERSION,
+      CURRENT_CRYPTOGRAPHIC_VERSION,
+      CURRENT_TOKEN_VERSION,
+    ]).toEqual([1, 1, 1]);
+    expect([
+      SUPPORTED_SCHEMA_VERSIONS,
+      SUPPORTED_CRYPTOGRAPHIC_VERSIONS,
+      SUPPORTED_TOKEN_VERSIONS,
+    ]).toEqual([[1], [1], [1]]);
+    expect(schemaVersionSchema.parse(2)).toBe(2);
+    expect(cryptographicVersionSchema.parse(2)).toBe(2);
+    expect(tokenVersionSchema.parse(2)).toBe(2);
+    expect(supportedSchemaVersionSchema.safeParse(2).success).toBe(false);
+    expect(supportedCryptographicVersionSchema.safeParse(2).success).toBe(false);
+    expect(supportedTokenVersionSchema.safeParse(2).success).toBe(false);
+
+    for (const counterSchema of [
+      keyVersionSchema,
+      templateVersionSchema,
+      recordRevisionSchema,
+      vaultRevisionSchema,
+      changeSequenceSchema,
+    ]) {
+      expect(counterSchema.safeParse(2).success).toBe(true);
+    }
   });
   it('requires hashes for every non-purge change', () => {
     const base = {
@@ -556,9 +657,21 @@ describe('sync metadata invariants', () => {
       createdAt: timestamp,
     };
     expect(deviceRecordSchema.safeParse(base).success).toBe(true);
+    expect(deviceRecordSchema.safeParse({ ...base, schemaVersion: 2 }).success).toBe(
+      false,
+    );
+    expect(deviceRecordSchema.safeParse({ ...base, tokenVersion: 2 }).success).toBe(
+      false,
+    );
     expect(
       deviceRecordSchema.safeParse({ ...base, encryptedLabel: envelope }).success,
     ).toBe(true);
+    expect(
+      deviceRecordSchema.safeParse({
+        ...base,
+        encryptedLabel: { ...envelope, ciphertext: 'A'.repeat(4_098) },
+      }).success,
+    ).toBe(false);
     for (const changed of [
       { vaultId: 'vault.other' },
       { schemaVersion: 2 },

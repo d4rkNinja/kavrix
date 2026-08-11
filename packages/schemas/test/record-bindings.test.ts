@@ -6,6 +6,7 @@ import {
   encryptedAuditRecordSchema,
   encryptedGroupRecordSchema,
   encryptedHistoryRecordSchema,
+  encryptedItemRecordSchema,
   encryptedRecordSchema,
   keySlotSchema,
   vaultRecordSchema,
@@ -311,73 +312,124 @@ describe('vault and opaque record bindings', () => {
     }
   });
 
+  it('rejects fully coordinated unsupported vault formats and crypto versions', () => {
+    const futureVault = {
+      ...vault,
+      schemaVersion: 2,
+      keySlots: [
+        slot('slot.1', 'active', {
+          wrappedRootKey: envelope('wrapped-root-key', 'slot.1', {
+            schemaVersion: 2,
+          }),
+        }),
+      ],
+      encryptedPreferences: envelope('vault-preferences', 'vault.1', {
+        schemaVersion: 2,
+      }),
+    };
+
+    expect(vaultRecordSchema.safeParse(futureVault).success).toBe(false);
+    expect(
+      vaultRecordSchema.safeParse({ ...vault, cryptographicVersion: 2 }).success,
+    ).toBe(false);
+  });
+
   it('accepts each opaque record and rejects a binding changed at any level', () => {
-    const records = [
-      {
-        schema: encryptedGroupRecordSchema,
-        value: {
-          id: 'group.1',
-          vaultId: 'vault.1',
-          schemaVersion: 1,
-          wrappedGroupKey: envelope('wrapped-group-key', 'group.1'),
-          encryptedPayload: envelope('group', 'group.1'),
-          templateVersion: 1,
-          recordRevision: 1,
-          createdAt: timestamp,
-          updatedAt: timestamp,
+    const recordCases = (schemaVersion: number) =>
+      [
+        {
+          schema: encryptedGroupRecordSchema,
+          value: {
+            id: 'group.1',
+            vaultId: 'vault.1',
+            schemaVersion,
+            wrappedGroupKey: envelope('wrapped-group-key', 'group.1', {
+              schemaVersion,
+            }),
+            encryptedPayload: envelope('group', 'group.1', { schemaVersion }),
+            templateVersion: 1,
+            recordRevision: 1,
+            createdAt: timestamp,
+            updatedAt: timestamp,
+          },
         },
-      },
-      {
-        schema: encryptedAttachmentRecordSchema,
-        value: {
-          id: 'attachment.1',
-          vaultId: 'vault.1',
-          groupId: 'group.1',
-          itemId: 'item.1',
-          schemaVersion: 1,
-          wrappedAttachmentKey: envelope('wrapped-attachment-key', 'attachment.1', {
+        {
+          schema: encryptedItemRecordSchema,
+          value: {
+            id: 'item.1',
+            vaultId: 'vault.1',
             groupId: 'group.1',
-            parentId: 'item.1',
-          }),
-          encryptedManifest: envelope('attachment', 'attachment.1', {
+            schemaVersion,
+            wrappedItemKey: envelope('wrapped-item-key', 'item.1', {
+              schemaVersion,
+              groupId: 'group.1',
+            }),
+            encryptedPayload: envelope('item', 'item.1', {
+              schemaVersion,
+              groupId: 'group.1',
+            }),
+            recordRevision: 1,
+            ciphertextHash: digest,
+            createdAt: timestamp,
+            updatedAt: timestamp,
+          },
+        },
+        {
+          schema: encryptedAttachmentRecordSchema,
+          value: {
+            id: 'attachment.1',
+            vaultId: 'vault.1',
             groupId: 'group.1',
-            parentId: 'item.1',
-          }),
-          chunkCount: 1,
-          recordRevision: 1,
-          createdAt: timestamp,
-          updatedAt: timestamp,
+            itemId: 'item.1',
+            schemaVersion,
+            wrappedAttachmentKey: envelope('wrapped-attachment-key', 'attachment.1', {
+              schemaVersion,
+              groupId: 'group.1',
+              parentId: 'item.1',
+            }),
+            encryptedManifest: envelope('attachment', 'attachment.1', {
+              schemaVersion,
+              groupId: 'group.1',
+              parentId: 'item.1',
+            }),
+            chunkCount: 1,
+            recordRevision: 1,
+            createdAt: timestamp,
+            updatedAt: timestamp,
+          },
         },
-      },
-      {
-        schema: encryptedAuditRecordSchema,
-        value: {
-          id: 'audit.1',
-          vaultId: 'vault.1',
-          schemaVersion: 1,
-          encryptedPayload: envelope('audit-event', 'audit.1'),
-          recordRevision: 1,
-          createdAt: timestamp,
+        {
+          schema: encryptedAuditRecordSchema,
+          value: {
+            id: 'audit.1',
+            vaultId: 'vault.1',
+            schemaVersion,
+            encryptedPayload: envelope('audit-event', 'audit.1', { schemaVersion }),
+            recordRevision: 1,
+            createdAt: timestamp,
+          },
         },
-      },
-      {
-        schema: encryptedHistoryRecordSchema,
-        value: {
-          id: 'history.1',
-          vaultId: 'vault.1',
-          groupId: 'group.1',
-          itemId: 'item.1',
-          schemaVersion: 1,
-          encryptedPayload: envelope('history', 'history.1', {
+        {
+          schema: encryptedHistoryRecordSchema,
+          value: {
+            id: 'history.1',
+            vaultId: 'vault.1',
             groupId: 'group.1',
-            parentId: 'item.1',
-          }),
-          itemRecordRevision: 1,
-          ciphertextHash: digest,
-          createdAt: timestamp,
+            itemId: 'item.1',
+            schemaVersion,
+            encryptedPayload: envelope('history', 'history.1', {
+              schemaVersion,
+              groupId: 'group.1',
+              parentId: 'item.1',
+            }),
+            itemRecordRevision: 1,
+            ciphertextHash: digest,
+            createdAt: timestamp,
+          },
         },
-      },
-    ] as const;
+      ] as const;
+
+    const records = recordCases(1);
 
     for (const { schema, value } of records) {
       expect(schema.safeParse(value).success).toBe(true);
@@ -386,6 +438,9 @@ describe('vault and opaque record bindings', () => {
         false,
       );
       expect(schema.safeParse({ ...value, schemaVersion: 2 }).success).toBe(false);
+    }
+    for (const { schema, value } of recordCases(2)) {
+      expect(schema.safeParse(value).success).toBe(false);
     }
   });
 });
