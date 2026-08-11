@@ -1,13 +1,18 @@
 import type { ClockPort } from '@kavrix/core';
-import { MongoVaultStorage } from '@kavrix/storage';
+import {
+  assertMongoStorageCompatibility,
+  installMongoStorageContracts,
+  MongoVaultStorage,
+} from '@kavrix/storage';
 import type { FastifyInstance } from 'fastify';
 import { MongoClient } from 'mongodb';
 import { z } from 'zod';
 
-import { buildApi } from './app.js';
+import { buildApi, type BuildApiOptions } from './app.js';
 import { NodeInviteIdPort } from './invite-id.js';
 import {
-  initializeMongoApiPersistence,
+  assertMongoApiCompatibility,
+  installMongoApiContracts,
   MongoAuthorizationPort,
   MongoVaultBootstrapPort,
 } from './mongo-persistence.js';
@@ -47,6 +52,19 @@ export interface StartedMongoApiServer extends MongoApiServer {
   readonly address: string;
 }
 
+export interface MongoApiServerRuntime {
+  createClient(uri: string): MongoClient;
+  buildApi(options: BuildApiOptions): FastifyInstance;
+}
+
+const defaultMongoApiServerRuntime: MongoApiServerRuntime = {
+  createClient: (uri) =>
+    new MongoClient(uri, {
+      appName: 'kavrix-api',
+    }),
+  buildApi,
+};
+
 export function parseMongoApiServerConfig(input: unknown): MongoApiServerConfig {
   return mongoApiServerConfigSchema.parse(input);
 }
@@ -57,19 +75,20 @@ export function parseMongoApiServerConfig(input: unknown): MongoApiServerConfig 
  */
 export async function createMongoApiServer(
   input: MongoApiServerConfig,
+  runtime: MongoApiServerRuntime = defaultMongoApiServerRuntime,
 ): Promise<MongoApiServer> {
   const config = parseMongoApiServerConfig(input);
-  const client = new MongoClient(config.mongodbUri, {
-    appName: 'kavrix-api',
-  });
+  const client = runtime.createClient(config.mongodbUri);
   try {
     await client.connect();
     const database = client.db(config.databaseName);
+    await installMongoStorageContracts(database);
+    await installMongoApiContracts(database);
+    await assertMongoStorageCompatibility(database);
+    await assertMongoApiCompatibility(database);
     const storage = new MongoVaultStorage(client, database);
-    await storage.initialize();
-    await initializeMongoApiPersistence(database);
     const authorization = new MongoAuthorizationPort(client, database);
-    const app = buildApi({
+    const app = runtime.buildApi({
       ports: {
         storage,
         authorization,

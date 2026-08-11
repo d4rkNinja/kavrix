@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest';
+import type { Db, MongoClient } from 'mongodb';
+import { describe, expect, it, vi } from 'vitest';
 
 import {
   deviceIdSchema,
@@ -13,6 +14,8 @@ import {
   apiScopesFragment,
   canonicalTimestampFragment,
   encryptedDeviceLabelFragment,
+  MONGO_DOCUMENT_ID_UNAVAILABLE,
+  MongoDocumentCompatibilityError,
   opaqueIdentifierFragment,
   sha256DigestFragment,
   supportedSchemaVersionFragment,
@@ -24,11 +27,22 @@ import {
   inviteGrantDocument,
   mongoApiCollectionNames,
   mongoApiCollectionOptions,
+  mongoApiDocumentSchemas,
+  mongoApiDeviceDocumentSchema,
   mongoApiCredentialClaimDocumentSchema,
   mongoApiEnrollmentDocumentSchema,
+  mongoApiIndexes,
   mongoApiInviteDocumentSchema,
+  mongoApiRateLimitDocumentSchema,
+  mongoApiSessionDocumentSchema,
   publicInviteFromDocument,
 } from '../src/mongo-documents.js';
+import {
+  assertMongoApiCompatibility,
+  initializeMongoApiPersistence,
+  installMongoApiContracts,
+  MongoAuthorizationPort,
+} from '../src/mongo-persistence.js';
 import { fixedWindowIdentity } from '../src/mongo-rate-limit.js';
 import { parseMongoApiServerConfig } from '../src/server.js';
 
@@ -117,6 +131,20 @@ function walkSchemas(
 }
 
 describe('Mongo API persistence contracts', () => {
+  it('maps every declared API collection to its exact canonical parser', () => {
+    expect(Object.keys(mongoApiDocumentSchemas).sort()).toEqual(
+      Object.values(mongoApiCollectionNames).sort(),
+    );
+    expect(mongoApiDocumentSchemas).toEqual({
+      api_sessions: mongoApiSessionDocumentSchema,
+      api_devices: mongoApiDeviceDocumentSchema,
+      api_invites: mongoApiInviteDocumentSchema,
+      api_enrollments: mongoApiEnrollmentDocumentSchema,
+      api_rate_limits: mongoApiRateLimitDocumentSchema,
+      api_credential_claims: mongoApiCredentialClaimDocumentSchema,
+    });
+  });
+
   it('defines every API collection with a strict erroring validator', () => {
     const names = Object.values(mongoApiCollectionNames);
     expect(Object.keys(mongoApiCollectionOptions).sort()).toEqual([...names].sort());
@@ -482,4 +510,136 @@ describe('Mongo API persistence contracts', () => {
       }),
     ).toThrow();
   });
+
+  it('keeps API contract installation and compatibility scanning as explicit phases', async () => {
+    const names = Object.values(mongoApiCollectionNames);
+    const fixture = apiInitializationDatabase({
+      existingCollections: names.filter((_name, index) => index % 2 === 0),
+    });
+
+    await installMongoApiContracts(fixture.database);
+    expect(fixture.scanNames).toEqual([]);
+
+    await assertMongoApiCompatibility(fixture.database);
+    expect(fixture.scanNames).toEqual(Object.values(mongoApiCollectionNames));
+    expect(fixture.installWasCompleteBeforeEveryScan()).toBe(true);
+  });
+
+  it.each([
+    [
+      'combined API initializer',
+      (database: Db) => initializeMongoApiPersistence(database),
+    ],
+    [
+      'authorization adapter initializer',
+      (database: Db) =>
+        new MongoAuthorizationPort({} as MongoClient, database).initialize(),
+    ],
+  ])(
+    '%s installs every API contract before scanning every collection',
+    async (_name, run) => {
+      const fixture = apiInitializationDatabase();
+
+      await run(fixture.database);
+
+      expect(fixture.scanNames).toEqual(Object.values(mongoApiCollectionNames));
+      expect(fixture.installWasCompleteBeforeEveryScan()).toBe(true);
+      expect(fixture.closeCalls).toHaveLength(
+        Object.values(mongoApiCollectionNames).length,
+      );
+      for (const close of fixture.closeCalls) expect(close).toHaveBeenCalledOnce();
+    },
+  );
+
+  it('redacts token-hash document IDs from API compatibility failures', async () => {
+    const sensitiveId = hash(40);
+    const fixture = apiInitializationDatabase({
+      invalidCollection: mongoApiCollectionNames.sessions,
+      invalidDocument: { _id: sensitiveId },
+    });
+
+    const error = await assertMongoApiCompatibility(fixture.database).catch(
+      (caught: unknown) => caught,
+    );
+
+    expect(error).toBeInstanceOf(MongoDocumentCompatibilityError);
+    expect(error).toMatchObject({
+      collectionName: mongoApiCollectionNames.sessions,
+      documentId: MONGO_DOCUMENT_ID_UNAVAILABLE,
+    });
+    expect(error instanceof Error ? error.message : String(error)).not.toContain(
+      sensitiveId,
+    );
+  });
 });
+
+function apiInitializationDatabase(
+  options: Readonly<{
+    invalidCollection?: string;
+    invalidDocument?: unknown;
+    existingCollections?: readonly string[];
+  }> = {},
+): {
+  readonly database: Db;
+  readonly scanNames: readonly string[];
+  readonly closeCalls: readonly ReturnType<typeof vi.fn>[];
+  installWasCompleteBeforeEveryScan(): boolean;
+} {
+  const expectedNames = Object.values(mongoApiCollectionNames);
+  const namesRequiringIndexes = expectedNames.filter(
+    (name) => mongoApiIndexes[name].length > 0,
+  );
+  const installed = new Set<string>();
+  const indexed = new Set<string>();
+  const scanNames: string[] = [];
+  const closeCalls: ReturnType<typeof vi.fn>[] = [];
+  let installWasComplete = true;
+  const database = {
+    listCollections: () => ({
+      toArray: () =>
+        Promise.resolve((options.existingCollections ?? []).map((name) => ({ name }))),
+    }),
+    command: (command: Readonly<{ collMod: string }>) => {
+      installed.add(command.collMod);
+      return Promise.resolve({});
+    },
+    createCollection: (name: string) => {
+      installed.add(name);
+      return Promise.resolve({});
+    },
+    collection: (name: string) => ({
+      createIndexes: () => {
+        indexed.add(name);
+        return Promise.resolve([]);
+      },
+      find: () => {
+        scanNames.push(name);
+        if (
+          expectedNames.some((expected) => !installed.has(expected)) ||
+          namesRequiringIndexes.some((expected) => !indexed.has(expected))
+        ) {
+          installWasComplete = false;
+        }
+        const rows =
+          name === options.invalidCollection ? [options.invalidDocument] : [];
+        let index = 0;
+        const close = vi.fn(() => Promise.resolve());
+        closeCalls.push(close);
+        return {
+          hasNext: () => Promise.resolve(index < rows.length),
+          next: () => Promise.resolve(rows[index++] ?? null),
+          close,
+          toArray: vi.fn(() =>
+            Promise.reject(new Error('api-preflight-toArray-canary')),
+          ),
+        };
+      },
+    }),
+  };
+  return {
+    database: database as unknown as Db,
+    scanNames,
+    closeCalls,
+    installWasCompleteBeforeEveryScan: () => installWasComplete,
+  };
+}

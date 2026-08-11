@@ -31,7 +31,28 @@ import {
   supportedSchemaVersionFragment,
   type MongoJsonSchema,
 } from './mongo-validator-fragments.js';
-import { MAX_MONGO_RESTORE_ENTRY_BYTES } from './restore-documents.js';
+import type { MongoDocumentSchemaMap } from './mongo-document-preflight.js';
+import {
+  attachmentStagingDocumentSchema,
+  idempotencyDocumentSchema,
+  stagedAttachmentChunkDocumentSchema,
+  storageCounterDocumentSchema,
+  storedAttachmentDocumentSchema,
+  storedAuditDocumentSchema,
+  storedChangeDocumentSchema,
+  storedGroupDocumentSchema,
+  storedHistoryDocumentSchema,
+  storedItemDocumentSchema,
+  storedTombstoneDocumentSchema,
+  storedVaultDocumentSchema,
+  syncPushBatchDocumentSchema,
+  templateMigrationPublicationDocumentSchema,
+} from './documents.js';
+import {
+  MAX_MONGO_RESTORE_ENTRY_BYTES,
+  backupRestoreEntryDocumentSchema,
+  backupRestoreSessionDocumentSchema,
+} from './restore-documents.js';
 
 export const mongoStorageCollectionNames = {
   vaults: 'vaults',
@@ -54,6 +75,30 @@ export const mongoStorageCollectionNames = {
 
 export type MongoStorageCollectionName =
   (typeof mongoStorageCollectionNames)[keyof typeof mongoStorageCollectionNames];
+
+export const mongoStorageDocumentSchemas: MongoDocumentSchemaMap<MongoStorageCollectionName> =
+  {
+    [mongoStorageCollectionNames.vaults]: storedVaultDocumentSchema,
+    [mongoStorageCollectionNames.groups]: storedGroupDocumentSchema,
+    [mongoStorageCollectionNames.items]: storedItemDocumentSchema,
+    [mongoStorageCollectionNames.attachments]: storedAttachmentDocumentSchema,
+    [mongoStorageCollectionNames.audits]: storedAuditDocumentSchema,
+    [mongoStorageCollectionNames.histories]: storedHistoryDocumentSchema,
+    [mongoStorageCollectionNames.changes]: storedChangeDocumentSchema,
+    [mongoStorageCollectionNames.tombstones]: storedTombstoneDocumentSchema,
+    [mongoStorageCollectionNames.counters]: storageCounterDocumentSchema,
+    [mongoStorageCollectionNames.idempotency]: idempotencyDocumentSchema,
+    [mongoStorageCollectionNames.syncPushBatches]: syncPushBatchDocumentSchema,
+    [mongoStorageCollectionNames.templateMigrationPublications]:
+      templateMigrationPublicationDocumentSchema,
+    [mongoStorageCollectionNames.attachmentStaging]: attachmentStagingDocumentSchema,
+    [mongoStorageCollectionNames.attachmentStagingChunks]:
+      stagedAttachmentChunkDocumentSchema,
+    [mongoStorageCollectionNames.backupRestoreSessions]:
+      backupRestoreSessionDocumentSchema,
+    [mongoStorageCollectionNames.backupRestoreEntries]:
+      backupRestoreEntryDocumentSchema,
+  };
 
 function stringEnum(values: readonly string[]): MongoJsonSchema {
   return { bsonType: 'string', enum: values };

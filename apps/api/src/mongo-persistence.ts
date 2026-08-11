@@ -18,6 +18,7 @@ import {
   type VaultId,
 } from '@kavrix/schemas';
 import {
+  assertMongoDocumentCompatibility,
   contentHashForRecord,
   fromVaultDocument,
   mongoStorageCollectionNames,
@@ -42,6 +43,7 @@ import {
   inviteGrantDocument,
   mongoApiCollectionNames,
   mongoApiCollectionOptions,
+  mongoApiDocumentSchemas,
   mongoApiCredentialClaimDocumentSchema,
   mongoApiDeviceDocumentSchema,
   mongoApiEnrollmentDocumentSchema,
@@ -72,7 +74,7 @@ const transactionOptions = {
   writeConcern: { w: 'majority' as const },
 };
 
-export async function initializeMongoApiPersistence(database: Db): Promise<void> {
+export async function installMongoApiContracts(database: Db): Promise<void> {
   const existing = new Set(
     (await database.listCollections({}, { nameOnly: true }).toArray()).map(
       ({ name }) => name,
@@ -95,6 +97,17 @@ export async function initializeMongoApiPersistence(database: Db): Promise<void>
       await database.collection(name).createIndexes([...indexes]);
     }
   }
+}
+
+export async function assertMongoApiCompatibility(database: Db): Promise<void> {
+  await assertMongoDocumentCompatibility(database, mongoApiDocumentSchemas, {
+    redactDocumentIds: true,
+  });
+}
+
+export async function initializeMongoApiPersistence(database: Db): Promise<void> {
+  await installMongoApiContracts(database);
+  await assertMongoApiCompatibility(database);
 }
 
 const bootstrapScopes = ['sync:read', 'sync:write', 'device:manage'] as const;

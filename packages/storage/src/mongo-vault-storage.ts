@@ -63,8 +63,10 @@ import {
 import {
   mongoStorageCollectionNames,
   mongoStorageCollectionOptions,
+  mongoStorageDocumentSchemas,
   mongoStorageIndexes,
 } from './collections.js';
+import { assertMongoDocumentCompatibility } from './mongo-document-preflight.js';
 import {
   attachmentStagingDocumentSchema,
   contentHashForRecord,
@@ -137,7 +139,7 @@ export type MongoVaultStorageOptions = Readonly<{
   now?: () => Date;
 }>;
 
-export async function initializeMongoStorage(database: Db): Promise<void> {
+export async function installMongoStorageContracts(database: Db): Promise<void> {
   const existing = new Set(
     (await database.listCollections({}, { nameOnly: true }).toArray()).map(
       ({ name }) => name,
@@ -160,6 +162,15 @@ export async function initializeMongoStorage(database: Db): Promise<void> {
       await database.collection(name).createIndexes([...indexes]);
     }
   }
+}
+
+export async function assertMongoStorageCompatibility(database: Db): Promise<void> {
+  await assertMongoDocumentCompatibility(database, mongoStorageDocumentSchemas);
+}
+
+export async function initializeMongoStorage(database: Db): Promise<void> {
+  await installMongoStorageContracts(database);
+  await assertMongoStorageCompatibility(database);
 }
 
 export class MongoVaultStorage implements VaultStoragePort {

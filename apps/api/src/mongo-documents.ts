@@ -24,6 +24,7 @@ import {
   strictObject,
   supportedSchemaVersionFragment,
   supportedTokenVersionFragment,
+  type MongoDocumentSchemaMap,
   type MongoJsonSchema,
 } from '@kavrix/storage';
 import type { CreateCollectionOptions, Document, IndexDescription } from 'mongodb';
@@ -196,6 +197,15 @@ export const mongoApiCollectionNames = {
 
 export type MongoApiCollectionName =
   (typeof mongoApiCollectionNames)[keyof typeof mongoApiCollectionNames];
+
+export const mongoApiDocumentSchemas: MongoDocumentSchemaMap<MongoApiCollectionName> = {
+  [mongoApiCollectionNames.sessions]: mongoApiSessionDocumentSchema,
+  [mongoApiCollectionNames.devices]: mongoApiDeviceDocumentSchema,
+  [mongoApiCollectionNames.invites]: mongoApiInviteDocumentSchema,
+  [mongoApiCollectionNames.enrollments]: mongoApiEnrollmentDocumentSchema,
+  [mongoApiCollectionNames.rateLimits]: mongoApiRateLimitDocumentSchema,
+  [mongoApiCollectionNames.credentialClaims]: mongoApiCredentialClaimDocumentSchema,
+};
 
 function stringEnum(values: readonly string[]): MongoJsonSchema {
   return { bsonType: 'string', enum: values };
