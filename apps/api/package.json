@@ -25,7 +25,7 @@
     "start": "node ./dist/main.js",
     "typecheck": "tsc -b tsconfig.build.json --pretty false && tsc -p tsconfig.json --pretty false",
     "test": "vitest run --root ../.. apps/api",
-    "test:integration": "vitest run --root ../.. --config apps/api/vitest.integration.config.ts"
+    "test:integration": "tsx ./scripts/api-integration-gate.ts"
   },
   "dependencies": {
     "@kavrix/core": "workspace:*",
