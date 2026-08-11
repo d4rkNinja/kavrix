@@ -48,9 +48,13 @@ Do not treat that command as available until a signed release and matching npm
 provenance are linked from this repository. The prepared packed executable
 exposes only production-backed local behavior: help, `--version`/`creds
 version`, static Bash/Zsh/Fish/PowerShell completion, password and passphrase
-generation, TOTP generation, and create-only portable key-file creation. It
-does not compose vault unlock, persistence, sync, clipboard, or network
-operations. See the [CLI Reference](./docs/cli-reference.md) and
+generation, TOTP generation, create-only portable key-file creation, and a
+locked local `creds status` diagnostic for one already-enrolled data home.
+Status reads only the canonical profile, opaque pending-mutation count, and
+protected rollback timestamp; it does not unlock, decrypt, contact the stored
+server, or open clipboard/lifecycle-journal resources. Public initialization,
+unlock, online sync, show, copy, and device workflows remain unavailable. See
+the [CLI Reference](./docs/cli-reference.md) and
 [Public Release Process](./docs/release.md).
 
 The package is a deterministic ESM entry with content-hashed lazy chunks; local
@@ -65,13 +69,14 @@ creds generate password
 creds generate passphrase
 creds totp
 creds key create --file portable-key.cvk
+creds status
 ```
 
 Generated values and TOTP codes require an interactive output stream unless
-`--stdout` is explicit. TOTP seeds and protected-file passphrases use masked
-input or explicit bounded stdin modes; they are never accepted as arguments or
-environment settings. `key create` never prints the portable key and refuses to
-replace an existing file.
+`--stdout` is explicit. TOTP seeds, protected-file passphrases, and sealed
+status-backend passphrases use masked input or explicit bounded stdin modes;
+they are never accepted as arguments or environment settings. `key create`
+never prints the portable key and refuses to replace an existing file.
 
 ## Planned vault quick start
 

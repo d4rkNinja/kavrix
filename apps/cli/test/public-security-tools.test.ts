@@ -337,7 +337,7 @@ describe('public secret-output boundary', () => {
     );
 
     const completion = await executePublic(['completion', 'bash']);
-    expect(completion.stdout).toContain('version generate totp key completion');
+    expect(completion.stdout).toContain('version generate totp key status completion');
     expect(completion.stdout).not.toContain('--secret');
     expect(completion.stdout).not.toContain(canary);
   });

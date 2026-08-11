@@ -4,7 +4,7 @@ import {
   type CredentialCopyReceipt,
   type VaultProfile,
 } from '@kavrix/client';
-import type { SyncStatus } from '@kavrix/sync';
+import type { ProtectedSyncStatePort, SyncStatus } from '@kavrix/sync';
 import type {
   ApiBearerToken,
   InviteId,
@@ -48,6 +48,32 @@ export interface ProductionVaultSession {
   synchronize(): Promise<unknown>;
   show(groupQuery: string, credentialQuery: string): Promise<CliShowResult>;
   lock(): Promise<void>;
+}
+
+export interface ProductionStatusOptions {
+  readonly profile: VaultProfile;
+  readonly environment: Pick<ProductionEnvironment, 'openSyncStore'>;
+  readonly protectedSyncState: ProtectedSyncStatePort;
+  readonly syncState?: SyncStatus['state'];
+}
+
+/** Reads only the canonical, redacted local status projection. */
+export async function readProductionStatus(
+  options: ProductionStatusOptions,
+): Promise<CliStatus> {
+  const { vaultId, deviceId } = options.profile;
+  const store = await options.environment.openSyncStore(options.profile);
+  const pending = await store.listPendingMutations(vaultId);
+  const protectedState = await options.protectedSyncState.load(vaultId, deviceId);
+  return {
+    // No daemon holds keys between invocations, so a fresh process is locked.
+    vaultState: 'locked',
+    vaultId,
+    deviceId,
+    syncState: mapSyncState(options.syncState ?? 'offline'),
+    pendingChanges: pending.length,
+    ...(protectedState === null ? {} : { lastSyncAt: protectedState.updatedAt }),
+  };
 }
 
 /**
@@ -131,25 +157,13 @@ export function createProductionPorts(
   };
 
   return {
-    status: async () => {
-      const { vaultId, deviceId } = options.profile;
-      const store = await options.environment.openSyncStore(options.profile);
-      const pending = await store.listPendingMutations(vaultId);
-      const protectedState = await options.secrets.protectedSyncState.load(
-        vaultId,
-        deviceId,
-      );
-      const status: CliStatus = {
-        // No daemon holds keys between invocations, so a fresh process is locked.
-        vaultState: 'locked',
-        vaultId,
-        deviceId,
-        syncState: mapSyncState(lastSyncStatus.value),
-        pendingChanges: pending.length,
-        ...(protectedState === null ? {} : { lastSyncAt: protectedState.updatedAt }),
-      };
-      return status;
-    },
+    status: () =>
+      readProductionStatus({
+        profile: options.profile,
+        environment: options.environment,
+        protectedSyncState: options.secrets.protectedSyncState,
+        syncState: lastSyncStatus.value,
+      }),
 
     lock: async () => {
       // Keys never outlive the process; clearing the clipboard is the only

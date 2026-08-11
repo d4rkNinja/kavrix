@@ -226,7 +226,7 @@ function sealedBackend(
       read: () => Promise.reject(new Error('unexpected secret read')),
       readBatch: () => Promise.reject(new Error('unexpected secret batch read')),
     },
-    'sealed-file',
+    { kind: 'sealed-file', passphraseFromStdin: false },
   );
 }
 

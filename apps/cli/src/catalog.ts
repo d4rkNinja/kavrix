@@ -3,7 +3,7 @@ import type { Writable } from 'node:stream';
 import { Command } from 'commander';
 import { z } from 'zod';
 
-import type { CliUseCasePorts } from './contracts.js';
+import type { CliStatus, CliUseCasePorts } from './contracts.js';
 import { CliUnavailableError, CliUsageError, type CliFeature } from './errors.js';
 import type {
   CliInitializationDependencies,
@@ -22,6 +22,8 @@ import {
 } from './secret-input.js';
 import { safeJson } from './terminal.js';
 import { CLI_VERSION } from './version.js';
+import type { SecretBackendPolicy } from './production/secret-backend.js';
+import type { ProductionStatusRequest } from './production/status.js';
 
 const querySchema = z.string().trim().min(1).max(512);
 const schemaVersionOptionSchema = z
@@ -40,9 +42,15 @@ export type CliCommandContext = Readonly<{
   ports?: CliUseCasePorts;
   secrets?: SecretInputPort;
   initialization?: CliInitializationDependencies;
+  productionStatus?: ProductionStatusCallback;
+  environment?: Readonly<Record<string, string | undefined>>;
   stdout: Writable;
   stdoutIsTty: boolean;
 }>;
+
+export type ProductionStatusCallback = (
+  request: ProductionStatusRequest,
+) => Promise<CliStatus>;
 
 type CliArgumentDescriptor = Readonly<{
   syntax: string;
@@ -71,6 +79,15 @@ export type CliCommandDescriptor = Readonly<{
 const jsonOption = Object.freeze({
   flags: '--json',
   description: 'Emit stable redacted JSON.',
+});
+const secretBackendOption = Object.freeze({
+  flags: '--secret-backend <native|sealed-file>',
+  description: 'Protected local storage backend.',
+  defaultValue: 'native',
+});
+const backendPassphraseStdinOption = Object.freeze({
+  flags: '--backend-passphrase-stdin',
+  description: 'Read the sealed-file backend passphrase from standard input.',
 });
 const vaultOption = Object.freeze({
   flags: '--vault <vault-id>',
@@ -327,6 +344,33 @@ const initializationCommand: CliCommandDescriptor = Object.freeze({
     context.stdout.write(renderInitializationReceipt(receipt));
   },
 });
+const statusCommand: CliCommandDescriptor = Object.freeze({
+  name: 'status',
+  description: 'Show local vault and sync status without secret data.',
+  options: [jsonOption, secretBackendOption, backendPassphraseStdinOption],
+  execute: async (context, _arguments, options) => {
+    const backendPolicy = parseStatusBackendPolicy(options);
+    let rawStatus: CliStatus;
+    if (context.ports !== undefined) {
+      rawStatus = await context.ports.status();
+    } else {
+      if (context.productionStatus === undefined || context.environment === undefined) {
+        throw new CliUnavailableError('status');
+      }
+      rawStatus = await context.productionStatus({
+        backendPolicy,
+        environment: context.environment,
+        secrets: secretInput(context, 'status'),
+      });
+    }
+    const [{ parseStatus }, { renderStatus }] = await Promise.all([
+      import('./contracts.js'),
+      import('./render.js'),
+    ]);
+    const status = parseStatus(rawStatus);
+    context.stdout.write(renderStatus(status, optionBoolean(options, 'json')));
+  },
+});
 
 export const CLI_COMMAND_CATALOG: readonly CliCommandDescriptor[] = Object.freeze([
   versionCommand,
@@ -334,19 +378,7 @@ export const CLI_COMMAND_CATALOG: readonly CliCommandDescriptor[] = Object.freez
   totpCommand,
   keyCommand,
   initializationCommand,
-  {
-    name: 'status',
-    description: 'Show local vault and sync status without secret data.',
-    options: [jsonOption],
-    execute: async (context, _arguments, options) => {
-      const [{ parseStatus }, { renderStatus }] = await Promise.all([
-        import('./contracts.js'),
-        import('./render.js'),
-      ]);
-      const status = parseStatus(await useCases(context, 'status').status());
-      context.stdout.write(renderStatus(status, optionBoolean(options, 'json')));
-    },
-  },
+  statusCommand,
   {
     name: 'lock',
     description: 'Lock the active vault and clear use-case-managed secret state.',
@@ -526,11 +558,11 @@ export const CLI_COMMAND_CATALOG: readonly CliCommandDescriptor[] = Object.freez
                 ([token, vault, version]) =>
                   shapeInviteJoinRequest(token, vault, version),
               );
-              const joinInvite = useCases(context, 'device invite join').joinInvite;
+              const inviteUseCases = useCases(context, 'device invite join');
               const result = parseJoinResult(
                 serverUrl === undefined
-                  ? await joinInvite(request, portableKey)
-                  : await joinInvite(request, portableKey, serverUrl),
+                  ? await inviteUseCases.joinInvite(request, portableKey)
+                  : await inviteUseCases.joinInvite(request, portableKey, serverUrl),
               );
               const safe = { vaultId: result.vaultId, deviceId: result.deviceId };
               context.stdout.write(
@@ -558,6 +590,7 @@ export const PUBLIC_CLI_COMMAND_CATALOG: readonly CliCommandDescriptor[] =
     generationCommand,
     totpCommand,
     keyCommand,
+    statusCommand,
     completionCommand(() => PUBLIC_CLI_COMMAND_CATALOG),
   ]);
 
@@ -690,6 +723,29 @@ function optionString(
     throw new CliUsageError('The server URL is invalid.');
   }
   return value;
+}
+
+function parseStatusBackendPolicy(
+  options: Readonly<Record<string, unknown>>,
+): SecretBackendPolicy {
+  const kind = options['secretBackend'];
+  const stdinValue = options['backendPassphraseStdin'];
+  if (
+    (kind !== 'native' && kind !== 'sealed-file') ||
+    (stdinValue !== undefined && typeof stdinValue !== 'boolean')
+  ) {
+    throw new CliUsageError('The protected secret backend policy is invalid.');
+  }
+  const passphraseFromStdin = stdinValue === true;
+  if (kind === 'native') {
+    if (passphraseFromStdin) {
+      throw new CliUsageError(
+        '--backend-passphrase-stdin requires --secret-backend sealed-file.',
+      );
+    }
+    return { kind: 'native' };
+  }
+  return { kind: 'sealed-file', passphraseFromStdin };
 }
 
 function parseInitializationStartOptions(

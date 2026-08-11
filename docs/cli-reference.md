@@ -3,18 +3,20 @@
 Kavrix is not published. The public-package build produces a `creds` executable,
 but its installed command surface is intentionally limited to production-backed
 local operations. Vault operations exist in a separately tested,
-dependency-injected catalog in the repository; the packed executable does not
-compose or expose them.
+dependency-injected catalog in the repository; only the narrow locked `status`
+slice is composed into the packed executable.
 
 This distinction is security-relevant: a command listed as "catalog only" below
 is not usable from the current public executable.
 
 ## Public-package executable
 
-The packed executable reads no vault, keychain, network, clipboard, or MongoDB
-state. Local generation uses the production cryptographic RNG, TOTP consumes a
-locally supplied seed, and `key create` writes one protected or unprotected
-portable-key file. Its current surface is:
+The packed executable never reads MongoDB or contacts a vault server. Local
+generation uses the production cryptographic RNG, TOTP consumes a locally
+supplied seed, and `key create` writes one protected or unprotected portable-key
+file. `status` reads a single canonical local profile, the opaque SQLite queue,
+and protected rollback state without unlocking or decrypting the vault. Its
+current surface is:
 
 | Command                                    | Status                         | Behavior                                                                                          |
 | ------------------------------------------ | ------------------------------ | ------------------------------------------------------------------------------------------------- |
@@ -27,6 +29,7 @@ portable-key file. Its current surface is:
 | `creds generate passphrase [options]`      | Available in the built package | Generates one passphrase from the attributed EFF short word list.                                 |
 | `creds totp [options]`                     | Available in the built package | Reads a masked or explicit-stdin Base32 seed and emits one canonical TOTP code.                   |
 | `creds key create --file <path> [options]` | Available in the built package | Creates one unbound v1 portable-key file, refuses overwrite, and never displays the portable key. |
+| `creds status [options]`                   | Available in the built package | Reports redacted locked/offline state for exactly one enrolled local profile without networking.  |
 
 The generated completion is derived from the static public catalog. It never
 loads runtime vault names, aliases, fields, IDs, or secrets. Inspect output
@@ -52,9 +55,26 @@ matching masked entries of at least 12 UTF-8 bytes; `--passphrase-stdin` require
 exactly two bounded frames followed by EOF. Success emits only `Portable key file
 created.` Existing targets are never replaced.
 
+`status` accepts `--json`, `--secret-backend <native|sealed-file>`, and
+`--backend-passphrase-stdin`. The backend defaults to `native`; a missing native
+adapter fails closed and never falls back to a file. Explicit `sealed-file` mode
+uses one masked prompt unless its stdin flag is present. The stdin form reads
+exactly one bounded UTF-8 passphrase followed by EOF. The stdin flag is invalid
+with `native`, and neither backend policy nor its passphrase is read from an
+environment variable. `CREDS_HOME` must be absolute when set.
+
+Status resolves exactly one profile before loading protected state. It reports
+only vault/device IDs, `locked`, `offline`, pending opaque mutation count, and an
+optional protected-state timestamp. It holds the global writer lease, closes
+the SQLite stores and protected backend before rendering, and never opens
+initialization/join journals or a clipboard. Zero/multiple profiles, corruption,
+wrong passphrases, and lease contention fail closed. This command is not an
+unlock, online-sync, credential-read, or native-keychain portability claim.
+
 The deterministic package build emits one ESM executable entry and
-content-hashed lazy chunks. Version and completion do not evaluate the
-cryptography/key-file chunk. The public JavaScript module contains only a
+content-hashed lazy chunks. Version, completion, public help, `status --help`,
+and invalid commands do not evaluate the production-status chunk; version and
+completion also avoid the cryptography/key-file chunk. The public JavaScript module contains only a
 `CLI_VERSION` export; repository-only CLI factories and adapters are not
 exported. The CycloneDX SBOM records an aggregate artifact-set hash, one hash for
 every emitted JavaScript file, four bundled npm libraries, and the attributed
@@ -66,15 +86,15 @@ EFF word list as a separate CC-BY-4.0 data component. See the
 [`CLI_COMMAND_CATALOG`](../apps/cli/src/catalog.ts) and
 [`runCli`](../apps/cli/src/cli.ts) implement and test the following parser,
 validation, rendering, and use-case boundaries. They require real
-`CliUseCasePorts` and, where applicable, a `SecretInputPort`. No production
-composition currently supplies those ports to the executable.
+`CliUseCasePorts` and, where applicable, a `SecretInputPort`. Except for the
+narrow status callback described above, no production composition supplies
+those ports to the executable.
 
 | Syntax                                                                                                 | Status       | Implemented boundary behavior                                                                                                               |
 | ------------------------------------------------------------------------------------------------------ | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------- |
 | `creds init [options]`                                                                                 | Catalog only | Drives the injected crash-safe initialization coordinator and dedicated sensitive-display boundary.                                         |
 | `creds init resume <operation-id>`                                                                     | Catalog only | Resumes one durable initialization journal operation without redisplaying creation material.                                                |
 | `creds init cancel <operation-id>`                                                                     | Catalog only | Requests safe cancellation; unsafe states fail generically.                                                                                 |
-| `creds status [--json]`                                                                                | Catalog only | Validates and renders redacted local vault/sync status.                                                                                     |
 | `creds lock`                                                                                           | Catalog only | Calls the injected lock use case and prints `Vault locked.` after success.                                                                  |
 | `creds show <group-query> <credential-query> [--json]`                                                 | Catalog only | Calls one redacted, schema-validated show use case. See [Direct access CLI](./direct-access-cli.md).                                        |
 | `creds copy <group-query> <credential-query> <field-query> [--index <number>]`                         | Catalog only | Delegates authorized clipboard copy and returns only a safe label/deadline receipt, never the copied value.                                 |
@@ -109,8 +129,8 @@ The following surfaces are not available from the packed executable and must not
 be treated as released behavior, even where a tested injected descriptor or
 lower-level use case exists:
 
-- initialization, resume/cancel, connect, and unlock;
-- direct `copy` and `reveal`;
+- initialization, resume/cancel, connect, unlock, and lock;
+- direct `show`, `copy`, and `reveal`;
 - group, item, dynamic-field, and note CRUD;
 - portable-key import, rotation, recovery, and device lifecycle beyond the
   catalog contracts above;
@@ -156,9 +176,9 @@ text even when a command has `--json`.
 ## Secret input
 
 [`NodeSecretInput`](../apps/cli/src/secret-input.ts) implements the current input
-boundary. The public executable uses it for TOTP seeds and protected key-file
-passphrases; the injected catalog also uses it for initialization and invite
-enrollment.
+boundary. The public executable uses it for TOTP seeds, protected key-file
+passphrases, and an explicitly selected sealed status backend; the injected
+catalog also uses it for initialization and invite enrollment.
 
 - Interactive input requires a real TTY, enters raw mode, does not echo the
   value, supports backspace, treats Ctrl+C as cancellation, and restores the
@@ -169,6 +189,10 @@ enrollment.
   `creds key create --protect-with-passphrase --passphrase-stdin` accepts exactly
   two matching bounded UTF-8 frames followed by EOF. Missing, extra, empty,
   malformed, control-bearing, or oversized input fails closed.
+- `creds status --secret-backend sealed-file --backend-passphrase-stdin`
+  accepts exactly one bounded UTF-8 passphrase followed by EOF. Without the
+  stdin flag, sealed mode requires a masked TTY prompt; native mode never accepts
+  this flag.
 - Injectable initialization has separately staged `--key-stdin` and
   `--confirmation-stdin` protocols; invite enrollment uses `--invite-stdin`.
   Those flags do not make the corresponding commands public.
@@ -235,8 +259,10 @@ case conversion, or unquoted command substitution for record selection.
 
 Parser, renderer, terminal sanitizer, masked/stdin input, local generators, RFC
 TOTP behavior, key-file creation/ACLs, static completion, package contents, lazy
-chunk loading, and packed-bin behavior have automated tests. They do not prove
-that a vault operation works end to end, because the public executable does not
-yet compose vault unlock, sync, read-session, keychain, clipboard, TUI, or backup
-use cases. Cross-platform shell completion packaging is prepared, but a
-published package and final target-platform release evidence do not exist.
+chunk loading, and packed-bin behavior have automated tests. A Windows packed
+fixture installs the npm archive, invokes the generated shim, and reads real
+canonical SQLite/sealed status state; it does not prove native-keychain behavior
+or an unlocked vault operation. The public executable does not yet compose
+enrollment, unlock, online sync, credential reads, clipboard, TUI, or backup use
+cases. Cross-platform shell completion packaging is prepared, but a published
+package and final target-platform release evidence do not exist.

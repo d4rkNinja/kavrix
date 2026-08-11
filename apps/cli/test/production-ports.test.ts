@@ -1,6 +1,7 @@
 import {
   deviceIdSchema,
   keychainLocatorSchema,
+  protectedLocalDeviceStateSchema,
   sessionCredentialLocatorSchema,
   vaultIdSchema,
 } from '@kavrix/schemas';
@@ -9,6 +10,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { shapeInviteJoinRequest } from '../src/contracts.js';
 import {
   createProductionPorts,
+  readProductionStatus,
   type ProductionPortsOptions,
   type ProductionVaultSession,
 } from '../src/production/ports.js';
@@ -53,6 +55,35 @@ describe('production CLI ports', () => {
     options.secrets.protectedSyncState.load = vi.fn(() => Promise.reject(failure));
 
     await expect(createProductionPorts(options).status()).rejects.toBe(failure);
+  });
+
+  it('uses the extracted status reader without changing its locked projection', async () => {
+    const options = productionOptions();
+    const protectedState = protectedLocalDeviceStateSchema.parse({
+      vaultId: options.profile.vaultId,
+      deviceId: options.profile.deviceId,
+      highestSeenVaultRevision: 4,
+      updatedAt: '2026-08-10T01:02:03.000Z',
+    });
+    options.secrets.protectedSyncState.load.mockResolvedValue(protectedState);
+
+    const direct = await readProductionStatus({
+      profile: options.profile,
+      environment: options.environment,
+      protectedSyncState: options.secrets.protectedSyncState,
+      syncState: 'offline',
+    });
+    const throughPorts = await createProductionPorts(options).status();
+
+    expect(throughPorts).toEqual(direct);
+    expect(throughPorts).toEqual({
+      vaultState: 'locked',
+      vaultId: 'vault.primary',
+      deviceId: 'device.primary',
+      syncState: 'offline',
+      pendingChanges: 0,
+      lastSyncAt: '2026-08-10T01:02:03.000Z',
+    });
   });
 
   it('opens, unlocks, synchronizes, shows, and always locks in exact order', async () => {

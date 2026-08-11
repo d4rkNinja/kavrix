@@ -55,6 +55,34 @@ entries must match in constant time and contain at least 12 UTF-8 bytes. Passphr
 accepted through argv or environment variables. Owned key and encoded passphrase buffers are
 wiped best effort; immutable JavaScript input strings remain an unavoidable runtime limitation.
 
+## Public locked status
+
+The packed executable exposes one production vault diagnostic:
+
+```text
+creds status [--json]
+             [--secret-backend <native|sealed-file>]
+             [--backend-passphrase-stdin]
+```
+
+Status requires exactly one canonical profile in the resolved data home. It reports only
+vault/device IDs, `locked` vault state, `offline` sync state, the opaque pending-mutation count,
+and the protected-state timestamp when present. It acquires the process-wide writer lease while
+reading the profile and SQLite queue, then releases every store, backend, and lease before
+rendering. It never unlocks or decrypts the vault, contacts the profile server, reads
+`CREDS_SERVER_URL`, or opens initialization/join journals or the clipboard.
+
+The protected backend defaults to `native` and fails closed when the native adapter is
+unavailable. `sealed-file` is an explicit alternative; without the stdin flag it asks once
+through the masked terminal prompt. `--backend-passphrase-stdin` is valid only with
+`sealed-file` and reads exactly one bounded UTF-8 passphrase through stdin followed by EOF.
+Backend policy and passphrases are never read from environment variables or accepted as secret
+argv values. The packed Windows acceptance fixture uses a real restrictive data home, canonical
+SQLite stores, sealed protected state, and the npm-generated launcher; it is not native-keychain
+or macOS/Linux evidence. Node 24 may emit its own built-in SQLite `ExperimentalWarning`; the
+packed fixture disables that warning class only for child-stderr assertions, and the CLI does not
+suppress runtime warnings itself.
+
 ## Injectable vault initialization
 
 The internal catalog also exposes `creds init` when a composition root injects the client
@@ -78,6 +106,7 @@ immutable string copies, so production ports must minimize lifetime and never lo
 redisplay them.
 
 The public packed executable advertises only version, static completion, local generation, TOTP,
-and portable key-file creation. Vault initialization, unlock, storage, clipboard, and authorization
-remain injectable until their native composition is available. Native profile/journal and
-sensitive-display composition remains outside this package slice.
+portable key-file creation, and the locked local status slice above. Vault initialization, unlock,
+online sync, show, copy/clipboard, and device authorization remain injectable until their native
+composition is available. Sensitive-display and complete lifecycle composition remain outside
+this package slice.

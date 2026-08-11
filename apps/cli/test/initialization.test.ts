@@ -558,7 +558,9 @@ describe('injectable initialization commands', () => {
     expect(completion.stdout).not.toContain(environmentCanary);
 
     const publicCompletion = await executePublic(['completion', 'bash']);
-    expect(publicCompletion.stdout).toContain("'version generate totp key completion'");
+    expect(publicCompletion.stdout).toContain(
+      "'version generate totp key status completion'",
+    );
     expect(publicCompletion.stdout).not.toContain('init');
     expect(publicCompletion.stdout).not.toContain(PORTABLE);
 

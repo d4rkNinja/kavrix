@@ -12,6 +12,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   CLI_EXIT_CODES,
   CLI_VERSION,
+  PUBLIC_CLI_COMMAND_CATALOG,
   acquiredSecretSchema,
   runCli,
   runPublicCli,
@@ -26,6 +27,17 @@ const ACQUIRED_TOKEN = acquiredSecretSchema.parse(TOKEN);
 // Clearly fake key material; only its round-trip through the command matters.
 const PORTABLE_KEY = 'B'.repeat(43);
 const ACQUIRED_PORTABLE_KEY = acquiredSecretSchema.parse(PORTABLE_KEY);
+
+type PublicStatusRequest = Readonly<{
+  backendPolicy:
+    | Readonly<{ kind: 'native' }>
+    | Readonly<{ kind: 'sealed-file'; passphraseFromStdin: boolean }>;
+  environment: Readonly<Record<string, string | undefined>>;
+  secrets: SecretInputPort;
+}>;
+type PublicStatusCallback = (
+  request: PublicStatusRequest,
+) => ReturnType<CliUseCasePorts['status']>;
 
 describe('CLI command shell', () => {
   it('provides the static version command without operational dependencies', async () => {
@@ -368,25 +380,37 @@ describe('CLI command shell', () => {
   });
 
   it('limits the production bin catalog to commands with real static behavior', async () => {
-    const publishedCommands = 'version generate totp key completion';
-    const unavailableCommands = /\b(?:init|status|lock|show|copy|device)\b/u;
+    const publishedCommands = 'version generate totp key status completion';
+    const unavailableCommands = /\b(?:init|lock|show|copy|device)\b/u;
+    expect(PUBLIC_CLI_COMMAND_CATALOG.map(({ name }) => name)).toEqual(
+      publishedCommands.split(' '),
+    );
     const help = await executePublic(['--help']);
     expect(help.exitCode).toBe(CLI_EXIT_CODES.success);
+    expect(
+      [...help.stdout.matchAll(/^ {2}([a-z][a-z-]*)(?:\s|$)/gmu)].map(
+        (match) => match[1],
+      ),
+    ).toEqual(publishedCommands.split(' '));
     for (const command of publishedCommands.split(' ')) {
       expect(help.stdout).toContain(command);
     }
     expect(help.stdout).not.toMatch(unavailableCommands);
 
-    for (const shell of ['bash', 'zsh', 'fish', 'powershell']) {
+    const expectedCompletions = {
+      bash: `_creds_complete() { COMPREPLY=( $(compgen -W '${publishedCommands}' -- "\${COMP_WORDS[COMP_CWORD]}") ); }\ncomplete -F _creds_complete creds\n`,
+      zsh: `#compdef creds\n_arguments '1:command:(${publishedCommands})'\n`,
+      fish: `complete -c creds -f -n '__fish_use_subcommand' -a '${publishedCommands}'\n`,
+      powershell: `Register-ArgumentCompleter -Native -CommandName creds -ScriptBlock { param($wordToComplete) '${publishedCommands}'.Split(' ') | Where-Object { $_ -like "$wordToComplete*" } }\n`,
+    } as const;
+    for (const [shell, expected] of Object.entries(expectedCompletions)) {
       const completion = await executePublic(['completion', shell]);
       expect(completion.exitCode).toBe(CLI_EXIT_CODES.success);
-      expect(completion.stdout).toContain(publishedCommands);
-      expect(completion.stdout).not.toMatch(unavailableCommands);
+      expect(completion.stdout).toBe(expected);
     }
 
     for (const unavailableOperation of [
       ['init'],
-      ['status'],
       ['lock'],
       ['show'],
       ['copy'],
@@ -400,13 +424,126 @@ describe('CLI command shell', () => {
     }
   });
 
-  it('forwards the invite server only when explicitly supplied', async () => {
-    const joinInvite = vi.fn(() =>
+  it('runs public status once with the exact default or explicit backend policy', async () => {
+    const result = {
+      vaultState: 'locked' as const,
+      vaultId: vaultIdSchema.parse('vault.primary'),
+      deviceId: deviceIdSchema.parse('device.primary'),
+      syncState: 'offline' as const,
+      pendingChanges: 2,
+      lastSyncAt: '2026-08-10T01:02:03.000Z',
+    };
+    const native = vi.fn<PublicStatusCallback>(() => Promise.resolve(result));
+    const nativeResult = await executePublic(['status'], native);
+    expect(nativeResult).toEqual({
+      exitCode: CLI_EXIT_CODES.success,
+      stdout:
+        'Vault: locked\nVault ID: vault.primary\nDevice ID: device.primary\nSync: offline\nPending changes: 2\nLast sync: 2026-08-10T01:02:03.000Z\n',
+      stderr: '',
+    });
+    expect(native).toHaveBeenCalledOnce();
+    const nativeRequest = native.mock.calls[0]?.[0];
+    if (nativeRequest === undefined) throw new Error('Missing status request');
+    expect(nativeRequest.backendPolicy).toEqual({ kind: 'native' });
+    expect(nativeRequest.environment).toBe(process.env);
+    expect(typeof nativeRequest.secrets.read).toBe('function');
+
+    const sealedMasked = vi.fn<PublicStatusCallback>(() => Promise.resolve(result));
+    await executePublic(['status', '--secret-backend', 'sealed-file'], sealedMasked);
+    expect(sealedMasked.mock.calls[0]?.[0].backendPolicy).toEqual({
+      kind: 'sealed-file',
+      passphraseFromStdin: false,
+    });
+
+    const sealedStdin = vi.fn<PublicStatusCallback>(() => Promise.resolve(result));
+    const json = await executePublic(
+      [
+        'status',
+        '--json',
+        '--secret-backend',
+        'sealed-file',
+        '--backend-passphrase-stdin',
+      ],
+      sealedStdin,
+    );
+    expect(JSON.parse(json.stdout)).toEqual(result);
+    expect(sealedStdin).toHaveBeenCalledOnce();
+    expect(sealedStdin.mock.calls[0]?.[0].backendPolicy).toEqual({
+      kind: 'sealed-file',
+      passphraseFromStdin: true,
+    });
+  });
+
+  it('rejects invalid public status backend options before callback or stdin access', async () => {
+    const callback = vi.fn<PublicStatusCallback>();
+    const read = vi.fn(() => {
+      throw new Error('stdin-must-not-be-read');
+    });
+    const stdin = new Readable({ read });
+
+    for (const arguments_ of [
+      ['status', '--secret-backend', 'automatic'],
+      ['status', '--backend-passphrase-stdin'],
+    ]) {
+      const result = await executePublic(arguments_, callback, stdin);
+      expect(result.exitCode).toBe(CLI_EXIT_CODES.usage);
+      expect(result.stdout).toBe('');
+      expect(result.stderr).not.toContain('automatic');
+    }
+    expect(callback).not.toHaveBeenCalled();
+    expect(read).not.toHaveBeenCalled();
+  });
+
+  it('keeps public static, help, and invalid paths outside production status', async () => {
+    const callback = vi.fn<PublicStatusCallback>();
+    for (const arguments_ of [
+      ['--help'],
+      ['--version'],
+      ['version'],
+      ['completion', 'bash'],
+      ['generate', '--help'],
+      ['status', '--help'],
+      ['unknown-command'],
+    ]) {
+      await executePublic(arguments_, callback);
+    }
+    expect(callback).not.toHaveBeenCalled();
+  });
+
+  it('keeps injected status on its supplied receiver without production input', async () => {
+    const secretRead = vi.fn(() => Promise.reject(new Error('unexpected secret read')));
+    const secrets: SecretInputPort = {
+      read: secretRead,
+      readBatch: vi.fn(() => Promise.reject(new Error('unexpected batch read'))),
+    };
+    const status = vi.fn(() =>
       Promise.resolve({
-        vaultId: vaultIdSchema.parse('vault.primary'),
-        deviceId: deviceIdSchema.parse('device.new'),
+        vaultState: 'locked' as const,
+        syncState: 'offline' as const,
+        pendingChanges: 0,
       }),
     );
+
+    const result = await execute(
+      ['status', '--secret-backend', 'sealed-file', '--backend-passphrase-stdin'],
+      { status },
+      secrets,
+    );
+
+    expect(result.exitCode).toBe(CLI_EXIT_CODES.success);
+    expect(status).toHaveBeenCalledOnce();
+    expect(secretRead).not.toHaveBeenCalled();
+  });
+
+  it('forwards the invite server only when explicitly supplied', async () => {
+    const receivers: CliUseCasePorts[] = [];
+    const joinInvite = vi.fn(function (this: CliUseCasePorts) {
+      receivers.push(this);
+      return Promise.resolve({
+        vaultId: vaultIdSchema.parse('vault.primary'),
+        deviceId: deviceIdSchema.parse('device.new'),
+      });
+    });
     const secrets: SecretInputPort = {
       read: () => Promise.reject(new Error('Unexpected single secret read')),
       readBatch: () => Promise.resolve([ACQUIRED_TOKEN, ACQUIRED_PORTABLE_KEY]),
@@ -441,6 +578,10 @@ describe('CLI command shell', () => {
       expect.objectContaining({ vaultId: 'vault.primary' }),
       PORTABLE_KEY,
       'https://sync.example/',
+    );
+    expect(receivers).toHaveLength(2);
+    expect(receivers.every((receiver) => receiver.status instanceof Function)).toBe(
+      true,
     );
   });
 
@@ -494,13 +635,19 @@ async function execute(
 
 async function executePublic(
   arguments_: readonly string[],
+  productionStatus?: PublicStatusCallback,
+  stdin: Readable = Readable.from([]),
 ): Promise<Readonly<{ exitCode: number; stdout: string; stderr: string }>> {
   const output = memoryOutput();
-  const exitCode = await runPublicCli(arguments_, {
-    stdin: Readable.from([]),
-    stdout: output.stdout.stream,
-    stderr: output.stderr.stream,
-  });
+  const exitCode = await runPublicCli(
+    arguments_,
+    {
+      stdin,
+      stdout: output.stdout.stream,
+      stderr: output.stderr.stream,
+    },
+    productionStatus,
+  );
   return { exitCode, stdout: output.stdout.value(), stderr: output.stderr.value() };
 }
 

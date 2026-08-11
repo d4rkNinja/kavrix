@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process';
 import { Buffer } from 'node:buffer';
-import { createHash } from 'node:crypto';
+import { createHash, randomFillSync } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import {
   mkdtemp,
@@ -17,6 +17,16 @@ import { tmpdir } from 'node:os';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 
+import { vaultProfileSchema } from '@kavrix/client';
+import { SealedSecretStore, sealedEntryFactory } from '@kavrix/key-files';
+import { NativeProtectedSyncState } from '@kavrix/keychain';
+import {
+  acquireLocalWriterLease,
+  openSqliteSyncLocalStore,
+  openSqliteVaultProfileStore,
+} from '@kavrix/local-store';
+import { protectedLocalDeviceStateSchema } from '@kavrix/schemas';
+
 const packageDirectory = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const manifest = JSON.parse(
   await readFile(resolve(packageDirectory, 'package.json'), 'utf8'),
@@ -32,6 +42,7 @@ if (!temporaryRoot.startsWith(temporaryPrefix)) {
 const archiveDirectory = resolve(temporaryRoot, 'archive');
 const installDirectory = resolve(temporaryRoot, 'install');
 const suppliedArchive = process.argv[2];
+let ownedStatusPassphrase;
 
 try {
   await Promise.all([
@@ -159,17 +170,30 @@ try {
   if (cryptoChunkNames.length === 0) {
     throw new Error('The packed portable-key crypto chunk could not be identified.');
   }
+  const productionChunkNames = javascriptArtifacts
+    .filter(({ bytes }) => bytes.includes('cli.writer.lock'))
+    .map(({ path }) => path.split('/').at(-1));
+  if (productionChunkNames.length === 0) {
+    throw new Error('The packed production-status chunk could not be identified.');
+  }
   const debugEnvironment = { ...process.env, NODE_DEBUG: 'esm' };
-  for (const arguments_ of [['--version'], ['completion', 'bash']]) {
+  for (const [arguments_, expectedStatus] of [
+    [['--version'], 0],
+    [['completion', 'bash'], 0],
+    [['--help'], 0],
+    [['status', '--help'], 0],
+    [['unknown-command'], 2],
+  ]) {
     const lazyResult = run(process.execPath, [executable, ...arguments_], {
       env: debugEnvironment,
     });
     if (
-      lazyResult.status !== 0 ||
-      cryptoChunkNames.some((name) => lazyResult.stderr.includes(name))
+      lazyResult.status !== expectedStatus ||
+      cryptoChunkNames.some((name) => lazyResult.stderr.includes(name)) ||
+      productionChunkNames.some((name) => lazyResult.stderr.includes(name))
     ) {
       throw new Error(
-        'A metadata-only command evaluated the portable-key crypto chunk.',
+        'A static, help, or invalid command evaluated a lazy production chunk.',
       );
     }
   }
@@ -233,14 +257,16 @@ try {
   ) {
     throw new Error('Packed CLI portable key-file creation failed.');
   }
-  const unsupported = run(process.execPath, [executable, 'status']);
-  if (
-    unsupported.status !== 2 ||
-    unsupported.stdout !== '' ||
-    unsupported.stderr !==
-      "Error [CLI_USAGE]: Invalid command usage. Run 'creds --help'.\n"
-  ) {
-    throw new Error('The packed executable exposed unsupported production behavior.');
+  for (const hidden of ['init', 'lock', 'show', 'copy', 'device']) {
+    const unsupported = run(process.execPath, [executable, hidden]);
+    if (
+      unsupported.status !== 2 ||
+      unsupported.stdout !== '' ||
+      unsupported.stderr !==
+        "Error [CLI_USAGE]: Invalid command usage. Run 'creds --help'.\n"
+    ) {
+      throw new Error('The packed executable exposed an unsupported vault family.');
+    }
   }
 
   // Everything above runs the bundle through `node dist/bin.js`. The launcher
@@ -259,10 +285,170 @@ try {
     throw new Error('The installed creds launcher did not run on this platform.');
   }
 
+  const statusHome = resolve(temporaryRoot, 'status-home');
+  await mkdir(statusHome);
+  await prepareSecureKeyDirectory(statusHome);
+  ownedStatusPassphrase = generatedAsciiPassphrase(48);
+  const statusFixture = await createPackedStatusFixture(
+    statusHome,
+    ownedStatusPassphrase,
+  );
+  // Node 24 still labels its built-in SQLite module experimental. Suppress only
+  // that warning class in the child so stderr assertions remain about the CLI;
+  // the status implementation and installed launcher are otherwise unchanged.
+  const statusEnvironment = {
+    ...process.env,
+    CREDS_HOME: statusHome,
+    NODE_OPTIONS: '--disable-warning=ExperimentalWarning',
+  };
+  const statusArguments = [
+    'status',
+    '--json',
+    '--secret-backend',
+    'sealed-file',
+    '--backend-passphrase-stdin',
+  ];
+  if (
+    stringsContainBytes(Object.values(statusEnvironment), ownedStatusPassphrase) ||
+    stringsContainBytes(statusArguments, ownedStatusPassphrase)
+  ) {
+    throw new Error('The packed status passphrase reached argv or environment.');
+  }
+  const jsonInput = Buffer.from(ownedStatusPassphrase);
+  const jsonStatus = runCommandShim(shim, statusArguments, {
+    env: statusEnvironment,
+    input: jsonInput,
+  });
+  jsonInput.fill(0);
+  const expectedJson = `${JSON.stringify(statusFixture.expected, undefined, 2)}\n`;
+  if (
+    jsonStatus.status !== 0 ||
+    jsonStatus.stdout !== expectedJson ||
+    jsonStatus.stderr !== '' ||
+    containsTerminalControl(jsonStatus.stdout)
+  ) {
+    throw new Error('The installed creds launcher did not return canonical status.');
+  }
+  await assertNoWriterLocks(statusHome);
+
+  const textInput = Buffer.from(ownedStatusPassphrase);
+  const textStatus = runCommandShim(
+    shim,
+    ['status', '--secret-backend', 'sealed-file', '--backend-passphrase-stdin'],
+    { env: statusEnvironment, input: textInput },
+  );
+  textInput.fill(0);
+  if (
+    textStatus.status !== 0 ||
+    textStatus.stdout !== statusFixture.expectedText ||
+    textStatus.stderr !== ''
+  ) {
+    throw new Error('The installed creds launcher did not return text status.');
+  }
+  await assertNoWriterLocks(statusHome);
+
+  const wrongInput = Buffer.from(ownedStatusPassphrase);
+  wrongInput[0] = wrongInput[0] === 0x41 ? 0x42 : 0x41;
+  const wrongStatus = runCommandShim(shim, statusArguments, {
+    env: statusEnvironment,
+    input: wrongInput,
+  });
+  wrongInput.fill(0);
+  if (
+    wrongStatus.status !== 1 ||
+    wrongStatus.stdout !== '' ||
+    wrongStatus.stderr !==
+      'Error [UNEXPECTED_FAILURE]: The command failed without exposing internal details.\n'
+  ) {
+    throw new Error('The installed status command did not fail closed.');
+  }
+  await assertNoWriterLocks(statusHome);
+
+  const heldLease = await acquireLocalWriterLease(
+    resolve(statusHome, 'cli.writer.lock'),
+  );
+  try {
+    const blockedInput = Buffer.from(ownedStatusPassphrase);
+    const blockedStatus = runCommandShim(shim, statusArguments, {
+      env: statusEnvironment,
+      input: blockedInput,
+    });
+    blockedInput.fill(0);
+    if (
+      blockedStatus.status !== 1 ||
+      blockedStatus.stdout !== '' ||
+      blockedStatus.stderr !==
+        'Error [UNEXPECTED_FAILURE]: The command failed without exposing internal details.\n' ||
+      !existsSync(resolve(statusHome, 'cli.writer.lock')) ||
+      stringsContainBytes(
+        [blockedStatus.stdout, blockedStatus.stderr],
+        ownedStatusPassphrase,
+      )
+    ) {
+      throw new Error('The installed status command bypassed the global writer lease.');
+    }
+  } finally {
+    await heldLease.release();
+  }
+  await assertNoWriterLocks(statusHome);
+
+  const recoveredInput = Buffer.from(ownedStatusPassphrase);
+  const recoveredStatus = runCommandShim(shim, statusArguments, {
+    env: statusEnvironment,
+    input: recoveredInput,
+  });
+  recoveredInput.fill(0);
+  if (
+    recoveredStatus.status !== 0 ||
+    recoveredStatus.stdout !== expectedJson ||
+    recoveredStatus.stderr !== ''
+  ) {
+    throw new Error('Status did not recover after the live lease was released.');
+  }
+  await assertNoWriterLocks(statusHome);
+
+  const debugInput = Buffer.from(ownedStatusPassphrase);
+  const debugStatus = run(process.execPath, [executable, ...statusArguments], {
+    env: { ...statusEnvironment, NODE_DEBUG: 'esm' },
+    input: debugInput,
+    maxBuffer: 8 * 1_024 * 1_024,
+  });
+  debugInput.fill(0);
+  if (
+    debugStatus.status !== 0 ||
+    debugStatus.stdout !== expectedJson ||
+    !productionChunkNames.some((name) => debugStatus.stderr.includes(name))
+  ) {
+    throw new Error('A real status invocation did not evaluate production code.');
+  }
+  await assertNoWriterLocks(statusHome);
+
+  for (const output of [
+    jsonStatus,
+    textStatus,
+    wrongStatus,
+    recoveredStatus,
+    debugStatus,
+  ]) {
+    if (stringsContainBytes([output.stdout, output.stderr], ownedStatusPassphrase)) {
+      throw new Error('The packed status passphrase reached command output.');
+    }
+  }
+  if (await treeContains(statusHome, ownedStatusPassphrase)) {
+    throw new Error('The packed status passphrase reached durable local state.');
+  }
+  if (
+    existsSync(resolve(statusHome, 'init-journal.db')) ||
+    existsSync(resolve(statusHome, 'join-journal.db'))
+  ) {
+    throw new Error('Status opened an unrelated lifecycle journal.');
+  }
+
   process.stdout.write(
     `Verified dependency-free packed CLI ${archive.split(/[\\/]/u).at(-1)} on ${process.platform}.\n`,
   );
 } finally {
+  ownedStatusPassphrase?.fill(0);
   await rm(temporaryRoot, { recursive: true, force: true });
 }
 
@@ -460,6 +646,134 @@ if (($actual.FileSystemRights -band $fullControl) -ne $fullControl) { exit 19 }
   }
 }
 
+function generatedAsciiPassphrase(length) {
+  const alphabet = Buffer.from(
+    'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789',
+    'ascii',
+  );
+  const passphrase = Buffer.alloc(length);
+  randomFillSync(passphrase);
+  for (let index = 0; index < passphrase.length; index += 1) {
+    passphrase[index] = alphabet[passphrase[index] % alphabet.length];
+  }
+  return passphrase;
+}
+
+async function createPackedStatusFixture(home, passphrase) {
+  const vaultId = 'vault.packed.status';
+  const deviceId = 'device.packed.status';
+  const updatedAt = '2026-08-10T01:02:03.000Z';
+  const profile = vaultProfileSchema.parse({
+    version: 1,
+    serverUrl: 'https://network-must-not-run.invalid/',
+    vaultId,
+    deviceId,
+    deviceLocator: {
+      version: 1,
+      vaultId,
+      deviceId,
+      keySlotId: 'slot.packed.status',
+    },
+    sessionLocator: { version: 1, vaultId, deviceId, purpose: 'api-session' },
+  });
+  const profiles = await openSqliteVaultProfileStore({
+    path: resolve(home, 'profiles.db'),
+  });
+  try {
+    await profiles.store(profile);
+  } finally {
+    await profiles.close();
+  }
+  const sync = await openSqliteSyncLocalStore({
+    path: resolve(home, `vault-${vaultId}.db`),
+  });
+  sync.close();
+
+  const sealed = new SealedSecretStore({
+    directory: resolve(home, 'sealed'),
+    passphrase: () => Promise.resolve(Buffer.from(passphrase)),
+  });
+  try {
+    const protectedState = new NativeProtectedSyncState(sealedEntryFactory(sealed));
+    await protectedState.save(
+      protectedLocalDeviceStateSchema.parse({
+        vaultId,
+        deviceId,
+        highestSeenVaultRevision: 9,
+        updatedAt,
+      }),
+    );
+  } finally {
+    await sealed.close();
+  }
+
+  return {
+    expected: {
+      vaultState: 'locked',
+      vaultId,
+      deviceId,
+      syncState: 'offline',
+      pendingChanges: 0,
+      lastSyncAt: updatedAt,
+    },
+    expectedText: `Vault: locked\nVault ID: ${vaultId}\nDevice ID: ${deviceId}\nSync: offline\nPending changes: 0\nLast sync: ${updatedAt}\n`,
+  };
+}
+
+async function allRegularFiles(root) {
+  const files = [];
+  const visit = async (directory) => {
+    for (const entry of await readdir(directory, { withFileTypes: true })) {
+      const path = resolve(directory, entry.name);
+      if (entry.isDirectory()) await visit(path);
+      else if (entry.isFile()) files.push(path);
+      else throw new Error('The status home contains a non-regular entry.');
+    }
+  };
+  await visit(root);
+  return files.sort((left, right) => left.localeCompare(right, 'en'));
+}
+
+async function assertNoWriterLocks(home) {
+  if ((await allRegularFiles(home)).some((path) => path.endsWith('.writer.lock'))) {
+    throw new Error('A completed status invocation left a writer lease behind.');
+  }
+}
+
+async function treeContains(home, needle) {
+  for (const path of await allRegularFiles(home)) {
+    if ((await readFile(path)).includes(needle)) return true;
+  }
+  return false;
+}
+
+function containsTerminalControl(value) {
+  for (const character of value) {
+    const codePoint = character.codePointAt(0);
+    if (
+      codePoint !== undefined &&
+      ((codePoint <= 0x1f && codePoint !== 0x0a) ||
+        (codePoint >= 0x7f && codePoint <= 0x9f))
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function stringsContainBytes(values, needle) {
+  for (const value of values) {
+    if (typeof value !== 'string') continue;
+    const bytes = Buffer.from(value, 'utf8');
+    try {
+      if (bytes.includes(needle)) return true;
+    } finally {
+      bytes.fill(0);
+    }
+  }
+  return false;
+}
+
 function runNodeCli(cliPath, arguments_, options) {
   const result = run(process.execPath, [cliPath, ...arguments_], options);
   if (result.status !== 0) {
@@ -512,13 +826,13 @@ async function resolveInstalledCommandShim(installDirectory) {
   return resolve(binDirectory, shim);
 }
 
-function runCommandShim(shim, arguments_) {
-  if (process.platform !== 'win32') return run(shim, arguments_);
+function runCommandShim(shim, arguments_, options = {}) {
+  if (process.platform !== 'win32') return run(shim, arguments_, options);
   // A .cmd launcher can only be executed by cmd.exe: Node refuses to spawn one
   // without a shell since the CVE-2024-27980 hardening, returning EINVAL. The
   // interpreter is therefore named explicitly, by absolute path rather than via
   // ComSpec or PATH, and the launcher is passed as one element of the argument
   // array — so shell stays false and no command string is ever assembled.
   const cmd = String.raw`C:\Windows\System32\cmd.exe`;
-  return run(cmd, ['/d', '/s', '/c', shim, ...arguments_]);
+  return run(cmd, ['/d', '/s', '/c', shim, ...arguments_], options);
 }

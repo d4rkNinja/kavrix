@@ -7,6 +7,7 @@ import {
   CLI_COMMAND_CATALOG,
   PUBLIC_CLI_COMMAND_CATALOG,
   type CliCommandDescriptor,
+  type ProductionStatusCallback,
 } from './catalog.js';
 import type { CliUseCasePorts } from './contracts.js';
 import { CLI_EXIT_CODES, presentCliCommandError } from './errors.js';
@@ -33,6 +34,8 @@ type ProgramDependencies = Readonly<{
   ports?: CliUseCasePorts;
   secrets?: SecretInputPort;
   initialization?: CliInitializationDependencies;
+  productionStatus?: ProductionStatusCallback;
+  environment?: Readonly<Record<string, string | undefined>>;
   runtime: CliRuntime;
 }>;
 
@@ -66,6 +69,12 @@ function createProgram(
     ...(dependencies.initialization === undefined
       ? {}
       : { initialization: dependencies.initialization }),
+    ...(dependencies.productionStatus === undefined
+      ? {}
+      : { productionStatus: dependencies.productionStatus }),
+    ...(dependencies.environment === undefined
+      ? {}
+      : { environment: dependencies.environment }),
     stdout: runtime.stdout,
     stdoutIsTty:
       (runtime.stdout as Writable & Readonly<{ isTTY?: boolean }>).isTTY === true,
@@ -83,12 +92,26 @@ export async function runCli(
 export async function runPublicCli(
   arguments_: readonly string[],
   runtime: CliRuntime,
+  productionStatus: ProductionStatusCallback = defaultProductionStatus,
 ): Promise<number> {
+  const secrets = new NodeSecretInput(runtime.stdin, runtime.stderr);
   return runProgram(
     arguments_,
-    { runtime, secrets: new NodeSecretInput(runtime.stdin, runtime.stderr) },
+    {
+      runtime,
+      secrets,
+      productionStatus,
+      environment: process.env,
+    },
     PUBLIC_CLI_COMMAND_CATALOG,
   );
+}
+
+async function defaultProductionStatus(
+  request: Parameters<ProductionStatusCallback>[0],
+): ReturnType<ProductionStatusCallback> {
+  const { runProductionStatus } = await import('./production/status.js');
+  return runProductionStatus(request);
 }
 
 async function runProgram(
