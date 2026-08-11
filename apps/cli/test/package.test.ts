@@ -30,6 +30,12 @@ const packageSchema = z
     // runtime preflight, which fails closed with an actionable error, rather
     // than by an engine ceiling that would block install on every newer Node.
     engines: z.object({ node: z.literal('>=24.12.0 <25 || >=25.1.0') }).strict(),
+    publishConfig: z
+      .object({
+        access: z.literal('public'),
+        registry: z.literal('https://registry.npmjs.org/'),
+      })
+      .strict(),
     license: z.literal('MIT'),
     repository: z.object({
       type: z.literal('git'),

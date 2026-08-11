@@ -4,21 +4,25 @@ on:
   release:
     types: [published]
 
-permissions:
-  actions: read
-  contents: read
-  id-token: write
+permissions: {}
 
 concurrency:
   group: npm-publish
   cancel-in-progress: false
 
 jobs:
-  publish:
-    if: ${{ !github.event.release.prerelease }}
-    runs-on: ubuntu-latest
+  validate:
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
-    environment: npm
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      archive_name: ${{ steps.package.outputs.archive_name }}
+      archive_sha256: ${{ steps.package.outputs.archive_sha256 }}
+      artifact_name: ${{ steps.package.outputs.artifact_name }}
+      npm_dist_tag: ${{ steps.release.outputs.npm_dist_tag }}
+      package_version: ${{ steps.package.outputs.package_version }}
     steps:
       - name: Require the reviewed public repository
         env:
@@ -30,7 +34,7 @@ jobs:
           fetch-depth: 0
           ref: ${{ github.event.release.tag_name }}
           persist-credentials: false
-      - name: Require the tagged commit on main with successful CI
+      - name: Require the tagged commit on main with exact-SHA CI and CodeQL
         env:
           GITHUB_API_URL: ${{ github.api_url }}
           GITHUB_REPOSITORY: ${{ github.repository }}
@@ -45,69 +49,11 @@ jobs:
           test "$(git rev-parse --verify 'HEAD^{commit}')" = "$tagged_commit"
           git merge-base --is-ancestor "$tagged_commit" "$main_commit"
           export TAGGED_COMMIT="$tagged_commit"
-          node --input-type=module <<'NODE'
-          const required = (name) => {
-            const value = process.env[name];
-            if (value === undefined || value.length === 0) {
-              throw new Error(`Missing required release context: ${name}.`);
-            }
-            return value;
-          };
-
-          const apiUrl = new URL(required('GITHUB_API_URL'));
-          const repository = required('GITHUB_REPOSITORY');
-          const taggedCommit = required('TAGGED_COMMIT');
-          const token = required('GITHUB_TOKEN');
-          const url = new URL(
-            `/repos/${repository}/actions/workflows/ci.yml/runs`,
-            apiUrl,
-          );
-          url.searchParams.set('event', 'push');
-          url.searchParams.set('head_sha', taggedCommit);
-          url.searchParams.set('status', 'success');
-          url.searchParams.set('per_page', '100');
-
-          const response = await fetch(url, {
-            headers: {
-              Accept: 'application/vnd.github+json',
-              Authorization: `Bearer ${token}`,
-              'X-GitHub-Api-Version': '2022-11-28',
-            },
-            redirect: 'error',
-            signal: AbortSignal.timeout(30_000),
-          });
-          if (!response.ok) {
-            throw new Error(`GitHub Actions API returned HTTP ${response.status}.`);
-          }
-
-          const payload = await response.json();
-          if (
-            payload === null ||
-            typeof payload !== 'object' ||
-            !Array.isArray(payload.workflow_runs)
-          ) {
-            throw new Error('GitHub Actions API returned an invalid workflow-runs response.');
-          }
-
-          const run = payload.workflow_runs.find(
-            (candidate) =>
-              candidate !== null &&
-              typeof candidate === 'object' &&
-              candidate.event === 'push' &&
-              candidate.status === 'completed' &&
-              candidate.conclusion === 'success' &&
-              candidate.head_sha === taggedCommit &&
-              candidate.head_branch === 'main' &&
-              candidate.path === '.github/workflows/ci.yml' &&
-              candidate.repository?.full_name === repository &&
-              candidate.head_repository?.full_name === repository,
-          );
-          if (run === undefined) {
-            throw new Error(
-              'No successful completed main push run of CI exactly matches the tagged commit.',
-            );
-          }
-          NODE
+          node apps/cli/scripts/require-workflow-runs.js \
+            .github/workflows/ci.yml \
+            .github/workflows/codeql.yml
+      # STOP: Do not add signature verification until the product decision names
+      # the exact allowed signer fingerprint and rotation/revocation policy.
       - name: Require the public CLI package
         shell: bash
         run: test -f apps/cli/package.json
@@ -118,54 +64,80 @@ jobs:
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: 24.19.0
-          registry-url: https://registry.npmjs.org
           package-manager-cache: false
       - run: pnpm install --frozen-lockfile
       - run: pnpm verify
-      - run: pnpm test:coverage
-      - name: Match a stable package version to the release tag
+      - name: Match the package version, release type, tag, and npm channel
+        id: release
         env:
+          RELEASE_PRERELEASE: ${{ github.event.release.prerelease }}
           RELEASE_TAG: ${{ github.event.release.tag_name }}
         shell: bash
         run: |
           set -euo pipefail
           node --input-type=module <<'NODE'
-          import { readFileSync } from 'node:fs';
+          import { appendFileSync, readFileSync } from 'node:fs';
+          import { resolveReleaseChannel } from './apps/cli/scripts/require-workflow-runs.js';
           const manifest = JSON.parse(readFileSync('apps/cli/package.json', 'utf8'));
-          if (!/^\d+\.\d+\.\d+$/u.test(manifest.version)) {
-            throw new Error('Only stable SemVer package versions may use this workflow.');
+          if (!['false', 'true'].includes(process.env.RELEASE_PRERELEASE)) {
+            throw new Error('GitHub release prerelease state is invalid.');
           }
+          const npmDistTag = resolveReleaseChannel(
+            manifest.version,
+            process.env.RELEASE_PRERELEASE === 'true',
+          );
           if (process.env.RELEASE_TAG !== `v${manifest.version}`) {
             throw new Error(`Release tag ${process.env.RELEASE_TAG} does not match kavrix@${manifest.version}.`);
           }
+          appendFileSync(
+            process.env.GITHUB_OUTPUT,
+            `npm_dist_tag=${npmDistTag}\n`,
+            { encoding: 'utf8' },
+          );
           NODE
           test "$(git tag --points-at HEAD --list "$RELEASE_TAG")" = "$RELEASE_TAG"
       - name: Reject token-based npm authentication
         shell: bash
         run: |
           set -euo pipefail
-          test -z "${NODE_AUTH_TOKEN:-}"
-          test -z "${NPM_TOKEN:-}"
+          node --input-type=module <<'NODE'
+          const prohibited = Object.keys(process.env).filter(
+            (name) => /^(?:NODE_AUTH_TOKEN|NPM_TOKEN)$/u.test(name) &&
+              process.env[name]?.length > 0,
+          );
+          if (prohibited.length > 0) {
+            throw new Error(`Long-lived npm authentication is forbidden: ${prohibited.join(', ')}.`);
+          }
+          NODE
           if git grep --line-number '_authToken' -- '*.npmrc'; then
             echo 'Long-lived npm authentication is forbidden.' >&2
             exit 1
           fi
+      - name: Refresh high-severity dependency advisories
+        run: pnpm audit --audit-level high
       - name: Pack the release archive exactly once
         id: package
         shell: bash
         run: |
           set -euo pipefail
           version="$(node -p "require('./apps/cli/package.json').version")"
+          archive_name="kavrix-${version}.tgz"
           test ! -e package-artifacts
           mkdir package-artifacts
           pnpm --filter kavrix --fail-if-no-match pack \
             --pack-destination package-artifacts
-          archive="$PWD/package-artifacts/kavrix-${version}.tgz"
+          archive="$PWD/package-artifacts/$archive_name"
           test -f "$archive"
           mapfile -t archives < <(find package-artifacts -maxdepth 1 -type f -name '*.tgz' -print)
           test "${#archives[@]}" -eq 1
-          test "${archives[0]}" = "package-artifacts/kavrix-${version}.tgz"
+          test "${archives[0]}" = "package-artifacts/$archive_name"
+          archive_sha256="$(sha256sum "$archive" | awk '{print $1}')"
+          [[ "$archive_sha256" =~ ^[0-9a-f]{64}$ ]]
           echo "archive=$archive" >> "$GITHUB_OUTPUT"
+          echo "archive_name=$archive_name" >> "$GITHUB_OUTPUT"
+          echo "archive_sha256=$archive_sha256" >> "$GITHUB_OUTPUT"
+          echo "artifact_name=kavrix-release-candidate-$archive_sha256" >> "$GITHUB_OUTPUT"
+          echo "package_version=$version" >> "$GITHUB_OUTPUT"
       - name: Inspect and smoke-test the exact release archive
         env:
           PACKAGE_ARCHIVE: ${{ steps.package.outputs.archive }}
@@ -213,10 +185,99 @@ jobs:
           fi
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
-          name: kavrix-release-candidate
-          path: package-artifacts/*.tgz
+          name: ${{ steps.package.outputs.artifact_name }}
+          path: package-artifacts/${{ steps.package.outputs.archive_name }}
           if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    needs: validate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: npm
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+    steps:
+      - name: Reject token-based npm authentication
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -z "${NODE_AUTH_TOKEN:-}"
+          test -z "${NPM_TOKEN:-}"
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: 24.19.0
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: ${{ needs.validate.outputs.artifact_name }}
+          path: package-artifacts
+      - name: Validate the sole approved release archive
+        env:
+          EXPECTED_ARCHIVE_NAME: ${{ needs.validate.outputs.archive_name }}
+          EXPECTED_ARCHIVE_SHA256: ${{ needs.validate.outputs.archive_sha256 }}
+          EXPECTED_NPM_DIST_TAG: ${{ needs.validate.outputs.npm_dist_tag }}
+          EXPECTED_PACKAGE_VERSION: ${{ needs.validate.outputs.package_version }}
+          PACKAGE_ARCHIVE: package-artifacts/${{ needs.validate.outputs.archive_name }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          RELEASE_PRERELEASE: ${{ github.event.release.prerelease }}
+          REPOSITORY_VISIBILITY: ${{ github.event.repository.visibility }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$REPOSITORY_VISIBILITY" = 'public'
+          [[ "$EXPECTED_ARCHIVE_SHA256" =~ ^[0-9a-f]{64}$ ]]
+          if [[ "$EXPECTED_PACKAGE_VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            test "$RELEASE_PRERELEASE" = 'false'
+            test "$EXPECTED_NPM_DIST_TAG" = 'latest'
+          elif [[ "$EXPECTED_PACKAGE_VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-beta\.(0|[1-9][0-9]*)$ ]]; then
+            test "$RELEASE_PRERELEASE" = 'true'
+            test "$EXPECTED_NPM_DIST_TAG" = 'beta'
+          else
+            echo 'Release version, prerelease flag, and npm dist-tag do not match policy.' >&2
+            exit 1
+          fi
+          test "$RELEASE_TAG" = "v$EXPECTED_PACKAGE_VERSION"
+          test "$EXPECTED_ARCHIVE_NAME" = "kavrix-$EXPECTED_PACKAGE_VERSION.tgz"
+          test "$PACKAGE_ARCHIVE" = "package-artifacts/$EXPECTED_ARCHIVE_NAME"
+          mapfile -t entries < <(find package-artifacts -mindepth 1 -maxdepth 1 -print)
+          test "${#entries[@]}" -eq 1
+          test "${entries[0]}" = "$PACKAGE_ARCHIVE"
+          test -f "$PACKAGE_ARCHIVE"
+          actual_sha256="$(sha256sum "$PACKAGE_ARCHIVE" | awk '{print $1}')"
+          test "$actual_sha256" = "$EXPECTED_ARCHIVE_SHA256"
+          node --input-type=module - "$PACKAGE_ARCHIVE" "$EXPECTED_PACKAGE_VERSION" <<'NODE'
+          import { execFileSync } from 'node:child_process';
+          const [archive, expectedVersion] = process.argv.slice(2);
+          const manifest = JSON.parse(execFileSync(
+            'tar',
+            ['-xOf', archive, 'package/package.json'],
+            { encoding: 'utf8', timeout: 10_000 },
+          ));
+          if (
+            manifest.name !== 'kavrix' ||
+            manifest.version !== expectedVersion ||
+            manifest.private !== false ||
+            manifest.publishConfig?.access !== 'public' ||
+            manifest.publishConfig?.registry !== 'https://registry.npmjs.org/'
+          ) {
+            throw new Error('The downloaded archive manifest violates release policy.');
+          }
+          NODE
       - name: Publish the inspected archive through npm OIDC
         env:
-          PACKAGE_ARCHIVE: ${{ steps.package.outputs.archive }}
-        run: npm publish "$PACKAGE_ARCHIVE" --access public --provenance
+          NPM_DIST_TAG: ${{ needs.validate.outputs.npm_dist_tag }}
+          PACKAGE_ARCHIVE: package-artifacts/${{ needs.validate.outputs.archive_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -z "${NODE_AUTH_TOKEN:-}"
+          test -z "${NPM_TOKEN:-}"
+          npm publish "$PACKAGE_ARCHIVE" \
+            --ignore-scripts \
+            --access public \
+            --tag "$NPM_DIST_TAG" \
+            --provenance

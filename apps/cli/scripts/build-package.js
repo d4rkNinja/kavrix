@@ -118,6 +118,14 @@ function assertPublicManifest(value) {
   if (value.bin?.creds !== './dist/bin.js') {
     throw new Error('The public creds executable must resolve to the compiled bundle.');
   }
+  if (
+    value.publishConfig?.access !== 'public' ||
+    value.publishConfig?.registry !== 'https://registry.npmjs.org/'
+  ) {
+    throw new Error(
+      'The public package must be pinned to public access on the npm registry.',
+    );
+  }
 }
 
 function assertSafeOutputDirectory() {
