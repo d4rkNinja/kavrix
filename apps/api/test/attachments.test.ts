@@ -135,6 +135,56 @@ describe('opaque attachment routes', () => {
     await expectParentHidden(app, ports.token, base);
   });
 
+  it('rejects split attachment key versions without publishing metadata or a change', async () => {
+    const ports = await createTestPorts();
+    const app = tracked(buildApi({ ports: ports.ports, environment: 'test' }));
+    const fixture = attachmentFixture();
+    seedParents(ports.storage, fixture);
+    const base = attachmentUrl(fixture.path);
+
+    for (const chunk of fixture.chunks) {
+      expect(
+        (
+          await app.inject({
+            method: 'PUT',
+            url: `${base}/stream/chunks/${String(chunk.record.index)}`,
+            headers: authHeader(ports.token),
+            payload: { start: fixture.start, chunk },
+          })
+        ).statusCode,
+      ).toBe(200);
+    }
+
+    expect(
+      (
+        await app.inject({
+          method: 'POST',
+          url: `${base}/stream/finalize`,
+          headers: authHeader(ports.token),
+          payload: {
+            start: fixture.start,
+            finalize: {
+              ...fixture.finalize,
+              record: {
+                ...fixture.finalize.record,
+                wrappedAttachmentKey: {
+                  ...fixture.finalize.record.wrappedAttachmentKey,
+                  aad: {
+                    ...fixture.finalize.record.wrappedAttachmentKey.aad,
+                    keyVersion: 2,
+                  },
+                  keyVersion: 2,
+                },
+              },
+            },
+          },
+        })
+      ).statusCode,
+    ).toBe(400);
+    expect(ports.storage.attachments).toHaveLength(0);
+    expect(ports.storage.changes).toHaveLength(0);
+  });
+
   it('fails closed on gaps, replacements, path swaps, bad hashes, and aborts', async () => {
     const ports = await createTestPorts();
     const app = tracked(buildApi({ ports: ports.ports, environment: 'test' }));

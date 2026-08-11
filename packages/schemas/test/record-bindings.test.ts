@@ -508,4 +508,62 @@ describe('vault and opaque record bindings', () => {
       expect(schema.safeParse(value).success).toBe(false);
     }
   });
+
+  it('requires attachment key envelopes to use one exact key version', () => {
+    const base = {
+      id: 'attachment.1',
+      vaultId: 'vault.1',
+      groupId: 'group.1',
+      itemId: 'item.1',
+      schemaVersion: 1,
+      wrappedAttachmentKey: envelope('wrapped-attachment-key', 'attachment.1', {
+        groupId: 'group.1',
+        parentId: 'item.1',
+      }),
+      encryptedManifest: envelope('attachment', 'attachment.1', {
+        groupId: 'group.1',
+        parentId: 'item.1',
+      }),
+      chunkCount: 1,
+      recordRevision: 1,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
+
+    expect(
+      encryptedAttachmentRecordSchema.safeParse({
+        ...base,
+        wrappedAttachmentKey: envelope('wrapped-attachment-key', 'attachment.1', {
+          keyVersion: 2,
+          groupId: 'group.1',
+          parentId: 'item.1',
+        }),
+      }).success,
+    ).toBe(false);
+    expect(
+      encryptedAttachmentRecordSchema.safeParse({
+        ...base,
+        encryptedManifest: envelope('attachment', 'attachment.1', {
+          keyVersion: 2,
+          groupId: 'group.1',
+          parentId: 'item.1',
+        }),
+      }).success,
+    ).toBe(false);
+    expect(
+      encryptedAttachmentRecordSchema.safeParse({
+        ...base,
+        wrappedAttachmentKey: envelope('wrapped-attachment-key', 'attachment.1', {
+          keyVersion: 2,
+          groupId: 'group.1',
+          parentId: 'item.1',
+        }),
+        encryptedManifest: envelope('attachment', 'attachment.1', {
+          keyVersion: 2,
+          groupId: 'group.1',
+          parentId: 'item.1',
+        }),
+      }).success,
+    ).toBe(true);
+  });
 });

@@ -352,6 +352,78 @@ describe('encrypted backup streaming format', () => {
     }
   });
 
+  it('rejects split attachment key versions during creation and verification', async () => {
+    const fixture = await createFixture();
+    try {
+      const graph = createAttachmentGraph();
+      const splitAttachment = {
+        ...graph.attachment,
+        wrappedAttachmentKey: {
+          ...graph.attachment.wrappedAttachmentKey,
+          aad: { ...graph.attachment.wrappedAttachmentKey.aad, keyVersion: 2 },
+          keyVersion: 2,
+        },
+      } as EncryptedAttachmentRecord;
+      const graphEntries = [
+        { kind: 'group', record: fixture.group },
+        { kind: 'item', record: graph.item },
+        { kind: 'attachment', record: splitAttachment },
+        { kind: 'attachment-header', record: graph.header },
+        { kind: 'attachment-chunk', record: graph.chunk },
+      ] as const;
+
+      await expect(
+        collect(
+          createEncryptedBackup(
+            {
+              vault: fixture.vault,
+              records: entries(...graphEntries),
+              createdAt: CREATED_AT,
+            },
+            fixture.rootKey,
+          ),
+        ),
+      ).rejects.toMatchObject({ code: 'BACKUP_INVALID' });
+
+      const validBytes = await collect(
+        createEncryptedBackup(
+          {
+            vault: fixture.vault,
+            records: entries(
+              { kind: 'group', record: fixture.group },
+              { kind: 'item', record: graph.item },
+              { kind: 'attachment', record: graph.attachment },
+              { kind: 'attachment-header', record: graph.header },
+              { kind: 'attachment-chunk', record: graph.chunk },
+            ),
+            createdAt: CREATED_AT,
+          },
+          fixture.rootKey,
+        ),
+      );
+      const lines = validBytes.toString('utf8').trimEnd().split('\n');
+      const attachmentLineIndex = lines.findIndex((line) => {
+        const value = JSON.parse(line) as { kind?: string };
+        return value.kind === 'attachment';
+      });
+      const attachmentEntry = JSON.parse(lines[attachmentLineIndex] ?? '') as {
+        record: EncryptedAttachmentRecord;
+      };
+      attachmentEntry.record = splitAttachment;
+      lines[attachmentLineIndex] = JSON.stringify(attachmentEntry);
+
+      await expect(
+        verifyEncryptedBackup(
+          chunks(Buffer.from(`${lines.join('\n')}\n`, 'utf8')),
+          fixture.rootKey,
+          VAULT_ID,
+        ),
+      ).rejects.toMatchObject({ code: 'BACKUP_INVALID' });
+    } finally {
+      zeroize(fixture.rootKey);
+    }
+  });
+
   it('requires the exact active predecessor before a deleted tombstone', async () => {
     const fixture = await createFixture();
     try {

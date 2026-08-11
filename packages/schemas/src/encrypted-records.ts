@@ -691,6 +691,15 @@ export const encryptedAttachmentRecordSchema = z
       record.groupId,
       record.itemId,
     );
+    if (
+      record.wrappedAttachmentKey.keyVersion !== record.encryptedManifest.keyVersion
+    ) {
+      context.addIssue({
+        code: 'custom',
+        path: ['wrappedAttachmentKey', 'keyVersion'],
+        message: 'Attachment key envelopes must use one exact key version',
+      });
+    }
   });
 
 export const encryptedAuditRecordSchema = z

@@ -945,15 +945,17 @@ function validateAttachmentTransportIdentity(
 ): void {
   const header = start.header;
   const attachmentId = 'id' in record ? record.id : record.attachmentId;
-  const keyVersion =
-    'id' in record ? record.encryptedManifest.keyVersion : record.keyVersion;
+  const keyVersions =
+    'id' in record
+      ? [record.wrappedAttachmentKey.keyVersion, record.encryptedManifest.keyVersion]
+      : [record.keyVersion];
   if (
     record.vaultId !== header.record.vaultId ||
     record.groupId !== header.record.groupId ||
     record.itemId !== header.record.itemId ||
     attachmentId !== header.record.attachmentId ||
     record.schemaVersion !== header.record.schemaVersion ||
-    keyVersion !== header.record.keyVersion ||
+    keyVersions.some((keyVersion) => keyVersion !== header.record.keyVersion) ||
     recordRevision !== header.recordRevision
   ) {
     context.addIssue({

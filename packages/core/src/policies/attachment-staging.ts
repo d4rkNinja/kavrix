@@ -112,6 +112,8 @@ export function validateAttachmentStagingFinalization(
     record.groupId !== header.groupId ||
     record.itemId !== header.itemId ||
     record.schemaVersion !== header.schemaVersion ||
+    record.wrappedAttachmentKey.keyVersion !== header.keyVersion ||
+    record.encryptedManifest.keyVersion !== header.keyVersion ||
     record.recordRevision !== start.header.recordRevision
   ) {
     throw new ValidationError(

@@ -139,6 +139,31 @@ describe('AttachmentTransferTransport', () => {
     ]);
   });
 
+  it('rejects split metadata before requesting an attachment header or chunk', async () => {
+    const fixture = attachmentTransportFixture();
+    const urls: string[] = [];
+    const server = await trackedServer((request, response) => {
+      urls.push(request.url ?? '');
+      sendJson(response, {
+        ...fixture.finalize.record,
+        wrappedAttachmentKey: {
+          ...fixture.finalize.record.wrappedAttachmentKey,
+          aad: {
+            ...fixture.finalize.record.wrappedAttachmentKey.aad,
+            keyVersion: 2,
+          },
+          keyVersion: 2,
+        },
+      });
+    });
+
+    await expect(
+      collect(developmentTransport(server.url).download(fixture.path)),
+    ).rejects.toBeInstanceOf(SyncProtocolError);
+    expect(urls).toHaveLength(1);
+    expect(urls[0]?.endsWith(`/${fixture.path.attachmentId}`)).toBe(true);
+  });
+
   it('rejects mismatched progress, identities, hashes, indexes, and final tags', async () => {
     const fixture = attachmentTransportFixture();
     const wrongProgress = await trackedServer((_request, response) => {

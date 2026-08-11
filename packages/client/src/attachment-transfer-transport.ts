@@ -199,6 +199,11 @@ export class AttachmentTransferTransport {
   > {
     const path = parsePath(pathValue);
     const metadata = await this.getMetadata(path);
+    if (
+      metadata.wrappedAttachmentKey.keyVersion !== metadata.encryptedManifest.keyVersion
+    ) {
+      throw new SyncProtocolError();
+    }
     const header = await this.getHeader(path);
     if (
       header.recordRevision !== metadata.recordRevision ||

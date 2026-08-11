@@ -36,6 +36,7 @@ const purposeByEntity: Readonly<Record<string, string>> = {
 
 function envelope(
   entityType: 'attachment' | 'wrapped-attachment-key',
+  keyVersion = 1,
 ): Record<string, unknown> {
   return {
     version: 1,
@@ -46,7 +47,7 @@ function envelope(
     aad: {
       version: 1,
       schemaVersion: 1,
-      keyVersion: 1,
+      keyVersion,
       vaultId: 'vault.1',
       entityType,
       entityId: 'attachment.1',
@@ -54,7 +55,7 @@ function envelope(
       parentId: 'item.1',
       purpose: purposeByEntity[entityType],
     },
-    keyVersion: 1,
+    keyVersion,
   };
 }
 
@@ -242,6 +243,37 @@ describe('incremental attachment staging policy', () => {
         },
       });
     }).toThrow();
+  });
+
+  it('rejects split and header-mismatched attachment key versions', () => {
+    const final = advanceAttachmentStaging(
+      start(),
+      createAttachmentStagingProgress(),
+      chunk(0, 'final'),
+    );
+    const base = finalRecord(1);
+    const splitRecord = {
+      ...base,
+      wrappedAttachmentKey: envelope('wrapped-attachment-key', 2),
+    } as EncryptedAttachmentRecord;
+    const headerMismatchedRecord = encryptedAttachmentRecordSchema.parse({
+      ...base,
+      wrappedAttachmentKey: envelope('wrapped-attachment-key', 2),
+      encryptedManifest: envelope('attachment', 2),
+    });
+
+    expect(() => {
+      validateAttachmentStagingFinalization(start(), final.progress, {
+        version: 1,
+        record: splitRecord,
+      });
+    }).toThrow();
+    expect(() => {
+      validateAttachmentStagingFinalization(start(), final.progress, {
+        version: 1,
+        record: headerMismatchedRecord,
+      });
+    }).toThrow(ValidationError);
   });
 
   it('enforces aggregate protocol caps from counters without large allocations', () => {
