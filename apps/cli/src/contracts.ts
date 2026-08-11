@@ -87,6 +87,7 @@ export interface CliUseCasePorts {
   joinInvite(
     request: CliInviteJoinRequest,
     portableKey: string,
+    serverUrl?: string,
   ): Promise<CliInviteJoinResult>;
 }
 

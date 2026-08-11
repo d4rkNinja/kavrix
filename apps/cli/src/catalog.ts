@@ -76,6 +76,10 @@ const vaultOption = Object.freeze({
   flags: '--vault <vault-id>',
   description: 'Target an opaque vault ID.',
 });
+const serverOption = Object.freeze({
+  flags: '--server <url>',
+  description: 'Sync server base URL; defaults to CREDS_SERVER_URL when set.',
+});
 const versionCommand: CliCommandDescriptor = Object.freeze({
   name: 'version',
   description: 'Print the Kavrix CLI version without loading vault data.',
@@ -233,6 +237,7 @@ const initializationCommand: CliCommandDescriptor = Object.freeze({
   name: 'init',
   description: 'Initialize a vault through injected protected lifecycle adapters.',
   options: [
+    serverOption,
     {
       flags: '--existing-portable',
       description: 'Import an existing portable key through a masked prompt.',
@@ -261,13 +266,19 @@ const initializationCommand: CliCommandDescriptor = Object.freeze({
           description: 'Opaque initialization operation identifier.',
         },
       ],
-      execute: async (context, arguments_) => {
+      options: [serverOption],
+      execute: async (context, arguments_, options) => {
         const { parseLifecycleOperationId, renderInitializationReceipt } =
           await import('./initialization.js');
         const operationId = parseLifecycleOperationId(
           requiredArgument(arguments_[0], 'operation ID'),
         );
-        const receipt = await initialization(context).coordinator.resume(operationId);
+        const coordinator = initialization(context).coordinator;
+        const serverUrl = optionString(options, 'server');
+        const receipt =
+          serverUrl === undefined
+            ? await coordinator.resume(operationId)
+            : await coordinator.resume(operationId, serverUrl);
         context.stdout.write(renderInitializationReceipt(receipt));
       },
     },
@@ -280,12 +291,19 @@ const initializationCommand: CliCommandDescriptor = Object.freeze({
           description: 'Opaque initialization operation identifier.',
         },
       ],
-      execute: async (context, arguments_) => {
+      options: [serverOption],
+      execute: async (context, arguments_, options) => {
         const { parseLifecycleOperationId } = await import('./initialization.js');
         const operationId = parseLifecycleOperationId(
           requiredArgument(arguments_[0], 'operation ID'),
         );
-        await initialization(context).coordinator.cancel(operationId);
+        const coordinator = initialization(context).coordinator;
+        const serverUrl = optionString(options, 'server');
+        if (serverUrl === undefined) {
+          await coordinator.cancel(operationId);
+        } else {
+          await coordinator.cancel(operationId, serverUrl);
+        }
         context.stdout.write('Initialization cancelled.\n');
       },
     },
@@ -293,11 +311,19 @@ const initializationCommand: CliCommandDescriptor = Object.freeze({
   execute: async (context, _arguments, options) => {
     const { renderInitializationReceipt, startVaultInitialization } =
       await import('./initialization.js');
-    const receipt = await startVaultInitialization(
-      initialization(context),
-      secretInput(context, 'init'),
-      parseInitializationStartOptions(options),
-    );
+    const serverUrl = optionString(options, 'server');
+    const dependencies = initialization(context);
+    const secrets = secretInput(context, 'init');
+    const startOptions = parseInitializationStartOptions(options);
+    const receipt =
+      serverUrl === undefined
+        ? await startVaultInitialization(dependencies, secrets, startOptions)
+        : await startVaultInitialization(
+            dependencies,
+            secrets,
+            startOptions,
+            serverUrl,
+          );
     context.stdout.write(renderInitializationReceipt(receipt));
   },
 });
@@ -455,6 +481,7 @@ export const CLI_COMMAND_CATALOG: readonly CliCommandDescriptor[] = Object.freez
             name: 'join',
             description: 'Redeem an invite without placing its token in argv.',
             options: [
+              serverOption,
               {
                 flags: '--vault <vault-id>',
                 description: 'Join this opaque vault ID, as named by the invite.',
@@ -498,11 +525,12 @@ export const CLI_COMMAND_CATALOG: readonly CliCommandDescriptor[] = Object.freez
                 ([token, vault, version]) =>
                   shapeInviteJoinRequest(token, vault, version),
               );
+              const joinInvite = useCases(context, 'device invite join').joinInvite;
+              const serverUrl = optionString(options, 'server');
               const result = parseJoinResult(
-                await useCases(context, 'device invite join').joinInvite(
-                  request,
-                  portableKey,
-                ),
+                serverUrl === undefined
+                  ? await joinInvite(request, portableKey)
+                  : await joinInvite(request, portableKey, serverUrl),
               );
               const safe = { vaultId: result.vaultId, deviceId: result.deviceId };
               context.stdout.write(
@@ -516,7 +544,27 @@ export const CLI_COMMAND_CATALOG: readonly CliCommandDescriptor[] = Object.freez
       },
     ],
   },
-  {
+  completionCommand(() => CLI_COMMAND_CATALOG),
+]);
+
+/**
+ * Explicit public surface for the packed executable. These are the only command
+ * families with production composition today; the internal catalog above keeps
+ * the remaining dependency-injected commands available to integration tests.
+ */
+export const PUBLIC_CLI_COMMAND_CATALOG: readonly CliCommandDescriptor[] =
+  Object.freeze([
+    versionCommand,
+    generationCommand,
+    totpCommand,
+    keyCommand,
+    completionCommand(() => PUBLIC_CLI_COMMAND_CATALOG),
+  ]);
+
+function completionCommand(
+  catalog: () => readonly CliCommandDescriptor[],
+): CliCommandDescriptor {
+  return Object.freeze({
     name: 'completion',
     description: 'Print static shell completion without reading vault data.',
     arguments: [
@@ -527,34 +575,13 @@ export const CLI_COMMAND_CATALOG: readonly CliCommandDescriptor[] = Object.freez
     ],
     execute: async (context, arguments_) => {
       const shell = parseInput(shellSchema, arguments_[0], 'shell');
-      context.stdout.write(renderCompletion(shell, CLI_COMMAND_CATALOG));
+      // Resolved on invocation: the published catalog cannot reference itself
+      // while it is still being constructed.
+      context.stdout.write(renderCompletion(shell, catalog()));
       await Promise.resolve();
     },
-  },
-]);
-
-export const PUBLIC_CLI_COMMAND_CATALOG: readonly CliCommandDescriptor[] =
-  Object.freeze([
-    versionCommand,
-    generationCommand,
-    totpCommand,
-    keyCommand,
-    {
-      name: 'completion',
-      description: 'Print static shell completion without reading vault data.',
-      arguments: [
-        {
-          syntax: '<shell>',
-          description: 'One of bash, zsh, fish, or powershell.',
-        },
-      ],
-      execute: async (context, arguments_) => {
-        const shell = parseInput(shellSchema, arguments_[0], 'shell');
-        context.stdout.write(renderCompletion(shell, PUBLIC_CLI_COMMAND_CATALOG));
-        await Promise.resolve();
-      },
-    },
-  ]);
+  });
+}
 
 export function registerCommandCatalog(
   program: Command,
@@ -585,7 +612,11 @@ export function registerCommandCatalog(
         const positionals = actionArguments
           .slice(0, argumentCount)
           .map((value) => (typeof value === 'string' ? value : ''));
-        await descriptor.execute?.(context, positionals, invokedCommand.opts());
+        await descriptor.execute?.(
+          context,
+          positionals,
+          invokedCommand.optsWithGlobals(),
+        );
       });
     } else {
       command.action(() => {
@@ -646,6 +677,15 @@ function optionBoolean(
   key: string,
 ): boolean {
   return options[key] === true;
+}
+
+/** Reads an optional string option, treating an empty value as absent. */
+function optionString(
+  options: Readonly<Record<string, unknown>>,
+  key: string,
+): string | undefined {
+  const value = options[key];
+  return typeof value === 'string' && value.length > 0 ? value : undefined;
 }
 
 function parseInitializationStartOptions(

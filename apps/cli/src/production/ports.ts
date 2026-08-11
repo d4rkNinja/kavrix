@@ -32,8 +32,6 @@ export interface ProductionPortsOptions {
   readonly profile: VaultProfile;
   readonly environment: ProductionEnvironment;
   readonly secrets: SecretBackend;
-  /** Acquires the portable key needed to unlock in-process. */
-  readonly unlockKey: () => Promise<string>;
   /** Completes an invite redemption; see `join.ts`. */
   readonly join: (
     request: CliInviteJoinRequest,
@@ -143,7 +141,11 @@ export function createProductionPorts(
         client.revokeInvite(bearer, vaultId, inviteId),
       ),
 
-    joinInvite: async (request) => options.join(request, await options.unlockKey()),
+    // The catalog reads the invite token and the portable key as one masked
+    // batch, so the key arrives as an argument. Reading it again here would
+    // double-prompt interactively and could never succeed under
+    // `--invite-stdin`, where the stream is already exhausted.
+    joinInvite: (request, portableKey) => options.join(request, portableKey),
   };
 }
 

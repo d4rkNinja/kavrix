@@ -2,8 +2,9 @@ import {
   lifecycleOperationIdSchema,
   type LifecycleOperationId,
   type VaultImportedPortableDisplayMaterial,
+  type VaultImportedPortableInitializationCreation,
   type VaultInitializationConfirmation,
-  type VaultInitializationCoordinator,
+  type VaultInitializationCreation,
   type VaultInitializationDisplayMaterial,
   type VaultInitializationInput,
   type VaultLifecycleReceipt,
@@ -42,10 +43,33 @@ export const DEFAULT_VAULT_INITIALIZATION_INPUT: VaultInitializationInput =
     deviceKeyProvider: 'native',
   });
 
-export type CliVaultInitializationPort = Pick<
-  VaultInitializationCoordinator,
-  'begin' | 'beginImportedPortable' | 'resume' | 'cancel'
->;
+/**
+ * The initialization surface the CLI depends on.
+ *
+ * `VaultInitializationCoordinator` satisfies this structurally. The two `begin`
+ * members are declared as awaitable rather than borrowed verbatim so the
+ * production adapter can construct the coordinator behind a dynamic `import()`
+ * on first use: the packed binary must not evaluate the crypto graph for
+ * `--version` or `completion`.
+ */
+export interface CliVaultInitializationPort {
+  begin(
+    input: VaultInitializationInput,
+    serverUrl?: string,
+  ): VaultInitializationCreation | Promise<VaultInitializationCreation>;
+  beginImportedPortable(
+    input: VaultInitializationInput,
+    formattedPortableKey: string,
+    serverUrl?: string,
+  ):
+    | VaultImportedPortableInitializationCreation
+    | Promise<VaultImportedPortableInitializationCreation>;
+  resume(
+    operationId: LifecycleOperationId,
+    serverUrl?: string,
+  ): Promise<VaultLifecycleReceipt>;
+  cancel(operationId: LifecycleOperationId, serverUrl?: string): Promise<void>;
+}
 
 export type SensitiveInitializationMaterial =
   VaultInitializationDisplayMaterial | VaultImportedPortableDisplayMaterial;
@@ -97,14 +121,23 @@ export type CliInitializationStartOptions =
       confirmationFromStdin: true;
     }>;
 
+/**
+ * `serverUrl` is the sync server the new vault will belong to. It is forwarded
+ * rather than resolved here: only the adapter knows whether an omitted `--server`
+ * can fall back to an environment default.
+ */
 export async function startVaultInitialization(
   dependencies: CliInitializationDependencies,
   secrets: SecretInputPort,
   options: CliInitializationStartOptions,
+  serverUrl?: string,
 ): Promise<VaultLifecycleReceipt> {
   const input = dependencies.input ?? DEFAULT_VAULT_INITIALIZATION_INPUT;
   if (options.source === 'generated') {
-    const creation = dependencies.coordinator.begin(input);
+    const creation =
+      serverUrl === undefined
+        ? await dependencies.coordinator.begin(input)
+        : await dependencies.coordinator.begin(input, serverUrl);
     try {
       await displayAndAcknowledge(
         dependencies.sensitiveDisplay,
@@ -144,10 +177,14 @@ export async function startVaultInitialization(
     importedPortable = requiredFrame(frames, 0);
   }
 
-  const creation = dependencies.coordinator.beginImportedPortable(
-    input,
-    importedPortable,
-  );
+  const creation =
+    serverUrl === undefined
+      ? await dependencies.coordinator.beginImportedPortable(input, importedPortable)
+      : await dependencies.coordinator.beginImportedPortable(
+          input,
+          importedPortable,
+          serverUrl,
+        );
   try {
     await displayAndAcknowledge(
       dependencies.sensitiveDisplay,

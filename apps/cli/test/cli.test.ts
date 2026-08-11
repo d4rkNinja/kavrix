@@ -368,17 +368,79 @@ describe('CLI command shell', () => {
   });
 
   it('limits the production bin catalog to commands with real static behavior', async () => {
-    const staticCompletion = await executePublic(['completion', 'bash']);
-    expect(staticCompletion.exitCode).toBe(CLI_EXIT_CODES.success);
-    expect(staticCompletion.stdout).toContain("'version generate totp key completion'");
-    expect(staticCompletion.stdout).not.toMatch(
-      /\b(?:init|status|lock|show|copy|device)\b/u,
+    const publishedCommands = 'version generate totp key completion';
+    const unavailableCommands = /\b(?:init|status|lock|show|copy|device)\b/u;
+    const help = await executePublic(['--help']);
+    expect(help.exitCode).toBe(CLI_EXIT_CODES.success);
+    for (const command of publishedCommands.split(' ')) {
+      expect(help.stdout).toContain(command);
+    }
+    expect(help.stdout).not.toMatch(unavailableCommands);
+
+    for (const shell of ['bash', 'zsh', 'fish', 'powershell']) {
+      const completion = await executePublic(['completion', shell]);
+      expect(completion.exitCode).toBe(CLI_EXIT_CODES.success);
+      expect(completion.stdout).toContain(publishedCommands);
+      expect(completion.stdout).not.toMatch(unavailableCommands);
+    }
+
+    for (const unavailableOperation of [
+      ['init'],
+      ['status'],
+      ['lock'],
+      ['show'],
+      ['copy'],
+      ['device'],
+    ]) {
+      const result = await executePublic(unavailableOperation);
+      expect(result.exitCode).toBe(CLI_EXIT_CODES.usage);
+      expect(result.stderr).toBe(
+        "Error [CLI_USAGE]: Invalid command usage. Run 'creds --help'.\n",
+      );
+    }
+  });
+
+  it('forwards the invite server only when explicitly supplied', async () => {
+    const joinInvite = vi.fn(() =>
+      Promise.resolve({
+        vaultId: vaultIdSchema.parse('vault.primary'),
+        deviceId: deviceIdSchema.parse('device.new'),
+      }),
+    );
+    const secrets: SecretInputPort = {
+      read: () => Promise.reject(new Error('Unexpected single secret read')),
+      readBatch: () => Promise.resolve([ACQUIRED_TOKEN, ACQUIRED_PORTABLE_KEY]),
+    };
+
+    await execute(
+      ['device', 'invite', 'join', '--vault', 'vault.primary'],
+      { joinInvite },
+      secrets,
+    );
+    await execute(
+      [
+        'device',
+        'invite',
+        'join',
+        '--vault',
+        'vault.primary',
+        '--server',
+        'https://sync.example/',
+      ],
+      { joinInvite },
+      secrets,
     );
 
-    const unavailableOperation = await executePublic(['status']);
-    expect(unavailableOperation.exitCode).toBe(CLI_EXIT_CODES.usage);
-    expect(unavailableOperation.stderr).toBe(
-      "Error [CLI_USAGE]: Invalid command usage. Run 'creds --help'.\n",
+    expect(joinInvite).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ vaultId: 'vault.primary' }),
+      PORTABLE_KEY,
+    );
+    expect(joinInvite).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ vaultId: 'vault.primary' }),
+      PORTABLE_KEY,
+      'https://sync.example/',
     );
   });
 });

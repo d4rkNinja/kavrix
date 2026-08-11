@@ -462,6 +462,49 @@ describe('injectable initialization commands', () => {
     expect(cancel).toHaveBeenCalledWith(OPERATION_ID);
   });
 
+  it('forwards the initialization server only when explicitly supplied', async () => {
+    const begin = vi.fn(() => generatedAttempt([]));
+    const resume = vi.fn(() => Promise.resolve(RECEIPT));
+    const cancel = vi.fn(() => Promise.resolve());
+    const dependencies = {
+      coordinator: coordinatorWith({ begin, resume, cancel }),
+      sensitiveDisplay: recordingDisplay([]).port,
+    };
+    const secrets = secretInput({
+      readBatch: () => Promise.resolve([PORTABLE, RECOVERY]),
+    });
+
+    await executeInit(['init'], dependencies, secrets);
+    await executeInit(
+      ['init', '--server', 'https://sync.example/'],
+      dependencies,
+      secrets,
+    );
+    await executeInit(['init', 'resume', OPERATION_ID], dependencies, secrets);
+    await executeInit(
+      ['init', 'resume', OPERATION_ID, '--server', 'https://sync.example/'],
+      dependencies,
+      secrets,
+    );
+    await executeInit(['init', 'cancel', OPERATION_ID], dependencies, secrets);
+    await executeInit(
+      ['init', 'cancel', OPERATION_ID, '--server', 'https://sync.example/'],
+      dependencies,
+      secrets,
+    );
+
+    expect(begin).toHaveBeenNthCalledWith(1, expect.any(Object));
+    expect(begin).toHaveBeenNthCalledWith(
+      2,
+      expect.any(Object),
+      'https://sync.example/',
+    );
+    expect(resume).toHaveBeenNthCalledWith(1, OPERATION_ID);
+    expect(resume).toHaveBeenNthCalledWith(2, OPERATION_ID, 'https://sync.example/');
+    expect(cancel).toHaveBeenNthCalledWith(1, OPERATION_ID);
+    expect(cancel).toHaveBeenNthCalledWith(2, OPERATION_ID, 'https://sync.example/');
+  });
+
   it('keeps argv, environment, completion, output, and errors free of canaries', async () => {
     const environmentCanary = 'KAVRIX_INIT_ENV_SECRET_CANARY';
     vi.stubEnv('KAVRIX_PORTABLE_KEY', environmentCanary);
