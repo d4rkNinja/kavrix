@@ -1,7 +1,6 @@
 import {
   VaultClientSession,
   type ControlPlaneClient,
-  type CredentialCopyOptions,
   type CredentialCopyReceipt,
   type VaultProfile,
 } from '@kavrix/client';
@@ -20,7 +19,7 @@ import type {
   CliStatus,
   CliUseCasePorts,
 } from '../contracts.js';
-import { CliUsageError } from '../errors.js';
+import { CliUnavailableError, CliUsageError } from '../errors.js';
 import type { ProductionEnvironment } from './environment.js';
 import type { SecretBackend } from './secret-backend.js';
 import { productionClock, randomIdempotencyKeys } from './runtime-adapters.js';
@@ -39,24 +38,34 @@ export interface ProductionPortsOptions {
     serverUrl?: string,
   ) => Promise<CliInviteJoinResult>;
   readonly allowInsecureLoopbackDevelopment?: boolean;
+  readonly sessionFactory?: (
+    options: ConstructorParameters<typeof VaultClientSession>[0],
+  ) => ProductionVaultSession;
+}
+
+export interface ProductionVaultSession {
+  unlockRememberedDevice(): Promise<void>;
+  synchronize(): Promise<unknown>;
+  show(groupQuery: string, credentialQuery: string): Promise<CliShowResult>;
+  lock(): Promise<void>;
 }
 
 /**
  * Production `CliUseCasePorts`.
  *
  * Each `creds` invocation is a fresh process with no daemon, so the vault is
- * always locked at start. `show` and `copy` therefore unlock, act, and lock
- * again within the single command; `status` reports the honest per-process
- * state rather than pretending a background session exists.
+ * always locked at start. `show` therefore unlocks, synchronizes, reads, and
+ * locks again within the single command. `copy` fails closed because this
+ * process cannot outlive its clipboard-clear timer.
  */
 export function createProductionPorts(
   options: ProductionPortsOptions,
 ): CliUseCasePorts {
   const lastSyncStatus = { value: 'offline' as SyncStatus['state'] };
 
-  const openSession = async (): Promise<VaultClientSession> => {
+  const openSession = async (): Promise<ProductionVaultSession> => {
     const store = await options.environment.openSyncStore(options.profile);
-    return new VaultClientSession({
+    const configuration: ConstructorParameters<typeof VaultClientSession>[0] = {
       profile: options.profile,
       sessions: options.secrets.sessions,
       keychain: options.secrets.keychain,
@@ -77,20 +86,48 @@ export function createProductionPorts(
       ...(options.allowInsecureLoopbackDevelopment === true
         ? { allowInsecureLoopbackDevelopment: true }
         : {}),
-    });
+    };
+    return options.sessionFactory === undefined
+      ? new VaultClientSession(configuration)
+      : options.sessionFactory(configuration);
   };
 
   /** Unlocks with the remembered device key, runs, then always relocks. */
   const withUnlocked = async <Output>(
-    operation: (session: VaultClientSession) => Promise<Output>,
+    operation: (session: ProductionVaultSession) => Promise<Output>,
+    synchronize = false,
   ): Promise<Output> => {
     const session = await openSession();
+    let outcome:
+      | Readonly<{ succeeded: true; value: Output }>
+      | Readonly<{ succeeded: false; error: unknown }>;
     try {
       await session.unlockRememberedDevice();
-      return await operation(session);
-    } finally {
-      await session.lock().catch(() => undefined);
+      if (synchronize) await session.synchronize();
+      outcome = { succeeded: true, value: await operation(session) };
+    } catch (error) {
+      outcome = { succeeded: false, error };
     }
+    let cleanupOutcome:
+      Readonly<{ succeeded: true }> | Readonly<{ succeeded: false; error: unknown }>;
+    try {
+      await session.lock();
+      cleanupOutcome = { succeeded: true };
+    } catch (error) {
+      cleanupOutcome = { succeeded: false, error };
+    }
+    if (!cleanupOutcome.succeeded) {
+      if (!outcome.succeeded) {
+        throw new AggregateError(
+          [outcome.error, cleanupOutcome.error],
+          'The vault operation and cleanup both failed.',
+          { cause: outcome.error },
+        );
+      }
+      throw cleanupOutcome.error;
+    }
+    if (!outcome.succeeded) throw outcome.error;
+    return outcome.value;
   };
 
   return {
@@ -98,9 +135,10 @@ export function createProductionPorts(
       const { vaultId, deviceId } = options.profile;
       const store = await options.environment.openSyncStore(options.profile);
       const pending = await store.listPendingMutations(vaultId);
-      const protectedState = await options.secrets.protectedSyncState
-        .load(vaultId, deviceId)
-        .catch(() => null);
+      const protectedState = await options.secrets.protectedSyncState.load(
+        vaultId,
+        deviceId,
+      );
       const status: CliStatus = {
         // No daemon holds keys between invocations, so a fresh process is locked.
         vaultState: 'locked',
@@ -120,17 +158,10 @@ export function createProductionPorts(
     },
 
     show: (groupQuery, credentialQuery): Promise<CliShowResult> =>
-      withUnlocked((session) => session.show(groupQuery, credentialQuery)),
+      withUnlocked((session) => session.show(groupQuery, credentialQuery), true),
 
-    copy: (
-      groupQuery,
-      credentialQuery,
-      fieldQuery,
-      copyOptions?: CredentialCopyOptions,
-    ): Promise<CredentialCopyReceipt> =>
-      withUnlocked((session) =>
-        session.copy(groupQuery, credentialQuery, fieldQuery, copyOptions ?? {}),
-      ),
+    copy: (): Promise<CredentialCopyReceipt> =>
+      Promise.reject(new CliUnavailableError('copy')),
 
     listInvites: (vaultId: VaultId): Promise<readonly PublicInviteRecord[]> =>
       withRemoteVault(options, vaultId, (client, bearer) =>

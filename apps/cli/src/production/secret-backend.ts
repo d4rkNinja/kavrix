@@ -6,7 +6,7 @@ import {
   NativeKeychain,
   NativeProtectedSyncState,
   NativeSessionCredentials,
-  tryLoadNativeEntryFactory,
+  loadNativeEntryFactory,
   type NativeEntryFactory,
 } from '@kavrix/keychain';
 
@@ -22,18 +22,30 @@ export interface SecretBackend {
   close(): Promise<void>;
 }
 
+export type SecretBackendPolicy = SecretBackend['kind'];
+
+export type SecretBackendDependencies = Readonly<{
+  loadNativeEntryFactory: () => Promise<NativeEntryFactory>;
+}>;
+
+const DEFAULT_DEPENDENCIES: SecretBackendDependencies = {
+  loadNativeEntryFactory,
+};
+
 /**
- * The user-chosen policy: use the operating-system keychain when the optional
- * native adapter is installed, and fall back to an encrypted sealed file
- * otherwise. The four hardened port classes are identical under either entry
- * factory, so only the factory differs between backends.
+ * The user-chosen policy is explicit. Native mode fails closed when its adapter
+ * is unavailable; sealed-file mode never probes native storage.
  */
 export async function createSecretBackend(
   paths: CliDataPaths,
   secrets: SecretInputPort,
+  policy: SecretBackendPolicy,
+  dependencies: SecretBackendDependencies = DEFAULT_DEPENDENCIES,
 ): Promise<SecretBackend> {
-  const native = await tryLoadNativeEntryFactory();
-  if (native !== null) return backend('native', native, () => Promise.resolve());
+  if (policy === 'native') {
+    const native = await dependencies.loadNativeEntryFactory();
+    return backend('native', native, () => Promise.resolve());
+  }
 
   const store = new SealedSecretStore({
     directory: paths.sealedSecrets,

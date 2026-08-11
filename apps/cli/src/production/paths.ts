@@ -12,6 +12,7 @@ const APPLICATION_DIRECTORY = 'kavrix';
  */
 export interface CliDataPaths {
   readonly home: string;
+  readonly writerLease: string;
   readonly profileStore: string;
   readonly initializationJournal: string;
   readonly joinJournal: string;
@@ -31,6 +32,7 @@ export function resolveCliDataPaths(
   const home = resolveHome(environment, platform);
   return {
     home,
+    writerLease: join(home, 'cli.writer.lock'),
     profileStore: join(home, 'profiles.db'),
     initializationJournal: join(home, 'init-journal.db'),
     joinJournal: join(home, 'join-journal.db'),
