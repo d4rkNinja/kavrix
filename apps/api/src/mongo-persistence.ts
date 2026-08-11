@@ -516,7 +516,12 @@ export class MongoAuthorizationPort implements AuthorizationPort {
           );
           if (sessionClaimValue === null) return null;
           mongoApiCredentialClaimDocumentSchema.parse(sessionClaimValue);
-          return this.#loadDevice(enrollment.deviceId, enrollment.vaultId, session);
+          return this.#loadActiveEnrollmentDevice(
+            enrollment.deviceId,
+            enrollment.vaultId,
+            completion.sessionTokenHash,
+            session,
+          );
         }
         if (
           enrollment.vaultId !== completion.vaultId ||
@@ -746,16 +751,36 @@ export class MongoAuthorizationPort implements AuthorizationPort {
     });
   }
 
-  async #loadDevice(
+  async #loadActiveEnrollmentDevice(
     deviceId: DeviceId,
     vaultId: VaultId,
+    sessionTokenHash: Sha256Digest,
     session: ClientSession,
   ): Promise<DeviceRecord | null> {
-    const value = await this.#devices().findOne(
-      { _id: deviceId, vaultId },
+    const deviceValue = await this.#devices().findOne(
+      { _id: deviceId, vaultId, 'record.revokedAt': { $exists: false } },
       { session },
     );
-    return value === null ? null : mongoApiDeviceDocumentSchema.parse(value).record;
+    const sessionValue = await this.#sessions().findOne(
+      {
+        _id: sessionTokenHash,
+        vaultId,
+        deviceId,
+        revokedAt: { $exists: false },
+      },
+      { session },
+    );
+    if (deviceValue === null || sessionValue === null) return null;
+    const device = mongoApiDeviceDocumentSchema.parse(deviceValue).record;
+    const activeSession = mongoApiSessionDocumentSchema.parse(sessionValue);
+    if (
+      device.tokenHash !== sessionTokenHash ||
+      device.scopes.length !== activeSession.scopes.length ||
+      !device.scopes.every((scope) => activeSession.scopes.includes(scope))
+    ) {
+      return null;
+    }
+    return device;
   }
 
   async #withTransaction<Result>(

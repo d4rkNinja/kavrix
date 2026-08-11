@@ -236,6 +236,7 @@ export class VaultJoinCoordinator {
         record.sessionSuccessor,
         record.completionRequest,
       );
+      await this.#validateCommittedSession(record);
       await this.#storeFinalSession(record);
       return await this.#commit(record);
     } catch (error) {
@@ -246,13 +247,8 @@ export class VaultJoinCoordinator {
   }
 
   async #recoverCommittedSession(record: JoinActiveJournalRecord): Promise<boolean> {
-    const sessionBearer = bearerFromBytes(record.sessionSuccessor);
     try {
-      await this.#options.controlPlane.getSession(
-        sessionBearer,
-        record.expectedVaultId,
-        record.deviceId,
-      );
+      await this.#validateCommittedSession(record);
     } catch (error) {
       if (
         error instanceof ControlPlaneFailure &&
@@ -264,6 +260,15 @@ export class VaultJoinCoordinator {
     }
     await this.#storeFinalSession(record);
     return true;
+  }
+
+  async #validateCommittedSession(record: JoinActiveJournalRecord): Promise<void> {
+    const sessionBearer = bearerFromBytes(record.sessionSuccessor);
+    await this.#options.controlPlane.getSession(
+      sessionBearer,
+      record.expectedVaultId,
+      record.deviceId,
+    );
   }
 
   async #storeFinalSession(record: JoinActiveJournalRecord): Promise<void> {

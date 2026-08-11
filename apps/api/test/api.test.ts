@@ -542,6 +542,36 @@ describe('zero-knowledge Fastify API', () => {
       sessionToken,
     );
 
+    const activePrincipal = fixture.authorization.sessions.get(sessionIssued.hash);
+    const activeDevice = fixture.authorization.devices.get(newDeviceId);
+    if (activePrincipal === undefined || activeDevice === undefined) {
+      throw new Error('Enrollment did not persist its authorization records');
+    }
+    fixture.authorization.sessions.delete(sessionIssued.hash);
+    const replayWithoutSession = await app.inject({
+      method: 'POST',
+      url: '/v1/enrollments/complete',
+      headers: exchangeHeaders(enrollmentToken, sessionToken),
+      payload: { vaultId, deviceId: newDeviceId, schemaVersion: 1 },
+    });
+    expect(replayWithoutSession.statusCode).toBe(401);
+    expect(replayWithoutSession.json()).toEqual(crossedCompletion.json());
+
+    fixture.authorization.sessions.set(sessionIssued.hash, activePrincipal);
+    fixture.authorization.devices.set(
+      newDeviceId,
+      deviceRecordSchema.parse({ ...activeDevice, revokedAt: nowIso }),
+    );
+    const replayWithRevokedDevice = await app.inject({
+      method: 'POST',
+      url: '/v1/enrollments/complete',
+      headers: exchangeHeaders(enrollmentToken, sessionToken),
+      payload: { vaultId, deviceId: newDeviceId, schemaVersion: 1 },
+    });
+    expect(replayWithRevokedDevice.statusCode).toBe(401);
+    expect(replayWithRevokedDevice.json()).toEqual(crossedCompletion.json());
+    fixture.authorization.devices.set(newDeviceId, activeDevice);
+
     const session = await app.inject({
       method: 'GET',
       url: '/v1/session',
@@ -580,6 +610,19 @@ describe('zero-knowledge Fastify API', () => {
       headers: authHeader(sessionToken),
     });
     expect(afterRevocation.statusCode).toBe(401);
+
+    const revokedCompletionReplay = await app.inject({
+      method: 'POST',
+      url: '/v1/enrollments/complete',
+      headers: exchangeHeaders(enrollmentToken, sessionToken),
+      payload: { vaultId, deviceId: newDeviceId, schemaVersion: 1 },
+    });
+    expect(revokedCompletionReplay.statusCode).toBe(401);
+    expect(revokedCompletionReplay.json()).toEqual(crossedCompletion.json());
+    expect(fixture.authorization.sessions.has(sessionIssued.hash)).toBe(false);
+    expect(fixture.authorization.devices.get(newDeviceId)).toMatchObject({
+      revokedAt: nowIso,
+    });
   });
 
   it('authenticates before parsing control-list queries and enforces page limits', async () => {

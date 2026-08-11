@@ -276,9 +276,22 @@ export class MemoryAuthorization implements AuthorizationPort {
   ): Promise<DeviceRecord | null> {
     const previous = this.completions.get(enrollmentTokenHash);
     if (previous !== undefined) {
+      const device = this.devices.get(completion.deviceId);
+      const session = this.sessions.get(completion.sessionTokenHash);
+      const intactAuthorization =
+        device !== undefined &&
+        session !== undefined &&
+        device.revokedAt === undefined &&
+        device.vaultId === completion.vaultId &&
+        device.tokenHash === completion.sessionTokenHash &&
+        session.vaultId === completion.vaultId &&
+        session.deviceId === completion.deviceId &&
+        session.scopes.length === device.scopes.length &&
+        device.scopes.every((scope) => session.scopes.includes(scope));
       return Promise.resolve(
         isDeepStrictEqual(previous.input, completion) &&
-          Date.parse(previous.expiresAt) > now.getTime()
+          Date.parse(previous.expiresAt) > now.getTime() &&
+          intactAuthorization
           ? structuredClone(previous.value)
           : null,
       );

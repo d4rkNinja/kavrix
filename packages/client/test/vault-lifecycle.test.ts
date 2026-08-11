@@ -899,6 +899,73 @@ describe('VaultJoinCoordinator', () => {
     expect(harness.joinJournal.record?.state).toBe('committed');
   });
 
+  it('does not persist or commit a session revoked after a lost completion response', async () => {
+    const fixture = await portableVault();
+    const requests: CapturedRequest[] = [];
+    let disconnectCompletion = true;
+    let revoked = false;
+    const server = await lifecycleServer(requests, {
+      redeemVault: fixture.vault,
+      sessionAuthorized: () => !revoked,
+      complete: () => {
+        if (disconnectCompletion) {
+          disconnectCompletion = false;
+          return 'disconnected';
+        }
+        return revoked ? 'unauthorized' : undefined;
+      },
+    });
+    const harness = joinHarness(server.url, '.revoked-replay');
+    const preparation = await harness.coordinator.begin({
+      inviteBearer: bearer(80),
+      expectedVaultId: fixture.vault.id,
+    });
+
+    await expect(
+      harness.coordinator.resume(preparation.operationId, fixture.formattedPortableKey),
+    ).rejects.toThrow();
+    expect(harness.joinJournal.record?.state).toBe('completion-attempted');
+    expect(harness.sessions.size).toBe(0);
+
+    revoked = true;
+    await expect(
+      harness.coordinator.resume(preparation.operationId, fixture.formattedPortableKey),
+    ).rejects.toMatchObject({ kind: 'unauthorized' });
+    expect(paths(requests, '/v1/session')).toHaveLength(1);
+    expect(paths(requests, '/v1/enrollments/complete')).toHaveLength(2);
+    expect(harness.sessions.size).toBe(0);
+    expect(harness.sessions.capturedStoreInputs).toHaveLength(0);
+    expect(harness.joinJournal.record?.state).toBe('completion-attempted');
+  });
+
+  it('validates a completed session before protected storage and commit', async () => {
+    const fixture = await portableVault();
+    const requests: CapturedRequest[] = [];
+    let revoked = false;
+    const server = await lifecycleServer(requests, {
+      redeemVault: fixture.vault,
+      sessionAuthorized: () => !revoked,
+      complete: () => {
+        revoked = true;
+        return undefined;
+      },
+    });
+    const harness = joinHarness(server.url, '.completion-revoked');
+    const preparation = await harness.coordinator.begin({
+      inviteBearer: bearer(81),
+      expectedVaultId: fixture.vault.id,
+    });
+
+    await expect(
+      harness.coordinator.resume(preparation.operationId, fixture.formattedPortableKey),
+    ).rejects.toMatchObject({ kind: 'unauthorized' });
+    expect(paths(requests, '/v1/enrollments/complete')).toHaveLength(1);
+    expect(paths(requests, '/v1/session')).toHaveLength(1);
+    expect(harness.sessions.size).toBe(0);
+    expect(harness.sessions.capturedStoreInputs).toHaveLength(0);
+    expect(harness.joinJournal.record?.state).toBe('completion-attempted');
+  });
+
   it('bounds replay by redemption expiry and only cancels before network use', async () => {
     const fixture = await portableVault();
     const requests: CapturedRequest[] = [];
@@ -1258,7 +1325,12 @@ async function lifecycleServer(
     ) => undefined | 'disconnected' | Promise<undefined | 'disconnected'>;
     readonly complete?: (
       request: IncomingMessage,
-    ) => undefined | 'disconnected' | Promise<undefined | 'disconnected'>;
+    ) =>
+      | undefined
+      | 'disconnected'
+      | 'unauthorized'
+      | Promise<undefined | 'disconnected' | 'unauthorized'>;
+    readonly sessionAuthorized?: () => boolean;
   } = {},
 ): Promise<LoopbackServer> {
   let bootstrapped: VaultBootstrapRequest | undefined;
@@ -1299,11 +1371,18 @@ async function lifecycleServer(
       activeSessionBearer = seen.successor;
       const result = await options.complete?.(request);
       if (result === 'disconnected') return;
+      if (result === 'unauthorized') {
+        json(response, 401, { error: { code: 'UNAUTHORIZED', message: 'denied' } });
+        return;
+      }
       json(response, 201, { vaultId: body.vaultId, deviceId: body.deviceId });
       return;
     }
     if (seen.path === '/v1/session' && seen.method === 'GET') {
-      if (seen.authorization !== `Bearer ${activeSessionBearer ?? ''}`) {
+      if (
+        seen.authorization !== `Bearer ${activeSessionBearer ?? ''}` ||
+        options.sessionAuthorized?.() === false
+      ) {
         json(response, 401, { error: { code: 'UNAUTHORIZED', message: 'denied' } });
         return;
       }

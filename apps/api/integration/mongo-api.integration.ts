@@ -98,11 +98,51 @@ describeMongo('Mongo API adapters against a transaction-capable replica set', ()
         new Date(baseTime.getTime() + 1_000),
       ),
     ).resolves.toEqual(device);
+    await expect(
+      database
+        .collection(mongoApiCollectionNames.credentialClaims)
+        .updateOne(
+          { _id: session.hash, kind: 'session' },
+          { $set: { parentHash: invite.hash } },
+        ),
+    ).resolves.toMatchObject({ modifiedCount: 1 });
+    await expect(
+      authorization.completeEnrollment(
+        enrollment.hash,
+        completion,
+        new Date(baseTime.getTime() + 1_500),
+      ),
+    ).resolves.toBeNull();
+    await expect(
+      database
+        .collection(mongoApiCollectionNames.credentialClaims)
+        .updateOne(
+          { _id: session.hash, kind: 'session' },
+          { $set: { parentHash: enrollment.hash } },
+        ),
+    ).resolves.toMatchObject({ modifiedCount: 1 });
     await expect(authorization.findSession(session.hash, baseTime)).resolves.toEqual({
       vaultId,
       deviceId: completion.deviceId,
       scopes: ['sync:read', 'sync:write', 'device:manage'],
     });
+
+    const revokedAt = timestampSchema.parse(
+      new Date(baseTime.getTime() + 2_000).toISOString(),
+    );
+    await expect(
+      authorization.revokeDevice(vaultId, completion.deviceId, revokedAt),
+    ).resolves.toBe(true);
+    await expect(
+      authorization.completeEnrollment(
+        enrollment.hash,
+        completion,
+        new Date(baseTime.getTime() + 3_000),
+      ),
+    ).resolves.toBeNull();
+    await expect(
+      authorization.findSession(session.hash, new Date(baseTime.getTime() + 3_000)),
+    ).resolves.toBeNull();
 
     const afterExpiry = new Date(Date.parse(enrollmentExpiry) + 1);
     await expect(
@@ -115,17 +155,6 @@ describeMongo('Mongo API adapters against a transaction-capable replica set', ()
     ).resolves.toBeNull();
     await expect(
       authorization.completeEnrollment(enrollment.hash, completion, afterExpiry),
-    ).resolves.toBeNull();
-
-    await expect(
-      authorization.revokeDevice(
-        vaultId,
-        completion.deviceId,
-        timestampSchema.parse(afterExpiry.toISOString()),
-      ),
-    ).resolves.toBe(true);
-    await expect(
-      authorization.findSession(session.hash, afterExpiry),
     ).resolves.toBeNull();
 
     const publicInvitePage = await authorization.listInvitePage(
@@ -232,6 +261,65 @@ describeMongo('Mongo API adapters against a transaction-capable replica set', ()
         baseTime,
       ),
     ).resolves.not.toBeNull();
+  });
+
+  it('linearizes exact completion replay against device revocation', async () => {
+    const invite = await tokenPort.issue();
+    const enrollment = await tokenPort.issue();
+    const session = await tokenPort.issue();
+    await authorization.createInvite(grant('invite.mongo-replay-revoke', invite.hash));
+    await expect(
+      authorization.redeemInvite(
+        invite.hash,
+        enrollment.hash,
+        plusMinutes(5),
+        baseTime,
+      ),
+    ).resolves.not.toBeNull();
+    const completion = {
+      vaultId,
+      deviceId: deviceIdSchema.parse('device.mongo-replay-revoke'),
+      schemaVersion: schemaVersionSchema.parse(1),
+      sessionTokenHash: session.hash,
+    };
+    await expect(
+      authorization.completeEnrollment(enrollment.hash, completion, baseTime),
+    ).resolves.toMatchObject({ id: completion.deviceId });
+
+    const revokedAt = timestampSchema.parse(
+      new Date(baseTime.getTime() + 1_000).toISOString(),
+    );
+    const [racedReplay, revoked] = await Promise.all([
+      authorization.completeEnrollment(
+        enrollment.hash,
+        completion,
+        new Date(baseTime.getTime() + 1_000),
+      ),
+      authorization.revokeDevice(vaultId, completion.deviceId, revokedAt),
+    ]);
+    expect(revoked).toBe(true);
+    expect(racedReplay === null || racedReplay.id === completion.deviceId).toBe(true);
+
+    await expect(
+      authorization.findSession(session.hash, new Date(baseTime.getTime() + 2_000)),
+    ).resolves.toBeNull();
+    await expect(
+      authorization.completeEnrollment(
+        enrollment.hash,
+        completion,
+        new Date(baseTime.getTime() + 2_000),
+      ),
+    ).resolves.toBeNull();
+    await expect(
+      database
+        .collection<RawMongoDocument>(mongoApiCollectionNames.devices)
+        .findOne({ _id: completion.deviceId }),
+    ).resolves.toMatchObject({ record: { revokedAt } });
+    await expect(
+      database
+        .collection<RawMongoDocument>(mongoApiCollectionNames.sessions)
+        .findOne({ _id: session.hash }),
+    ).resolves.toMatchObject({ revokedAt });
   });
 
   it('does not consume enrollment on a global device-ID collision', async () => {
