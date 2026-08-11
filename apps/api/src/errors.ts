@@ -59,6 +59,13 @@ export class ApiAtomicPublicationConflictError extends Error {
   }
 }
 
+export class ApiSyncRollbackError extends Error {
+  public constructor() {
+    super('The sync cursor is not accepted');
+    this.name = 'ApiSyncRollbackError';
+  }
+}
+
 export class ApiAttachmentConflictError extends Error {
   public constructor() {
     super('The opaque attachment stream has a conflict');

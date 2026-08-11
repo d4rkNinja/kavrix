@@ -15,6 +15,7 @@ import {
 } from '@kavrix/schemas';
 import {
   SyncProtocolError,
+  SyncRollbackError,
   SyncTransportFailure,
   classifySyncFailure,
 } from '@kavrix/sync';
@@ -356,6 +357,56 @@ describe('FetchSyncTransport', () => {
         timeoutMs: 1_000,
       }).pull({ vaultId: fixture.vaultId, cursor, limit: 1 }),
     ).rejects.toMatchObject({ kind: 'offline' });
+  });
+
+  it('maps only pull conflicts to rollback without retaining the response body', async () => {
+    const fixture = await encryptedFixture();
+    const bodyCanary = 'rollback-response-body-canary-5f4c';
+    const server = await trackedServer((_request, response) => {
+      response.statusCode = 409;
+      response.setHeader('content-type', 'application/json');
+      response.end(JSON.stringify({ error: bodyCanary }));
+    });
+    const transport = developmentTransport(server.url);
+    const cursor = syncCursorSchema.parse({
+      vaultId: fixture.vaultId,
+      serverSequence: 0,
+      highestSeenVaultRevision: 0,
+    });
+
+    const pullError = await transport
+      .pull({ vaultId: fixture.vaultId, cursor, limit: 1 })
+      .catch((error: unknown) => error);
+    expect(pullError).toBeInstanceOf(SyncRollbackError);
+    expect(pullError).not.toHaveProperty('cause');
+    expect(String(pullError)).not.toContain(bodyCanary);
+    expect(JSON.stringify(pullError)).not.toContain(bodyCanary);
+
+    const pushRequest = syncPushRequestSchema.parse({
+      vaultId: fixture.vaultId,
+      batchIdempotencyKey: 'rollback-push-client-0001',
+      mutations: [
+        {
+          entityType: 'group',
+          expectedRecordRevision: 0,
+          idempotencyKey: 'rollback-push-client-mutation-0001',
+          record: required(fixture.groups[0]),
+        },
+      ],
+    });
+    const pushError = await transport
+      .push(pushRequest)
+      .catch((error: unknown) => error);
+    expect(pushError).toBeInstanceOf(SyncTransportFailure);
+    expect(pushError).toMatchObject({ kind: 'conflict' });
+    expect(pushError).not.toBeInstanceOf(SyncRollbackError);
+
+    const templateError = await transport
+      .publishTemplateMigration(atomicPublication(fixture))
+      .catch((error: unknown) => error);
+    expect(templateError).toBeInstanceOf(SyncTransportFailure);
+    expect(templateError).toMatchObject({ kind: 'conflict' });
+    expect(templateError).not.toBeInstanceOf(SyncRollbackError);
   });
 
   it('rejects well-formed JSON that violates canonical response schemas', async () => {

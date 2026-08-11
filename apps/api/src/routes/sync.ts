@@ -12,7 +12,11 @@ import {
 import { SyncConflictError } from '@kavrix/core';
 
 import { parseRequest } from '../boundary.js';
-import { ApiAtomicPublicationConflictError, ApiValidationError } from '../errors.js';
+import {
+  ApiAtomicPublicationConflictError,
+  ApiSyncRollbackError,
+  ApiValidationError,
+} from '../errors.js';
 import type { ApiRoutePlugin } from '../route-context.js';
 import { requireMutationVault } from '../route-utils.js';
 import {
@@ -32,7 +36,15 @@ export const syncRoutes: ApiRoutePlugin = (app, context) => {
       serverSequence: query.serverSequence,
       highestSeenVaultRevision: query.highestSeenVaultRevision,
     });
-    const page = await context.ports.storage.pullSyncPage(cursor, query.limit);
+    let page;
+    try {
+      page = await context.ports.storage.pullSyncPage(cursor, query.limit);
+    } catch (error) {
+      if (error instanceof SyncConflictError) {
+        throw new ApiSyncRollbackError();
+      }
+      throw error;
+    }
     return validatePullPage(page, vaultId, cursor, query.limit);
   });
 

@@ -1,4 +1,4 @@
-import Fastify, { type FastifyInstance } from 'fastify';
+import Fastify, { LogController, type FastifyInstance } from 'fastify';
 
 import { apiErrorResponseSchema } from '@kavrix/schemas';
 
@@ -12,6 +12,7 @@ import {
   ApiHttpsRequiredError,
   ApiNotFoundError,
   ApiRateLimitError,
+  ApiSyncRollbackError,
   ApiUnsupportedMediaTypeError,
   ApiValidationError,
 } from './errors.js';
@@ -67,6 +68,7 @@ export function buildApi(options: BuildApiOptions): FastifyInstance {
     options.environment === 'production' || options.logStream !== undefined;
   const app = Fastify({
     bodyLimit,
+    logController: new LogController({ disableRequestLogging: true }),
     trustProxy: options.trustedProxy ?? false,
     logger: loggingEnabled
       ? {
@@ -199,6 +201,9 @@ function mapError(error: unknown): {
       'SYNC_CONFLICT',
       'The opaque migration publication has a revision conflict',
     );
+  }
+  if (error instanceof ApiSyncRollbackError) {
+    return response(409, 'SYNC_ROLLBACK_DETECTED', 'The sync cursor is not accepted');
   }
   if (error instanceof ApiAttachmentConflictError) {
     return response(409, 'ATTACHMENT_CONFLICT', 'The attachment stream has a conflict');

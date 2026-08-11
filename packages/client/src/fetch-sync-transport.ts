@@ -13,6 +13,7 @@ import {
 import {
   parseTemplateMigrationPublicationResponse,
   SyncProtocolError,
+  SyncRollbackError,
   type PullPageRequest,
   type PullPageResponse,
   type PushBatchRequest,
@@ -20,7 +21,11 @@ import {
   type SyncTransportPort,
 } from '@kavrix/sync';
 
-import { SecureFetchClient, type SecureFetchOptions } from './secure-fetch.js';
+import {
+  SecureFetchClient,
+  SecureFetchFailure,
+  type SecureFetchOptions,
+} from './secure-fetch.js';
 import { throwMappedSecureFetchError } from './secure-fetch-sync-errors.js';
 
 export type FetchSyncTransportOptions = SecureFetchOptions &
@@ -53,17 +58,25 @@ export class FetchSyncTransport implements SyncTransportPort {
     }
     const vaultId = parsedVaultId.data;
     const cursor = parsedCursor.data;
-    const value = await this.#requestJson({
-      method: 'GET',
-      path: ['v1', 'vaults', vaultId, 'sync'],
-      expectedStatus: 200,
-      bearerToken: this.#bearerToken,
-      query: [
-        ['serverSequence', String(cursor.serverSequence)],
-        ['highestSeenVaultRevision', String(cursor.highestSeenVaultRevision)],
-        ['limit', String(request.limit)],
-      ],
-    });
+    let value: unknown;
+    try {
+      value = await this.#fetch.requestJson({
+        method: 'GET',
+        path: ['v1', 'vaults', vaultId, 'sync'],
+        expectedStatus: 200,
+        bearerToken: this.#bearerToken,
+        query: [
+          ['serverSequence', String(cursor.serverSequence)],
+          ['highestSeenVaultRevision', String(cursor.highestSeenVaultRevision)],
+          ['limit', String(request.limit)],
+        ],
+      });
+    } catch (error) {
+      if (error instanceof SecureFetchFailure && error.kind === 'conflict') {
+        throw new SyncRollbackError();
+      }
+      throwMappedSecureFetchError(error);
+    }
     const parsed = syncPullResponseSchema.safeParse(value);
     if (!parsed.success) throw new SyncProtocolError();
     return parsed.data;

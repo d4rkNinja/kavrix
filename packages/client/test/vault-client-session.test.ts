@@ -1,6 +1,6 @@
 import type { ServerResponse } from 'node:http';
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type {
   ClipboardCopyOptions,
@@ -54,6 +54,7 @@ import type {
 import {
   VaultClientSession,
   VaultClientSessionError,
+  VaultReadSession,
   vaultProfileSchema,
   type VaultClientSessionOptions,
   type VaultProfile,
@@ -423,6 +424,51 @@ describe('VaultClientSession', () => {
     material.dispose();
   });
 
+  it('terminally locks and releases unlocked state on a loopback rollback response', async () => {
+    const material = await sessionFixture();
+    const remote = await startRemote(material.fixture.vault);
+    const store = new SessionStore(material.fixture);
+    const sessions = new MemorySessions(material.sessionSecret);
+    const keychain = new MemoryKeychain(material.deviceSecret);
+    const clipboard = new RecordingClipboard();
+    const session = buildSession(
+      material,
+      remote,
+      store,
+      sessions,
+      keychain,
+      clipboard,
+    );
+    const bodyCanary = 'rollback-session-body-canary-a612';
+    remote.syncStatus = 409;
+    remote.syncErrorBody = {
+      error: {
+        code: 'SYNC_ROLLBACK_DETECTED',
+        message: 'The sync cursor is not accepted',
+        detail: bodyCanary,
+      },
+    };
+    const readLock = vi.spyOn(VaultReadSession.prototype, 'lock');
+    await session.unlockPortable(material.portableFormatted);
+
+    const error = await rejected(session.synchronize());
+
+    expect(error).toMatchObject({ kind: 'terminal-sync' });
+    expect(error).not.toHaveProperty('cause');
+    expect(String(error)).not.toContain(bodyCanary);
+    expect(JSON.stringify(error)).not.toContain(bodyCanary);
+    expect(session.locked).toBe(true);
+    expect(session.status()).toMatchObject({ state: 'locked' });
+    await expect(session.show('group.1', 'item.1.1')).rejects.toMatchObject({
+      kind: 'locked',
+    });
+    expect(clipboard.lockCalls).toBe(1);
+    expect(readLock).toHaveBeenCalledTimes(1);
+    expect(sessions.lastLoaded?.every((byte) => byte === 0)).toBe(true);
+    expect(keychain.lastLoaded).toBeUndefined();
+    material.dispose();
+  });
+
   it('blocks concurrent operations and lock aborts an in-flight sync graph', async () => {
     const material = await sessionFixture();
     const remote = await startRemote(material.fixture.vault);
@@ -735,7 +781,12 @@ class RecordingClipboard implements SecureClipboardPort {
   ): Promise<ClipboardCopyReceipt> {
     this.observed = Uint8Array.from(secret);
     this.reference = secret;
-    return Promise.resolve({ generation: 1, clearAfterMs: options.clearAfterMs });
+    return Promise.resolve({
+      generation: 1,
+      requestedClearAfterMs: options.clearAfterMs,
+      cleanupRetryWindowMs: 700,
+      clearAfterMs: options.clearAfterMs,
+    });
   }
 
   lock(): Promise<boolean> {
@@ -770,6 +821,7 @@ interface Remote {
   scopes: string[];
   sessionStatus: number;
   syncStatus: number;
+  syncErrorBody: unknown;
   syncGate: Promise<unknown> | undefined;
 }
 
@@ -785,6 +837,7 @@ async function startRemote(initialVault: VaultRecord): Promise<Remote> {
     scopes: ['sync:read', 'sync:write'],
     sessionStatus: 200,
     syncStatus: 200,
+    syncErrorBody: { error: 'sync-denied-detail-canary' },
     syncGate: undefined,
   } as Remote;
   const server = await startLoopbackServer(async (request, response) => {
@@ -822,7 +875,7 @@ async function startRemote(initialVault: VaultRecord): Promise<Remote> {
       remote.syncStarted.resolve(true);
       await remote.syncGate;
       if (remote.syncStatus !== 200) {
-        json(response, remote.syncStatus, { error: 'sync-denied-detail-canary' });
+        json(response, remote.syncStatus, remote.syncErrorBody);
         return;
       }
       json(response, 200, {
