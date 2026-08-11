@@ -16,6 +16,10 @@
     { "path": "../../packages/schemas/tsconfig.build.json" },
     { "path": "../../packages/core/tsconfig.build.json" },
     { "path": "../../packages/crypto/tsconfig.build.json" },
-    { "path": "../../packages/key-files/tsconfig.build.json" }
+    { "path": "../../packages/key-files/tsconfig.build.json" },
+    { "path": "../../packages/clipboard/tsconfig.build.json" },
+    { "path": "../../packages/keychain/tsconfig.build.json" },
+    { "path": "../../packages/local-store/tsconfig.build.json" },
+    { "path": "../../packages/sync/tsconfig.build.json" }
   ]
 }

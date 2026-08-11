@@ -113,6 +113,9 @@ importers:
       '@kavrix/client':
         specifier: workspace:*
         version: link:../../packages/client
+      '@kavrix/clipboard':
+        specifier: workspace:*
+        version: link:../../packages/clipboard
       '@kavrix/core':
         specifier: workspace:*
         version: link:../../packages/core
@@ -122,9 +125,18 @@ importers:
       '@kavrix/key-files':
         specifier: workspace:*
         version: link:../../packages/key-files
+      '@kavrix/keychain':
+        specifier: workspace:*
+        version: link:../../packages/keychain
+      '@kavrix/local-store':
+        specifier: workspace:*
+        version: link:../../packages/local-store
       '@kavrix/schemas':
         specifier: workspace:*
         version: link:../../packages/schemas
+      '@kavrix/sync':
+        specifier: workspace:*
+        version: link:../../packages/sync
       commander:
         specifier: 'catalog:'
         version: 15.0.0

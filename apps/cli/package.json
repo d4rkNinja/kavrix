@@ -51,10 +51,14 @@
   },
   "devDependencies": {
     "@kavrix/client": "workspace:*",
+    "@kavrix/clipboard": "workspace:*",
     "@kavrix/core": "workspace:*",
     "@kavrix/crypto": "workspace:*",
     "@kavrix/key-files": "workspace:*",
+    "@kavrix/keychain": "workspace:*",
+    "@kavrix/local-store": "workspace:*",
     "@kavrix/schemas": "workspace:*",
+    "@kavrix/sync": "workspace:*",
     "commander": "catalog:",
     "esbuild": "0.28.1",
     "zod": "catalog:"
