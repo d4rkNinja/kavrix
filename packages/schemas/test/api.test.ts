@@ -1,16 +1,20 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import {
   aeadEnvelopeSchema,
+  API_SCOPE_VALUES,
+  apiSessionResponseSchema,
   apiBearerTokenSchema,
   canonicalJson,
   changeRecordSchema,
   CONTROL_LIST_CURSOR_VERSION,
   controlListCursorPayloadSchema,
   controlListCursorSchema,
+  controlListPageOptionsSchema,
   controlListPageQuerySchema,
   decodeControlListCursor,
   DEFAULT_CONTROL_LIST_PAGE_SIZE,
+  deviceRecordSchema,
   deviceListPageResponseSchema,
   deviceListResponseSchema,
   encodeControlListCursor,
@@ -24,12 +28,21 @@ import {
   inviteRedeemResponseSchema,
   MAX_CONTROL_LIST_CURSOR_CHARS,
   MAX_CONTROL_LIST_PAGE_SIZE,
+  MAX_API_SCOPES,
+  MAX_IDEMPOTENCY_KEY_CHARS,
+  MAX_OPAQUE_ID_CHARS,
+  MAX_SYNC_PULL_PAGE_CHANGES,
+  MAX_SYNC_PUSH_MUTATIONS,
+  MAX_TEMPLATE_MIGRATION_RESULTS,
+  MIN_API_SCOPES,
+  MIN_IDEMPOTENCY_KEY_CHARS,
   publicDeviceRecordSchema,
   publicInviteRecordSchema,
   opaqueMutationSchema,
   syncPullQuerySchema,
   syncPullResponseSchema,
   syncPulledChangeSchema,
+  syncPushRequestSchema,
   syncCursorSchema,
   timestampSchema,
   templateMigrationPublicationRequestSchema,
@@ -128,6 +141,73 @@ describe('API wire contracts', () => {
         expiresInSeconds: 600,
       }).success,
     ).toBe(false);
+  });
+
+  it('exports the one canonical authorization-scope vocabulary and bounds', () => {
+    expect(API_SCOPE_VALUES).toEqual(['sync:read', 'sync:write', 'device:manage']);
+    expect(Object.isFrozen(API_SCOPE_VALUES)).toBe(true);
+    expect(MIN_API_SCOPES).toBe(1);
+    expect(MAX_API_SCOPES).toBe(API_SCOPE_VALUES.length);
+  });
+
+  it.each([
+    ['invite issue request', inviteIssueRequestSchema, { expiresInSeconds: 600 }],
+    [
+      'public invite',
+      publicInviteRecordSchema,
+      {
+        id: 'invite.scope-contract',
+        vaultId: 'vault.scope-contract',
+        issuedByDeviceId: 'device.scope-contract',
+        state: 'active',
+        createdAt: '2026-08-11T00:00:00.000Z',
+        expiresAt: '2026-08-11T00:10:00.000Z',
+      },
+    ],
+    [
+      'API session',
+      apiSessionResponseSchema,
+      {
+        vaultId: 'vault.scope-contract',
+        deviceId: 'device.scope-contract',
+      },
+    ],
+    [
+      'public device',
+      publicDeviceRecordSchema,
+      {
+        id: 'device.scope-contract',
+        vaultId: 'vault.scope-contract',
+        schemaVersion: 1,
+        tokenVersion: 1,
+        createdAt: '2026-08-11T00:00:00.000Z',
+      },
+    ],
+    [
+      'persisted device',
+      deviceRecordSchema,
+      {
+        id: 'device.scope-contract',
+        vaultId: 'vault.scope-contract',
+        schemaVersion: 1,
+        tokenVersion: 1,
+        tokenHash: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+        createdAt: '2026-08-11T00:00:00.000Z',
+      },
+    ],
+  ])('enforces ordered, unique, bounded scopes for %s', (_name, schema, base) => {
+    const ordered = ['device:manage', 'sync:read'];
+    const parsed = schema.safeParse({ ...base, scopes: ordered });
+    expect(parsed.success).toBe(true);
+    if (parsed.success) expect(parsed.data.scopes).toEqual(ordered);
+
+    for (const scopes of [
+      [],
+      ['sync:read', 'sync:read'],
+      ['sync:read', 'sync:write', 'device:manage', 'sync:read'],
+    ]) {
+      expect(schema.safeParse({ ...base, scopes }).success).toBe(false);
+    }
   });
 
   it('exposes opaque invite identity and lifecycle without token hashes', () => {
@@ -323,28 +403,64 @@ describe('API wire contracts', () => {
       controlListPageQuerySchema.safeParse({ limit: '1', unexpected: 'value' }).success,
     ).toBe(false);
 
-    const maximumCursor = encodeControlListCursor({
+    const maximumIdCursor = encodeControlListCursor({
       version: 1,
       resource: 'invites',
-      vaultId: `v${'a'.repeat(127)}`,
-      createdAt: `2026-08-11T00:00:00.${'0'.repeat(37)}Z`,
-      id: `i${'a'.repeat(127)}`,
+      vaultId: `v${'a'.repeat(MAX_OPAQUE_ID_CHARS - 1)}`,
+      createdAt: '2026-08-11T00:00:00.000Z',
+      id: `i${'a'.repeat(MAX_OPAQUE_ID_CHARS - 1)}`,
     });
-    expect(maximumCursor).toHaveLength(MAX_CONTROL_LIST_CURSOR_CHARS);
-    expect(controlListCursorSchema.safeParse(maximumCursor).success).toBe(true);
-    expect(controlListPageQuerySchema.parse({ cursor: maximumCursor })).toEqual({
+    expect(maximumIdCursor).toHaveLength(467);
+    expect(maximumIdCursor.length).toBeLessThanOrEqual(MAX_CONTROL_LIST_CURSOR_CHARS);
+    expect(controlListCursorSchema.safeParse(maximumIdCursor).success).toBe(true);
+    expect(controlListPageQuerySchema.parse({ cursor: maximumIdCursor })).toEqual({
       limit: DEFAULT_CONTROL_LIST_PAGE_SIZE,
-      cursor: maximumCursor,
+      cursor: maximumIdCursor,
     });
-    expect(() =>
-      encodeControlListCursor({
-        version: 1,
-        resource: 'invites',
-        vaultId: `v${'a'.repeat(127)}`,
-        createdAt: `2026-08-11T00:00:00.${'0'.repeat(38)}Z`,
-        id: `i${'a'.repeat(127)}`,
-      }),
-    ).toThrow();
+
+    const boundedInvalidCursor = 'A'.repeat(MAX_CONTROL_LIST_CURSOR_CHARS);
+    expect(() => decodeControlListCursor(boundedInvalidCursor)).toThrow(
+      new TypeError('Invalid control-list cursor'),
+    );
+
+    const oversizedCursor = 'A'.repeat(MAX_CONTROL_LIST_CURSOR_CHARS + 1);
+    let oversizedError: unknown;
+    const fromSpy = vi.spyOn(Buffer, 'from');
+    try {
+      decodeControlListCursor(oversizedCursor);
+    } catch (error) {
+      oversizedError = error;
+    }
+    const bufferFromCalls = fromSpy.mock.calls.length;
+    fromSpy.mockRestore();
+    expect(oversizedError).toEqual(new TypeError('Invalid control-list cursor'));
+    expect(bufferFromCalls).toBe(0);
+    expect(controlListCursorSchema.safeParse(oversizedCursor).success).toBe(false);
+  });
+
+  it('strictly parses numeric control-list options independently of HTTP text', () => {
+    expect(controlListPageOptionsSchema.parse({})).toEqual({
+      limit: DEFAULT_CONTROL_LIST_PAGE_SIZE,
+    });
+    expect(controlListPageOptionsSchema.parse({ limit: 1 })).toEqual({ limit: 1 });
+    expect(controlListPageOptionsSchema.parse({ limit: 200 })).toEqual({
+      limit: 200,
+    });
+    for (const limit of [0, 201, 1.5, Number.NaN, Number.POSITIVE_INFINITY, '1']) {
+      expect(controlListPageOptionsSchema.safeParse({ limit }).success).toBe(false);
+    }
+    expect(
+      controlListPageOptionsSchema.safeParse({ limit: 1, unexpected: true }).success,
+    ).toBe(false);
+
+    expect(controlListPageOptionsSchema.parse({ cursor: inviteCursorGolden })).toEqual({
+      limit: DEFAULT_CONTROL_LIST_PAGE_SIZE,
+      cursor: inviteCursorGolden,
+    });
+    for (const cursor of ['', 'AA', 'A'.repeat(MAX_CONTROL_LIST_CURSOR_CHARS + 1)]) {
+      expect(controlListPageOptionsSchema.safeParse({ cursor }).success).toBe(false);
+      expect(controlListPageQuerySchema.safeParse({ cursor }).success).toBe(false);
+    }
   });
 
   it('round-trips deterministic invite and device cursors with a literal golden', () => {
@@ -530,7 +646,7 @@ describe('API wire contracts', () => {
     ).toBe(false);
     for (const mismatch of [
       { vaultId: 'vault.other' },
-      { createdAt: '2026-08-11T00:00:00Z' },
+      { createdAt: '2026-08-11T00:00:00.001Z' },
     ]) {
       const mismatchedCursor = encodeControlListCursor({
         version: 1,
@@ -583,6 +699,132 @@ describe('API wire contracts', () => {
         highestSeenVaultRevision: '2',
         limit: '501',
       }).success,
+    ).toBe(false);
+  });
+
+  it('exports exact sync and persisted-result collection bounds', () => {
+    expect(MIN_IDEMPOTENCY_KEY_CHARS).toBe(16);
+    expect(MAX_IDEMPOTENCY_KEY_CHARS).toBe(256);
+    expect(MAX_SYNC_PUSH_MUTATIONS).toBe(100);
+    expect(MAX_TEMPLATE_MIGRATION_RESULTS).toBe(100);
+    expect(MAX_SYNC_PULL_PAGE_CHANGES).toBe(500);
+  });
+
+  it('applies the shared idempotency-key and sync-push mutation bounds', () => {
+    const record = currentVaultRecord('vault.sync-boundary');
+    const mutation = (idempotencyKey: string): Readonly<Record<string, unknown>> => ({
+      entityType: 'vault' as const,
+      expectedVaultRevision: 0,
+      idempotencyKey,
+      record,
+    });
+
+    for (const length of [MIN_IDEMPOTENCY_KEY_CHARS, MAX_IDEMPOTENCY_KEY_CHARS]) {
+      expect(opaqueMutationSchema.safeParse(mutation('k'.repeat(length))).success).toBe(
+        true,
+      );
+    }
+    for (const length of [
+      MIN_IDEMPOTENCY_KEY_CHARS - 1,
+      MAX_IDEMPOTENCY_KEY_CHARS + 1,
+    ]) {
+      expect(opaqueMutationSchema.safeParse(mutation('k'.repeat(length))).success).toBe(
+        false,
+      );
+    }
+
+    const mutations = Array.from({ length: MAX_SYNC_PUSH_MUTATIONS }, (_, index) =>
+      mutation(`sync-mutation-${String(index).padStart(3, '0')}`),
+    );
+    const request = {
+      vaultId: record.id,
+      batchIdempotencyKey: 'sync-boundary-batch',
+      mutations,
+    };
+    expect(syncPushRequestSchema.safeParse(request).success).toBe(true);
+    expect(
+      syncPushRequestSchema.safeParse({
+        ...request,
+        mutations: [...mutations, mutation('sync-mutation-overflow')],
+      }).success,
+    ).toBe(false);
+  });
+
+  it('applies the sync-pull page and template-result collection bounds', () => {
+    const vaultId = vaultIdSchema.parse('vault.collection-boundary');
+    const changeAt = (
+      index: number,
+      entityType: 'item' | 'group' = 'item',
+    ): ReturnType<typeof changeRecordSchema.parse> => {
+      const suffix = String(index).padStart(3, '0');
+      return changeRecordSchema.parse({
+        id: `change.${suffix}`,
+        vaultId,
+        serverSequence: index + 1,
+        entityType,
+        entityId: `${entityType}.${suffix}`,
+        recordRevision: 1,
+        operation: 'upsert',
+        ciphertextHash: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+        createdAt: '2026-08-11T00:00:00.000Z',
+      });
+    };
+    const pulled = {
+      change: changeRecordSchema.parse({
+        ...changeAt(0),
+        operation: 'purge',
+        ciphertextHash: undefined,
+      }),
+      record: null,
+    };
+    const pullResponse = {
+      vaultId,
+      serverVaultRevision: 1,
+      changes: Array.from({ length: MAX_SYNC_PULL_PAGE_CHANGES }, () => pulled),
+      nextCursor: {
+        vaultId,
+        serverSequence: 1,
+        highestSeenVaultRevision: 1,
+      },
+      hasMore: true,
+    };
+    expect(syncPullResponseSchema.safeParse(pullResponse).success).toBe(true);
+    expect(
+      syncPullResponseSchema.safeParse({
+        ...pullResponse,
+        changes: [...pullResponse.changes, pulled],
+      }).success,
+    ).toBe(false);
+
+    const templateResponse = (
+      resultCount: number,
+    ): Readonly<Record<string, unknown>> => {
+      const itemResults = Array.from({ length: resultCount - 1 }, (_, index) => ({
+        idempotencyKey: `template-result-${String(index).padStart(3, '0')}`,
+        change: changeAt(index),
+      }));
+      return {
+        vaultId,
+        batchIdempotencyKey: 'template-boundary-batch',
+        serverVaultRevision: resultCount,
+        results: [
+          ...itemResults,
+          {
+            idempotencyKey: 'template-result-group',
+            change: changeAt(resultCount - 1, 'group'),
+          },
+        ],
+      };
+    };
+    expect(
+      templateMigrationPublicationResponseSchema.safeParse(
+        templateResponse(MAX_TEMPLATE_MIGRATION_RESULTS),
+      ).success,
+    ).toBe(true);
+    expect(
+      templateMigrationPublicationResponseSchema.safeParse(
+        templateResponse(MAX_TEMPLATE_MIGRATION_RESULTS + 1),
+      ).success,
     ).toBe(false);
   });
 

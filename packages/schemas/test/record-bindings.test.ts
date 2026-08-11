@@ -9,6 +9,8 @@ import {
   encryptedItemRecordSchema,
   encryptedRecordSchema,
   keySlotSchema,
+  MAX_VAULT_KEY_SLOTS,
+  MIN_VAULT_KEY_SLOTS,
   vaultRecordSchema,
   type AssociatedData,
   type AttachmentId,
@@ -266,6 +268,27 @@ describe('vault and opaque record bindings', () => {
     createdAt: timestamp,
     updatedAt: timestamp,
   };
+
+  it('exports and applies the canonical vault key-slot count bounds', () => {
+    expect(MIN_VAULT_KEY_SLOTS).toBe(1);
+    expect(MAX_VAULT_KEY_SLOTS).toBe(128);
+    expect(
+      vaultRecordSchema.safeParse({
+        ...vault,
+        keySlots: Array.from({ length: MAX_VAULT_KEY_SLOTS }, (_, index) =>
+          slot(`slot.${String(index)}`),
+        ),
+      }).success,
+    ).toBe(true);
+    for (const keySlots of [
+      [],
+      Array.from({ length: MAX_VAULT_KEY_SLOTS + 1 }, (_, index) =>
+        slot(`slot.${String(index)}`),
+      ),
+    ]) {
+      expect(vaultRecordSchema.safeParse({ ...vault, keySlots }).success).toBe(false);
+    }
+  });
 
   it('rejects duplicate, inactive, stale, cross-vault, and cross-schema slots', () => {
     const invalid = [

@@ -1,5 +1,6 @@
 import { z } from 'zod';
 
+import { apiScopesSchema } from './authorization.js';
 import {
   attachmentIdSchema,
   changeIdSchema,
@@ -31,6 +32,9 @@ import {
   vaultRevisionSchema,
 } from './primitives.js';
 import { attachmentHeaderContentHash } from './content-hash.js';
+
+export const MIN_IDEMPOTENCY_KEY_CHARS = 16;
+export const MAX_IDEMPOTENCY_KEY_CHARS = 256;
 
 export const syncEntityTypeSchema = z.enum(['vault', 'group', 'item', 'attachment']);
 export const syncOperationSchema = z.enum(['upsert', 'tombstone', 'restore', 'purge']);
@@ -97,10 +101,7 @@ const publicDeviceRecordObjectSchema = z
     schemaVersion: supportedSchemaVersionSchema,
     tokenVersion: supportedTokenVersionSchema,
     encryptedLabel: encryptedDeviceLabelSchema.optional(),
-    scopes: z
-      .array(z.enum(['sync:read', 'sync:write', 'device:manage']))
-      .min(1)
-      .max(3),
+    scopes: apiScopesSchema,
     createdAt: timestampSchema,
     lastSeenAt: timestampSchema.optional(),
     revokedAt: timestampSchema.optional(),
@@ -219,7 +220,10 @@ export const opaqueMutationSchema = z.discriminatedUnion('entityType', [
     .object({
       entityType: z.literal('vault'),
       expectedVaultRevision: vaultRevisionSchema.nullable(),
-      idempotencyKey: z.string().min(16).max(256),
+      idempotencyKey: z
+        .string()
+        .min(MIN_IDEMPOTENCY_KEY_CHARS)
+        .max(MAX_IDEMPOTENCY_KEY_CHARS),
       record: vaultRecordSchema,
     })
     .strict(),
@@ -227,7 +231,10 @@ export const opaqueMutationSchema = z.discriminatedUnion('entityType', [
     .object({
       entityType: z.literal('group'),
       expectedRecordRevision: recordRevisionSchema.nullable(),
-      idempotencyKey: z.string().min(16).max(256),
+      idempotencyKey: z
+        .string()
+        .min(MIN_IDEMPOTENCY_KEY_CHARS)
+        .max(MAX_IDEMPOTENCY_KEY_CHARS),
       record: encryptedGroupRecordSchema,
     })
     .strict(),
@@ -235,7 +242,10 @@ export const opaqueMutationSchema = z.discriminatedUnion('entityType', [
     .object({
       entityType: z.literal('item'),
       expectedRecordRevision: recordRevisionSchema.nullable(),
-      idempotencyKey: z.string().min(16).max(256),
+      idempotencyKey: z
+        .string()
+        .min(MIN_IDEMPOTENCY_KEY_CHARS)
+        .max(MAX_IDEMPOTENCY_KEY_CHARS),
       record: encryptedItemRecordSchema,
     })
     .strict(),
@@ -244,7 +254,10 @@ export const opaqueMutationSchema = z.discriminatedUnion('entityType', [
 export const attachmentStreamStartInputSchema = z
   .object({
     version: z.literal(1),
-    idempotencyKey: z.string().min(16).max(256),
+    idempotencyKey: z
+      .string()
+      .min(MIN_IDEMPOTENCY_KEY_CHARS)
+      .max(MAX_IDEMPOTENCY_KEY_CHARS),
     expectedAttachmentRevision: recordRevisionSchema.nullable(),
     header: persistedAttachmentHeaderRecordSchema,
   })

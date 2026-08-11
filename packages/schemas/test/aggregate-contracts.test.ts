@@ -3,6 +3,8 @@ import { describe, expect, expectTypeOf, it } from 'vitest';
 import {
   changeSequenceSchema,
   changeRecordSchema,
+  CANONICAL_TIMESTAMP_CHARS,
+  CANONICAL_TIMESTAMP_PATTERN_SOURCE,
   CURRENT_CRYPTOGRAPHIC_VERSION,
   CURRENT_SCHEMA_VERSION,
   CURRENT_TOKEN_VERSION,
@@ -25,10 +27,13 @@ import {
   templateMigrationPlanSchema,
   templateMigrationStepSchema,
   templateVersionSchema,
+  timestampSchema,
   tokenVersionSchema,
   tombstoneRecordSchema,
   vaultRevisionSchema,
   type AeadEnvelope,
+  type ApiScope,
+  type ApiSessionResponse,
   type AttachmentId,
   type AttachmentSecretStreamRecord,
   type ChangeRecord,
@@ -46,8 +51,10 @@ import {
   type GroupTemplate,
   type ItemId,
   type ItemPayload,
+  type InviteIssueRequest,
   type KeyVersion,
   type PublicDeviceRecord,
+  type PublicInviteRecord,
   type RecordRevision,
   type SchemaVersion,
   type TemplateVersion,
@@ -393,6 +400,37 @@ describe('notes and migration persistence schemas', () => {
 });
 
 describe('sync metadata invariants', () => {
+  it('accepts only canonical 24-character UTC-millisecond timestamps', () => {
+    const canonical = '2026-08-11T00:00:00.000Z';
+    const dateOutput = new Date('2026-08-11T12:34:56.789Z').toISOString();
+
+    expect(CANONICAL_TIMESTAMP_CHARS).toBe(24);
+    expect(CANONICAL_TIMESTAMP_PATTERN_SOURCE).toBe(
+      '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$',
+    );
+    expect(canonical).toHaveLength(CANONICAL_TIMESTAMP_CHARS);
+    expect(timestampSchema.parse(canonical)).toBe(canonical);
+    expect(timestampSchema.parse(dateOutput)).toBe(dateOutput);
+
+    for (const invalid of [
+      '2026-08-11T00:00:00Z',
+      '2026-08-11T00:00:00.0Z',
+      '2026-08-11T00:00:00.00Z',
+      '2026-08-11T00:00:00.0000Z',
+      '2026-08-11T00:00:00.000000000Z',
+      '2026-08-11T00:00:00.000+00:00',
+      '2026-08-11 00:00:00.000Z',
+      '2026-08-11T00:00:00.000z',
+      '2026-13-11T00:00:00.000Z',
+      '2026-02-30T00:00:00.000Z',
+      '2026-08-11T24:00:00.000Z',
+      '2026-08-11T00:00:00.000Zx',
+      '+010000-01-01T00:00:00.000Z',
+    ]) {
+      expect(timestampSchema.safeParse(invalid).success).toBe(false);
+    }
+  });
+
   it('keeps semantic versions and revision types distinct', () => {
     expectTypeOf<SchemaVersion>().not.toEqualTypeOf<KeyVersion>();
     expectTypeOf<TemplateVersion>().not.toEqualTypeOf<RecordRevision>();
@@ -436,6 +474,11 @@ describe('sync metadata invariants', () => {
     >().toEqualTypeOf<SchemaVersion>();
     expectTypeOf<PublicDeviceRecord['schemaVersion']>().toEqualTypeOf<SchemaVersion>();
     expectTypeOf<PublicDeviceRecord['tokenVersion']>().toEqualTypeOf<TokenVersion>();
+    expectTypeOf<InviteIssueRequest['scopes'][number]>().toEqualTypeOf<ApiScope>();
+    expectTypeOf<PublicInviteRecord['scopes'][number]>().toEqualTypeOf<ApiScope>();
+    expectTypeOf<ApiSessionResponse['scopes'][number]>().toEqualTypeOf<ApiScope>();
+    expectTypeOf<PublicDeviceRecord['scopes'][number]>().toEqualTypeOf<ApiScope>();
+    expectTypeOf<DeviceRecord['scopes'][number]>().toEqualTypeOf<ApiScope>();
     expectTypeOf<
       Exclude<PublicDeviceRecord['encryptedLabel'], undefined>
     >().toEqualTypeOf<AeadEnvelope>();

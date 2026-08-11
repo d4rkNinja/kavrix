@@ -56,6 +56,9 @@ export const encryptedPayloadPurposeSchema = z.enum([
   'attachment-key',
 ]);
 
+export const AEAD_NONCE_BASE64URL_CHARS = 32;
+export const AEAD_AUTHENTICATION_TAG_BASE64URL_CHARS = 22;
+
 const associatedDataBaseSchema = z
   .object({
     version: associatedDataVersionSchema,
@@ -179,14 +182,14 @@ export const aeadEnvelopeSchema = z
   })
   .strict()
   .superRefine((envelope, context) => {
-    if (envelope.nonce.length !== 32) {
+    if (envelope.nonce.length !== AEAD_NONCE_BASE64URL_CHARS) {
       context.addIssue({
         code: 'custom',
         message: 'Nonce length does not match the authenticated-encryption algorithm',
         path: ['nonce'],
       });
     }
-    if (envelope.authenticationTag.length !== 22) {
+    if (envelope.authenticationTag.length !== AEAD_AUTHENTICATION_TAG_BASE64URL_CHARS) {
       context.addIssue({
         code: 'custom',
         message: 'Authentication tag must encode 16 bytes',
@@ -232,14 +235,22 @@ export const MAX_ATTACHMENT_CHUNK_CIPHERTEXT_BYTES =
 export const MAX_ATTACHMENT_STREAM_CIPHERTEXT_BYTES =
   MAX_ATTACHMENT_STREAM_PLAINTEXT_BYTES +
   MAX_ATTACHMENT_CHUNKS * SECRETSTREAM_CHUNK_OVERHEAD_BYTES;
+export const SECRETSTREAM_HEADER_BASE64URL_CHARS = 32;
+export const MIN_ATTACHMENT_CHUNK_CIPHERTEXT_CHARS = Math.ceil(
+  (SECRETSTREAM_CHUNK_OVERHEAD_BYTES * 4) / 3,
+);
+export const MAX_ATTACHMENT_CHUNK_CIPHERTEXT_CHARS = Math.ceil(
+  (MAX_ATTACHMENT_CHUNK_CIPHERTEXT_BYTES * 4) / 3,
+);
 
 const secretStreamHeaderSchema = base64UrlSchema
-  .length(32)
+  .length(SECRETSTREAM_HEADER_BASE64URL_CHARS)
   .refine((value) => Buffer.from(value, 'base64url').byteLength === 24, {
     error: 'Secretstream headers must canonically encode exactly 24 bytes',
   });
 export const attachmentChunkCiphertextSchema = base64UrlSchema
-  .max(11_184_834)
+  .min(MIN_ATTACHMENT_CHUNK_CIPHERTEXT_CHARS)
+  .max(MAX_ATTACHMENT_CHUNK_CIPHERTEXT_CHARS)
   .refine(
     (value) => {
       const byteLength = Buffer.from(value, 'base64url').byteLength;
@@ -342,13 +353,24 @@ export const attachmentSecretStreamManifestSchema = attachmentSecretStreamIdenti
       .number()
       .int()
       .nonnegative()
-      .max(4 * 1024 * 1024 * 1024),
+      .max(MAX_ATTACHMENT_STREAM_PLAINTEXT_BYTES),
     plaintextSha256: sha256DigestSchema,
   })
   .strict();
 
-const hkdfSaltSchema = base64UrlSchema.length(43);
-const argon2idSaltSchema = base64UrlSchema.length(22);
+export const HKDF_SALT_BASE64URL_CHARS = 43;
+export const ARGON2ID_SALT_BASE64URL_CHARS = 22;
+export const KEY_DERIVATION_OUTPUT_BYTES = 32;
+export const MIN_ARGON2_MEMORY_KIB = 65_536;
+export const MAX_ARGON2_MEMORY_KIB = 1_048_576;
+export const MIN_ARGON2_PASSES = 3;
+export const MAX_ARGON2_PASSES = 64;
+export const MIN_ARGON2_PARALLELISM = 4;
+export const MAX_ARGON2_PARALLELISM = 32;
+export const MAX_DEVICE_KEY_PROVIDER_CHARS = 128;
+
+const hkdfSaltSchema = base64UrlSchema.length(HKDF_SALT_BASE64URL_CHARS);
+const argon2idSaltSchema = base64UrlSchema.length(ARGON2ID_SALT_BASE64URL_CHARS);
 
 export const portableKeyDerivationSchema = z
   .object({
@@ -356,7 +378,7 @@ export const portableKeyDerivationSchema = z
     version: z.literal(1),
     salt: hkdfSaltSchema,
     context: z.literal('credvault/v1/portable-key-wrap'),
-    outputLength: z.literal(32),
+    outputLength: z.literal(KEY_DERIVATION_OUTPUT_BYTES),
   })
   .strict();
 
@@ -365,10 +387,14 @@ export const passphraseDerivationSchema = z
     algorithm: z.literal('argon2id'),
     version: z.literal(1),
     salt: argon2idSaltSchema,
-    memoryKiB: z.number().int().min(65_536).max(1_048_576),
-    passes: z.number().int().min(3).max(64),
-    parallelism: z.number().int().min(4).max(32),
-    outputLength: z.literal(32),
+    memoryKiB: z.number().int().min(MIN_ARGON2_MEMORY_KIB).max(MAX_ARGON2_MEMORY_KIB),
+    passes: z.number().int().min(MIN_ARGON2_PASSES).max(MAX_ARGON2_PASSES),
+    parallelism: z
+      .number()
+      .int()
+      .min(MIN_ARGON2_PARALLELISM)
+      .max(MAX_ARGON2_PARALLELISM),
+    outputLength: z.literal(KEY_DERIVATION_OUTPUT_BYTES),
   })
   .strict();
 
@@ -378,7 +404,7 @@ export const recoveryKeyDerivationSchema = z
     version: z.literal(1),
     salt: hkdfSaltSchema,
     context: z.literal('credvault/v1/recovery-key-wrap'),
-    outputLength: z.literal(32),
+    outputLength: z.literal(KEY_DERIVATION_OUTPUT_BYTES),
   })
   .strict();
 
@@ -388,10 +414,13 @@ export const deviceKeyDerivationSchema = z
     version: z.literal(1),
     salt: hkdfSaltSchema,
     context: z.literal('credvault/v1/device-key-wrap'),
-    outputLength: z.literal(32),
-    provider: z.string().min(1).max(128),
+    outputLength: z.literal(KEY_DERIVATION_OUTPUT_BYTES),
+    provider: z.string().min(1).max(MAX_DEVICE_KEY_PROVIDER_CHARS),
   })
   .strict();
+
+export const MIN_VAULT_KEY_SLOTS = 1;
+export const MAX_VAULT_KEY_SLOTS = 128;
 
 const keySlotBaseSchema = z.object({
   slotVersion: keySlotVersionSchema,
@@ -481,7 +510,7 @@ export const vaultRecordSchema = z
     id: vaultIdSchema,
     schemaVersion: supportedSchemaVersionSchema,
     cryptographicVersion: supportedCryptographicVersionSchema,
-    keySlots: z.array(keySlotSchema).min(1).max(128),
+    keySlots: z.array(keySlotSchema).min(MIN_VAULT_KEY_SLOTS).max(MAX_VAULT_KEY_SLOTS),
     currentKeyVersion: keyVersionSchema,
     revision: vaultRevisionSchema,
     encryptedPreferences: aeadEnvelopeSchema,

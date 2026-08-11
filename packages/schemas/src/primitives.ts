@@ -18,8 +18,13 @@ export const SUPPORTED_TOKEN_VERSIONS = Object.freeze([CURRENT_TOKEN_VERSION] as
 
 export const CANONICAL_BASE64URL_PATTERN_SOURCE =
   '^(?:[A-Za-z0-9_-]{4})*(?:[A-Za-z0-9_-][AQgw]|[A-Za-z0-9_-]{2}[AEIMQUYcgkosw048])?$';
+export const CANONICAL_TIMESTAMP_CHARS = 24;
+export const CANONICAL_TIMESTAMP_PATTERN_SOURCE =
+  '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$';
+export const SHA256_DIGEST_BASE64URL_CHARS = 43;
 
 const canonicalBase64UrlPattern = new RegExp(CANONICAL_BASE64URL_PATTERN_SOURCE);
+const canonicalTimestampPattern = new RegExp(CANONICAL_TIMESTAMP_PATTERN_SOURCE);
 
 function hasCanonicalBase64UrlTerminalBits(value: string): boolean {
   if (value.length === 0) return false;
@@ -32,7 +37,10 @@ function hasCanonicalBase64UrlTerminalBits(value: string): boolean {
   return canonicalBase64UrlPattern.test(value.slice(-tailLength));
 }
 
-export const timestampSchema = z.iso.datetime({ offset: false });
+export const timestampSchema = z.iso
+  .datetime({ offset: false, precision: 3 })
+  .length(CANONICAL_TIMESTAMP_CHARS)
+  .regex(canonicalTimestampPattern);
 export const revisionSchema = z.number().int().nonnegative().brand<'Revision'>();
 export const positiveVersionSchema = z
   .number()
@@ -103,7 +111,7 @@ export const base64UrlSchema = z
   });
 
 export const sha256DigestSchema = base64UrlSchema
-  .length(43)
+  .length(SHA256_DIGEST_BASE64URL_CHARS)
   .refine((value) => Buffer.from(value, 'base64url').byteLength === 32, {
     error: 'SHA-256 digests must canonically encode exactly 32 bytes',
   })

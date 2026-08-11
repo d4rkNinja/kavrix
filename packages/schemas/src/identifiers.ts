@@ -1,10 +1,15 @@
 import { z } from 'zod';
 
+export const MIN_OPAQUE_ID_CHARS = 1;
+export const MAX_OPAQUE_ID_CHARS = 128;
+export const OPAQUE_ID_PATTERN_SOURCE = '^[A-Za-z0-9][A-Za-z0-9._~-]*$';
+
+const opaqueIdPattern = new RegExp(OPAQUE_ID_PATTERN_SOURCE);
 const opaqueId = z
   .string()
-  .min(1)
-  .max(128)
-  .regex(/^[A-Za-z0-9][A-Za-z0-9._~-]*$/, 'Must be an opaque identifier');
+  .min(MIN_OPAQUE_ID_CHARS)
+  .max(MAX_OPAQUE_ID_CHARS)
+  .regex(opaqueIdPattern, 'Must be an opaque identifier');
 
 export const vaultIdSchema = opaqueId.brand<'VaultId'>();
 export const keySlotIdSchema = opaqueId.brand<'KeySlotId'>();

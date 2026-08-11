@@ -1,5 +1,6 @@
 import { z } from 'zod';
 
+import { apiScopesSchema } from './authorization.js';
 import {
   attachmentIdSchema,
   deviceIdSchema,
@@ -32,13 +33,13 @@ import {
   attachmentStreamProgressSchema,
   attachmentStreamStartInputSchema,
   changeRecordSchema,
+  MAX_IDEMPOTENCY_KEY_CHARS,
+  MIN_IDEMPOTENCY_KEY_CHARS,
   opaqueMutationSchema,
   publicDeviceRecordSchema,
   syncCursorSchema,
   tombstoneRecordSchema,
 } from './sync.js';
-
-export const apiScopeSchema = z.enum(['sync:read', 'sync:write', 'device:manage']);
 
 export const healthResponseSchema = z.object({ status: z.literal('ok') }).strict();
 
@@ -46,6 +47,9 @@ export const CONTROL_LIST_CURSOR_VERSION = 1;
 export const DEFAULT_CONTROL_LIST_PAGE_SIZE = 50;
 export const MAX_CONTROL_LIST_PAGE_SIZE = 200;
 export const MAX_CONTROL_LIST_CURSOR_CHARS = 512;
+export const MAX_SYNC_PUSH_MUTATIONS = 100;
+export const MAX_TEMPLATE_MIGRATION_RESULTS = 100;
+export const MAX_SYNC_PULL_PAGE_CHANGES = 500;
 
 /** Unsigned navigation hint. Authenticated routes must bind it to their resource/vault. */
 const controlListCursorPayloadBaseSchema = z
@@ -155,19 +159,10 @@ export const apiErrorResponseSchema = z
 
 export const inviteIssueRequestSchema = z
   .object({
-    scopes: z.array(apiScopeSchema).min(1).max(3),
+    scopes: apiScopesSchema,
     expiresInSeconds: z.number().int().min(60).max(86_400),
   })
-  .strict()
-  .superRefine((value, context) => {
-    if (new Set(value.scopes).size !== value.scopes.length) {
-      context.addIssue({
-        code: 'custom',
-        path: ['scopes'],
-        message: 'Invite scopes must be unique',
-      });
-    }
-  });
+  .strict();
 
 export const inviteIssueResponseSchema = z
   .object({
@@ -182,7 +177,7 @@ export const publicInviteRecordSchema = z
     id: inviteIdSchema,
     vaultId: vaultIdSchema,
     issuedByDeviceId: deviceIdSchema,
-    scopes: z.array(apiScopeSchema).min(1).max(3),
+    scopes: apiScopesSchema,
     state: z.enum(['active', 'redeemed', 'revoked', 'expired']),
     createdAt: timestampSchema,
     expiresAt: timestampSchema,
@@ -191,13 +186,6 @@ export const publicInviteRecordSchema = z
   })
   .strict()
   .superRefine((invite, context) => {
-    if (new Set(invite.scopes).size !== invite.scopes.length) {
-      context.addIssue({
-        code: 'custom',
-        path: ['scopes'],
-        message: 'Invite scopes must be unique',
-      });
-    }
     if ((invite.state === 'redeemed') !== (invite.consumedAt !== undefined)) {
       context.addIssue({
         code: 'custom',
@@ -274,13 +262,9 @@ export const apiSessionResponseSchema = z
   .object({
     vaultId: vaultIdSchema,
     deviceId: deviceIdSchema,
-    scopes: z.array(apiScopeSchema).min(1).max(3),
+    scopes: apiScopesSchema,
   })
-  .strict()
-  .refine((session) => new Set(session.scopes).size === session.scopes.length, {
-    path: ['scopes'],
-    error: 'Session scopes must be unique',
-  });
+  .strict();
 
 /**
  * The first device sends an already-encrypted, revision-zero vault aggregate.
@@ -365,7 +349,10 @@ export const vaultKeySlotPathSchema = z
 export const vaultKeySlotUpdateRequestSchema = z
   .object({
     expectedVaultRevision: vaultRevisionSchema,
-    idempotencyKey: z.string().min(16).max(256),
+    idempotencyKey: z
+      .string()
+      .min(MIN_IDEMPOTENCY_KEY_CHARS)
+      .max(MAX_IDEMPOTENCY_KEY_CHARS),
     record: vaultRecordSchema,
   })
   .strict()
@@ -389,16 +376,30 @@ const decimalIntegerQuerySchema = z
     return parsed;
   });
 
-const controlListPageLimitSchema = decimalIntegerQuerySchema.pipe(
-  z.number().int().min(1).max(MAX_CONTROL_LIST_PAGE_SIZE),
+const numericControlListPageLimitSchema = z
+  .number()
+  .int()
+  .min(1)
+  .max(MAX_CONTROL_LIST_PAGE_SIZE);
+
+export const controlListPageOptionsSchema = z
+  .object({
+    limit: numericControlListPageLimitSchema.default(DEFAULT_CONTROL_LIST_PAGE_SIZE),
+    cursor: controlListCursorSchema.optional(),
+  })
+  .strict();
+
+const controlListPageLimitQuerySchema = decimalIntegerQuerySchema.pipe(
+  numericControlListPageLimitSchema,
 );
 
 export const controlListPageQuerySchema = z
   .object({
-    limit: controlListPageLimitSchema.default(DEFAULT_CONTROL_LIST_PAGE_SIZE),
+    limit: controlListPageLimitQuerySchema.optional(),
     cursor: controlListCursorSchema.optional(),
   })
-  .strict();
+  .strict()
+  .transform((query) => controlListPageOptionsSchema.parse(query));
 
 export const attachmentTransferPathSchema = z
   .object({
@@ -463,7 +464,7 @@ export const syncPullQuerySchema = z
     highestSeenVaultRevision: vaultRevisionSchema.parse(value.highestSeenVaultRevision),
     limit: value.limit,
   }))
-  .refine((value) => value.limit >= 1 && value.limit <= 500, {
+  .refine((value) => value.limit >= 1 && value.limit <= MAX_SYNC_PULL_PAGE_CHANGES, {
     path: ['limit'],
     error: 'Sync pull limits must be between 1 and 500',
   });
@@ -534,7 +535,7 @@ export const syncPullResponseSchema = z
   .object({
     vaultId: vaultIdSchema,
     serverVaultRevision: vaultRevisionSchema,
-    changes: z.array(syncPulledChangeSchema).max(500),
+    changes: z.array(syncPulledChangeSchema).max(MAX_SYNC_PULL_PAGE_CHANGES),
     nextCursor: syncCursorSchema,
     hasMore: z.boolean(),
   })
@@ -569,8 +570,11 @@ export const syncPullResponseSchema = z
 export const syncPushRequestSchema = z
   .object({
     vaultId: vaultIdSchema,
-    batchIdempotencyKey: z.string().min(16).max(256),
-    mutations: z.array(opaqueMutationSchema).min(1).max(100),
+    batchIdempotencyKey: z
+      .string()
+      .min(MIN_IDEMPOTENCY_KEY_CHARS)
+      .max(MAX_IDEMPOTENCY_KEY_CHARS),
+    mutations: z.array(opaqueMutationSchema).min(1).max(MAX_SYNC_PUSH_MUTATIONS),
   })
   .strict()
   .superRefine((batch, context) => {
@@ -612,7 +616,10 @@ export const syncPushRequestSchema = z
 export const syncAcceptedPushResultSchema = z
   .object({
     status: z.literal('accepted'),
-    idempotencyKey: z.string().min(16).max(256),
+    idempotencyKey: z
+      .string()
+      .min(MIN_IDEMPOTENCY_KEY_CHARS)
+      .max(MAX_IDEMPOTENCY_KEY_CHARS),
     disposition: z.enum(['committed', 'duplicate']),
     change: changeRecordSchema,
   })
@@ -621,7 +628,10 @@ export const syncAcceptedPushResultSchema = z
 export const syncConflictingPushResultSchema = z
   .object({
     status: z.literal('conflict'),
-    idempotencyKey: z.string().min(16).max(256),
+    idempotencyKey: z
+      .string()
+      .min(MIN_IDEMPOTENCY_KEY_CHARS)
+      .max(MAX_IDEMPOTENCY_KEY_CHARS),
     currentRevision: z.union([vaultRevisionSchema, recordRevisionSchema]),
     current: opaqueSyncRecordSchema.nullable(),
   })
@@ -631,7 +641,10 @@ export const syncPushResponseSchema = z
   .object({
     vaultId: vaultIdSchema,
     serverVaultRevision: vaultRevisionSchema,
-    batchIdempotencyKey: z.string().min(16).max(256),
+    batchIdempotencyKey: z
+      .string()
+      .min(MIN_IDEMPOTENCY_KEY_CHARS)
+      .max(MAX_IDEMPOTENCY_KEY_CHARS),
     results: z
       .array(
         z.discriminatedUnion('status', [
@@ -640,7 +653,7 @@ export const syncPushResponseSchema = z
         ]),
       )
       .min(1)
-      .max(100),
+      .max(MAX_SYNC_PUSH_MUTATIONS),
   })
   .strict();
 
@@ -736,7 +749,10 @@ export const templateMigrationPublicationRequestSchema =
 
 export const templateMigrationPublicationResultSchema = z
   .object({
-    idempotencyKey: z.string().min(16).max(256),
+    idempotencyKey: z
+      .string()
+      .min(MIN_IDEMPOTENCY_KEY_CHARS)
+      .max(MAX_IDEMPOTENCY_KEY_CHARS),
     change: changeRecordSchema,
   })
   .strict()
@@ -756,9 +772,15 @@ export const templateMigrationPublicationResultSchema = z
 export const templateMigrationPublicationResponseSchema = z
   .object({
     vaultId: vaultIdSchema,
-    batchIdempotencyKey: z.string().min(16).max(256),
+    batchIdempotencyKey: z
+      .string()
+      .min(MIN_IDEMPOTENCY_KEY_CHARS)
+      .max(MAX_IDEMPOTENCY_KEY_CHARS),
     serverVaultRevision: vaultRevisionSchema,
-    results: z.array(templateMigrationPublicationResultSchema).min(1).max(100),
+    results: z
+      .array(templateMigrationPublicationResultSchema)
+      .min(1)
+      .max(MAX_TEMPLATE_MIGRATION_RESULTS),
   })
   .strict()
   .superRefine((response, context) => {
@@ -807,11 +829,11 @@ export const templateMigrationPublicationResponseSchema = z
 
 export const opaqueMutationRequestSchema = opaqueMutationSchema;
 
-export type ApiScope = z.infer<typeof apiScopeSchema>;
 export type HealthResponse = z.infer<typeof healthResponseSchema>;
 export type ApiBearerToken = z.infer<typeof apiBearerTokenSchema>;
 export type ControlListCursor = z.infer<typeof controlListCursorSchema>;
 export type ControlListCursorPayload = z.infer<typeof controlListCursorPayloadSchema>;
+export type ControlListPageOptions = z.infer<typeof controlListPageOptionsSchema>;
 export type ControlListPageQuery = z.infer<typeof controlListPageQuerySchema>;
 export type InviteListPageResponse = z.infer<typeof inviteListPageResponseSchema>;
 export type DeviceListPageResponse = z.infer<typeof deviceListPageResponseSchema>;
