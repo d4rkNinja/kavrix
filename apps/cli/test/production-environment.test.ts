@@ -72,6 +72,55 @@ describe('production environment ownership', () => {
     await environment.close();
   });
 
+  it('acquires the global lease before opening any mutable store', async () => {
+    const acquisitions: string[] = [];
+    const dependencies = lifecycleDependencies([], {
+      ensureDataDirectory: () => {
+        acquisitions.push('secure-directory');
+        return Promise.resolve();
+      },
+      acquireLease: () => {
+        acquisitions.push('global-lease');
+        return Promise.resolve({
+          path: 'lease',
+          release: () => Promise.resolve(),
+        });
+      },
+      openProfiles: () => {
+        acquisitions.push('profiles');
+        return Promise.resolve({ close: () => Promise.resolve() } as never);
+      },
+      openInitializationJournal: () => {
+        acquisitions.push('initialization');
+        return Promise.resolve({ close: () => Promise.resolve() } as never);
+      },
+      openJoinJournal: () => {
+        acquisitions.push('join');
+        return Promise.resolve({ close: () => Promise.resolve() } as never);
+      },
+      createClipboard: () => {
+        acquisitions.push('clipboard');
+        return { dispose: () => Promise.resolve() } as never;
+      },
+    });
+
+    const environment = await openProductionEnvironment(
+      fakePaths(),
+      secretBackend(),
+      dependencies,
+    );
+
+    expect(acquisitions).toEqual([
+      'secure-directory',
+      'global-lease',
+      'profiles',
+      'initialization',
+      'join',
+      'clipboard',
+    ]);
+    await environment.close();
+  });
+
   it('rolls back a failed open in reverse ownership order and surfaces cleanup failures', async () => {
     const events: string[] = [];
     const dependencies = lifecycleDependencies(events, {

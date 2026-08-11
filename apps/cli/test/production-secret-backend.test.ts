@@ -9,6 +9,7 @@ import { acquiredSecretSchema } from '../src/secret-input.js';
 import type { SecretInputPort } from '../src/secret-input.js';
 import { resolveCliDataPaths } from '../src/production/paths.js';
 import { createSecretBackend } from '../src/production/secret-backend.js';
+import type { SecretBackendPolicy } from '../src/production/secret-backend.js';
 
 const temporaryDirectories: string[] = [];
 
@@ -76,6 +77,29 @@ describe('protected secret backend policy', () => {
     } finally {
       await backend.close();
     }
+  });
+
+  it('rejects an unknown runtime policy before any backend side effect', async () => {
+    const resolvedPaths = await createPaths();
+    const native = vi.fn(() => Promise.reject(new Error('must-not-probe')));
+    const secrets = unusedSecrets();
+    const read = vi.spyOn(secrets, 'read');
+    const runtimePolicy: unknown = 'automatic-fallback';
+
+    await expect(
+      createSecretBackend(
+        resolvedPaths,
+        secrets,
+        runtimePolicy as SecretBackendPolicy,
+        { loadNativeEntryFactory: native },
+      ),
+    ).rejects.toSatisfy(
+      (error: unknown) =>
+        error instanceof Error && !error.message.includes('automatic-fallback'),
+    );
+    expect(native).not.toHaveBeenCalled();
+    expect(read).not.toHaveBeenCalled();
+    await expect(access(resolvedPaths.sealedSecrets)).rejects.toBeDefined();
   });
 });
 

@@ -11,6 +11,7 @@ import {
 } from '@kavrix/keychain';
 
 import type { SecretInputPort } from '../secret-input.js';
+import { CliUsageError } from '../errors.js';
 import type { CliDataPaths } from './paths.js';
 
 export interface SecretBackend {
@@ -42,16 +43,19 @@ export async function createSecretBackend(
   policy: SecretBackendPolicy,
   dependencies: SecretBackendDependencies = DEFAULT_DEPENDENCIES,
 ): Promise<SecretBackend> {
-  if (policy === 'native') {
+  const runtimePolicy: unknown = policy;
+  if (runtimePolicy === 'native') {
     const native = await dependencies.loadNativeEntryFactory();
     return backend('native', native, () => Promise.resolve());
   }
-
-  const store = new SealedSecretStore({
-    directory: paths.sealedSecrets,
-    passphrase: () => readSealedStorePassphrase(secrets),
-  });
-  return backend('sealed-file', sealedEntryFactory(store), () => store.close());
+  if (runtimePolicy === 'sealed-file') {
+    const store = new SealedSecretStore({
+      directory: paths.sealedSecrets,
+      passphrase: () => readSealedStorePassphrase(secrets),
+    });
+    return backend('sealed-file', sealedEntryFactory(store), () => store.close());
+  }
+  throw new CliUsageError('The protected secret backend policy is invalid.');
 }
 
 function backend(

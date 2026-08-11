@@ -60,21 +60,45 @@ export class NodeSensitiveInitializationDisplay implements SensitiveInitializati
         'Recovery material can only be shown on an interactive terminal.',
       );
     }
-    this.#output.write(CLEAR_SURFACE + renderMaterial(request.material));
+    const abort = new AbortController();
+    const writer = new SensitiveTerminalWriter(this.#output, () => {
+      abort.abort();
+    });
+    let primary:
+      Readonly<{ succeeded: true }> | Readonly<{ succeeded: false; error: unknown }>;
     try {
-      await this.#readAcknowledgement();
-    } finally {
-      // A failed acknowledgement must not leave the keys on screen while the
-      // operation is cancelled.
-      this.#output.write(CLEAR_SURFACE);
+      await writer.write(CLEAR_SURFACE + renderMaterial(request.material));
+      await this.#readAcknowledgement(abort.signal);
+      primary = { succeeded: true };
+    } catch (error) {
+      primary = { succeeded: false, error };
     }
+    let cleanup:
+      Readonly<{ succeeded: true }> | Readonly<{ succeeded: false; error: unknown }>;
+    try {
+      await writer.write(CLEAR_SURFACE);
+      cleanup = { succeeded: true };
+    } catch (error) {
+      cleanup = { succeeded: false, error };
+    }
+    writer.close();
+    if (!cleanup.succeeded) {
+      if (!primary.succeeded) {
+        throw new AggregateError(
+          [primary.error, cleanup.error],
+          'The sensitive terminal operation and cleanup both failed.',
+          { cause: primary.error },
+        );
+      }
+      throw cleanup.error;
+    }
+    if (!primary.succeeded) throw primary.error;
     return { acknowledged: true, interactiveTty: true };
   }
 
-  /** Reads one echoed line and requires it to equal `ACKNOWLEDGEMENT` exactly. */
-  #readAcknowledgement(): Promise<void> {
+  /** Reads one line and requires it to equal `ACKNOWLEDGEMENT` exactly. */
+  #readAcknowledgement(signal: AbortSignal): Promise<void> {
     const input = this.#input;
-    const output = this.#output;
     return new Promise((resolve, reject) => {
       const typed: number[] = [];
       const wasRaw = input.isRaw === true;
@@ -85,20 +109,41 @@ export class NodeSensitiveInitializationDisplay implements SensitiveInitializati
         input.off('data', onData);
         input.off('end', onEnd);
         input.off('error', onError);
-        let cleanupError: Error | undefined;
+        signal.removeEventListener('abort', onAbort);
+        const cleanupFailures: Error[] = [];
         try {
           input.setRawMode?.(wasRaw);
-          input.pause();
-          output.write('\n');
         } catch {
-          cleanupError = new CliUsageError(
-            'The sensitive terminal could not be restored.',
+          cleanupFailures.push(
+            new CliUsageError('The sensitive terminal could not be restored.'),
           );
-        } finally {
-          typed.fill(0);
         }
-        if (cleanupError !== undefined) reject(cleanupError);
-        else if (error === undefined) resolve();
+        try {
+          input.pause();
+        } catch {
+          cleanupFailures.push(
+            new CliUsageError('The sensitive terminal could not be restored.'),
+          );
+        }
+        typed.fill(0);
+        if (cleanupFailures.length > 0) {
+          if (error !== undefined) {
+            reject(
+              new AggregateError(
+                [error, ...cleanupFailures],
+                'The sensitive terminal input and cleanup both failed.',
+                { cause: error },
+              ),
+            );
+          } else {
+            reject(
+              new AggregateError(
+                cleanupFailures,
+                'The sensitive terminal input cleanup failed.',
+              ),
+            );
+          }
+        } else if (error === undefined) resolve();
         else reject(error);
       };
       const onEnd = (): void => {
@@ -106,6 +151,9 @@ export class NodeSensitiveInitializationDisplay implements SensitiveInitializati
       };
       const onError = (): void => {
         finish(new CliUsageError('The acknowledgement could not be read.'));
+      };
+      const onAbort = (): void => {
+        finish(new CliUsageError('The sensitive terminal output failed.'));
       };
       const onData = (chunk: Buffer | string): void => {
         const incoming = Buffer.from(chunk);
@@ -129,7 +177,7 @@ export class NodeSensitiveInitializationDisplay implements SensitiveInitializati
               return;
             }
             if (byte === 8 || byte === 127) {
-              if (typed.pop() !== undefined) output.write('\b \b');
+              typed.pop();
               continue;
             }
             // The acknowledgement is exactly one printable-ASCII word. Refuse
@@ -144,19 +192,101 @@ export class NodeSensitiveInitializationDisplay implements SensitiveInitializati
               finish(new CliUsageError('The acknowledgement is too long.'));
               return;
             }
-            output.write(String.fromCharCode(byte));
           }
         } finally {
           incoming.fill(0);
         }
       };
-      input.setRawMode?.(true);
-      input.on('data', onData);
-      input.once('end', onEnd);
-      input.once('error', onError);
-      input.resume();
+      try {
+        if (signal.aborted) {
+          finish(new CliUsageError('The sensitive terminal output failed.'));
+          return;
+        }
+        input.setRawMode?.(true);
+        input.on('data', onData);
+        input.once('end', onEnd);
+        input.once('error', onError);
+        signal.addEventListener('abort', onAbort, { once: true });
+        input.resume();
+      } catch {
+        finish(new CliUsageError('The sensitive terminal could not be prepared.'));
+      }
     });
   }
+}
+
+class SensitiveTerminalWriter {
+  readonly #output: SensitiveWritable;
+  readonly #onFailure: () => void;
+  #failCurrentWrite: ((error: CliUsageError) => void) | undefined;
+  #closed = false;
+
+  constructor(output: SensitiveWritable, onFailure: () => void) {
+    this.#output = output;
+    this.#onFailure = onFailure;
+    output.on('error', this.#handleOutputError);
+  }
+
+  write(value: string): Promise<void> {
+    if (this.#closed) {
+      return Promise.reject(new CliUsageError('The sensitive terminal is closed.'));
+    }
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const finish = (error?: CliUsageError): void => {
+        if (settled) return;
+        settled = true;
+        if (this.#failCurrentWrite === fail) this.#failCurrentWrite = undefined;
+        if (error === undefined) resolve();
+        else reject(error);
+      };
+      const fail = (error: CliUsageError): void => {
+        finish(error);
+      };
+      this.#failCurrentWrite = fail;
+      try {
+        this.#output.write(value, (error) => {
+          // Keep the error listener through the stream's next-turn error event.
+          setImmediate(() => {
+            if (error !== null && error !== undefined) {
+              this.#recordFailure(error);
+            } else {
+              finish();
+            }
+          });
+        });
+      } catch (error) {
+        this.#recordFailure(error);
+      }
+    });
+  }
+
+  close(): void {
+    if (this.#closed) return;
+    this.#closed = true;
+    this.#output.off('error', this.#handleOutputError);
+    this.#failCurrentWrite = undefined;
+  }
+
+  readonly #handleOutputError = (error: Error): void => {
+    this.#recordFailure(error);
+  };
+
+  #recordFailure(cause: unknown): void {
+    this.#onFailure();
+    this.#failCurrentWrite?.(sensitiveOutputFailure(cause));
+  }
+}
+
+function sensitiveOutputFailure(cause: unknown): CliUsageError {
+  const failure = new CliUsageError('The sensitive terminal output failed.');
+  Object.defineProperty(failure, 'cause', {
+    value: cause,
+    configurable: false,
+    enumerable: false,
+    writable: false,
+  });
+  return failure;
 }
 
 function renderMaterial(material: SensitiveInitializationMaterial): string {
