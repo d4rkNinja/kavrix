@@ -101,6 +101,58 @@ function slot(
   };
 }
 
+function slotTypeCases(): readonly (readonly [string, Record<string, unknown>])[] {
+  return [
+    ['portable-key', slot('slot.portable')],
+    [
+      'passphrase',
+      slot('slot.passphrase', 'active', {
+        type: 'passphrase',
+        derivation: {
+          algorithm: 'argon2id',
+          version: 1,
+          salt: 'AAAAAAAAAAAAAAAAAAAAAA',
+          memoryKiB: 65_536,
+          passes: 3,
+          parallelism: 4,
+          outputLength: 32,
+        },
+        wrappedRootKey: envelope('wrapped-root-key', 'slot.passphrase'),
+      }),
+    ],
+    [
+      'recovery-key',
+      slot('slot.recovery', 'active', {
+        type: 'recovery-key',
+        derivation: {
+          algorithm: 'hkdf-sha256',
+          version: 1,
+          salt: digest,
+          context: 'credvault/v1/recovery-key-wrap',
+          outputLength: 32,
+        },
+        wrappedRootKey: envelope('wrapped-root-key', 'slot.recovery'),
+      }),
+    ],
+    [
+      'device-key',
+      slot('slot.device', 'active', {
+        type: 'device-key',
+        deviceId: 'device.1',
+        derivation: {
+          algorithm: 'hkdf-sha256',
+          version: 1,
+          salt: digest,
+          context: 'credvault/v1/device-key-wrap',
+          outputLength: 32,
+          provider: 'native-keychain',
+        },
+        wrappedRootKey: envelope('wrapped-root-key', 'slot.device'),
+      }),
+    ],
+  ];
+}
+
 describe('authenticated envelope contracts', () => {
   it('brands every associated-data identity role by discriminator', () => {
     expectTypeOf<
@@ -186,49 +238,39 @@ describe('authenticated envelope contracts', () => {
 
 describe('unlock-slot state bindings', () => {
   it('accepts every derivation type with its required metadata', () => {
-    const cases = [
-      slot('slot.portable'),
-      slot('slot.passphrase', 'active', {
-        type: 'passphrase',
-        derivation: {
-          algorithm: 'argon2id',
-          version: 1,
-          salt: 'AAAAAAAAAAAAAAAAAAAAAA',
-          memoryKiB: 65_536,
-          passes: 3,
-          parallelism: 4,
-          outputLength: 32,
-        },
-        wrappedRootKey: envelope('wrapped-root-key', 'slot.passphrase'),
-      }),
-      slot('slot.recovery', 'active', {
-        type: 'recovery-key',
-        derivation: {
-          algorithm: 'hkdf-sha256',
-          version: 1,
-          salt: digest,
-          context: 'credvault/v1/recovery-key-wrap',
-          outputLength: 32,
-        },
-        wrappedRootKey: envelope('wrapped-root-key', 'slot.recovery'),
-      }),
-      slot('slot.device', 'active', {
-        type: 'device-key',
-        deviceId: 'device.1',
-        derivation: {
-          algorithm: 'hkdf-sha256',
-          version: 1,
-          salt: digest,
-          context: 'credvault/v1/device-key-wrap',
-          outputLength: 32,
-          provider: 'native-keychain',
-        },
-        wrappedRootKey: envelope('wrapped-root-key', 'slot.device'),
-      }),
-    ];
-    expect(cases.every((candidate) => keySlotSchema.safeParse(candidate).success)).toBe(
-      true,
-    );
+    expect(
+      slotTypeCases().every(
+        ([, candidate]) => keySlotSchema.safeParse(candidate).success,
+      ),
+    ).toBe(true);
+  });
+
+  it.each(slotTypeCases())(
+    'rejects arbitrary fields on %s slots',
+    (_type, candidate) => {
+      expect(
+        keySlotSchema.safeParse({ ...candidate, unexpectedMetadata: 'opaque' }).success,
+      ).toBe(false);
+    },
+  );
+
+  it.each(slotTypeCases().slice(0, 3))(
+    'rejects deviceId on non-device %s slots',
+    (_type, candidate) => {
+      expect(
+        keySlotSchema.safeParse({ ...candidate, deviceId: 'device.1' }).success,
+      ).toBe(false);
+    },
+  );
+
+  it('requires and accepts deviceId only on device-key slots', () => {
+    const deviceSlot = slotTypeCases()[3]?.[1];
+    expect(deviceSlot).toBeDefined();
+    if (deviceSlot === undefined) return;
+    const withoutDeviceId = { ...deviceSlot };
+    delete withoutDeviceId['deviceId'];
+    expect(keySlotSchema.safeParse(deviceSlot).success).toBe(true);
+    expect(keySlotSchema.safeParse(withoutDeviceId).success).toBe(false);
   });
 
   it('requires timestamps to agree exactly with terminal slot states', () => {

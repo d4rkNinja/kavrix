@@ -3,6 +3,7 @@ import { sha256DigestSchema } from '@kavrix/schemas';
 import { describe, expect, it } from 'vitest';
 
 import {
+  backupRestoreEntryDocumentSchema,
   backupRestoreSessionDocumentSchema,
   makeRestoreEntryDocument,
   parseRestoreEntryDocument,
@@ -39,6 +40,28 @@ describe('Mongo encrypted-backup staging documents', () => {
     expect(() =>
       parseRestoreEntryDocument({ ...document, restoreSessionId: 'A'.repeat(43) }),
     ).toThrow(ValidationError);
+  });
+
+  it('rejects a raw unknown key-slot field through vault restore entries', () => {
+    const entry = { kind: 'vault' as const, record: vaultRecord() };
+    const document = makeRestoreEntryDocument(restoreSessionId, 1, 1_024, entry);
+    const keySlot = entry.record.keySlots[0];
+    expect(keySlot).toBeDefined();
+    if (keySlot === undefined) return;
+    expect(backupRestoreEntryDocumentSchema.safeParse(document).success).toBe(true);
+
+    expect(
+      backupRestoreEntryDocumentSchema.safeParse({
+        ...document,
+        entry: {
+          ...entry,
+          record: {
+            ...entry.record,
+            keySlots: [{ ...keySlot, unexpectedMetadata: 'opaque' }],
+          },
+        },
+      }).success,
+    ).toBe(false);
   });
 
   it('requires exact durable state and zero retained counters after close', () => {

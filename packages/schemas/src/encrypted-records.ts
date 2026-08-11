@@ -435,23 +435,31 @@ const keySlotBaseSchema = z.object({
 
 export const keySlotSchema = z
   .discriminatedUnion('type', [
-    keySlotBaseSchema.extend({
-      type: z.literal('portable-key'),
-      derivation: portableKeyDerivationSchema,
-    }),
-    keySlotBaseSchema.extend({
-      type: z.literal('passphrase'),
-      derivation: passphraseDerivationSchema,
-    }),
-    keySlotBaseSchema.extend({
-      type: z.literal('recovery-key'),
-      derivation: recoveryKeyDerivationSchema,
-    }),
-    keySlotBaseSchema.extend({
-      type: z.literal('device-key'),
-      derivation: deviceKeyDerivationSchema,
-      deviceId: deviceIdSchema,
-    }),
+    keySlotBaseSchema
+      .extend({
+        type: z.literal('portable-key'),
+        derivation: portableKeyDerivationSchema,
+      })
+      .strict(),
+    keySlotBaseSchema
+      .extend({
+        type: z.literal('passphrase'),
+        derivation: passphraseDerivationSchema,
+      })
+      .strict(),
+    keySlotBaseSchema
+      .extend({
+        type: z.literal('recovery-key'),
+        derivation: recoveryKeyDerivationSchema,
+      })
+      .strict(),
+    keySlotBaseSchema
+      .extend({
+        type: z.literal('device-key'),
+        derivation: deviceKeyDerivationSchema,
+        deviceId: deviceIdSchema,
+      })
+      .strict(),
   ])
   .superRefine((slot, context) => {
     if (slot.wrappedRootKey.aad.entityType !== 'wrapped-root-key') {

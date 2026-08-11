@@ -15,6 +15,8 @@ import {
   hashCanonical,
   makeStagedChunkDocument,
   parseMutation,
+  storedChangeDocumentSchema,
+  storedVaultDocumentSchema,
   synchronizeVaultRecordRevision,
   syncPushBatchDocumentId,
   syncPushBatchDocumentSchema,
@@ -39,6 +41,32 @@ import {
   vaultRecord,
   mutation,
 } from './fixtures.js';
+
+function vaultWithUnknownSlotField(): Record<string, unknown> {
+  const vault = vaultRecord();
+  const keySlot = vault.keySlots[0];
+  if (keySlot === undefined) throw new Error('Expected a vault key slot fixture');
+  return {
+    ...vault,
+    keySlots: [{ ...keySlot, unexpectedMetadata: 'opaque' }],
+  };
+}
+
+function vaultChangeDocument(): ReturnType<typeof toChangeDocument> {
+  const vault = vaultRecord();
+  const change = changeRecordSchema.parse({
+    id: 'change.vault.1',
+    vaultId: vault.id,
+    serverSequence: 1,
+    entityType: 'vault',
+    entityId: vault.id,
+    recordRevision: vault.revision,
+    operation: 'upsert',
+    ciphertextHash: contentHashForRecord(vault),
+    createdAt: timestamp,
+  });
+  return toChangeDocument(change, vault);
+}
 
 describe('Mongo document boundaries', () => {
   it('round-trips canonical opaque entity records', () => {
@@ -77,6 +105,57 @@ describe('Mongo document boundaries', () => {
     expect(() =>
       parseMutation({ ...mutation('item', itemRecord(), null), $where: 'unsafe' }),
     ).toThrow(ValidationError);
+  });
+
+  it('rejects a raw unknown key-slot field through stored vault records', () => {
+    const document = toVaultDocument(vaultRecord());
+    expect(storedVaultDocumentSchema.safeParse(document).success).toBe(true);
+    expect(
+      storedVaultDocumentSchema.safeParse({
+        ...document,
+        record: vaultWithUnknownSlotField(),
+      }).success,
+    ).toBe(false);
+  });
+
+  it('rejects a raw unknown key-slot field through vault change payloads', () => {
+    const document = vaultChangeDocument();
+    expect(storedChangeDocumentSchema.safeParse(document).success).toBe(true);
+    expect(
+      storedChangeDocumentSchema.safeParse({
+        ...document,
+        payload: vaultWithUnknownSlotField(),
+      }).success,
+    ).toBe(false);
+  });
+
+  it('rejects a raw unknown key-slot field through sync conflict current state', () => {
+    const batchIdempotencyKey = 'sync-push-batch-slot-0001';
+    const conflict = {
+      status: 'conflict',
+      idempotencyKey: 'idempotency-vault-slot-0001',
+      currentRevision: 0,
+      current: vaultRecord(),
+    } as const;
+    const document = {
+      _id: syncPushBatchDocumentId('vault.1', batchIdempotencyKey),
+      vaultId: 'vault.1',
+      batchIdempotencyKey,
+      requestHash: 'a'.repeat(64),
+      mutationCount: 1,
+      state: 'running',
+      nextMutationIndex: 1,
+      results: [conflict],
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    } as const;
+    expect(syncPushBatchDocumentSchema.safeParse(document).success).toBe(true);
+    expect(
+      syncPushBatchDocumentSchema.safeParse({
+        ...document,
+        results: [{ ...conflict, current: vaultWithUnknownSlotField() }],
+      }).success,
+    ).toBe(false);
   });
 
   it('maps change, tombstone, and staged chunk records through strict schemas', () => {
