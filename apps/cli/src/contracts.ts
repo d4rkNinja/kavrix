@@ -7,13 +7,14 @@ import {
 } from '@kavrix/client';
 import {
   apiBearerTokenSchema,
+  inviteListPageResponseSchema,
   deviceIdSchema,
   inviteIdSchema,
-  publicInviteRecordSchema,
   schemaVersionSchema,
   vaultIdSchema,
+  type ControlListPageOptions,
   type InviteId,
-  type PublicInviteRecord,
+  type InviteListPageResponse,
   type VaultId,
 } from '@kavrix/schemas';
 import { z } from 'zod';
@@ -76,7 +77,10 @@ export interface CliUseCasePorts {
     fieldQuery: string,
     options?: CredentialCopyOptions,
   ): Promise<CredentialCopyReceipt>;
-  listInvites(vaultId: VaultId): Promise<readonly PublicInviteRecord[]>;
+  listInvitePage(
+    vaultId: VaultId,
+    options: ControlListPageOptions,
+  ): Promise<InviteListPageResponse>;
   revokeInvite(vaultId: VaultId, inviteId: InviteId): Promise<void>;
   /**
    * Completes the two-step enrollment protocol. The adapter owns durable,
@@ -103,8 +107,8 @@ export function parseCopyReceipt(value: unknown): CredentialCopyReceipt {
   return credentialCopyReceiptSchema.parse(value);
 }
 
-export function parseInviteList(value: unknown): readonly PublicInviteRecord[] {
-  return z.array(publicInviteRecordSchema).max(10_000).parse(value);
+export function parseInvitePage(value: unknown): InviteListPageResponse {
+  return inviteListPageResponseSchema.parse(value);
 }
 
 export function parseJoinResult(value: unknown): CliInviteJoinResult {

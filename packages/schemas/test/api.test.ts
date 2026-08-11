@@ -16,7 +16,6 @@ import {
   DEFAULT_CONTROL_LIST_PAGE_SIZE,
   deviceRecordSchema,
   deviceListPageResponseSchema,
-  deviceListResponseSchema,
   encodeControlListCursor,
   enrollmentCompleteRequestSchema,
   encryptedGroupRecordSchema,
@@ -251,30 +250,6 @@ describe('API wire contracts', () => {
         vaultId: 'vault-other',
         expiresAt: '2026-08-10T00:10:00.000Z',
         vault,
-      }).success,
-    ).toBe(false);
-  });
-
-  it('parses the actual hash-free public device wire shape', () => {
-    const device = {
-      id: 'device-public-wire',
-      vaultId: 'vault-public-wire',
-      schemaVersion: 1,
-      tokenVersion: 1,
-      scopes: ['sync:read'] as const,
-      createdAt: '2026-08-10T00:00:00.000Z',
-    };
-    expect(deviceListResponseSchema.parse({ devices: [device] })).toEqual({
-      devices: [device],
-    });
-    expect(
-      deviceListResponseSchema.safeParse({
-        devices: [
-          {
-            ...device,
-            tokenHash: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
-          },
-        ],
       }).success,
     ).toBe(false);
   });

@@ -202,10 +202,6 @@ export const publicInviteRecordSchema = z
     }
   });
 
-export const inviteListResponseSchema = z
-  .object({ invites: z.array(publicInviteRecordSchema).max(10_000) })
-  .strict();
-
 export const inviteListPageResponseSchema = z
   .object({
     invites: z.array(publicInviteRecordSchema).max(MAX_CONTROL_LIST_PAGE_SIZE),
@@ -323,10 +319,6 @@ export const vaultBootstrapResponseSchema = z
   .strict();
 
 export { publicDeviceRecordSchema } from './sync.js';
-
-export const deviceListResponseSchema = z
-  .object({ devices: z.array(publicDeviceRecordSchema).max(10_000) })
-  .strict();
 
 export const deviceListPageResponseSchema = z
   .object({

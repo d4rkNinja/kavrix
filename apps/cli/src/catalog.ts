@@ -1,6 +1,7 @@
 import type { Writable } from 'node:stream';
 
 import { Command } from 'commander';
+import { controlListPageQuerySchema } from '@kavrix/schemas';
 import { z } from 'zod';
 
 import type { CliStatus, CliUseCasePorts } from './contracts.js';
@@ -474,17 +475,41 @@ export const CLI_COMMAND_CATALOG: readonly CliCommandDescriptor[] = Object.freez
           {
             name: 'list',
             description: 'List public invite metadata.',
-            options: [vaultOption, jsonOption],
+            options: [
+              vaultOption,
+              {
+                flags: '--limit <1..200>',
+                description: 'Maximum number of invites to return.',
+              },
+              {
+                flags: '--cursor <opaque>',
+                description: 'Continue from an opaque invite page cursor.',
+              },
+              jsonOption,
+            ],
             execute: async (context, _arguments, options) => {
-              const [{ parseInviteList, parseVaultId }, { renderInvites }] =
+              const [{ parseInvitePage, parseVaultId }, { renderInvites }] =
                 await Promise.all([import('./contracts.js'), import('./render.js')]);
               const vaultId = parseInputString(options, 'vault', parseVaultId);
-              const invites = parseInviteList(
-                await useCases(context, 'device invite list').listInvites(vaultId),
+              const pageOptions = parseInput(
+                controlListPageQuerySchema,
+                {
+                  ...(options['limit'] === undefined
+                    ? {}
+                    : { limit: options['limit'] }),
+                  ...(options['cursor'] === undefined
+                    ? {}
+                    : { cursor: options['cursor'] }),
+                },
+                'invite list options',
               );
-              context.stdout.write(
-                renderInvites(invites, optionBoolean(options, 'json')),
+              const page = parseInvitePage(
+                await useCases(context, 'device invite list').listInvitePage(
+                  vaultId,
+                  pageOptions,
+                ),
               );
+              context.stdout.write(renderInvites(page, optionBoolean(options, 'json')));
             },
           },
           {

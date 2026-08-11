@@ -7,8 +7,9 @@ import {
 import type { ProtectedSyncStatePort, SyncStatus } from '@kavrix/sync';
 import type {
   ApiBearerToken,
+  ControlListPageOptions,
   InviteId,
-  PublicInviteRecord,
+  InviteListPageResponse,
   VaultId,
 } from '@kavrix/schemas';
 
@@ -177,9 +178,12 @@ export function createProductionPorts(
     copy: (): Promise<CredentialCopyReceipt> =>
       Promise.reject(new CliUnavailableError('copy')),
 
-    listInvites: (vaultId: VaultId): Promise<readonly PublicInviteRecord[]> =>
+    listInvitePage: (
+      vaultId: VaultId,
+      pageOptions: ControlListPageOptions,
+    ): Promise<InviteListPageResponse> =>
       withRemoteVault(options, vaultId, (client, bearer) =>
-        client.listInvites(bearer, vaultId),
+        client.listInvitePage(bearer, vaultId, pageOptions),
       ),
 
     revokeInvite: (vaultId: VaultId, inviteId: InviteId): Promise<void> =>

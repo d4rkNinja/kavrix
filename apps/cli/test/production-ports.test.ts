@@ -1,10 +1,13 @@
 import {
+  apiBearerTokenSchema,
   deviceIdSchema,
   keychainLocatorSchema,
   protectedLocalDeviceStateSchema,
+  publicInviteRecordSchema,
   sessionCredentialLocatorSchema,
   vaultIdSchema,
 } from '@kavrix/schemas';
+import { ControlPlaneClient } from '@kavrix/client';
 import { describe, expect, it, vi } from 'vitest';
 
 import { shapeInviteJoinRequest } from '../src/contracts.js';
@@ -18,6 +21,40 @@ import { CliUnavailableError } from '../src/errors.js';
 import { showFixture } from './fixtures.js';
 
 describe('production CLI ports', () => {
+  it('forwards one invite page request and exposes no device-list adapter', async () => {
+    const options = productionOptions();
+    const sessionSecret = new Uint8Array(32).fill(7);
+    Object.assign(options.secrets.sessions, {
+      load: vi.fn(() => Promise.resolve(sessionSecret)),
+    });
+    const invite = publicInviteRecordSchema.parse({
+      id: 'invite.primary',
+      vaultId: options.profile.vaultId,
+      issuedByDeviceId: options.profile.deviceId,
+      scopes: ['sync:read'],
+      state: 'active',
+      createdAt: '2026-08-10T00:00:00.000Z',
+      expiresAt: '2026-08-10T01:00:00.000Z',
+    });
+    const page = { invites: [invite], nextCursor: null };
+    const listInvitePage = vi
+      .spyOn(ControlPlaneClient.prototype, 'listInvitePage')
+      .mockResolvedValue(page);
+    const ports = createProductionPorts(options);
+
+    await expect(
+      ports.listInvitePage(options.profile.vaultId, { limit: 1 }),
+    ).resolves.toEqual(page);
+
+    expect(listInvitePage).toHaveBeenCalledWith(
+      apiBearerTokenSchema.parse(Buffer.alloc(32, 7).toString('base64url')),
+      options.profile.vaultId,
+      { limit: 1 },
+    );
+    expect(ports).not.toHaveProperty('listDevicePage');
+    expect([...sessionSecret]).toEqual(Array.from({ length: 32 }, () => 0));
+  });
+
   it('forwards the invite server only when explicitly supplied', async () => {
     const request = shapeInviteJoinRequest(
       'A'.repeat(43),

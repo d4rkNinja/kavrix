@@ -104,7 +104,9 @@ describe('CLI runtime boundaries', () => {
         false,
       ),
     ).toBe('Vault: locked\nSync: offline\nPending changes: 0\n');
-    expect(renderInvites([], false)).toBe('No device invites.\n');
+    expect(renderInvites({ invites: [], nextCursor: null }, false)).toBe(
+      'No device invites.\n',
+    );
 
     const invite = publicInviteRecordSchema.parse({
       id: 'invite.redeemed',
@@ -116,12 +118,64 @@ describe('CLI runtime boundaries', () => {
       expiresAt: '2026-08-10T01:00:00.000Z',
       consumedAt: '2026-08-10T00:30:00.000Z',
     });
-    const output = renderInvites([invite], false);
+    const output = renderInvites({ invites: [invite], nextCursor: null }, false);
     expect(output).toBe(
       'invite.redeemed\tredeemed\tsync:read\t2026-08-10T01:00:00.000Z\n',
     );
-    expect(JSON.parse(renderInvites([invite], true))).toMatchObject({
-      invites: [{ consumedAt: '2026-08-10T00:30:00.000Z' }],
+    expect(
+      JSON.parse(renderInvites({ invites: [invite], nextCursor: null }, true)),
+    ).toEqual({
+      invites: [invite],
+      nextCursor: null,
+    });
+  });
+
+  it('preserves server invite order and sanitizes one continuation hint', () => {
+    const newer = publicInviteRecordSchema.parse({
+      id: 'invite.newer',
+      vaultId: vaultIdSchema.parse('vault.primary'),
+      issuedByDeviceId: 'device.owner',
+      scopes: ['sync:read'],
+      state: 'active',
+      createdAt: '2026-08-10T01:00:00.000Z',
+      expiresAt: '2026-08-10T02:00:00.000Z',
+    });
+    const older = publicInviteRecordSchema.parse({
+      ...newer,
+      id: 'invite.older',
+      createdAt: '2026-08-10T00:00:00.000Z',
+      expiresAt: '2026-08-10T01:00:00.000Z',
+    });
+    const hostileCursor = 'cursor\u001b]8;;https://unsafe.invalid\u0007\r\nnext';
+    const hostilePage = {
+      invites: [
+        {
+          ...newer,
+          issuedByDeviceId: 'device\u001b[2Jowner',
+          scopes: ['sync:read\u0007'],
+        },
+        older,
+      ],
+      nextCursor: hostileCursor,
+    } as never;
+
+    const text = renderInvites(hostilePage, false);
+    expect(text.indexOf('invite.newer')).toBeLessThan(text.indexOf('invite.older'));
+    expect(text).not.toContain('\u001b');
+    expect(text).not.toContain('\u0007');
+    expect(text).not.toContain('https://unsafe.invalid');
+    expect(text.match(/Next cursor:/gu)).toHaveLength(1);
+    expect(text).toContain('\\r\\nnext');
+
+    const json = JSON.parse(renderInvites(hostilePage, true)) as {
+      invites: readonly { id: string }[];
+      nextCursor: string;
+    };
+    expect(json.invites.map(({ id }) => id)).toEqual(['invite.newer', 'invite.older']);
+    expect(json.nextCursor).not.toContain('\u001b');
+    expect(json).toEqual({
+      invites: json.invites,
+      nextCursor: sanitizeTerminalText(hostileCursor),
     });
   });
 

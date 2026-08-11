@@ -2,6 +2,7 @@ import { AmbiguousNameError, NotFoundError } from '@kavrix/core';
 import {
   apiBearerTokenSchema,
   deviceIdSchema,
+  encodeControlListCursor,
   inviteIdSchema,
   publicInviteRecordSchema,
   vaultIdSchema,
@@ -260,7 +261,7 @@ describe('CLI command shell', () => {
     expect(secretRead).not.toHaveBeenCalled();
   });
 
-  it('lists and revokes only canonical public invite metadata', async () => {
+  it('lists canonical public invite pages and forwards bounded pagination options', async () => {
     const invite = publicInviteRecordSchema.parse({
       id: 'invite.primary',
       vaultId: 'vault.primary',
@@ -270,14 +271,134 @@ describe('CLI command shell', () => {
       createdAt: '2026-08-10T00:00:00.000Z',
       expiresAt: '2026-08-10T01:00:00.000Z',
     });
-    const listInvites = vi.fn(() => Promise.resolve([invite]));
-    const listed = await execute(
-      ['device', 'invite', 'list', '--vault', 'vault.primary', '--json'],
-      { listInvites },
+    const nextCursor = encodeControlListCursor({
+      version: 1,
+      resource: 'invites',
+      vaultId: invite.vaultId,
+      createdAt: invite.createdAt,
+      id: invite.id,
+    });
+    const page = { invites: [invite], nextCursor };
+    const listInvitePage = vi.fn(() => Promise.resolve(page));
+    const argumentSets = [
+      [
+        ['device', 'invite', 'list', '--vault', 'vault.primary', '--json'],
+        { limit: 50 },
+      ],
+      [
+        [
+          'device',
+          'invite',
+          'list',
+          '--vault',
+          'vault.primary',
+          '--limit',
+          '1',
+          '--json',
+        ],
+        { limit: 1 },
+      ],
+      [
+        [
+          'device',
+          'invite',
+          'list',
+          '--vault',
+          'vault.primary',
+          '--limit',
+          '200',
+          '--json',
+        ],
+        { limit: 200 },
+      ],
+      [
+        [
+          'device',
+          'invite',
+          'list',
+          '--vault',
+          'vault.primary',
+          '--cursor',
+          nextCursor,
+          '--json',
+        ],
+        { limit: 50, cursor: nextCursor },
+      ],
+    ] as const;
+
+    for (const [arguments_, expectedOptions] of argumentSets) {
+      const listed = await execute(arguments_, { listInvitePage });
+      expect(listed.exitCode).toBe(CLI_EXIT_CODES.success);
+      expect(JSON.parse(listed.stdout)).toEqual(page);
+      expect(listed.stdout).not.toMatch(/token|hash/iu);
+      expect(listInvitePage).toHaveBeenLastCalledWith('vault.primary', expectedOptions);
+    }
+
+    expect(listInvitePage).toHaveBeenCalledTimes(4);
+  });
+
+  it('rejects noncanonical invite page options before invoking the use case', async () => {
+    const listInvitePage = vi.fn(() =>
+      Promise.resolve({ invites: [], nextCursor: null }),
     );
-    expect(listed.exitCode).toBe(CLI_EXIT_CODES.success);
-    expect(JSON.parse(listed.stdout)).toEqual({ invites: [invite] });
-    expect(listed.stdout).not.toMatch(/token|hash/iu);
+    const invalidArguments = [
+      ['--limit', '0'],
+      ['--limit', '201'],
+      ['--limit', '01'],
+      ['--limit', '1.5'],
+      ['--limit', '1e2'],
+      ['--cursor', 'AA'],
+      ['--unknown', 'value'],
+    ];
+
+    for (const invalid of invalidArguments) {
+      const listed = await execute(
+        ['device', 'invite', 'list', '--vault', 'vault.primary', ...invalid],
+        { listInvitePage },
+      );
+      expect(listed.exitCode).toBe(CLI_EXIT_CODES.usage);
+      expect(listed.stderr).not.toContain(invalid.at(-1) ?? '');
+    }
+    expect(listInvitePage).not.toHaveBeenCalled();
+  });
+
+  it('rejects malformed invite pages without exposing returned data', async () => {
+    const invite = publicInviteRecordSchema.parse({
+      id: 'invite.protocol',
+      vaultId: 'vault.primary',
+      issuedByDeviceId: 'device.owner',
+      scopes: ['sync:read'],
+      state: 'active',
+      createdAt: '2026-08-10T00:00:00.000Z',
+      expiresAt: '2026-08-10T01:00:00.000Z',
+    });
+    const malformedPages = [
+      { invites: [] },
+      { invites: [invite], nextCursor: 'AA' },
+      { invites: Array.from({ length: 201 }, () => invite), nextCursor: null },
+      {
+        invites: [{ ...invite, tokenHash: SECRET_CANARY }],
+        nextCursor: null,
+      },
+    ];
+
+    for (const malformedPage of malformedPages) {
+      const listed = await execute(
+        ['device', 'invite', 'list', '--vault', 'vault.primary'],
+        {
+          listInvitePage: () => Promise.resolve(malformedPage as never),
+        },
+      );
+      expect(listed.exitCode).toBe(CLI_EXIT_CODES.failure);
+      expect(listed.stderr).toBe(
+        'Error [UNEXPECTED_FAILURE]: The command failed without exposing internal details.\n',
+      );
+      expect(listed.stderr).not.toContain(SECRET_CANARY);
+    }
+  });
+
+  it('revokes only canonical public invite metadata', async () => {
+    const inviteId = inviteIdSchema.parse('invite.primary');
 
     const revokeInvite = vi.fn(() => Promise.resolve());
     const revoked = await execute(
@@ -285,7 +406,7 @@ describe('CLI command shell', () => {
         'device',
         'invite',
         'revoke',
-        inviteIdSchema.parse('invite.primary'),
+        inviteId,
         '--vault',
         vaultIdSchema.parse('vault.primary'),
       ],
@@ -360,6 +481,9 @@ describe('CLI command shell', () => {
     const runtimeCanary = 'runtime-vault-secret-canary';
     const show = vi.fn(() => Promise.reject(new Error(runtimeCanary)));
     const help = await execute(['--help'], { show });
+    const inviteListHelp = await execute(['device', 'invite', 'list', '--help'], {
+      show,
+    });
     const joinHelp = await execute(['device', 'invite', 'join', '--help'], { show });
     expect(help.exitCode).toBe(CLI_EXIT_CODES.success);
     expect(help.stdout).toContain('show [options] <group> <credential>');
@@ -368,6 +492,8 @@ describe('CLI command shell', () => {
     expect(joinHelp.stdout).not.toContain('--invite <');
     expect(joinHelp.stdout).not.toContain('--passphrase <');
     expect(joinHelp.stdout).not.toContain('--portable-key <');
+    expect(inviteListHelp.stdout).toContain('--limit <1..200>');
+    expect(inviteListHelp.stdout).toContain('--cursor <opaque>');
     expect(help.stdout).not.toContain(runtimeCanary);
 
     for (const shell of ['bash', 'zsh', 'fish', 'powershell']) {
@@ -658,7 +784,7 @@ function useCases(overrides: Partial<CliUseCasePorts>): CliUseCasePorts {
     lock: unexpected,
     show: unexpected,
     copy: unexpected,
-    listInvites: unexpected,
+    listInvitePage: unexpected,
     revokeInvite: unexpected,
     joinInvite: unexpected,
     ...overrides,

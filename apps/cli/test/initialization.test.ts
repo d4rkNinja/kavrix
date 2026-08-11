@@ -722,7 +722,7 @@ function useCases(): CliUseCasePorts {
     lock: unexpected,
     show: unexpected,
     copy: unexpected,
-    listInvites: unexpected,
+    listInvitePage: unexpected,
     revokeInvite: unexpected,
     joinInvite: unexpected,
   };

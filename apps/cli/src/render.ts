@@ -3,7 +3,11 @@ import type {
   CredentialShowField,
   CredentialShowNote,
 } from '@kavrix/client';
-import { isSensitiveFieldType, type PublicInviteRecord } from '@kavrix/schemas';
+import {
+  isSensitiveFieldType,
+  type InviteListPageResponse,
+  type PublicInviteRecord,
+} from '@kavrix/schemas';
 
 import type { CliShowResult, CliStatus } from './contracts.js';
 import { safeJson, sanitizeTerminalText } from './terminal.js';
@@ -113,25 +117,20 @@ export function renderCopyReceipt(receipt: CredentialCopyReceipt): string {
   return `Copied ${sanitizeTerminalText(receipt.label)} — clipboard clears in ${String(receipt.clearAfterSeconds)} seconds.\n`;
 }
 
-export function renderInvites(
-  invites: readonly PublicInviteRecord[],
-  json: boolean,
-): string {
-  const safe = [...invites]
-    .sort(
-      (left, right) =>
-        left.createdAt.localeCompare(right.createdAt) ||
-        left.id.localeCompare(right.id),
-    )
-    .map((invite) => safeInvite(invite));
-  if (json) return safeJson({ invites: safe });
+export function renderInvites(page: InviteListPageResponse, json: boolean): string {
+  const safe = page.invites.map((invite) => safeInvite(invite));
+  const nextCursor =
+    page.nextCursor === null ? null : sanitizeTerminalText(page.nextCursor);
+  if (json) return safeJson({ invites: safe, nextCursor });
   if (safe.length === 0) return 'No device invites.\n';
-  return `${safe
+  const rows = safe
     .map(
       (invite) =>
         `${invite.id}\t${invite.state}\t${invite.scopes.join(',')}\t${invite.expiresAt}`,
     )
-    .join('\n')}\n`;
+    .join('\n');
+  const continuation = nextCursor === null ? '' : `Next cursor: ${nextCursor}\n`;
+  return `${rows}\n${continuation}`;
 }
 
 function safeShow(result: CliShowResult): CliShowResult {
@@ -246,11 +245,15 @@ function safeInvite(invite: PublicInviteRecord): SafeInvite {
     id: sanitizeTerminalText(invite.id),
     vaultId: sanitizeTerminalText(invite.vaultId),
     issuedByDeviceId: sanitizeTerminalText(invite.issuedByDeviceId),
-    scopes: invite.scopes,
+    scopes: invite.scopes.map(sanitizeTerminalText),
     state: invite.state,
-    createdAt: invite.createdAt,
-    expiresAt: invite.expiresAt,
-    ...(invite.consumedAt === undefined ? {} : { consumedAt: invite.consumedAt }),
-    ...(invite.revokedAt === undefined ? {} : { revokedAt: invite.revokedAt }),
+    createdAt: sanitizeTerminalText(invite.createdAt),
+    expiresAt: sanitizeTerminalText(invite.expiresAt),
+    ...(invite.consumedAt === undefined
+      ? {}
+      : { consumedAt: sanitizeTerminalText(invite.consumedAt) }),
+    ...(invite.revokedAt === undefined
+      ? {}
+      : { revokedAt: sanitizeTerminalText(invite.revokedAt) }),
   };
 }
