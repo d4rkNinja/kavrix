@@ -142,4 +142,155 @@ describe('API production dependency graph', () => {
       'Forbidden Kavrix production dependency path: @kavrix/api -> @kavrix/storage -> @kavrix/crypto',
     );
   });
+
+  it('resolves workspace aliases and reports the full forbidden target path', () => {
+    const manifests: readonly WorkspaceManifest[] = [
+      {
+        name: '@kavrix/api',
+        dependencies: { bridge: 'workspace:@kavrix/crypto@*' },
+      },
+      { name: '@kavrix/crypto', dependencies: {} },
+    ];
+
+    expect(() =>
+      reachableProductionPackages(
+        manifests,
+        '@kavrix/api',
+        forbiddenApiProductionPackages,
+      ),
+    ).toThrow(
+      'Forbidden Kavrix production dependency path: @kavrix/api -> bridge -> @kavrix/crypto',
+    );
+  });
+
+  it('traverses a server-safe workspace alias by its target package', () => {
+    const manifests: readonly WorkspaceManifest[] = [
+      {
+        name: '@kavrix/api',
+        dependencies: { bridge: 'workspace:@kavrix/core@*' },
+      },
+      {
+        name: '@kavrix/core',
+        dependencies: { '@kavrix/schemas': 'workspace:*' },
+      },
+      { name: '@kavrix/schemas', dependencies: {} },
+    ];
+
+    const reachable = reachableProductionPackages(
+      manifests,
+      '@kavrix/api',
+      forbiddenApiProductionPackages,
+    );
+
+    expect([...reachable].sort()).toEqual([
+      '@kavrix/api',
+      '@kavrix/core',
+      '@kavrix/schemas',
+    ]);
+  });
+
+  it('fails closed on an unknown unscoped workspace dependency', () => {
+    const manifests: readonly WorkspaceManifest[] = [
+      {
+        name: '@kavrix/api',
+        dependencies: { bridge: 'workspace:*' },
+      },
+    ];
+
+    expect(() =>
+      reachableProductionPackages(
+        manifests,
+        '@kavrix/api',
+        forbiddenApiProductionPackages,
+      ),
+    ).toThrow('Unknown workspace production dependency path: @kavrix/api -> bridge');
+  });
+
+  it('rejects npm aliases targeting a Kavrix secret capability', () => {
+    const manifests: readonly WorkspaceManifest[] = [
+      {
+        name: '@kavrix/api',
+        dependencies: { bridge: 'npm:@kavrix/crypto@0.1.0' },
+      },
+      { name: '@kavrix/crypto', dependencies: {} },
+    ];
+
+    expect(() =>
+      reachableProductionPackages(
+        manifests,
+        '@kavrix/api',
+        forbiddenApiProductionPackages,
+      ),
+    ).toThrow(
+      'Forbidden Kavrix production dependency path: @kavrix/api -> bridge -> @kavrix/crypto',
+    );
+  });
+
+  it('fails closed on an npm alias whose Kavrix production graph is unavailable', () => {
+    const manifests: readonly WorkspaceManifest[] = [
+      {
+        name: '@kavrix/api',
+        dependencies: { bridge: 'npm:@kavrix/core@0.1.0' },
+      },
+      { name: '@kavrix/core', dependencies: {} },
+    ];
+
+    expect(() =>
+      reachableProductionPackages(
+        manifests,
+        '@kavrix/api',
+        forbiddenApiProductionPackages,
+      ),
+    ).toThrow(
+      'Unresolved package alias production dependency path: @kavrix/api -> bridge -> @kavrix/core (npm: alias)',
+    );
+  });
+
+  it('fails closed on unresolved relative workspace dependencies', () => {
+    const manifests: readonly WorkspaceManifest[] = [
+      {
+        name: '@kavrix/api',
+        dependencies: { bridge: 'workspace:../packages/crypto' },
+      },
+      { name: '@kavrix/crypto', dependencies: {} },
+    ];
+
+    expect(() =>
+      reachableProductionPackages(
+        manifests,
+        '@kavrix/api',
+        forbiddenApiProductionPackages,
+      ),
+    ).toThrow(
+      'Unresolved workspace production dependency path: @kavrix/api -> bridge (unresolved workspace specifier)',
+    );
+  });
+
+  it.each([
+    ['link:../packages/crypto', 'link: specifier'],
+    ['file:../packages/crypto', 'file: specifier'],
+    ['../packages/crypto', 'filesystem path'],
+    ['crypto.tgz', 'local tarball'],
+  ])(
+    'fails closed on unresolved local production dependency %s',
+    (specifier, description) => {
+      const manifests: readonly WorkspaceManifest[] = [
+        {
+          name: '@kavrix/api',
+          dependencies: { bridge: specifier },
+        },
+        { name: '@kavrix/crypto', dependencies: {} },
+      ];
+
+      expect(() =>
+        reachableProductionPackages(
+          manifests,
+          '@kavrix/api',
+          forbiddenApiProductionPackages,
+        ),
+      ).toThrow(
+        `Unresolved local production dependency path: @kavrix/api -> bridge (${description})`,
+      );
+    },
+  );
 });
