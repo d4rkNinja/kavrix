@@ -1,15 +1,19 @@
+import type { z } from 'zod';
+
 import {
   apiBearerTokenSchema,
   apiSessionResponseSchema,
+  controlListPageOptionsSchema,
+  decodeControlListCursor,
   deviceIdSchema,
-  deviceListResponseSchema,
+  deviceListPageResponseSchema,
   enrollmentCompleteRequestSchema,
   enrollmentCompleteResponseSchema,
   healthResponseSchema,
   inviteIdSchema,
   inviteIssueRequestSchema,
   inviteIssueResponseSchema,
-  inviteListResponseSchema,
+  inviteListPageResponseSchema,
   inviteRedeemResponseSchema,
   keySlotIdSchema,
   vaultBootstrapRequestSchema,
@@ -19,14 +23,15 @@ import {
   vaultRecordSchema,
   type ApiBearerToken,
   type ApiSessionResponse,
+  type DeviceListPageResponse,
   type DeviceId,
   type EnrollmentCompleteRequest,
   type HealthResponse,
   type InviteId,
   type InviteIssueRequest,
   type InviteRedeemResponse,
+  type InviteListPageResponse,
   type KeySlotId,
-  type PublicDeviceRecord,
   type VaultBootstrapRequest,
   type VaultBootstrapResponse,
   type VaultId,
@@ -143,23 +148,33 @@ export class ControlPlaneClient {
     });
   }
 
-  async listInvites(
+  async listInvitePage(
     bearerToken: ApiBearerToken,
     requestedVaultId: VaultId,
-  ): Promise<
-    readonly ReturnType<typeof inviteListResponseSchema.parse>['invites'][number][]
-  > {
+    optionsInput: z.input<typeof controlListPageOptionsSchema> = {},
+  ): Promise<InviteListPageResponse> {
     const vaultId = parse(vaultIdSchema, requestedVaultId);
-    const response = await this.#canonicalRequest(inviteListResponseSchema, {
+    const options = parse(controlListPageOptionsSchema, optionsInput);
+    const response = await this.#canonicalRequest(inviteListPageResponseSchema, {
       method: 'GET',
       path: ['v1', 'vaults', vaultId, 'invites'],
       expectedStatus: 200,
       bearerToken,
+      query: [
+        ['limit', String(options.limit)],
+        ...(options.cursor === undefined ? [] : [['cursor', options.cursor] as const]),
+      ],
     });
     if (response.invites.some((invite) => invite.vaultId !== vaultId)) {
       throw new ControlPlaneFailure('protocol');
     }
-    return response.invites;
+    if (response.nextCursor !== null) {
+      const cursor = decodeCursor(response.nextCursor);
+      if (cursor.resource !== 'invites' || cursor.vaultId !== vaultId) {
+        throw new ControlPlaneFailure('protocol');
+      }
+    }
+    return response;
   }
 
   async revokeInvite(
@@ -231,21 +246,33 @@ export class ControlPlaneClient {
     );
   }
 
-  async listDevices(
+  async listDevicePage(
     bearerToken: ApiBearerToken,
     requestedVaultId: VaultId,
-  ): Promise<readonly PublicDeviceRecord[]> {
+    optionsInput: z.input<typeof controlListPageOptionsSchema> = {},
+  ): Promise<DeviceListPageResponse> {
     const vaultId = parse(vaultIdSchema, requestedVaultId);
-    const response = await this.#canonicalRequest(deviceListResponseSchema, {
+    const options = parse(controlListPageOptionsSchema, optionsInput);
+    const response = await this.#canonicalRequest(deviceListPageResponseSchema, {
       method: 'GET',
       path: ['v1', 'vaults', vaultId, 'devices'],
       expectedStatus: 200,
       bearerToken,
+      query: [
+        ['limit', String(options.limit)],
+        ...(options.cursor === undefined ? [] : [['cursor', options.cursor] as const]),
+      ],
     });
     if (response.devices.some((device) => device.vaultId !== vaultId)) {
       throw new ControlPlaneFailure('protocol');
     }
-    return response.devices;
+    if (response.nextCursor !== null) {
+      const cursor = decodeCursor(response.nextCursor);
+      if (cursor.resource !== 'devices' || cursor.vaultId !== vaultId) {
+        throw new ControlPlaneFailure('protocol');
+      }
+    }
+    return response;
   }
 
   async revokeDevice(
@@ -386,6 +413,14 @@ function parse<Output>(schema: RuntimeSchema<Output>, value: unknown): Output {
     // Fall through to one generic protocol failure.
   }
   throw new ControlPlaneFailure('protocol');
+}
+
+function decodeCursor(cursor: string): ReturnType<typeof decodeControlListCursor> {
+  try {
+    return decodeControlListCursor(cursor);
+  } catch {
+    throw new ControlPlaneFailure('protocol');
+  }
 }
 
 function stringify(value: unknown): string {

@@ -7,6 +7,7 @@ import {
   apiBearerTokenSchema,
   deviceIdSchema,
   enrollmentCompleteRequestSchema,
+  encodeControlListCursor,
   inviteIdSchema,
   inviteIssueRequestSchema,
   keySlotIdSchema,
@@ -86,7 +87,7 @@ describe('ControlPlaneClient', () => {
         return;
       }
       if (pathname.endsWith('/invites') && request.method === 'GET') {
-        json(response, 200, { invites: [fixture.invite] });
+        json(response, 200, { invites: [fixture.invite], nextCursor: null });
         return;
       }
       if (pathname.endsWith(`/invites/${inviteId}`)) {
@@ -106,7 +107,7 @@ describe('ControlPlaneClient', () => {
         return;
       }
       if (pathname.endsWith('/devices') && request.method === 'GET') {
-        json(response, 200, { devices: [fixture.device] });
+        json(response, 200, { devices: [fixture.device], nextCursor: null });
         return;
       }
       if (pathname.endsWith(`/devices/${deviceId}`)) {
@@ -134,9 +135,9 @@ describe('ControlPlaneClient', () => {
     await expect(
       client.issueInvite(sessionToken, fixture.vaultId, fixture.inviteRequest),
     ).resolves.toMatchObject({ inviteId, inviteToken });
-    await expect(client.listInvites(sessionToken, fixture.vaultId)).resolves.toEqual([
-      fixture.invite,
-    ]);
+    await expect(client.listInvitePage(sessionToken, fixture.vaultId)).resolves.toEqual(
+      { invites: [fixture.invite], nextCursor: null },
+    );
     await expect(
       client.revokeInvite(sessionToken, fixture.vaultId, inviteId),
     ).resolves.toBeUndefined();
@@ -160,9 +161,9 @@ describe('ControlPlaneClient', () => {
       ),
     ).resolves.toEqual({ vaultId: fixture.vaultId, deviceId });
     expect(sessionSuccessor).toEqual(Uint8Array.from(Buffer.alloc(32, 13)));
-    await expect(client.listDevices(sessionToken, fixture.vaultId)).resolves.toEqual([
-      fixture.device,
-    ]);
+    await expect(client.listDevicePage(sessionToken, fixture.vaultId)).resolves.toEqual(
+      { devices: [fixture.device], nextCursor: null },
+    );
     await expect(
       client.revokeDevice(sessionToken, fixture.vaultId, deviceId),
     ).resolves.toBeUndefined();
@@ -201,6 +202,12 @@ describe('ControlPlaneClient', () => {
     });
     const bootstrap = required(seen.find((request) => request.url === '/v1/vaults'));
     expect(bootstrap.authorization).toBe(`Bearer ${sessionToken}`);
+    expect(seen.find((request) => request.url.includes('/invites?'))?.url).toBe(
+      `/v1/vaults/${fixture.vaultId}/invites?limit=50`,
+    );
+    expect(seen.find((request) => request.url.includes('/devices?'))?.url).toBe(
+      `/v1/vaults/${fixture.vaultId}/devices?limit=50`,
+    );
     for (const request of seen) {
       expect(request.url).not.toContain(sessionToken);
       expect(request.url).not.toContain(inviteToken);
@@ -210,6 +217,356 @@ describe('ControlPlaneClient', () => {
       expect(request.body).not.toContain(inviteToken);
       expect(request.body).not.toContain(enrollmentToken);
       expect(request.body).not.toContain(successorSessionToken);
+    }
+  });
+
+  it('serializes bounded page options in canonical order for both resources', async () => {
+    const fixture = await controlPlaneFixture();
+    const inviteCursor = encodeControlListCursor({
+      version: 1,
+      resource: 'invites',
+      vaultId: fixture.vaultId,
+      createdAt: fixture.invite.createdAt,
+      id: fixture.invite.id,
+    });
+    const deviceCursor = encodeControlListCursor({
+      version: 1,
+      resource: 'devices',
+      vaultId: fixture.vaultId,
+      createdAt: fixture.device.createdAt,
+      id: fixture.device.id,
+    });
+    const urls: string[] = [];
+    const server = await trackedServer((request, response) => {
+      urls.push(request.url ?? '');
+      const pathname = new URL(request.url ?? '/', 'http://loopback').pathname;
+      json(
+        response,
+        200,
+        pathname.endsWith('/invites')
+          ? { invites: [], nextCursor: null }
+          : { devices: [], nextCursor: null },
+      );
+    });
+    const client = developmentClient(server.url);
+
+    await client.listInvitePage(sessionToken, fixture.vaultId);
+    await client.listInvitePage(sessionToken, fixture.vaultId, { limit: 1 });
+    await client.listInvitePage(sessionToken, fixture.vaultId, { limit: 200 });
+    await client.listInvitePage(sessionToken, fixture.vaultId, {
+      cursor: inviteCursor,
+    });
+    await client.listDevicePage(sessionToken, fixture.vaultId);
+    await client.listDevicePage(sessionToken, fixture.vaultId, { limit: 1 });
+    await client.listDevicePage(sessionToken, fixture.vaultId, { limit: 200 });
+    await client.listDevicePage(sessionToken, fixture.vaultId, {
+      cursor: deviceCursor,
+    });
+
+    const invitePath = `/v1/vaults/${fixture.vaultId}/invites`;
+    const devicePath = `/v1/vaults/${fixture.vaultId}/devices`;
+    expect(urls).toEqual([
+      `${invitePath}?limit=50`,
+      `${invitePath}?limit=1`,
+      `${invitePath}?limit=200`,
+      `${invitePath}?limit=50&cursor=${encodeURIComponent(inviteCursor)}`,
+      `${devicePath}?limit=50`,
+      `${devicePath}?limit=1`,
+      `${devicePath}?limit=200`,
+      `${devicePath}?limit=50&cursor=${encodeURIComponent(deviceCursor)}`,
+    ]);
+  });
+
+  it('rejects invalid page options before either resource reaches the network', async () => {
+    const fixture = await controlPlaneFixture();
+    let hits = 0;
+    const server = await trackedServer((_request, response) => {
+      hits += 1;
+      json(response, 200, { invites: [], nextCursor: null });
+    });
+    const client = developmentClient(server.url);
+    const noncanonicalCursor = Buffer.from(
+      JSON.stringify({
+        resource: 'invites',
+        version: 1,
+        id: fixture.invite.id,
+        createdAt: fixture.invite.createdAt,
+        vaultId: fixture.vaultId,
+      }),
+      'utf8',
+    ).toString('base64url');
+    const invalidOptions: readonly unknown[] = [
+      { limit: 0 },
+      { limit: 201 },
+      { limit: 1.5 },
+      { limit: Number.MAX_SAFE_INTEGER + 1 },
+      { limit: Number.NaN },
+      { unexpected: true },
+      { cursor: 'AA' },
+      { cursor: noncanonicalCursor },
+    ];
+
+    for (const options of invalidOptions) {
+      for (const request of [
+        () => client.listInvitePage(sessionToken, fixture.vaultId, options as never),
+        () => client.listDevicePage(sessionToken, fixture.vaultId, options as never),
+      ]) {
+        await expect(request()).rejects.toMatchObject({ kind: 'protocol' });
+      }
+    }
+    for (const request of [
+      () => client.listInvitePage(sessionToken, 'not a vault id' as never),
+      () => client.listDevicePage(sessionToken, 'not a vault id' as never),
+    ]) {
+      await expect(request()).rejects.toMatchObject({ kind: 'protocol' });
+    }
+    expect(hits).toBe(0);
+  });
+
+  it('returns exactly one page and leaves continuation traversal to the caller', async () => {
+    const fixture = await controlPlaneFixture();
+    const inviteCursor = encodeControlListCursor({
+      version: 1,
+      resource: 'invites',
+      vaultId: fixture.vaultId,
+      createdAt: fixture.invite.createdAt,
+      id: fixture.invite.id,
+    });
+    const deviceCursor = encodeControlListCursor({
+      version: 1,
+      resource: 'devices',
+      vaultId: fixture.vaultId,
+      createdAt: fixture.device.createdAt,
+      id: fixture.device.id,
+    });
+    let hits = 0;
+    const server = await trackedServer((request, response) => {
+      hits += 1;
+      const url = new URL(request.url ?? '/', 'http://loopback');
+      const isInvite = url.pathname.endsWith('/invites');
+      const hasCursor = url.searchParams.has('cursor');
+      json(
+        response,
+        200,
+        isInvite
+          ? hasCursor
+            ? { invites: [], nextCursor: null }
+            : { invites: [fixture.invite], nextCursor: inviteCursor }
+          : hasCursor
+            ? { devices: [], nextCursor: null }
+            : { devices: [fixture.device], nextCursor: deviceCursor },
+      );
+    });
+    const client = developmentClient(server.url);
+
+    await expect(client.listInvitePage(sessionToken, fixture.vaultId)).resolves.toEqual(
+      { invites: [fixture.invite], nextCursor: inviteCursor },
+    );
+    expect(hits).toBe(1);
+    await expect(
+      client.listInvitePage(sessionToken, fixture.vaultId, {
+        cursor: inviteCursor,
+      }),
+    ).resolves.toEqual({ invites: [], nextCursor: null });
+    expect(hits).toBe(2);
+
+    await expect(client.listDevicePage(sessionToken, fixture.vaultId)).resolves.toEqual(
+      { devices: [fixture.device], nextCursor: deviceCursor },
+    );
+    expect(hits).toBe(3);
+    await expect(
+      client.listDevicePage(sessionToken, fixture.vaultId, {
+        cursor: deviceCursor,
+      }),
+    ).resolves.toEqual({ devices: [], nextCursor: null });
+    expect(hits).toBe(4);
+  });
+
+  it('accepts contextual terminal pages and only applies the global response bound', async () => {
+    const fixture = await controlPlaneFixture();
+    const server = await trackedServer((request, response) => {
+      const url = new URL(request.url ?? '/', 'http://loopback');
+      const limit = url.searchParams.get('limit');
+      const rowCount = limit === '50' ? 0 : limit === '200' ? 200 : 2;
+      json(
+        response,
+        200,
+        url.pathname.endsWith('/invites')
+          ? {
+              invites: Array(rowCount).fill(fixture.invite),
+              nextCursor: null,
+            }
+          : {
+              devices: Array(rowCount).fill(fixture.device),
+              nextCursor: null,
+            },
+      );
+    });
+    const client = developmentClient(server.url);
+
+    await expect(client.listInvitePage(sessionToken, fixture.vaultId)).resolves.toEqual(
+      { invites: [], nextCursor: null },
+    );
+    await expect(client.listDevicePage(sessionToken, fixture.vaultId)).resolves.toEqual(
+      { devices: [], nextCursor: null },
+    );
+    await expect(
+      client.listInvitePage(sessionToken, fixture.vaultId, { limit: 1 }),
+    ).resolves.toEqual({
+      invites: [fixture.invite, fixture.invite],
+      nextCursor: null,
+    });
+    await expect(
+      client.listDevicePage(sessionToken, fixture.vaultId, { limit: 1 }),
+    ).resolves.toEqual({
+      devices: [fixture.device, fixture.device],
+      nextCursor: null,
+    });
+    await expect(
+      client.listInvitePage(sessionToken, fixture.vaultId, { limit: 200 }),
+    ).resolves.toMatchObject({ invites: { length: 200 }, nextCursor: null });
+    await expect(
+      client.listDevicePage(sessionToken, fixture.vaultId, { limit: 200 }),
+    ).resolves.toMatchObject({ devices: { length: 200 }, nextCursor: null });
+  });
+
+  it('rejects malformed or misbound invite and device pages generically', async () => {
+    const fixture = await controlPlaneFixture();
+    const otherVaultId = vaultIdSchema.parse('vault.response-other');
+    const canary = 'PAGE-TOKEN-HASH-CANARY';
+    const noncanonicalCursor = Buffer.from(
+      JSON.stringify({
+        resource: 'invites',
+        version: 1,
+        id: fixture.invite.id,
+        createdAt: fixture.invite.createdAt,
+        vaultId: fixture.vaultId,
+      }),
+      'utf8',
+    ).toString('base64url');
+    const inviteCursor = (
+      overrides: Readonly<Record<string, unknown>> = {},
+    ): ReturnType<typeof encodeControlListCursor> =>
+      encodeControlListCursor({
+        version: 1,
+        resource: 'invites',
+        vaultId: fixture.vaultId,
+        createdAt: fixture.invite.createdAt,
+        id: fixture.invite.id,
+        ...overrides,
+      } as never);
+    const deviceCursor = (
+      overrides: Readonly<Record<string, unknown>> = {},
+    ): ReturnType<typeof encodeControlListCursor> =>
+      encodeControlListCursor({
+        version: 1,
+        resource: 'devices',
+        vaultId: fixture.vaultId,
+        createdAt: fixture.device.createdAt,
+        id: fixture.device.id,
+        ...overrides,
+      } as never);
+    const cases: readonly Readonly<{
+      resource: 'invites' | 'devices';
+      response: unknown;
+    }>[] = [
+      { resource: 'invites', response: { invites: [] } },
+      { resource: 'devices', response: { devices: [] } },
+      {
+        resource: 'invites',
+        response: { invites: Array(201).fill(fixture.invite), nextCursor: null },
+      },
+      {
+        resource: 'devices',
+        response: { devices: Array(201).fill(fixture.device), nextCursor: null },
+      },
+      {
+        resource: 'invites',
+        response: {
+          invites: [{ ...fixture.invite, vaultId: otherVaultId }],
+          nextCursor: null,
+        },
+      },
+      {
+        resource: 'devices',
+        response: {
+          devices: [{ ...fixture.device, vaultId: otherVaultId }],
+          nextCursor: null,
+        },
+      },
+      {
+        resource: 'invites',
+        response: { invites: [fixture.invite], nextCursor: deviceCursor() },
+      },
+      {
+        resource: 'devices',
+        response: { devices: [fixture.device], nextCursor: inviteCursor() },
+      },
+      {
+        resource: 'invites',
+        response: {
+          invites: [fixture.invite],
+          nextCursor: inviteCursor({ vaultId: otherVaultId }),
+        },
+      },
+      {
+        resource: 'devices',
+        response: {
+          devices: [fixture.device],
+          nextCursor: deviceCursor({ vaultId: otherVaultId }),
+        },
+      },
+      {
+        resource: 'invites',
+        response: {
+          invites: [fixture.invite],
+          nextCursor: inviteCursor({ id: inviteIdSchema.parse('invite.not-final') }),
+        },
+      },
+      {
+        resource: 'devices',
+        response: {
+          devices: [fixture.device],
+          nextCursor: deviceCursor({ id: deviceIdSchema.parse('device.not-final') }),
+        },
+      },
+      {
+        resource: 'invites',
+        response: { invites: [fixture.invite], nextCursor: 'AA' },
+      },
+      {
+        resource: 'invites',
+        response: { invites: [fixture.invite], nextCursor: noncanonicalCursor },
+      },
+      {
+        resource: 'invites',
+        response: {
+          invites: [{ ...fixture.invite, tokenHash: canary }],
+          nextCursor: null,
+        },
+      },
+      {
+        resource: 'devices',
+        response: {
+          devices: [{ ...fixture.device, tokenHash: canary }],
+          nextCursor: null,
+        },
+      },
+    ];
+
+    for (const testCase of cases) {
+      const server = await trackedServer((_request, response) => {
+        json(response, 200, testCase.response);
+      });
+      const client = developmentClient(server.url);
+      const error = await (
+        testCase.resource === 'invites'
+          ? client.listInvitePage(sessionToken, fixture.vaultId)
+          : client.listDevicePage(sessionToken, fixture.vaultId)
+      ).catch((failure: unknown) => failure);
+      expect(error).toMatchObject({ kind: 'protocol' });
+      expect(String(error)).not.toContain(canary);
+      expect(JSON.stringify(error)).not.toContain(canary);
     }
   });
 
@@ -396,6 +753,7 @@ describe('ControlPlaneClient', () => {
       if (pathname.endsWith('/invites') && request.method === 'GET') {
         json(response, 200, {
           invites: [{ ...fixture.invite, vaultId: otherVaultId }],
+          nextCursor: null,
         });
         return;
       }
@@ -415,7 +773,7 @@ describe('ControlPlaneClient', () => {
         return;
       }
       if (pathname.endsWith('/devices')) {
-        json(response, 200, { devices: [otherDevice] });
+        json(response, 200, { devices: [otherDevice], nextCursor: null });
         return;
       }
       json(response, 200, fixture.vault);
@@ -431,7 +789,7 @@ describe('ControlPlaneClient', () => {
       kind: 'protocol',
     });
     await expect(
-      client.listInvites(sessionToken, fixture.vaultId),
+      client.listInvitePage(sessionToken, fixture.vaultId),
     ).rejects.toMatchObject({ kind: 'protocol' });
     await expect(
       client.redeemInvite(
@@ -448,7 +806,7 @@ describe('ControlPlaneClient', () => {
       ),
     ).rejects.toMatchObject({ kind: 'protocol' });
     await expect(
-      client.listDevices(sessionToken, fixture.vaultId),
+      client.listDevicePage(sessionToken, fixture.vaultId),
     ).rejects.toMatchObject({ kind: 'protocol' });
   });
 
@@ -463,6 +821,7 @@ describe('ControlPlaneClient', () => {
           devices: [
             { ...fixture.device, tokenHash: Buffer.alloc(32).toString('base64url') },
           ],
+          nextCursor: null,
         });
         return;
       }
@@ -474,7 +833,7 @@ describe('ControlPlaneClient', () => {
     });
     const client = developmentClient(server.url);
     await expect(
-      client.listDevices(sessionToken, fixture.vaultId),
+      client.listDevicePage(sessionToken, fixture.vaultId),
     ).rejects.toMatchObject({ kind: 'protocol' });
     const hitsAfterDeviceList = hits;
     await expect(
