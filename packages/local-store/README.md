@@ -1,7 +1,10 @@
 # `@kavrix/local-store`
 
-Durable local synchronization state for Node 24.19 using the built-in
-`node:sqlite` adapter. The store implements the canonical
+Durable local synchronization state using the built-in `node:sqlite` adapter.
+Requires Node `>=24.12.0 <25 || >=25.1.0`: the floor is where
+`DatabaseSync.enableDefensive` became available, which this package calls to
+disable the SQL features that can deliberately corrupt the database file. The
+store implements the canonical
 `SyncLocalStorePort` and persists only schema-validated opaque encrypted
 records, public synchronization metadata, cursors, pending mutations, active
 push batches, and bounded completion receipts.

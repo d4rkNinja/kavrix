@@ -77,7 +77,8 @@ levels are established, this section must name them explicitly.
 
 The planned baseline is:
 
-- Node.js `>=24.19.0 <25` LTS with strict ESM TypeScript;
+- Node.js `>=24.12.0 <25 || >=25.1.0` with strict ESM TypeScript, enforced at
+  startup by a capability probe rather than by the version string alone;
 - client-side XChaCha20-Poly1305 authenticated encryption and secretstream
   through standard `libsodium-wrappers` 0.8.4 (not the sumo build);
 - a mandatory 256-bit random portable vault key, with HKDF-SHA-256 deriving only
@@ -122,12 +123,16 @@ specific credential rotation process.
   cross-platform/package inspection.
 - Avoid install scripts unless required and reviewed. Minimize native and
   transitive code at the plaintext boundary.
-- Keep Node.js on a supported patched 24.x LTS release; Node.js recommends LTS
-  lines for production: [Node.js release policy](https://nodejs.org/en/about/previous-releases).
-- Passphrase Argon2id uses the asynchronous Node 24 `crypto.argon2`, marked
-  stable in Node 24.19. Supported 24.x updates still require RFC-vector and
-  serialized-parameter compatibility tests. The native `argon2` package is
-  excluded to avoid another binary/install-script dependency:
+- Run Node.js on a supported patched release; deployments that can choose should
+  prefer a 24.x LTS line, which Node.js recommends for production:
+  [Node.js release policy](https://nodejs.org/en/about/previous-releases).
+- Passphrase Argon2id uses the asynchronous built-in `crypto.argon2`, added in
+  v24.7.0 and marked stable in 24.19. The supported range admits releases where
+  it is still labelled active development, so startup probes that the primitive
+  exists and is callable and fails closed otherwise; updates across the range
+  still require RFC-vector and serialized-parameter compatibility tests. The
+  native `argon2` package is excluded to avoid another binary/install-script
+  dependency:
   [Node stability commit](https://github.com/nodejs/node/commit/7bb6dab70c5ad2a8585c26a3f1cd1da2907f33ee).
 - HKDF must follow [RFC 5869](https://datatracker.ietf.org/doc/html/rfc5869), and
   Argon2id parameters/formats must follow the project contract and

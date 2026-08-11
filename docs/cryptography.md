@@ -60,13 +60,20 @@ and the streaming construction at
 [secretstream](https://doc.libsodium.org/secret-key_cryptography/secretstream).
 
 Passphrase derivation uses only the asynchronous `crypto.argon2`; the engine
-contract is `>=24.19.0 <25`. Node marked Argon2 stable in 24.19 in
-[`doc,crypto: mark argon2 and encap/decap as stable`](https://github.com/nodejs/node/commit/7bb6dab70c5ad2a8585c26a3f1cd1da2907f33ee).
-Kavrix still treats the Node call signature as an adapter, persists its own
-versioned Argon2 parameter schema, runs RFC vectors and serialized-parameter
-compatibility tests on supported Node 24.x updates, and does not call the
-synchronous variant. A separate native `argon2` package is excluded to avoid
-additional binary and install-script risk.
+contract is `>=24.12.0 <25 || >=25.1.0`. `crypto.argon2` was added in v24.7.0 and
+marked stable in 24.19 by
+[`doc,crypto: mark argon2 and encap/decap as stable`](https://github.com/nodejs/node/commit/7bb6dab70c5ad2a8585c26a3f1cd1da2907f33ee),
+so releases between those two points expose the primitive under an
+active-development label. The floor is therefore set by the local store rather
+than by this module: `DatabaseSync.enableDefensive` was added in v25.1.0 and
+backported to v24.12.0, which is also why 25.0.x is excluded. Because the range
+admits runtimes where Argon2 predates the stability marking, the CLI probes for
+the primitive at startup and fails closed instead of trusting the version string
+alone; see `apps/cli/src/runtime-preflight.ts`. Kavrix still treats the Node call
+signature as an adapter, persists its own versioned Argon2 parameter schema, runs
+RFC vectors and serialized-parameter compatibility tests across the supported
+range, and does not call the synchronous variant. A separate native `argon2`
+package is excluded to avoid additional binary and install-script risk.
 
 These are initial choices, not claims of everlasting suitability. Any change
 requires a new algorithm/envelope version, migration plan, compatibility tests,

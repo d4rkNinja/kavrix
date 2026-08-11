@@ -9,7 +9,8 @@ vault-decryption capability.
 
 ## Runtime topology
 
-Use Node.js 24.19.x, pnpm 11.21.x, and a transaction-capable MongoDB replica set.
+Use Node.js `>=24.12.0 <25 || >=25.1.0` (24.19.x LTS is the tested baseline),
+pnpm 11.21.x, and a transaction-capable MongoDB replica set.
 A standalone `mongod` is insufficient because bootstrap, enrollment, revocation,
 sync idempotency, and opaque record changes use transactions.
 

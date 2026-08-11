@@ -11,7 +11,10 @@ must also be consistent with `docs/threat-model.md` and `docs/cryptography.md`.
 
 Requirements:
 
-- Node.js 24.19.x (the minimum release with stable built-in Argon2)
+- Node.js 24.19.x, matching `.nvmrc` (the oldest LTS marking built-in Argon2
+  stable). The published CLI supports the wider `>=24.12.0 <25 || >=25.1.0`;
+  contributors stay on one baseline so gate results are comparable, and CI
+  covers the rest of the range.
 - pnpm 11 through Corepack
 
 ```sh

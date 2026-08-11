@@ -58,8 +58,11 @@ dependency audit is insufficient.
   parameters.
 - Check Argon2id implementation against
   [RFC 9106 test vectors](https://datatracker.ietf.org/doc/html/rfc9106#section-5.3).
-- Run the vectors and serialized-parameter compatibility suite on every
-  supported Node 24.x update; assert startup rejects Node `<24.19.0` and `>=25`.
+- Run the vectors and serialized-parameter compatibility suite across the
+  supported range; assert startup rejects Node `<24.12.0` and the excluded 25.0.x
+  band, and rejects a runtime that reports a supported version but is missing or
+  cannot call `crypto.argon2`/`crypto.argon2Sync`. Test the predicate at both
+  edges of every boundary rather than at one admitted version.
 - Serialize and restore Argon2id version, salt, memory, passes, parallelism, and
   output length exactly.
 - Enforce the 64 MiB/3-pass/4-lane floor for new slots and upper allocation/time

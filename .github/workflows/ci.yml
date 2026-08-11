@@ -42,6 +42,9 @@ jobs:
           run_install: false
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
+          # The development baseline, matching .nvmrc: the oldest LTS that marks
+          # crypto.argon2 stable. The `runtime-range` job covers the wider range
+          # `engines.node` promises, so this pin only needs to be reproducible.
           node-version: 24.19.0
           cache: pnpm
           package-manager-cache: false
@@ -52,6 +55,78 @@ jobs:
         run: node --input-type=module -e "if (process.arch !== process.env.EXPECTED_ARCH) process.exit(1)"
       - run: pnpm install --frozen-lockfile
       - run: pnpm verify
+      - name: Install and smoke-test the packed public CLI
+        run: pnpm --filter kavrix --fail-if-no-match package:smoke
+
+  runtime-range:
+    name: Published CLI (${{ matrix.label }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        # `verify` covers every runner at one development baseline. This job
+        # covers the other axis: the range `engines.node` actually promises to
+        # anyone running `npm install -g kavrix`. Both edges are load-bearing.
+        # 24.12.0 is the oldest runtime a user can install on, because
+        # DatabaseSync.enableDefensive — which the local store calls to refuse
+        # SQL that can corrupt the database file — was added in v25.1.0 and
+        # backported no further than v24.12.0. Those two are also why 25.0.x is
+        # excluded, so both edges of that gap are pinned here. The range is
+        # deliberately open above 25.1.0, so the newest release guards against
+        # drift in the release-candidate APIs the CLI depends on: node:sqlite is
+        # stability 1.2, and crypto.argon2 only became stable in 24.19.0. macOS
+        # runs the floor only: newer-Node risk is API drift rather than anything
+        # platform-specific, while the launcher shape and path handling that do
+        # differ per OS are covered on Linux and Windows at every version. Bump
+        # `newest` when a Node major ships; a break there is a real break for
+        # users already on it.
+        include:
+          - label: Linux · Node 24.12.0 · engines floor
+            runner: ubuntu-24.04
+            node: 24.12.0
+          - label: Windows · Node 24.12.0 · engines floor
+            runner: windows-2025
+            node: 24.12.0
+          - label: macOS · Node 24.12.0 · engines floor
+            runner: macos-15
+            node: 24.12.0
+          - label: Linux · Node 25.1.0
+            runner: ubuntu-24.04
+            node: 25.1.0
+          - label: Windows · Node 25.1.0
+            runner: windows-2025
+            node: 25.1.0
+          - label: Linux · Node 26.7.0 · newest
+            runner: ubuntu-24.04
+            node: 26.7.0
+          - label: Windows · Node 26.7.0 · newest
+            runner: windows-2025
+            node: 26.7.0
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: 11.21.0
+          run_install: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: ${{ matrix.node }}
+          cache: pnpm
+          package-manager-cache: false
+      - name: Verify the runtime under test
+        env:
+          EXPECTED_NODE: ${{ matrix.node }}
+        shell: bash
+        run: node --input-type=module -e "if (process.versions.node !== process.env.EXPECTED_NODE) process.exit(1)"
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - name: Test the runtime-sensitive packages
+        run: >-
+          pnpm --filter @kavrix/crypto --filter @kavrix/local-store
+          --filter kavrix --fail-if-no-match test
       - name: Install and smoke-test the packed public CLI
         run: pnpm --filter kavrix --fail-if-no-match package:smoke
 

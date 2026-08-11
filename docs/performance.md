@@ -65,8 +65,9 @@ Read-call counts come from transparent instrumentation that delegates every
 operation to the production opaque snapshot. It does not return synthetic
 records or replace the storage implementation.
 
-The harness accepts only Node `>=24.19.0 <25`. `--output` uses exclusive file
-creation and refuses to overwrite an existing file. Report metadata omits
+The harness accepts only Node `>=24.12.0 <25 || >=25.1.0`, mirroring
+`engines.node`. `--output` uses exclusive file creation and refuses to overwrite
+an existing file. Report metadata omits
 working-directory paths, temporary paths, usernames, hostnames, and environment
 contents. Child processes receive a narrow environment. Temporary package data
 is removed after the run.

@@ -34,13 +34,18 @@ These rules are architectural, not optional configuration:
 
 ## Technology baseline
 
-- Node.js 24 LTS with an engine range of `>=24.19.0 <25`, kept on a patched 24.x
-  release. Node 24.19 includes the stable `node:crypto` Argon2 API required by
-  this design. Node.js lists 24.x as an LTS line and recommends LTS releases for
-  production applications:
-  [Node.js releases](https://nodejs.org/en/about/previous-releases). The Argon2
-  stability change is recorded in
-  [Node commit 7bb6dab](https://github.com/nodejs/node/commit/7bb6dab70c5ad2a8585c26a3f1cd1da2907f33ee).
+- An engine range of `>=24.12.0 <25 || >=25.1.0`. The floor is the oldest release
+  carrying both runtime APIs this design requires: `DatabaseSync.enableDefensive`
+  (added in v25.1.0, backported to v24.12.0 — the pair that also makes 25.0.x
+  unusable and so excluded) and `crypto.argon2` (added in v24.7.0). The range is
+  deliberately open above 25.1.0 so a user on a current Node can install without
+  waiting on a release of this project; CI tests both edges and the newest
+  release. Development and release pipelines stay on 24.x LTS, which Node.js
+  recommends for production applications:
+  [Node.js releases](https://nodejs.org/en/about/previous-releases). Because the
+  range spans releases where these APIs are still marked release-candidate, the
+  CLI probes for the primitives it needs at startup rather than trusting the
+  version string; see `apps/cli/src/runtime-preflight.ts`.
 - Strict ESM TypeScript with `strict`, `exactOptionalPropertyTypes`, and
   `noUncheckedIndexedAccess`.
 - pnpm workspaces and project references where they make dependency boundaries
@@ -49,7 +54,7 @@ These rules are architectural, not optional configuration:
   `libsodium-wrappers` 0.8.4 package (not the sumo build) for application AEAD,
   key wrapping, and attachment streams.
 - HKDF-SHA-256 for high-entropy portable, recovery, and device key slots.
-- Argon2id through the asynchronous Node 24 `node:crypto` `argon2` API for human
+- Argon2id through the asynchronous built-in `node:crypto` `argon2` API for human
   passphrase slots and passphrase-protected portable-key files. Node marked the
   API stable in 24.19, while Kavrix still owns a versioned serialized parameter
   contract and compatibility tests. A native third-party Argon2 package is

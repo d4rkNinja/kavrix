@@ -92,7 +92,9 @@ documented only after the real end-to-end vault flows pass their acceptance test
 
 Requirements:
 
-- Node.js 24.19.x
+- Node.js 24.19.x for development (the published CLI supports
+  `>=24.12.0 <25 || >=25.1.0`; contributors stay on one pinned baseline so
+  lockfile and gate results are comparable)
 - pnpm 11.21.0
 
 ```sh
