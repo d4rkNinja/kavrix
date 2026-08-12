@@ -8,26 +8,15 @@ import {
 } from '@kavrix/core';
 import {
   cloneSecretKey,
-  decryptPayload,
   requireByteLength,
-  unwrapGroupKey,
-  unwrapItemKey,
   zeroize,
-  type GroupKey,
   type VaultRootKey,
 } from '@kavrix/crypto';
 import {
-  associatedDataSchema,
-  encryptedGroupRecordSchema,
   encryptedItemRecordSchema,
-  fieldValueMatchesDefinition,
-  groupPayloadSchema,
   groupIdSchema,
-  itemPayloadSchema,
   itemIdSchema,
   vaultRecordSchema,
-  type EncryptedGroupRecord,
-  type EncryptedItemRecord,
   type GroupPayload,
   type GroupTemplate,
   type ItemPayload,
@@ -37,8 +26,13 @@ import {
 } from '@kavrix/schemas';
 
 import { VaultSessionConcurrencyError } from './errors.js';
+import {
+  openGroupRecord,
+  openItemRecord,
+  type OpenGroup,
+} from './vault-mutation-records.js';
 
-export const MAX_VAULT_PAYLOAD_BYTES = 16 * 1024 * 1024;
+export { MAX_VAULT_PAYLOAD_BYTES } from './vault-mutation-records.js';
 export const MAX_VAULT_GROUPS = 1_000;
 export const MAX_GROUP_ITEMS = 10_000;
 
@@ -58,11 +52,6 @@ interface UnlockedState {
   readonly keyVersion: KeyVersion;
   readonly schemaVersion: SchemaVersion;
 }
-
-type OpenGroup = Readonly<{
-  payload: GroupPayload;
-  key: GroupKey;
-}>;
 
 /** Owns the only client-side copy of the active root key and never returns keys. */
 export class VaultReadSession {
@@ -204,9 +193,11 @@ export class VaultReadSession {
     this.#assertActive(state, epoch);
     if (groupCandidate === null) return undefined;
     if (groupCandidate.id !== groupId.data) throw new CryptoAuthenticationError();
-    const group = await openGroup(
-      parseGroupRecord(groupCandidate, this.#vaultId, state),
+    const group = await openGroupRecord(
+      groupCandidate,
+      this.#vaultId,
       state,
+      state.rootKey,
     );
     try {
       const itemCandidate = await this.#source.getItem(this.#vaultId, itemId.data);
@@ -221,12 +212,16 @@ export class VaultReadSession {
         throw new CryptoAuthenticationError();
       }
       if (parsedItem.data.groupId !== group.payload.id) return undefined;
-      const item = await openItem(
-        parseItemRecord(parsedItem.data, this.#vaultId, group.payload.id, state),
-        group,
-        state,
-      );
-      return { group: group.payload, item, template: group.payload.template };
+      const item = await openItemRecord(parsedItem.data, group, state);
+      try {
+        return {
+          group: group.payload,
+          item: item.payload,
+          template: group.payload.template,
+        };
+      } finally {
+        zeroize(item.key);
+      }
     } finally {
       zeroize(group.key);
     }
@@ -264,10 +259,18 @@ export class VaultReadSession {
           throw new CryptoAuthenticationError();
         }
         this.#assertActive(state, epoch);
-        const record = parseGroupRecord(candidate, this.#vaultId, state);
-        if (ids.has(record.id)) throw new CryptoAuthenticationError();
-        ids.add(record.id);
-        groups.push(await openGroup(record, state));
+        const opened = await openGroupRecord(
+          candidate,
+          this.#vaultId,
+          state,
+          state.rootKey,
+        );
+        if (ids.has(opened.record.id)) {
+          zeroize(opened.key);
+          throw new CryptoAuthenticationError();
+        }
+        ids.add(opened.record.id);
+        groups.push(opened);
       }
       this.#assertActive(state, epoch);
       return groups;
@@ -312,10 +315,14 @@ export class VaultReadSession {
     )) {
       if (items.length >= MAX_GROUP_ITEMS) throw new CryptoAuthenticationError();
       this.#assertActive(state, epoch);
-      const record = parseItemRecord(candidate, this.#vaultId, group.payload.id, state);
-      if (ids.has(record.id)) throw new CryptoAuthenticationError();
-      ids.add(record.id);
-      items.push(await openItem(record, group, state));
+      const opened = await openItemRecord(candidate, group, state);
+      try {
+        if (ids.has(opened.record.id)) throw new CryptoAuthenticationError();
+        ids.add(opened.record.id);
+        items.push(opened.payload);
+      } finally {
+        zeroize(opened.key);
+      }
     }
     this.#assertActive(state, epoch);
     return items;
@@ -324,183 +331,6 @@ export class VaultReadSession {
   #assertActive(state: UnlockedState, epoch: number): void {
     if (this.#state !== state || this.#epoch !== epoch) throw new VaultLockedError();
   }
-}
-
-function parseGroupRecord(
-  candidate: EncryptedGroupRecord,
-  vaultId: VaultId,
-  state: UnlockedState,
-): EncryptedGroupRecord {
-  const parsed = encryptedGroupRecordSchema.safeParse(candidate);
-  if (
-    !parsed.success ||
-    parsed.data.vaultId !== vaultId ||
-    parsed.data.schemaVersion !== state.schemaVersion ||
-    parsed.data.tombstonedAt !== undefined ||
-    parsed.data.wrappedGroupKey.keyVersion !== state.keyVersion ||
-    parsed.data.encryptedPayload.keyVersion !== state.keyVersion
-  ) {
-    throw new CryptoAuthenticationError();
-  }
-  return parsed.data;
-}
-
-async function openGroup(
-  record: EncryptedGroupRecord,
-  state: UnlockedState,
-): Promise<OpenGroup> {
-  const keyContext = associatedDataSchema.parse({
-    version: 1,
-    schemaVersion: state.schemaVersion,
-    keyVersion: state.keyVersion,
-    vaultId: record.vaultId,
-    entityType: 'wrapped-group-key',
-    entityId: record.id,
-    purpose: 'group-key',
-  });
-  const payloadContext = associatedDataSchema.parse({
-    version: 1,
-    schemaVersion: state.schemaVersion,
-    keyVersion: state.keyVersion,
-    vaultId: record.vaultId,
-    entityType: 'group',
-    entityId: record.id,
-    purpose: 'group-payload',
-  });
-  const key = await unwrapGroupKey(record.wrappedGroupKey, state.rootKey, keyContext);
-  let plaintext: Uint8Array | undefined;
-  try {
-    plaintext = await decryptPayload(record.encryptedPayload, key, payloadContext);
-    const payload = parseCanonicalPayload(plaintext, groupPayloadSchema);
-    if (
-      payload.id !== record.id ||
-      payload.vaultId !== record.vaultId ||
-      payload.revision !== record.recordRevision ||
-      payload.template.version !== record.templateVersion ||
-      payload.createdAt !== record.createdAt ||
-      payload.updatedAt !== record.updatedAt ||
-      payload.deletedAt !== undefined
-    ) {
-      throw new CryptoAuthenticationError();
-    }
-    return { key, payload };
-  } catch (error) {
-    zeroize(key);
-    throw error;
-  } finally {
-    zeroize(plaintext);
-  }
-}
-
-function parseItemRecord(
-  candidate: EncryptedItemRecord,
-  vaultId: VaultId,
-  groupId: GroupPayload['id'],
-  state: UnlockedState,
-): EncryptedItemRecord {
-  const parsed = encryptedItemRecordSchema.safeParse(candidate);
-  if (
-    !parsed.success ||
-    parsed.data.vaultId !== vaultId ||
-    parsed.data.groupId !== groupId ||
-    parsed.data.schemaVersion !== state.schemaVersion ||
-    parsed.data.tombstonedAt !== undefined ||
-    parsed.data.wrappedItemKey.keyVersion !== state.keyVersion ||
-    parsed.data.encryptedPayload.keyVersion !== state.keyVersion
-  ) {
-    throw new CryptoAuthenticationError();
-  }
-  return parsed.data;
-}
-
-async function openItem(
-  record: EncryptedItemRecord,
-  group: OpenGroup,
-  state: UnlockedState,
-): Promise<ItemPayload> {
-  const keyContext = associatedDataSchema.parse({
-    version: 1,
-    schemaVersion: state.schemaVersion,
-    keyVersion: state.keyVersion,
-    vaultId: record.vaultId,
-    entityType: 'wrapped-item-key',
-    entityId: record.id,
-    groupId: record.groupId,
-    purpose: 'item-key',
-  });
-  const payloadContext = associatedDataSchema.parse({
-    version: 1,
-    schemaVersion: state.schemaVersion,
-    keyVersion: state.keyVersion,
-    vaultId: record.vaultId,
-    entityType: 'item',
-    entityId: record.id,
-    groupId: record.groupId,
-    purpose: 'item-payload',
-  });
-  const itemKey = await unwrapItemKey(record.wrappedItemKey, group.key, keyContext);
-  let plaintext: Uint8Array | undefined;
-  try {
-    plaintext = await decryptPayload(record.encryptedPayload, itemKey, payloadContext);
-    const payload = parseCanonicalPayload(plaintext, itemPayloadSchema);
-    if (
-      payload.id !== record.id ||
-      payload.vaultId !== record.vaultId ||
-      payload.groupId !== record.groupId ||
-      payload.revision !== record.recordRevision ||
-      payload.createdAt !== record.createdAt ||
-      payload.updatedAt !== record.updatedAt ||
-      payload.deletedAt !== undefined ||
-      payload.templateId !== group.payload.template.id ||
-      payload.templateVersion !== group.payload.template.version ||
-      !templateValuesMatch(payload, group.payload.template)
-    ) {
-      throw new CryptoAuthenticationError();
-    }
-    return payload;
-  } finally {
-    zeroize(itemKey);
-    zeroize(plaintext);
-  }
-}
-
-function parseCanonicalPayload<TOutput>(
-  plaintext: Uint8Array,
-  schema: {
-    safeParse(
-      value: unknown,
-    ): Readonly<{ success: true; data: TOutput }> | Readonly<{ success: false }>;
-  },
-): TOutput {
-  if (plaintext.byteLength === 0 || plaintext.byteLength > MAX_VAULT_PAYLOAD_BYTES) {
-    throw new CryptoAuthenticationError();
-  }
-  try {
-    const text = new TextDecoder('utf-8', { fatal: true }).decode(plaintext);
-    const decoded = JSON.parse(text) as unknown;
-    const result = schema.safeParse(decoded);
-    if (!result.success || JSON.stringify(result.data) !== text) {
-      throw new CryptoAuthenticationError();
-    }
-    return result.data;
-  } catch {
-    throw new CryptoAuthenticationError();
-  }
-}
-
-function templateValuesMatch(item: ItemPayload, template: GroupTemplate): boolean {
-  const values = new Map(item.templateValues.map((value) => [value.fieldId, value]));
-  for (const definition of template.fields) {
-    const value = values.get(definition.id);
-    if (
-      value?.stableKey !== definition.stableKey ||
-      !fieldValueMatchesDefinition(definition, value.value)
-    ) {
-      return false;
-    }
-    values.delete(definition.id);
-  }
-  return values.size === 0;
 }
 
 function safeReadError(error: unknown): Error {

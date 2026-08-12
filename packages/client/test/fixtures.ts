@@ -35,7 +35,6 @@ import {
 } from '@kavrix/schemas';
 
 const timestamp = timestampSchema.parse('2026-08-10T00:00:00.000Z');
-const digest = createHash('sha256').update('ciphertext').digest('base64url');
 
 export type EncryptedFixture = Readonly<{
   vaultId: VaultId;
@@ -123,6 +122,7 @@ export async function encryptedFixture(
     readonly recordKeyVersion?: number;
     readonly itemTemplateId?: string;
     readonly nonCanonicalItem?: boolean;
+    readonly nonCanonicalGroup?: boolean;
     readonly portableKey?: Uint8Array;
     readonly transformItem?: (
       item: ItemPayload,
@@ -195,7 +195,12 @@ export async function encryptedFixture(
       schemaVersion,
       wrappedGroupKey: await wrapGroupKey(groupKey, rootKey, groupKeyContext),
       encryptedPayload: await encryptPayload(
-        Buffer.from(JSON.stringify(groupPayload), 'utf8'),
+        Buffer.from(
+          JSON.stringify(groupPayload).concat(
+            options.nonCanonicalGroup === true ? ' ' : '',
+          ),
+          'utf8',
+        ),
         groupKey,
         groupPayloadContext,
       ),
@@ -268,6 +273,11 @@ export async function encryptedFixture(
       const serialized = JSON.stringify(itemPayload).concat(
         options.nonCanonicalItem === true ? ' ' : '',
       );
+      const encryptedPayload = await encryptPayload(
+        Buffer.from(serialized, 'utf8'),
+        itemKey,
+        itemPayloadContext,
+      );
       encryptedItems.push(
         encryptedItemRecordSchema.parse({
           id: itemId,
@@ -275,13 +285,11 @@ export async function encryptedFixture(
           groupId,
           schemaVersion,
           wrappedItemKey: await wrapItemKey(itemKey, groupKey, itemKeyContext),
-          encryptedPayload: await encryptPayload(
-            Buffer.from(serialized, 'utf8'),
-            itemKey,
-            itemPayloadContext,
-          ),
+          encryptedPayload,
           recordRevision: itemPayload.revision,
-          ciphertextHash: digest,
+          ciphertextHash: createHash('sha256')
+            .update(Buffer.from(encryptedPayload.ciphertext, 'base64url'))
+            .digest('base64url'),
           createdAt: timestamp,
           updatedAt: timestamp,
         }),

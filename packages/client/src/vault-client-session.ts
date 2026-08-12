@@ -11,7 +11,6 @@ import {
   unlockPortableKeySlot,
   unlockRecoveryKeySlot,
   zeroize,
-  type SlotBinding,
   type VaultRootKey,
 } from '@kavrix/crypto';
 import {
@@ -25,7 +24,6 @@ import {
   type EncryptedItemRecord,
   type GroupId,
   type ItemId,
-  type KeySlot,
   type KeySlotId,
   type VaultId,
   type VaultRecord,
@@ -50,6 +48,11 @@ import {
 import { ControlPlaneFailure, VaultClientSessionError } from './errors.js';
 import { FetchSyncTransport } from './fetch-sync-transport.js';
 import {
+  MAX_PASSPHRASE_BYTES,
+  selectCurrentSlot,
+  slotBinding,
+} from './restore-slot-selection.js';
+import {
   VaultInteractionService,
   type CredentialCopyOptions,
   type CredentialCopyReceipt,
@@ -64,7 +67,6 @@ import {
 } from './vault-profile.js';
 
 const REQUIRED_SCOPES = new Set(['sync:read', 'sync:write'] as const);
-const MAX_PASSPHRASE_BYTES = 1024 * 1024;
 
 export const vaultClientSessionStatusSchema = z.discriminatedUnion('state', [
   z
@@ -111,8 +113,6 @@ type ActiveSession = Readonly<{
   interaction: VaultInteractionService;
   sync: SyncEngine;
 }>;
-
-type SlotType = KeySlot['type'];
 
 /**
  * Online-only, key-owning facade. It never returns a VRK, device secret, API
@@ -523,33 +523,6 @@ function parseRequiredSlotId(value: KeySlotId): KeySlotId {
   const parsed = keySlotIdSchema.safeParse(value);
   if (!parsed.success) throw new VaultClientSessionError('invalid-input');
   return parsed.data;
-}
-
-function selectCurrentSlot<Type extends SlotType>(
-  vault: VaultRecord,
-  type: Type,
-  slotId: KeySlotId | undefined,
-): Extract<KeySlot, { readonly type: Type }> {
-  const candidates = vault.keySlots.filter(
-    (slot): slot is Extract<KeySlot, { readonly type: Type }> =>
-      slot.type === type &&
-      slot.state === 'active' &&
-      slot.keyVersion === vault.currentKeyVersion &&
-      (slotId === undefined || slot.id === slotId),
-  );
-  if (candidates.length !== 1) {
-    throw new VaultClientSessionError('authentication');
-  }
-  return candidates[0] as Extract<KeySlot, { readonly type: Type }>;
-}
-
-function slotBinding(vault: VaultRecord, slot: KeySlot): SlotBinding {
-  return {
-    vaultId: vault.id,
-    slotId: slot.id,
-    schemaVersion: vault.schemaVersion,
-    keyVersion: vault.currentKeyVersion,
-  };
 }
 
 function bearerFromSecret(secret: Uint8Array): ApiBearerToken {

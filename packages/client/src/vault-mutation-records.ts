@@ -39,7 +39,9 @@ import {
   type VaultRecord,
 } from '@kavrix/schemas';
 
-import { MAX_VAULT_PAYLOAD_BYTES } from './vault-read-session.js';
+export const MAX_VAULT_PAYLOAD_BYTES = 16 * 1024 * 1024;
+
+export type ExpectedRecordState = 'active' | 'deleted';
 
 export type ActiveVault = Readonly<{
   schemaVersion: SchemaVersion;
@@ -109,6 +111,17 @@ export async function openGroupRecord(
   vault: ActiveVault,
   rootKey: VaultRootKey,
 ): Promise<OpenGroup> {
+  return openGroupRecordForState(candidate, vaultId, vault, rootKey, 'active');
+}
+
+export async function openGroupRecordForState(
+  candidate: EncryptedGroupRecord,
+  vaultId: VaultId,
+  vault: ActiveVault,
+  rootKey: VaultRootKey,
+  expectedState: ExpectedRecordState,
+): Promise<OpenGroup> {
+  assertExpectedRecordState(expectedState);
   const parsed = encryptedGroupRecordSchema.safeParse(candidate);
   if (
     !parsed.success ||
@@ -116,7 +129,9 @@ export async function openGroupRecord(
     parsed.data.schemaVersion !== vault.schemaVersion ||
     parsed.data.wrappedGroupKey.keyVersion !== vault.keyVersion ||
     parsed.data.encryptedPayload.keyVersion !== vault.keyVersion ||
-    parsed.data.tombstonedAt !== undefined
+    (expectedState === 'active'
+      ? parsed.data.tombstonedAt !== undefined
+      : parsed.data.tombstonedAt === undefined)
   ) {
     throw new CryptoAuthenticationError();
   }
@@ -142,7 +157,9 @@ export async function openGroupRecord(
       payload.template.version !== record.templateVersion ||
       payload.createdAt !== record.createdAt ||
       payload.updatedAt !== record.updatedAt ||
-      payload.deletedAt !== undefined
+      (expectedState === 'active'
+        ? payload.deletedAt !== undefined
+        : payload.deletedAt === undefined || payload.deletedAt !== record.tombstonedAt)
     ) {
       throw new CryptoAuthenticationError();
     }
@@ -151,12 +168,11 @@ export async function openGroupRecord(
       payload,
       record,
       expectedRecordRevision: record.recordRevision,
-      deleted: false,
+      deleted: expectedState === 'deleted',
     };
-  } catch (error) {
+  } catch {
     zeroize(key);
-    if (error instanceof CryptoAuthenticationError) throw error;
-    throw new CryptoAuthenticationError({ cause: error });
+    throw new CryptoAuthenticationError();
   } finally {
     zeroize(plaintext);
   }
@@ -167,6 +183,16 @@ export async function openItemRecord(
   group: OpenGroup,
   vault: ActiveVault,
 ): Promise<OpenItem> {
+  return openItemRecordForState(candidate, group, vault, 'active');
+}
+
+export async function openItemRecordForState(
+  candidate: EncryptedItemRecord,
+  group: OpenGroup,
+  vault: ActiveVault,
+  expectedState: ExpectedRecordState,
+): Promise<OpenItem> {
+  assertExpectedRecordState(expectedState);
   const parsed = encryptedItemRecordSchema.safeParse(candidate);
   if (
     !parsed.success ||
@@ -177,7 +203,9 @@ export async function openItemRecord(
     parsed.data.encryptedPayload.keyVersion !== vault.keyVersion ||
     parsed.data.ciphertextHash !==
       ciphertextDigest(parsed.data.encryptedPayload.ciphertext) ||
-    parsed.data.tombstonedAt !== undefined
+    (expectedState === 'active'
+      ? parsed.data.tombstonedAt !== undefined
+      : parsed.data.tombstonedAt === undefined)
   ) {
     throw new CryptoAuthenticationError();
   }
@@ -203,7 +231,10 @@ export async function openItemRecord(
       payload.revision !== record.recordRevision ||
       payload.createdAt !== record.createdAt ||
       payload.updatedAt !== record.updatedAt ||
-      payload.deletedAt !== undefined ||
+      (expectedState === 'active'
+        ? payload.deletedAt !== undefined
+        : payload.deletedAt === undefined ||
+          payload.deletedAt !== record.tombstonedAt) ||
       payload.templateId !== group.payload.template.id ||
       payload.templateVersion !== group.payload.template.version
     ) {
@@ -215,12 +246,11 @@ export async function openItemRecord(
       payload,
       record,
       expectedRecordRevision: record.recordRevision,
-      deleted: false,
+      deleted: expectedState === 'deleted',
     };
-  } catch (error) {
+  } catch {
     zeroize(key);
-    if (error instanceof CryptoAuthenticationError) throw error;
-    throw new CryptoAuthenticationError({ cause: error });
+    throw new CryptoAuthenticationError();
   } finally {
     zeroize(plaintext);
   }
@@ -319,9 +349,8 @@ export function parseCanonicalPayload<TOutput>(
       throw new CryptoAuthenticationError();
     }
     return result.data;
-  } catch (error) {
-    if (error instanceof CryptoAuthenticationError) throw error;
-    throw new CryptoAuthenticationError({ cause: error });
+  } catch {
+    throw new CryptoAuthenticationError();
   }
 }
 
@@ -402,4 +431,12 @@ function ciphertextDigest(ciphertext: string): Sha256Digest {
       .update(Buffer.from(ciphertext, 'base64url'))
       .digest('base64url'),
   );
+}
+
+function assertExpectedRecordState(
+  value: unknown,
+): asserts value is ExpectedRecordState {
+  if (value !== 'active' && value !== 'deleted') {
+    throw new CryptoAuthenticationError();
+  }
 }
