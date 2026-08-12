@@ -158,6 +158,9 @@ importers:
       '@kavrix/crypto':
         specifier: workspace:*
         version: link:../crypto
+      '@kavrix/import-export':
+        specifier: workspace:*
+        version: link:../import-export
       '@kavrix/schemas':
         specifier: workspace:*
         version: link:../schemas

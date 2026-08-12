@@ -17,15 +17,21 @@ import {
   DEFAULT_MAX_BACKUP_RECORDS,
   MAX_SUPPORTED_BACKUP_BYTES,
   attachmentRecordHashMatchesCanonicalContent,
+  backupRestoreStatusSchema,
+  backupVerificationSchema,
+  canonicalJson,
   contentHashForRecord,
+  createBackupStagedEntryCommitment,
+  restoreKnownRecordsVerificationV1Schema,
   sha256DigestSchema,
   vaultIdSchema,
   type BackupLimits,
   type BackupRestoreStager,
   type BackupRestoreStore,
-  type BackupStagingStatus,
+  type BackupRestoreStatus,
   type BackupVerification,
   type ResolvedBackupLimits,
+  type RestoreKnownRecordsVerificationV1,
   type Sha256Digest,
   type VaultId,
   type VaultRecord,
@@ -61,7 +67,7 @@ export type {
   BackupLimits,
   BackupRestoreStager,
   BackupRestoreStore,
-  BackupStagingStatus,
+  BackupRestoreStatus,
   BackupVerification,
   ResolvedBackupLimits,
 } from '@kavrix/schemas';
@@ -73,18 +79,52 @@ export type CreateEncryptedBackupInput = Readonly<{
   limits?: BackupLimits;
 }>;
 
+export type RestoreVerificationSession = Readonly<{
+  readonly vaultRootKey: VaultRootKey;
+  readonly selectedSlot: RestoreKnownRecordsVerificationV1['selectedSlot'];
+  verify(
+    entries: AsyncIterable<EncryptedBackupEntry>,
+    summary: BackupVerification,
+  ): Promise<RestoreKnownRecordsVerificationV1>;
+  close(): void;
+}>;
+
+export type RestoreVerificationSessionFactory = (
+  vault: VaultRecord,
+) => Promise<RestoreVerificationSession>;
+
+export type RestoreEncryptedBackupResult =
+  | Readonly<{
+      disposition: 'verified-and-committed';
+      backup: BackupVerification;
+      verification: RestoreKnownRecordsVerificationV1;
+    }>
+  | Readonly<{
+      disposition: 'previously-committed';
+      backup: BackupVerification;
+    }>;
+
 type Transcript = Readonly<{
   update(line: Uint8Array): void;
   finish(): Readonly<{ digest: Uint8Array; authenticationTag: Uint8Array }>;
 }>;
 
-type ProcessCallbacks = Readonly<{
-  onHeader?: (
-    restoreSessionId: Sha256Digest,
-    limits: ResolvedBackupLimits,
-  ) => Promise<void>;
+type ProcessSetup = Readonly<{
+  vaultRootKey: VaultRootKey;
   onEntry?: (entry: EncryptedBackupEntry) => Promise<void>;
 }>;
+
+type ProcessSetupFactory = (input: {
+  readonly header: EncryptedBackupHeader;
+  readonly vault: VaultRecord;
+  readonly restoreSessionId: Sha256Digest;
+  readonly limits: ResolvedBackupLimits;
+}) => Promise<ProcessSetup>;
+
+interface RestoreRecoveryContext {
+  initialState?: BackupRestoreStatus['state'];
+  publicationMayHaveStarted: boolean;
+}
 
 export async function* createEncryptedBackup(
   input: CreateEncryptedBackupInput,
@@ -163,162 +203,218 @@ export async function verifyEncryptedBackup(
 ): Promise<BackupVerification> {
   return processEncryptedBackup(
     source,
-    vaultRootKey,
     expectedVaultId,
     resolveBackupLimits(limits),
+    () => Promise.resolve({ vaultRootKey }),
   );
 }
 
 export async function restoreEncryptedBackup(
   source: AsyncIterable<Uint8Array>,
-  vaultRootKey: VaultRootKey,
   expectedVaultId: VaultId,
   store: BackupRestoreStore,
+  openVerification: RestoreVerificationSessionFactory,
   limitsInput?: BackupLimits,
-): Promise<BackupVerification> {
+): Promise<RestoreEncryptedBackupResult> {
   const limits = resolveBackupLimits(limitsInput);
   let stager: BackupRestoreStager | undefined;
-  let commitStarted = false;
+  let initialStatus: BackupRestoreStatus | undefined;
+  let session: RestoreVerificationSession | undefined;
+  let capturedVaultRootKey: VaultRootKey | undefined;
   let summary: BackupVerification | undefined;
+  let result: RestoreEncryptedBackupResult | undefined;
+  let failure: unknown;
+  const recovery: RestoreRecoveryContext = {
+    publicationMayHaveStarted: false,
+  };
 
   try {
     summary = await processEncryptedBackup(
       source,
-      vaultRootKey,
       expectedVaultId,
       limits,
-      {
-        async onHeader(restoreSessionId): Promise<void> {
+      async ({ vault, restoreSessionId }) => {
+        try {
+          session = await openVerification(vault);
+          capturedVaultRootKey = session.vaultRootKey;
+          requireByteLength(capturedVaultRootKey, AUTH_KEY_BYTES, 'vault root key');
+        } catch {
+          throw authenticationFailure();
+        }
+        let statusCandidate: unknown;
+        try {
           stager = await store.open(restoreSessionId, limits);
-        },
-        async onEntry(entry): Promise<void> {
-          if (stager === undefined) {
-            throw new BackupError(
-              'BACKUP_INCOMPLETE',
-              'Backup staging was not initialized.',
-            );
-          }
-          await stager.write(entry);
-        },
+          statusCandidate = await stager.status();
+        } catch {
+          throw commitUncertain();
+        }
+        initialStatus = parseRestoreStatus(statusCandidate);
+        recovery.initialState = initialStatus.state;
+        assertInitialStatus(initialStatus, restoreSessionId, vault.id, limits);
+        return {
+          vaultRootKey: capturedVaultRootKey,
+          ...(initialStatus.state === 'staging'
+            ? {
+                async onEntry(entry: EncryptedBackupEntry): Promise<void> {
+                  try {
+                    await requireDefined(stager).write(entry);
+                  } catch {
+                    throw authenticationFailure();
+                  }
+                },
+              }
+            : {}),
+        };
       },
     );
-    if (stager === undefined) {
-      throw new BackupError('BACKUP_INCOMPLETE', 'Backup staging was not initialized.');
-    }
-
-    commitStarted = true;
-    try {
-      await stager.commit(summary);
-      return summary;
-    } catch (commitError) {
-      let status: BackupStagingStatus;
-      try {
-        status = await stager.status();
-      } catch (statusError) {
-        throw new AggregateError(
-          [commitError, statusError],
-          'Backup commit failed and its durable status could not be reconciled.',
-          { cause: statusError },
-        );
-      }
-      if (status === 'committed') {
-        return summary;
-      }
-      throw new BackupError(
-        'BACKUP_COMMIT_UNCERTAIN',
-        'The authenticated backup remains staged; retry the same restore session.',
-        { cause: commitError },
-      );
-    }
+    const readyStager = requireDefined(stager);
+    const readyStatus = requireDefined(initialStatus);
+    const readySession = requireDefined(session);
+    assertFrozenSummary(readyStatus, summary);
+    result = await coordinateRestore(
+      readyStager,
+      readySession,
+      readyStatus,
+      summary,
+      recovery,
+    );
   } catch (error) {
-    if (commitStarted || stager === undefined) {
-      throw error;
-    }
+    failure = await reconcileFailure(stager, initialStatus, summary, error, recovery);
+  } finally {
+    let cleanupFailed = false;
     try {
-      await stager.abort();
-    } catch (abortError) {
-      throw new AggregateError(
-        [error, abortError],
-        'Backup restore failed and its hidden staging area could not be aborted.',
-        { cause: abortError },
-      );
+      session?.close();
+    } catch {
+      cleanupFailed = true;
+    } finally {
+      try {
+        zeroize(capturedVaultRootKey);
+      } catch {
+        cleanupFailed = true;
+      }
     }
-    throw error;
+    if (cleanupFailed && !isCommitUncertain(failure)) {
+      failure = authenticationFailure();
+    }
   }
+  if (failure !== undefined) {
+    throw failure instanceof Error ? failure : authenticationFailure();
+  }
+  return requireDefined(result);
 }
 
 async function processEncryptedBackup(
   source: AsyncIterable<Uint8Array>,
-  vaultRootKey: VaultRootKey,
   expectedVaultId: VaultId,
   limits: ResolvedBackupLimits,
-  callbacks: ProcessCallbacks = {},
+  setupFactory: ProcessSetupFactory,
 ): Promise<BackupVerification> {
-  requireByteLength(vaultRootKey, AUTH_KEY_BYTES, 'vault root key');
   const expectedId = vaultIdSchema.parse(expectedVaultId);
+  const iterator = splitBackupLines(sanitizeSource(source), limits.maximumBytes)[
+    Symbol.asyncIterator
+  ]();
   let header: EncryptedBackupHeader | undefined;
   let footer: EncryptedBackupFooter | undefined;
   let transcript: Transcript | undefined;
   let authenticationKey: Uint8Array | undefined;
   let restoreSessionId: Sha256Digest | undefined;
+  let headerLine: Uint8Array | undefined;
+  let vaultLine: Uint8Array | undefined;
+  let eof = false;
   const recordSet = new BackupRecordSet(expectedId, limits.maximumRecords);
+  const commitment = createBackupStagedEntryCommitment();
 
   try {
-    for await (const line of splitBackupLines(source, limits.maximumBytes)) {
-      if (footer !== undefined) {
-        throw new BackupError(
-          'BACKUP_INVALID',
-          'The encrypted backup contains data after its footer.',
-        );
-      }
-
-      const value = parseJsonLine(line);
-      if (header === undefined) {
-        header = parseSchema(encryptedBackupHeaderSchema, value);
-        if (header.vaultId !== expectedId) {
-          throw new BackupError(
-            'BACKUP_WRONG_VAULT',
-            'The encrypted backup belongs to a different vault.',
-          );
-        }
-        const salt = decodeBackupBytes(header.authentication.salt);
-        try {
-          authenticationKey = deriveAuthenticationKey(vaultRootKey, salt);
-        } finally {
-          zeroize(salt);
-        }
-        transcript = createTranscript(authenticationKey);
-        transcript.update(line);
-        restoreSessionId = restoreSessionIdForHeader(line);
-        await callbacks.onHeader?.(restoreSessionId, limits);
-        continue;
-      }
-
-      if (isFooterCandidate(value)) {
-        footer = parseSchema(encryptedBackupFooterSchema, value);
-        continue;
-      }
-      if (transcript === undefined) {
-        throw new BackupError('BACKUP_INVALID', 'Invalid backup transcript state.');
-      }
-
-      const entry = parseSchema(encryptedBackupEntrySchema, value);
-      recordSet.accept(entry);
-      transcript.update(line);
-      await callbacks.onEntry?.(entry);
+    const first = await iterator.next();
+    if (first.done) {
+      eof = true;
+      throw incompleteBackup();
     }
-
-    if (
-      header === undefined ||
-      footer === undefined ||
-      transcript === undefined ||
-      restoreSessionId === undefined
-    ) {
+    headerLine = first.value;
+    header = parseSchema(encryptedBackupHeaderSchema, parseJsonLine(headerLine));
+    if (header.vaultId !== expectedId) {
       throw new BackupError(
-        'BACKUP_INCOMPLETE',
-        'The encrypted backup header or footer is missing.',
+        'BACKUP_WRONG_VAULT',
+        'The encrypted backup belongs to a different vault.',
       );
     }
+    restoreSessionId = restoreSessionIdForHeader(headerLine);
+
+    const second = await iterator.next();
+    if (second.done) {
+      eof = true;
+      throw incompleteBackup();
+    }
+    vaultLine = second.value;
+    const vaultEntry = parseSchema(
+      encryptedBackupEntrySchema,
+      parseJsonLine(vaultLine),
+    );
+    if (
+      vaultEntry.kind !== 'vault' ||
+      vaultEntry.record.id !== header.vaultId ||
+      vaultEntry.record.schemaVersion !== header.schemaVersion
+    ) {
+      throw new BackupError(
+        'BACKUP_INVALID',
+        'The encrypted backup leading vault does not match its header.',
+      );
+    }
+
+    const setup = await setupFactory({
+      header,
+      vault: vaultEntry.record,
+      restoreSessionId,
+      limits,
+    });
+    requireByteLength(setup.vaultRootKey, AUTH_KEY_BYTES, 'vault root key');
+    const salt = decodeBackupBytes(header.authentication.salt);
+    try {
+      authenticationKey = deriveAuthenticationKey(setup.vaultRootKey, salt);
+    } finally {
+      zeroize(salt);
+    }
+    transcript = createTranscript(authenticationKey);
+    transcript.update(headerLine);
+    transcript.update(vaultLine);
+    recordSet.accept(vaultEntry);
+    commitment.update(vaultEntry);
+    await setup.onEntry?.(vaultEntry);
+    zeroize(headerLine);
+    headerLine = undefined;
+    zeroize(vaultLine);
+    vaultLine = undefined;
+
+    for (;;) {
+      const next = await iterator.next();
+      if (next.done) {
+        eof = true;
+        break;
+      }
+      const line = next.value;
+      try {
+        if (footer !== undefined) {
+          throw new BackupError(
+            'BACKUP_INVALID',
+            'The encrypted backup contains data after its footer.',
+          );
+        }
+        const value = parseJsonLine(line);
+        if (isFooterCandidate(value)) {
+          footer = parseSchema(encryptedBackupFooterSchema, value);
+          continue;
+        }
+        const entry = parseSchema(encryptedBackupEntrySchema, value);
+        recordSet.accept(entry);
+        transcript.update(line);
+        commitment.update(entry);
+        await setup.onEntry?.(entry);
+      } finally {
+        zeroize(line);
+      }
+    }
+
+    if (footer === undefined) throw incompleteBackup();
     recordSet.finish();
     if (recordSet.recordCount !== footer.recordCount) {
       throw new BackupError(
@@ -340,12 +436,13 @@ async function processEncryptedBackup(
           'The encrypted backup could not be authenticated.',
         );
       }
-      return {
+      return parseSchema(backupVerificationSchema, {
         header,
         restoreSessionId,
         recordCount: recordSet.recordCount,
         transcriptSha256: footer.transcriptSha256,
-      };
+        canonicalEntriesSha256: commitment.finalize(),
+      });
     } finally {
       zeroize(finished.digest);
       zeroize(finished.authenticationTag);
@@ -353,8 +450,486 @@ async function processEncryptedBackup(
       zeroize(suppliedTag);
     }
   } finally {
+    if (!eof) {
+      try {
+        await iterator.return(undefined);
+      } catch {
+        // The public failure remains sanitized by the owning API.
+      }
+    }
+    zeroize(headerLine);
+    zeroize(vaultLine);
     zeroize(authenticationKey);
   }
+}
+
+async function coordinateRestore(
+  stager: BackupRestoreStager,
+  session: RestoreVerificationSession,
+  initialStatus: BackupRestoreStatus,
+  summary: BackupVerification,
+  recovery: RestoreRecoveryContext,
+): Promise<RestoreEncryptedBackupResult> {
+  if (initialStatus.state === 'aborted') throw authenticationFailure();
+  if (initialStatus.state === 'committed') {
+    return { disposition: 'previously-committed', backup: summary };
+  }
+
+  let state = initialStatus;
+  if (state.state === 'staging') {
+    state = await sealAndReconcile(stager, summary, state);
+  }
+
+  let receipt = await verifySealed(stager, session, summary);
+  if (state.state === 'sealed') {
+    const publication = await publishAndReconcile(
+      stager,
+      session,
+      summary,
+      receipt,
+      recovery,
+    );
+    receipt = publication.receipt;
+    if (publication.status.state === 'committed') {
+      return verifiedResult(summary, receipt);
+    }
+  }
+  recovery.publicationMayHaveStarted = true;
+  await finalizeAndReconcile(stager, summary, receipt);
+  return verifiedResult(summary, receipt);
+}
+
+async function sealAndReconcile(
+  stager: BackupRestoreStager,
+  summary: BackupVerification,
+  initialStatus: Extract<BackupRestoreStatus, { state: 'staging' }>,
+): Promise<Extract<BackupRestoreStatus, { state: 'sealed' }>> {
+  let failed = false;
+  try {
+    await stager.seal(summary);
+  } catch {
+    failed = true;
+  }
+  const status = await readExactStatusOrUncertain(stager, summary, initialStatus);
+  if (status.state === 'sealed') return status;
+  if (status.state === 'staging') {
+    await abortDefiniteHiddenState(stager, status, commitUncertain());
+  }
+  if (failed) throw commitUncertain();
+  throw commitUncertain();
+}
+
+async function publishAndReconcile(
+  stager: BackupRestoreStager,
+  session: RestoreVerificationSession,
+  summary: BackupVerification,
+  initialReceipt: RestoreKnownRecordsVerificationV1,
+  recovery: RestoreRecoveryContext,
+): Promise<{
+  readonly receipt: RestoreKnownRecordsVerificationV1;
+  readonly status: Extract<BackupRestoreStatus, { state: 'published' | 'committed' }>;
+}> {
+  let receipt = initialReceipt;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    let failed = false;
+    try {
+      recovery.publicationMayHaveStarted = true;
+      await stager.publish(summary, receipt);
+    } catch {
+      failed = true;
+    }
+    const status = await readExactStatusOrUncertain(stager, summary, undefined);
+    if (status.state === 'published' || status.state === 'committed') {
+      return { receipt, status };
+    }
+    if (status.state === 'sealed' && failed && attempt === 0) {
+      receipt = await verifySealed(stager, session, summary);
+      continue;
+    }
+    if (status.state === 'sealed') {
+      await abortDefiniteHiddenState(stager, status, commitUncertain());
+    }
+    throw commitUncertain();
+  }
+  throw commitUncertain();
+}
+
+async function finalizeAndReconcile(
+  stager: BackupRestoreStager,
+  summary: BackupVerification,
+  receipt: RestoreKnownRecordsVerificationV1,
+): Promise<void> {
+  try {
+    await stager.finalize(summary, receipt);
+  } catch {
+    // The exact durable state below is authoritative.
+  }
+  const status = await readExactStatusOrUncertain(stager, summary, undefined);
+  if (status.state === 'committed') return;
+  throw commitUncertain();
+}
+
+async function verifySealed(
+  stager: BackupRestoreStager,
+  session: RestoreVerificationSession,
+  summary: BackupVerification,
+): Promise<RestoreKnownRecordsVerificationV1> {
+  let iterator: AsyncIterator<EncryptedBackupEntry> | undefined;
+  const readback = { eof: false };
+  let claimed = false;
+  let cleanupFailed = false;
+  let candidate: unknown;
+  let verificationFailure: unknown;
+  try {
+    iterator = stager.readSealed(summary)[Symbol.asyncIterator]();
+    const guarded: AsyncIterable<EncryptedBackupEntry> = {
+      [Symbol.asyncIterator](): AsyncIterator<EncryptedBackupEntry> {
+        if (claimed) throw authenticationFailure();
+        claimed = true;
+        return {
+          async next(): Promise<IteratorResult<EncryptedBackupEntry>> {
+            const next = await requireDefined(iterator).next();
+            if (next.done) readback.eof = true;
+            return next;
+          },
+          async return(): Promise<IteratorResult<EncryptedBackupEntry>> {
+            const active = requireDefined(iterator);
+            if (active.return === undefined) {
+              return { done: true, value: undefined };
+            }
+            return active.return();
+          },
+        };
+      },
+    };
+    candidate = await session.verify(guarded, summary);
+    if (!readback.eof) verificationFailure = authenticationFailure();
+  } catch (error) {
+    verificationFailure = mapVerificationFailure(error);
+  } finally {
+    if (!readback.eof && iterator?.return !== undefined) {
+      try {
+        await iterator.return();
+      } catch {
+        cleanupFailed = true;
+      }
+    }
+  }
+  if (verificationFailure !== undefined) {
+    throw verificationFailure instanceof Error
+      ? verificationFailure
+      : authenticationFailure();
+  }
+  if (cleanupFailed) throw authenticationFailure();
+  const receipt = parseReceipt(candidate);
+  assertReceiptBinding(receipt, summary, session.selectedSlot);
+  return receipt;
+}
+
+function assertReceiptBinding(
+  receipt: RestoreKnownRecordsVerificationV1,
+  summary: BackupVerification,
+  selectedSlot: RestoreKnownRecordsVerificationV1['selectedSlot'],
+): void {
+  if (
+    receipt.vaultId !== summary.header.vaultId ||
+    receipt.restoreSessionId !== summary.restoreSessionId ||
+    receipt.transcriptSha256 !== summary.transcriptSha256 ||
+    receipt.canonicalEntriesSha256 !== summary.canonicalEntriesSha256 ||
+    receipt.recordCount !== summary.recordCount ||
+    receipt.selectedSlot.id !== selectedSlot.id ||
+    receipt.selectedSlot.type !== selectedSlot.type ||
+    receipt.selectedSlot.keyVersion !== selectedSlot.keyVersion
+  ) {
+    throw authenticationFailure();
+  }
+}
+
+function parseReceipt(candidate: unknown): RestoreKnownRecordsVerificationV1 {
+  const parsed = restoreKnownRecordsVerificationV1Schema.safeParse(candidate);
+  if (!parsed.success) throw authenticationFailure();
+  return parsed.data;
+}
+
+function parseRestoreStatus(candidate: unknown): BackupRestoreStatus {
+  const parsed = backupRestoreStatusSchema.safeParse(candidate);
+  if (!parsed.success) throw authenticationFailure();
+  return parsed.data;
+}
+
+async function readStatusOrUncertain(
+  stager: BackupRestoreStager,
+): Promise<BackupRestoreStatus> {
+  try {
+    return parseRestoreStatus(await stager.status());
+  } catch {
+    throw commitUncertain();
+  }
+}
+
+async function readExactStatusOrUncertain(
+  stager: BackupRestoreStager,
+  summary: BackupVerification,
+  expectedHidden: BackupRestoreStatus | undefined,
+): Promise<BackupRestoreStatus> {
+  const status = await readStatusOrUncertain(stager);
+  try {
+    assertFrozenSummary(status, summary);
+    if (
+      status.state === 'staging' &&
+      (!isExactAbortableHiddenStatus(status, expectedHidden, summary) ||
+        status.stagedRecords !== summary.recordCount ||
+        status.vaultId !== summary.header.vaultId)
+    ) {
+      throw commitUncertain();
+    }
+    return status;
+  } catch {
+    throw commitUncertain();
+  }
+}
+
+function assertInitialStatus(
+  status: BackupRestoreStatus,
+  restoreSessionId: Sha256Digest,
+  vaultId: VaultId,
+  limits: ResolvedBackupLimits,
+): void {
+  if (status.restoreSessionId !== restoreSessionId) throw authenticationFailure();
+  if ('maximumBytes' in status) {
+    if (
+      status.maximumBytes !== limits.maximumBytes ||
+      status.maximumRecords !== limits.maximumRecords ||
+      (status.stagedRecords > 0 && status.vaultId !== vaultId)
+    ) {
+      throw authenticationFailure();
+    }
+  }
+}
+
+function assertFrozenSummary(
+  status: BackupRestoreStatus,
+  summary: BackupVerification,
+): void {
+  if (
+    status.state !== 'staging' &&
+    status.state !== 'aborted' &&
+    canonicalJson(status.summary) !== canonicalJson(summary)
+  ) {
+    throw authenticationFailure();
+  }
+}
+
+async function reconcileFailure(
+  stager: BackupRestoreStager | undefined,
+  initialStatus: BackupRestoreStatus | undefined,
+  summary: BackupVerification | undefined,
+  error: unknown,
+  recovery: RestoreRecoveryContext,
+): Promise<unknown> {
+  const safe = mapCoordinatorFailure(error);
+  if (stager === undefined || isCommitUncertain(safe)) return safe;
+  if (initialStatus === undefined) return safe;
+  if (
+    recovery.initialState === 'committed' ||
+    (recovery.initialState === 'published' && !recovery.publicationMayHaveStarted)
+  ) {
+    return safe;
+  }
+  let status: BackupRestoreStatus;
+  try {
+    status = parseRestoreStatus(await stager.status());
+  } catch {
+    return commitUncertain();
+  }
+  if (status.state === 'published' || status.state === 'committed') {
+    return commitUncertain();
+  }
+  if (status.state !== 'staging' && status.state !== 'sealed') {
+    return safe;
+  }
+  if (!isExactAbortableHiddenStatus(status, initialStatus, summary)) {
+    return commitUncertain();
+  }
+  try {
+    await abortDefiniteHiddenState(stager, status, safe);
+    return safe;
+  } catch (abortFailure) {
+    return abortFailure;
+  }
+}
+
+function isExactAbortableHiddenStatus(
+  status: Extract<BackupRestoreStatus, { state: 'staging' | 'sealed' }>,
+  initialStatus: BackupRestoreStatus | undefined,
+  summary: BackupVerification | undefined,
+): boolean {
+  if (status.state === 'sealed') {
+    if (
+      initialStatus?.state === 'sealed' &&
+      canonicalJson(status) === canonicalJson(initialStatus)
+    ) {
+      return true;
+    }
+    if (summary !== undefined) {
+      return canonicalJson(status.summary) === canonicalJson(summary);
+    }
+    return false;
+  }
+  if (initialStatus?.state !== 'staging') return false;
+  return (
+    status.restoreSessionId === initialStatus.restoreSessionId &&
+    status.maximumBytes === initialStatus.maximumBytes &&
+    status.maximumRecords === initialStatus.maximumRecords &&
+    (status.vaultId === undefined ||
+      summary === undefined ||
+      status.vaultId === summary.header.vaultId)
+  );
+}
+
+async function abortDefiniteHiddenState(
+  stager: BackupRestoreStager,
+  expectedHidden: Extract<BackupRestoreStatus, { state: 'staging' | 'sealed' }>,
+  originalFailure: unknown,
+): Promise<never> {
+  try {
+    await stager.abort();
+  } catch {
+    // Reconcile below without retaining the unsafe operational exception.
+  }
+  let status: BackupRestoreStatus;
+  try {
+    status = parseRestoreStatus(await stager.status());
+  } catch {
+    throw commitUncertain();
+  }
+  if (
+    status.state === 'aborted' &&
+    status.restoreSessionId === expectedHidden.restoreSessionId
+  ) {
+    throw mapCoordinatorFailure(originalFailure);
+  }
+  if (status.state === 'staging' || status.state === 'sealed') {
+    if (!isSameHiddenStatus(status, expectedHidden)) throw commitUncertain();
+    throw new AggregateError(
+      [
+        mapCoordinatorFailure(originalFailure),
+        new Error('Backup hidden staging cleanup failed.'),
+      ],
+      'Backup restore failed and its hidden staging area could not be aborted.',
+    );
+  }
+  throw commitUncertain();
+}
+
+function isSameHiddenStatus(
+  status: Extract<BackupRestoreStatus, { state: 'staging' | 'sealed' }>,
+  expected: Extract<BackupRestoreStatus, { state: 'staging' | 'sealed' }>,
+): boolean {
+  return canonicalJson(status) === canonicalJson(expected);
+}
+
+function mapVerificationFailure(error: unknown): BackupError {
+  if (isSafeVerifierFailure(error)) {
+    return error.kind === 'unsupported'
+      ? new BackupError(
+          'BACKUP_DECRYPTABILITY_UNSUPPORTED',
+          'Encrypted backup decryptability verification is unsupported.',
+        )
+      : authenticationFailure();
+  }
+  return authenticationFailure();
+}
+
+function mapCoordinatorFailure(error: unknown): BackupError {
+  if (error instanceof BackupError) {
+    return new BackupError(error.code, error.message);
+  }
+  return mapVerificationFailure(error);
+}
+
+function isSafeVerifierFailure(error: unknown): error is Error & {
+  readonly safe: true;
+  readonly kind: 'invalid' | 'unsupported';
+} {
+  return (
+    error instanceof Error &&
+    error.name === 'RestoreKnownRecordsVerificationError' &&
+    error.message === 'Encrypted backup decryptability verification failed.' &&
+    'safe' in error &&
+    error.safe === true &&
+    'kind' in error &&
+    (error.kind === 'invalid' || error.kind === 'unsupported')
+  );
+}
+
+function authenticationFailure(): BackupError {
+  return new BackupError(
+    'BACKUP_AUTHENTICATION_FAILED',
+    'The encrypted backup could not be authenticated.',
+  );
+}
+
+function commitUncertain(): BackupError {
+  return new BackupError(
+    'BACKUP_COMMIT_UNCERTAIN',
+    'The authenticated backup state could not be reconciled; retry the same restore session.',
+  );
+}
+
+function isCommitUncertain(error: unknown): boolean {
+  return error instanceof BackupError && error.code === 'BACKUP_COMMIT_UNCERTAIN';
+}
+
+function incompleteBackup(): BackupError {
+  return new BackupError(
+    'BACKUP_INCOMPLETE',
+    'The encrypted backup header or footer is missing.',
+  );
+}
+
+function sanitizeSource(source: AsyncIterable<Uint8Array>): AsyncIterable<Uint8Array> {
+  return {
+    [Symbol.asyncIterator](): AsyncIterator<Uint8Array> {
+      let iterator: AsyncIterator<Uint8Array>;
+      try {
+        iterator = source[Symbol.asyncIterator]();
+      } catch {
+        throw authenticationFailure();
+      }
+      return {
+        async next(): Promise<IteratorResult<Uint8Array>> {
+          try {
+            return await iterator.next();
+          } catch {
+            throw authenticationFailure();
+          }
+        },
+        async return(): Promise<IteratorResult<Uint8Array>> {
+          if (iterator.return === undefined) {
+            return { done: true, value: undefined };
+          }
+          try {
+            return await iterator.return();
+          } catch {
+            throw authenticationFailure();
+          }
+        },
+      };
+    },
+  };
+}
+
+function verifiedResult(
+  backup: BackupVerification,
+  verification: RestoreKnownRecordsVerificationV1,
+): RestoreEncryptedBackupResult {
+  return { disposition: 'verified-and-committed', backup, verification };
+}
+
+function requireDefined<Value>(value: Value | undefined): Value {
+  if (value === undefined) throw authenticationFailure();
+  return value;
 }
 
 class BackupRecordSet {

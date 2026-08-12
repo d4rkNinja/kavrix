@@ -2,6 +2,7 @@ import { createHash, createHmac, hkdfSync } from 'node:crypto';
 
 import {
   createPortableKeySlot,
+  cloneSecretKey,
   encryptPayload,
   generateGroupKey,
   generatePortableKey,
@@ -13,7 +14,10 @@ import {
   associatedDataSchema,
   attachmentChunkCiphertextHash,
   attachmentHeaderContentHash,
+  backupRestoreStatusSchema,
+  canonicalJson,
   contentHashForRecord,
+  createBackupStagedEntryCommitment,
   encryptedAttachmentRecordSchema,
   encryptedGroupRecordSchema,
   encryptedItemRecordSchema,
@@ -22,6 +26,7 @@ import {
   persistedAttachmentHeaderRecordSchema,
   keySlotIdSchema,
   recordRevisionSchema,
+  restoreKnownRecordsVerificationV1Schema,
   sha256DigestSchema,
   timestampSchema,
   tombstoneRecordSchema,
@@ -33,6 +38,10 @@ import {
   type PersistedAttachmentChunkRecord,
   type PersistedAttachmentHeaderRecord,
   type VaultRecord,
+  type BackupRestoreStatus,
+  type BackupVerification,
+  type ResolvedBackupLimits,
+  type RestoreKnownRecordsVerificationV1,
 } from '@kavrix/schemas';
 import { describe, expect, it } from 'vitest';
 
@@ -44,6 +53,7 @@ import {
   type BackupRestoreStager,
   type BackupRestoreStore,
   type EncryptedBackupEntry,
+  type RestoreVerificationSessionFactory,
 } from '../src/index.js';
 
 const CREATED_AT = timestampSchema.parse('2026-08-10T00:00:00.000Z');
@@ -128,41 +138,18 @@ describe('encrypted backup streaming format', () => {
         ),
       );
       const tampered = replaceFooterTag(bytes);
-      const staged: EncryptedBackupEntry[] = [];
-      let committed = false;
-      let aborted = false;
-      const stager: BackupRestoreStager = {
-        write(entry): Promise<void> {
-          staged.push(entry);
-          return Promise.resolve();
-        },
-        commit(): Promise<void> {
-          committed = true;
-          return Promise.resolve();
-        },
-        status(): Promise<'staging'> {
-          return Promise.resolve('staging');
-        },
-        abort(): Promise<void> {
-          aborted = true;
-          staged.length = 0;
-          return Promise.resolve();
-        },
-      };
+      const restore = createRestoreHarness(fixture);
 
       await expect(
         restoreEncryptedBackup(
           chunks(tampered),
-          fixture.rootKey,
           VAULT_ID,
-          storeFor(stager),
+          restore.store,
+          restore.factory,
         ),
       ).rejects.toBeInstanceOf(BackupError);
-      expect({ aborted, committed, staged }).toEqual({
-        aborted: true,
-        committed: false,
-        staged: [],
-      });
+      expect(restore.state()).toBe('aborted');
+      expect(restore.staged).toEqual([]);
     } finally {
       zeroize(fixture.rootKey);
     }
@@ -181,34 +168,31 @@ describe('encrypted backup streaming format', () => {
           fixture.rootKey,
         ),
       );
-      const staged: EncryptedBackupEntry[] = [];
-      const events: string[] = [];
-      await restoreEncryptedBackup(
+      const restore = createRestoreHarness(fixture);
+      const result = await restoreEncryptedBackup(
         chunks(bytes, 1),
-        fixture.rootKey,
         VAULT_ID,
-        storeFor({
-          write(entry): Promise<void> {
-            events.push(`write:${entry.kind}`);
-            staged.push(entry);
-            return Promise.resolve();
-          },
-          commit(summary): Promise<void> {
-            events.push(`commit:${String(summary.recordCount)}`);
-            return Promise.resolve();
-          },
-          status(): Promise<'committed'> {
-            return Promise.resolve('committed');
-          },
-          abort(): Promise<void> {
-            events.push('abort');
-            return Promise.resolve();
-          },
-        }),
+        restore.store,
+        restore.factory,
       );
 
-      expect(staged.map((entry) => entry.kind)).toEqual(['vault', 'group']);
-      expect(events).toEqual(['write:vault', 'write:group', 'commit:2']);
+      expect(result).toMatchObject({ disposition: 'verified-and-committed' });
+      expect(restore.staged.map((entry) => entry.kind)).toEqual(['vault', 'group']);
+      expect(restore.events).toEqual([
+        'write:vault',
+        'write:group',
+        'seal:2',
+        'readSealed',
+        'readSealed:eof',
+        'verify',
+        'publish',
+        'finalize',
+      ]);
+      expect(restore.publishedReceipt()).toEqual(
+        result.disposition === 'verified-and-committed'
+          ? result.verification
+          : undefined,
+      );
     } finally {
       zeroize(fixture.rootKey);
     }
@@ -527,34 +511,19 @@ describe('encrypted backup streaming format', () => {
           verifyEncryptedBackup(chunks(invalidBytes), fixture.rootKey, VAULT_ID),
         ).rejects.toMatchObject({ code: 'BACKUP_INVALID' });
 
-        const staged: EncryptedBackupEntry[] = [];
-        let state: 'staging' | 'committed' | 'aborted' = 'staging';
+        const restore = createRestoreHarness(fixture);
         await expect(
           restoreEncryptedBackup(
             chunks(invalidBytes),
-            fixture.rootKey,
             VAULT_ID,
-            storeFor({
-              write(entry): Promise<void> {
-                staged.push(entry);
-                return Promise.resolve();
-              },
-              commit(): Promise<void> {
-                state = 'committed';
-                return Promise.resolve();
-              },
-              status(): Promise<typeof state> {
-                return Promise.resolve(state);
-              },
-              abort(): Promise<void> {
-                state = 'aborted';
-                staged.length = 0;
-                return Promise.resolve();
-              },
-            }),
+            restore.store,
+            restore.factory,
           ),
         ).rejects.toMatchObject({ code: 'BACKUP_INVALID' });
-        expect({ state, staged }).toEqual({ state: 'aborted', staged: [] });
+        expect({ state: restore.state(), staged: restore.staged }).toEqual({
+          state: 'aborted',
+          staged: [],
+        });
       } finally {
         zeroize(fixture.rootKey);
       }
@@ -640,36 +609,21 @@ describe('encrypted backup streaming format', () => {
           fixture.rootKey,
         ),
       );
-      const staged: EncryptedBackupEntry[] = [];
-      let aborted = false;
-      const stager: BackupRestoreStager = {
-        write(entry): Promise<void> {
-          staged.push(entry);
-          return Promise.resolve();
-        },
-        commit(): Promise<void> {
-          return Promise.resolve();
-        },
-        status(): Promise<'staging'> {
-          return Promise.resolve('staging');
-        },
-        abort(): Promise<void> {
-          aborted = true;
-          staged.length = 0;
-          return Promise.resolve();
-        },
-      };
+      const restore = createRestoreHarness(fixture);
 
       await expect(
         restoreEncryptedBackup(
           chunks(bytes),
-          fixture.rootKey,
           VAULT_ID,
-          storeFor(stager),
+          restore.store,
+          restore.factory,
           { maximumRecords: 1 },
         ),
       ).rejects.toMatchObject({ code: 'BACKUP_TOO_LARGE' });
-      expect({ aborted, staged }).toEqual({ aborted: true, staged: [] });
+      expect({ state: restore.state(), staged: restore.staged }).toEqual({
+        state: 'aborted',
+        staged: [],
+      });
 
       await expect(
         verifyEncryptedBackup(chunks(bytes), fixture.rootKey, VAULT_ID, {
@@ -686,7 +640,7 @@ describe('encrypted backup streaming format', () => {
     }
   });
 
-  it('reconciles ambiguous commit outcomes with durable staging status', async () => {
+  it('authenticates exact committed replay without fabricating a receipt', async () => {
     const fixture = await createFixture();
     try {
       const bytes = await collect(
@@ -699,37 +653,20 @@ describe('encrypted backup streaming format', () => {
           fixture.rootKey,
         ),
       );
-      const stager = (status: 'staging' | 'committed'): BackupRestoreStager => ({
-        write(): Promise<void> {
-          return Promise.resolve();
-        },
-        commit(): Promise<never> {
-          return Promise.reject(new Error('ambiguous transport failure'));
-        },
-        status(): Promise<'staging' | 'committed'> {
-          return Promise.resolve(status);
-        },
-        abort(): Promise<void> {
-          return Promise.resolve();
-        },
+      const summary = await verifyEncryptedBackup(
+        chunks(bytes),
+        fixture.rootKey,
+        VAULT_ID,
+      );
+      const restore = createRestoreHarness(fixture, {
+        initialState: 'committed',
+        summary,
       });
 
       await expect(
-        restoreEncryptedBackup(
-          chunks(bytes),
-          fixture.rootKey,
-          VAULT_ID,
-          storeFor(stager('staging')),
-        ),
-      ).rejects.toMatchObject({ code: 'BACKUP_COMMIT_UNCERTAIN' });
-      await expect(
-        restoreEncryptedBackup(
-          chunks(bytes),
-          fixture.rootKey,
-          VAULT_ID,
-          storeFor(stager('committed')),
-        ),
-      ).resolves.toMatchObject({ recordCount: 2 });
+        restoreEncryptedBackup(chunks(bytes), VAULT_ID, restore.store, restore.factory),
+      ).resolves.toEqual({ disposition: 'previously-committed', backup: summary });
+      expect(restore.events).toEqual([]);
     } finally {
       zeroize(fixture.rootKey);
     }
@@ -737,8 +674,6 @@ describe('encrypted backup streaming format', () => {
 
   it('preserves staging failures and aborts hidden state before commit starts', async () => {
     const fixture = await createFixture();
-    const storageFailure = new Error('storage unavailable');
-    let aborted = false;
     try {
       const bytes = await collect(
         createEncryptedBackup(
@@ -750,29 +685,974 @@ describe('encrypted backup streaming format', () => {
           fixture.rootKey,
         ),
       );
+      const restore = createRestoreHarness(fixture, { failWrite: true });
       await expect(
-        restoreEncryptedBackup(
+        restoreEncryptedBackup(chunks(bytes), VAULT_ID, restore.store, restore.factory),
+      ).rejects.toMatchObject({ code: 'BACKUP_AUTHENTICATION_FAILED' });
+      expect(restore.state()).toBe('aborted');
+    } finally {
+      zeroize(fixture.rootKey);
+    }
+  });
+
+  it('uses exact-prefix replay and then verifies sealed and published resumes', async () => {
+    const fixture = await createFixture();
+    try {
+      const bytes = await collect(
+        createEncryptedBackup(
+          {
+            vault: fixture.vault,
+            records: entries({ kind: 'group', record: fixture.group }),
+            createdAt: CREATED_AT,
+          },
+          fixture.rootKey,
+        ),
+      );
+      const summary = await verifyEncryptedBackup(
+        chunks(bytes),
+        fixture.rootKey,
+        VAULT_ID,
+      );
+      const allEntries = [
+        { kind: 'vault' as const, record: fixture.vault },
+        { kind: 'group' as const, record: fixture.group },
+      ];
+
+      for (const prefixLength of [1, 2]) {
+        const resumed = createRestoreHarness(fixture, {
+          initialEntries: allEntries.slice(0, prefixLength),
+        });
+        await expect(
+          restoreEncryptedBackup(
+            chunks(bytes, 1),
+            VAULT_ID,
+            resumed.store,
+            resumed.factory,
+          ),
+        ).resolves.toMatchObject({ disposition: 'verified-and-committed' });
+        expect(resumed.staged).toEqual(allEntries);
+        expect(
+          resumed.events.filter((event) => event.startsWith('write:')),
+        ).toHaveLength(2);
+      }
+
+      for (const initialState of ['sealed', 'published'] as const) {
+        const resumed = createRestoreHarness(fixture, {
+          initialState,
+          initialEntries: allEntries,
+          summary,
+        });
+        await expect(
+          restoreEncryptedBackup(
+            chunks(bytes),
+            VAULT_ID,
+            resumed.store,
+            resumed.factory,
+          ),
+        ).resolves.toMatchObject({ disposition: 'verified-and-committed' });
+        expect(resumed.events.some((event) => event.startsWith('write:'))).toBe(false);
+        expect(resumed.events).toContain('readSealed:eof');
+        expect(resumed.events).toContain('verify');
+        expect(resumed.events).toContain('finalize');
+        expect(resumed.events.includes('publish')).toBe(initialState === 'sealed');
+      }
+    } finally {
+      zeroize(fixture.rootKey);
+    }
+  });
+
+  it('rejects aborted reuse and validates the strict leading vault before factory/store', async () => {
+    const fixture = await createFixture();
+    try {
+      const bytes = await collect(
+        createEncryptedBackup(
+          { vault: fixture.vault, records: entries(), createdAt: CREATED_AT },
+          fixture.rootKey,
+        ),
+      );
+      const summary = await verifyEncryptedBackup(
+        chunks(bytes),
+        fixture.rootKey,
+        VAULT_ID,
+      );
+      const aborted = createRestoreHarness(fixture, {
+        initialState: 'aborted',
+        summary,
+      });
+      await expect(
+        restoreEncryptedBackup(chunks(bytes), VAULT_ID, aborted.store, aborted.factory),
+      ).rejects.toMatchObject({ code: 'BACKUP_AUTHENTICATION_FAILED' });
+
+      let factoryCalls = 0;
+      let storeCalls = 0;
+      const factory: RestoreVerificationSessionFactory = async (vault) => {
+        factoryCalls += 1;
+        return createRestoreHarness({ rootKey: fixture.rootKey, vault }).factory(vault);
+      };
+      const store: BackupRestoreStore = {
+        open(): Promise<never> {
+          storeCalls += 1;
+          return Promise.reject(new Error('must not open'));
+        },
+      };
+      for (const invalid of [
+        Buffer.from('{"type":"bad"}\n', 'utf8'),
+        Buffer.from(bytes.toString('utf8').split('\n').slice(0, 1).join('\n') + '\n'),
+      ]) {
+        await expect(
+          restoreEncryptedBackup(chunks(invalid), VAULT_ID, store, factory),
+        ).rejects.toBeInstanceOf(BackupError);
+      }
+      await expect(
+        restoreEncryptedBackup(chunks(bytes), OTHER_VAULT_ID, store, factory),
+      ).rejects.toMatchObject({ code: 'BACKUP_WRONG_VAULT' });
+      expect({ factoryCalls, storeCalls }).toEqual({ factoryCalls: 0, storeCalls: 0 });
+    } finally {
+      zeroize(fixture.rootKey);
+    }
+  });
+
+  it('rejects every wrong second-line leading-vault variant before factory/store', async () => {
+    const fixture = await createFixture();
+    let factoryCalls = 0;
+    let storeCalls = 0;
+    try {
+      const bytes = await collect(
+        createEncryptedBackup(
+          {
+            vault: fixture.vault,
+            records: entries({ kind: 'group', record: fixture.group }),
+            createdAt: CREATED_AT,
+          },
+          fixture.rootKey,
+        ),
+      );
+      const lines = bytes.toString('utf8').trimEnd().split('\n');
+      const header = JSON.parse(lines[0] ?? '') as Record<string, unknown>;
+      const mismatchedHeader = JSON.stringify({ ...header, schemaVersion: 2 });
+      const variants = [
+        [lines[0], lines.at(-1)],
+        [lines[0], lines[2]],
+        [mismatchedHeader, lines[1]],
+      ].map((variant) =>
+        Buffer.from(`${variant.filter((line) => line !== undefined).join('\n')}\n`),
+      );
+      const factory: RestoreVerificationSessionFactory = () => {
+        factoryCalls += 1;
+        return Promise.reject(new Error('must not open verifier'));
+      };
+      const store: BackupRestoreStore = {
+        open(): Promise<never> {
+          storeCalls += 1;
+          return Promise.reject(new Error('must not open store'));
+        },
+      };
+      for (const variant of variants) {
+        await expect(
+          restoreEncryptedBackup(chunks(variant), VAULT_ID, store, factory),
+        ).rejects.toMatchObject({ code: 'BACKUP_INVALID' });
+      }
+      expect({ factoryCalls, storeCalls }).toEqual({ factoryCalls: 0, storeCalls: 0 });
+    } finally {
+      zeroize(fixture.rootKey);
+    }
+  });
+
+  it.each([
+    ['invalid', 'BACKUP_AUTHENTICATION_FAILED'],
+    ['unsupported', 'BACKUP_DECRYPTABILITY_UNSUPPORTED'],
+    ['unknown', 'BACKUP_AUTHENTICATION_FAILED'],
+  ] as const)(
+    'maps %s verifier failure generically and never publishes',
+    async (verifierFailure, code) => {
+      const fixture = await createFixture();
+      try {
+        const bytes = await collect(
+          createEncryptedBackup(
+            { vault: fixture.vault, records: entries(), createdAt: CREATED_AT },
+            fixture.rootKey,
+          ),
+        );
+        const restore = createRestoreHarness(fixture, { verifierFailure });
+        const caught = await captureError(
+          restoreEncryptedBackup(
+            chunks(bytes),
+            VAULT_ID,
+            restore.store,
+            restore.factory,
+          ),
+        );
+        expect(caught).toMatchObject({ code });
+        expect(restore.events).not.toContain('publish');
+        expect(restore.state()).toBe('aborted');
+        expect(JSON.stringify(caught)).not.toContain('KAVRIX_');
+      } finally {
+        zeroize(fixture.rootKey);
+      }
+    },
+  );
+
+  it('preserves unsupported classification when cursor cleanup also fails', async () => {
+    const fixture = await createFixture();
+    try {
+      const bytes = await collect(
+        createEncryptedBackup(
+          { vault: fixture.vault, records: entries(), createdAt: CREATED_AT },
+          fixture.rootKey,
+        ),
+      );
+      const restore = createRestoreHarness(fixture, {
+        verifierFailure: 'unsupported',
+        failReturn: true,
+      });
+      const caught = await captureError(
+        restoreEncryptedBackup(chunks(bytes), VAULT_ID, restore.store, restore.factory),
+      );
+      expect(caught).toMatchObject({
+        code: 'BACKUP_DECRYPTABILITY_UNSUPPORTED',
+      });
+      expect(errorText(caught)).not.toContain('KAVRIX_RETURN_CANARY');
+      expect(restore.events).not.toContain('publish');
+    } finally {
+      zeroize(fixture.rootKey);
+    }
+  });
+
+  it.each([false, true])(
+    'requires verifier-observed EOF and treats cursor cleanup failure=%s as authentication failure',
+    async (failReturn) => {
+      const fixture = await createFixture();
+      try {
+        const bytes = await collect(
+          createEncryptedBackup(
+            {
+              vault: fixture.vault,
+              records: entries({ kind: 'group', record: fixture.group }),
+              createdAt: CREATED_AT,
+            },
+            fixture.rootKey,
+          ),
+        );
+        const restore = createRestoreHarness(fixture, {
+          verifierReturnsEarly: true,
+          failReturn,
+        });
+        const caught = await captureError(
+          restoreEncryptedBackup(
+            chunks(bytes),
+            VAULT_ID,
+            restore.store,
+            restore.factory,
+          ),
+        );
+        expect(caught).toMatchObject({ code: 'BACKUP_AUTHENTICATION_FAILED' });
+        expect(restore.events).toContain('readSealed:return');
+        expect(restore.events).not.toContain('publish');
+        expect(errorText(caught)).not.toContain('KAVRIX_RETURN_CANARY');
+      } finally {
+        zeroize(fixture.rootKey);
+      }
+    },
+  );
+
+  it('reverifies and succeeds after one transient publish failure leaves exact sealed state', async () => {
+    const fixture = await createFixture();
+    try {
+      const bytes = await collect(
+        createEncryptedBackup(
+          { vault: fixture.vault, records: entries(), createdAt: CREATED_AT },
+          fixture.rootKey,
+        ),
+      );
+      const restore = createRestoreHarness(fixture, {
+        failPublish: true,
+        failPublishCount: 1,
+        publishFailureState: 'sealed',
+      });
+      await expect(
+        restoreEncryptedBackup(chunks(bytes), VAULT_ID, restore.store, restore.factory),
+      ).resolves.toMatchObject({ disposition: 'verified-and-committed' });
+      expect(restore.events.filter((event) => event === 'publish')).toHaveLength(2);
+      expect(restore.events.filter((event) => event === 'verify')).toHaveLength(2);
+    } finally {
+      zeroize(fixture.rootKey);
+    }
+  });
+
+  it.each(['published', 'committed'] as const)(
+    'never claims abort when publication wins the abort race as %s',
+    async (abortRaceState) => {
+      const fixture = await createFixture();
+      try {
+        const bytes = await collect(
+          createEncryptedBackup(
+            { vault: fixture.vault, records: entries(), createdAt: CREATED_AT },
+            fixture.rootKey,
+          ),
+        );
+        const restore = createRestoreHarness(fixture, {
+          verifierFailure: 'invalid',
+          abortRaceState,
+        });
+        await expect(
+          restoreEncryptedBackup(
+            chunks(bytes),
+            VAULT_ID,
+            restore.store,
+            restore.factory,
+          ),
+        ).rejects.toMatchObject({ code: 'BACKUP_COMMIT_UNCERTAIN' });
+        expect(restore.events.filter((event) => event === 'abort')).toHaveLength(1);
+        expect(restore.state()).toBe(abortRaceState);
+      } finally {
+        zeroize(fixture.rootKey);
+      }
+    },
+  );
+
+  it.each([
+    ['initial', 0, {}],
+    ['seal', 1, { failSeal: true, sealFailureState: 'sealed' as const }],
+    ['publish', 2, { failPublish: true, publishFailureState: 'published' as const }],
+    ['finalize', 3, { failFinalize: true, finalizeFailureState: 'committed' as const }],
+  ] as const)(
+    'reports uncertainty without leaking unreadable %s status details',
+    async (_phase, failStatusAfter, phaseOptions) => {
+      const fixture = await createFixture();
+      try {
+        const bytes = await collect(
+          createEncryptedBackup(
+            { vault: fixture.vault, records: entries(), createdAt: CREATED_AT },
+            fixture.rootKey,
+          ),
+        );
+        const restore = createRestoreHarness(fixture, {
+          ...phaseOptions,
+          failStatus: true,
+          failStatusAfter,
+        });
+        const caught = await captureError(
+          restoreEncryptedBackup(
+            chunks(bytes),
+            VAULT_ID,
+            restore.store,
+            restore.factory,
+          ),
+        );
+        expect(caught).toMatchObject({ code: 'BACKUP_COMMIT_UNCERTAIN' });
+        expect(errorText(caught)).not.toContain('KAVRIX_STATUS_CANARY');
+        if (_phase === 'publish' || _phase === 'finalize') {
+          expect(restore.events).not.toContain('abort');
+        }
+      } finally {
+        zeroize(fixture.rootKey);
+      }
+    },
+  );
+
+  it.each([
+    ['seal', { failSeal: true, sealFailureState: 'sealed' as const }],
+    ['publish', { failPublish: true, publishFailureState: 'published' as const }],
+    ['finalize', { failFinalize: true, finalizeFailureState: 'committed' as const }],
+  ] as const)(
+    'retains state and reports uncertainty for a divergent %s reconciliation status',
+    async (_operation, failureOptions) => {
+      const fixture = await createFixture();
+      try {
+        const bytes = await collect(
+          createEncryptedBackup(
+            { vault: fixture.vault, records: entries(), createdAt: CREATED_AT },
+            fixture.rootKey,
+          ),
+        );
+        const restore = createRestoreHarness(fixture, {
+          ...failureOptions,
+          divergentFrozenStatus: true,
+        });
+        await expect(
+          restoreEncryptedBackup(
+            chunks(bytes),
+            VAULT_ID,
+            restore.store,
+            restore.factory,
+          ),
+        ).rejects.toMatchObject({ code: 'BACKUP_COMMIT_UNCERTAIN' });
+        expect(restore.events).not.toContain('abort');
+      } finally {
+        zeroize(fixture.rootKey);
+      }
+    },
+  );
+
+  it.each([
+    [
+      'recordCount',
+      (receipt: RestoreKnownRecordsVerificationV1) => ({
+        ...receipt,
+        recordCount: receipt.recordCount + 1,
+      }),
+    ],
+    [
+      'slot',
+      (receipt: RestoreKnownRecordsVerificationV1) => ({
+        ...receipt,
+        selectedSlot: {
+          ...receipt.selectedSlot,
+          id: keySlotIdSchema.parse('other-slot'),
+        },
+      }),
+    ],
+    [
+      'vault',
+      (receipt: RestoreKnownRecordsVerificationV1) => ({
+        ...receipt,
+        vaultId: OTHER_VAULT_ID,
+      }),
+    ],
+    [
+      'session',
+      (receipt: RestoreKnownRecordsVerificationV1) => ({
+        ...receipt,
+        restoreSessionId: DIGEST,
+      }),
+    ],
+    [
+      'transcript',
+      (receipt: RestoreKnownRecordsVerificationV1) => ({
+        ...receipt,
+        transcriptSha256: DIGEST,
+      }),
+    ],
+    [
+      'commitment',
+      (receipt: RestoreKnownRecordsVerificationV1) => ({
+        ...receipt,
+        canonicalEntriesSha256: DIGEST,
+      }),
+    ],
+    [
+      'slot-type',
+      (receipt: RestoreKnownRecordsVerificationV1) => ({
+        ...receipt,
+        selectedSlot: { ...receipt.selectedSlot, type: 'recovery-key' as const },
+      }),
+    ],
+    [
+      'slot-version',
+      (receipt: RestoreKnownRecordsVerificationV1) => ({
+        ...receipt,
+        selectedSlot: {
+          ...receipt.selectedSlot,
+          keyVersion: receipt.selectedSlot.keyVersion + 1,
+        },
+      }),
+    ],
+    [
+      'excess',
+      (receipt: RestoreKnownRecordsVerificationV1) => ({
+        ...receipt,
+        unexpected: true,
+      }),
+    ],
+  ] as const)(
+    'rejects a forged %s receipt before publication',
+    async (_name, mutateReceipt) => {
+      const fixture = await createFixture();
+      try {
+        const bytes = await collect(
+          createEncryptedBackup(
+            { vault: fixture.vault, records: entries(), createdAt: CREATED_AT },
+            fixture.rootKey,
+          ),
+        );
+        const restore = createRestoreHarness(fixture, { mutateReceipt });
+        await expect(
+          restoreEncryptedBackup(
+            chunks(bytes),
+            VAULT_ID,
+            restore.store,
+            restore.factory,
+          ),
+        ).rejects.toMatchObject({ code: 'BACKUP_AUTHENTICATION_FAILED' });
+        expect(restore.events).not.toContain('publish');
+      } finally {
+        zeroize(fixture.rootKey);
+      }
+    },
+  );
+
+  it('sanitizes collaborator causes, closes the session, and still zeroizes its VRK', async () => {
+    const fixture = await createFixture();
+    try {
+      const bytes = await collect(
+        createEncryptedBackup(
+          { vault: fixture.vault, records: entries(), createdAt: CREATED_AT },
+          fixture.rootKey,
+        ),
+      );
+      const restore = createRestoreHarness(fixture, {
+        failWrite: true,
+        closeFailure: true,
+      });
+      const caught = await captureError(
+        restoreEncryptedBackup(chunks(bytes), VAULT_ID, restore.store, restore.factory),
+      );
+      expect(caught).toMatchObject({ code: 'BACKUP_AUTHENTICATION_FAILED' });
+      expect(errorText(caught)).not.toContain('KAVRIX_');
+    } finally {
+      zeroize(fixture.rootKey);
+    }
+  });
+
+  it('reports a sanitized aggregate when abort leaves exact hidden state', async () => {
+    const fixture = await createFixture();
+    try {
+      const bytes = await collect(
+        createEncryptedBackup(
+          { vault: fixture.vault, records: entries(), createdAt: CREATED_AT },
+          fixture.rootKey,
+        ),
+      );
+      const restore = createRestoreHarness(fixture, {
+        verifierFailure: 'invalid',
+        failAbort: true,
+      });
+      const caught = await captureError(
+        restoreEncryptedBackup(chunks(bytes), VAULT_ID, restore.store, restore.factory),
+      );
+      expect(caught).toBeInstanceOf(AggregateError);
+      expect(errorText(caught)).not.toContain('KAVRIX_ABORT_CANARY');
+      expect(restore.state()).toBe('sealed');
+    } finally {
+      zeroize(fixture.rootKey);
+    }
+  });
+
+  it.each([
+    ['sealed', 'verified-and-committed'],
+    ['staging', 'BACKUP_COMMIT_UNCERTAIN'],
+  ] as const)(
+    'bounds an ambiguous seal reconciled as %s',
+    async (sealFailureState, expected) => {
+      const fixture = await createFixture();
+      try {
+        const bytes = await collect(
+          createEncryptedBackup(
+            { vault: fixture.vault, records: entries(), createdAt: CREATED_AT },
+            fixture.rootKey,
+          ),
+        );
+        const restore = createRestoreHarness(fixture, {
+          failSeal: true,
+          sealFailureState,
+        });
+        const operation = restoreEncryptedBackup(
+          chunks(bytes),
+          VAULT_ID,
+          restore.store,
+          restore.factory,
+        );
+        if (expected === 'verified-and-committed') {
+          await expect(operation).resolves.toMatchObject({ disposition: expected });
+        } else {
+          await expect(operation).rejects.toMatchObject({ code: expected });
+        }
+        expect(
+          restore.events.filter((event) => event.startsWith('seal:')),
+        ).toHaveLength(1);
+      } finally {
+        zeroize(fixture.rootKey);
+      }
+    },
+  );
+
+  it.each([
+    ['published', 1, 'verified-and-committed'],
+    ['sealed', 2, 'BACKUP_COMMIT_UNCERTAIN'],
+  ] as const)(
+    'bounds ambiguous publish at %s with %s attempt(s)',
+    async (publishFailureState, attempts, expected) => {
+      const fixture = await createFixture();
+      try {
+        const bytes = await collect(
+          createEncryptedBackup(
+            { vault: fixture.vault, records: entries(), createdAt: CREATED_AT },
+            fixture.rootKey,
+          ),
+        );
+        const restore = createRestoreHarness(fixture, {
+          failPublish: true,
+          publishFailureState,
+        });
+        const operation = restoreEncryptedBackup(
+          chunks(bytes),
+          VAULT_ID,
+          restore.store,
+          restore.factory,
+        );
+        if (expected === 'verified-and-committed') {
+          await expect(operation).resolves.toMatchObject({ disposition: expected });
+        } else {
+          await expect(operation).rejects.toMatchObject({ code: expected });
+        }
+        expect(restore.events.filter((event) => event === 'publish')).toHaveLength(
+          attempts,
+        );
+        expect(restore.events.filter((event) => event === 'verify')).toHaveLength(
+          attempts,
+        );
+      } finally {
+        zeroize(fixture.rootKey);
+      }
+    },
+  );
+
+  it.each([
+    ['committed', 'verified-and-committed'],
+    ['published', 'BACKUP_COMMIT_UNCERTAIN'],
+  ] as const)(
+    'reconciles an ambiguous finalize as %s without aborting publication',
+    async (finalizeFailureState, expected) => {
+      const fixture = await createFixture();
+      try {
+        const bytes = await collect(
+          createEncryptedBackup(
+            { vault: fixture.vault, records: entries(), createdAt: CREATED_AT },
+            fixture.rootKey,
+          ),
+        );
+        const restore = createRestoreHarness(fixture, {
+          failFinalize: true,
+          finalizeFailureState,
+        });
+        const operation = restoreEncryptedBackup(
+          chunks(bytes),
+          VAULT_ID,
+          restore.store,
+          restore.factory,
+        );
+        if (expected === 'verified-and-committed') {
+          await expect(operation).resolves.toMatchObject({ disposition: expected });
+        } else {
+          await expect(operation).rejects.toMatchObject({ code: expected });
+        }
+        expect(restore.events).not.toContain('abort');
+        expect(restore.events.filter((event) => event === 'finalize')).toHaveLength(1);
+      } finally {
+        zeroize(fixture.rootKey);
+      }
+    },
+  );
+
+  it.each(['published', 'committed'] as const)(
+    'preserves replay error semantics from initial %s without aborting',
+    async (initialState) => {
+      const fixture = await createFixture();
+      try {
+        const bytes = await collect(
+          createEncryptedBackup(
+            { vault: fixture.vault, records: entries(), createdAt: CREATED_AT },
+            fixture.rootKey,
+          ),
+        );
+        const summary = await verifyEncryptedBackup(
           chunks(bytes),
           fixture.rootKey,
           VAULT_ID,
-          storeFor({
-            write(): Promise<never> {
-              return Promise.reject(storageFailure);
-            },
-            commit(): Promise<void> {
-              return Promise.resolve();
-            },
-            status(): Promise<'staging'> {
-              return Promise.resolve('staging');
-            },
-            abort(): Promise<void> {
-              aborted = true;
-              return Promise.resolve();
-            },
-          }),
+        );
+        const restore = createRestoreHarness(fixture, {
+          initialState,
+          initialEntries: [{ kind: 'vault', record: fixture.vault }],
+          summary,
+          ...(initialState === 'published'
+            ? { verifierFailure: 'unsupported' as const }
+            : {}),
+        });
+        const input = initialState === 'committed' ? replaceFooterTag(bytes) : bytes;
+        const caught = await captureError(
+          restoreEncryptedBackup(
+            chunks(input),
+            VAULT_ID,
+            restore.store,
+            restore.factory,
+          ),
+        );
+        expect(caught).toMatchObject({
+          code:
+            initialState === 'published'
+              ? 'BACKUP_DECRYPTABILITY_UNSUPPORTED'
+              : 'BACKUP_AUTHENTICATION_FAILED',
+        });
+        expect(restore.events).not.toContain('abort');
+      } finally {
+        zeroize(fixture.rootKey);
+      }
+    },
+  );
+
+  it('aborts an exact initial sealed session when the authenticated archive summary differs', async () => {
+    const fixture = await createFixture();
+    try {
+      const bytes = await collect(
+        createEncryptedBackup(
+          {
+            vault: fixture.vault,
+            records: entries({ kind: 'group', record: fixture.group }),
+            createdAt: CREATED_AT,
+          },
+          fixture.rootKey,
         ),
-      ).rejects.toBe(storageFailure);
-      expect(aborted).toBe(true);
+      );
+      const summary = await verifyEncryptedBackup(
+        chunks(bytes),
+        fixture.rootKey,
+        VAULT_ID,
+      );
+      const changed = authenticateMutatedArchive(
+        bytes,
+        fixture.rootKey,
+        'group',
+        (entry) =>
+          entry.kind === 'group'
+            ? {
+                ...entry,
+                record: {
+                  ...entry.record,
+                  updatedAt: timestampSchema.parse('2026-08-10T00:00:01.000Z'),
+                },
+              }
+            : entry,
+      );
+      const restore = createRestoreHarness(fixture, {
+        initialState: 'sealed',
+        initialEntries: [
+          { kind: 'vault', record: fixture.vault },
+          { kind: 'group', record: fixture.group },
+        ],
+        summary,
+      });
+      await expect(
+        restoreEncryptedBackup(
+          chunks(changed),
+          VAULT_ID,
+          restore.store,
+          restore.factory,
+        ),
+      ).rejects.toMatchObject({ code: 'BACKUP_AUTHENTICATION_FAILED' });
+      expect(restore.events).toContain('abort');
+      expect(restore.state()).toBe('aborted');
+    } finally {
+      zeroize(fixture.rootKey);
+    }
+  });
+
+  it.each(['staging', 'sealed', 'published'] as const)(
+    'rejects different persisted bounds for %s and aborts only exact hidden state',
+    async (initialState) => {
+      const fixture = await createFixture();
+      try {
+        const bytes = await collect(
+          createEncryptedBackup(
+            { vault: fixture.vault, records: entries(), createdAt: CREATED_AT },
+            fixture.rootKey,
+          ),
+        );
+        const summary = await verifyEncryptedBackup(
+          chunks(bytes),
+          fixture.rootKey,
+          VAULT_ID,
+        );
+        const restore = createRestoreHarness(fixture, {
+          initialState,
+          summary,
+          initialEntries:
+            initialState === 'staging'
+              ? []
+              : [{ kind: 'vault', record: fixture.vault }],
+          persistedLimits: { maximumBytes: 8 * 1024 * 1024, maximumRecords: 100 },
+        });
+        await expect(
+          restoreEncryptedBackup(
+            chunks(bytes),
+            VAULT_ID,
+            restore.store,
+            restore.factory,
+            { maximumBytes: 4 * 1024 * 1024, maximumRecords: 50 },
+          ),
+        ).rejects.toMatchObject({
+          code: 'BACKUP_AUTHENTICATION_FAILED',
+        });
+        expect(restore.events.includes('abort')).toBe(initialState !== 'published');
+        expect(restore.state()).toBe(
+          initialState === 'published' ? 'published' : 'aborted',
+        );
+      } finally {
+        zeroize(fixture.rootKey);
+      }
+    },
+  );
+
+  it.each([
+    ['string', 'staging'],
+    ['versionless', { state: 'staging', restoreSessionId: DIGEST }],
+    [
+      'excess',
+      {
+        state: 'aborted',
+        protocolVersion: 2,
+        restoreSessionId: DIGEST,
+        abortedAt: CREATED_AT,
+        extra: true,
+      },
+    ],
+  ] as const)('rejects an invalid initial %s status', async (_name, rawStatus) => {
+    const fixture = await createFixture();
+    try {
+      const bytes = await collect(
+        createEncryptedBackup(
+          { vault: fixture.vault, records: entries(), createdAt: CREATED_AT },
+          fixture.rootKey,
+        ),
+      );
+      const restore = createRestoreHarness(fixture, { rawStatus });
+      await expect(
+        restoreEncryptedBackup(chunks(bytes), VAULT_ID, restore.store, restore.factory),
+      ).rejects.toMatchObject({ code: 'BACKUP_AUTHENTICATION_FAILED' });
+      expect(restore.events).not.toContain('publish');
+    } finally {
+      zeroize(fixture.rootKey);
+    }
+  });
+
+  it('maps factory failure and wrong-length VRK generically', async () => {
+    const fixture = await createFixture();
+    try {
+      const bytes = await collect(
+        createEncryptedBackup(
+          { vault: fixture.vault, records: entries(), createdAt: CREATED_AT },
+          fixture.rootKey,
+        ),
+      );
+      const restore = createRestoreHarness(fixture);
+      const factories: readonly RestoreVerificationSessionFactory[] = [
+        () =>
+          Promise.reject(new BackupError('BACKUP_INCOMPLETE', 'KAVRIX_FACTORY_CANARY')),
+        async (vault) => {
+          const session = await restore.factory(vault);
+          return { ...session, vaultRootKey: new Uint8Array(31) as never };
+        },
+      ];
+      for (const factory of factories) {
+        const caught = await captureError(
+          restoreEncryptedBackup(chunks(bytes), VAULT_ID, restore.store, factory),
+        );
+        expect(caught).toMatchObject({ code: 'BACKUP_AUTHENTICATION_FAILED' });
+        expect(errorText(caught)).not.toContain('KAVRIX_FACTORY_CANARY');
+      }
+    } finally {
+      zeroize(fixture.rootKey);
+    }
+  });
+
+  it('zeroizes the captured VRK even when session close throws', async () => {
+    const fixture = await createFixture();
+    let captured: Uint8Array | undefined;
+    try {
+      const bytes = await collect(
+        createEncryptedBackup(
+          { vault: fixture.vault, records: entries(), createdAt: CREATED_AT },
+          fixture.rootKey,
+        ),
+      );
+      const restore = createRestoreHarness(fixture, {
+        closeFailure: true,
+        exposeRootKey: (value) => {
+          captured = value;
+        },
+      });
+      await expect(
+        restoreEncryptedBackup(chunks(bytes), VAULT_ID, restore.store, restore.factory),
+      ).rejects.toMatchObject({ code: 'BACKUP_AUTHENTICATION_FAILED' });
+      expect(captured).toEqual(new Uint8Array(32));
+    } finally {
+      zeroize(fixture.rootKey);
+    }
+  });
+
+  it('sanitizes readSealed next failures and publishes nothing', async () => {
+    const fixture = await createFixture();
+    try {
+      const bytes = await collect(
+        createEncryptedBackup(
+          { vault: fixture.vault, records: entries(), createdAt: CREATED_AT },
+          fixture.rootKey,
+        ),
+      );
+      const restore = createRestoreHarness(fixture, { failNext: true });
+      const caught = await captureError(
+        restoreEncryptedBackup(chunks(bytes), VAULT_ID, restore.store, restore.factory),
+      );
+      expect(caught).toMatchObject({ code: 'BACKUP_AUTHENTICATION_FAILED' });
+      expect(errorText(caught)).not.toContain('KAVRIX_NEXT_CANARY');
+      expect(restore.events).not.toContain('publish');
+    } finally {
+      zeroize(fixture.rootKey);
+    }
+  });
+
+  it('allows a published replay to use a different permitted slot without persisting the old slot', async () => {
+    const fixture = await createFixture();
+    try {
+      const bytes = await collect(
+        createEncryptedBackup(
+          { vault: fixture.vault, records: entries(), createdAt: CREATED_AT },
+          fixture.rootKey,
+        ),
+      );
+      const summary = await verifyEncryptedBackup(
+        chunks(bytes),
+        fixture.rootKey,
+        VAULT_ID,
+      );
+      const alternate = {
+        id: keySlotIdSchema.parse('slot-alternate'),
+        type: 'recovery-key' as const,
+        keyVersion: fixture.vault.currentKeyVersion,
+      };
+      const restore = createRestoreHarness(fixture, {
+        initialState: 'published',
+        initialEntries: [{ kind: 'vault', record: fixture.vault }],
+        summary,
+        selectedSlotOverride: alternate,
+      });
+      await expect(
+        restoreEncryptedBackup(chunks(bytes), VAULT_ID, restore.store, restore.factory),
+      ).resolves.toMatchObject({
+        disposition: 'verified-and-committed',
+        verification: { selectedSlot: alternate },
+      });
+      expect(restore.publishedReceipt()?.selectedSlot).toEqual(alternate);
+    } finally {
+      zeroize(fixture.rootKey);
+    }
+  });
+
+  it('returns the frozen canonical-entry commitment from authentication-only verification', async () => {
+    const fixture = await createFixture();
+    try {
+      const entry = { kind: 'group' as const, record: fixture.group };
+      const bytes = await collect(
+        createEncryptedBackup(
+          { vault: fixture.vault, records: entries(entry), createdAt: CREATED_AT },
+          fixture.rootKey,
+        ),
+      );
+      const commitment = createBackupStagedEntryCommitment();
+      commitment.update({ kind: 'vault', record: fixture.vault });
+      commitment.update(entry);
+      await expect(
+        verifyEncryptedBackup(chunks(bytes, 1), fixture.rootKey, VAULT_ID),
+      ).resolves.toMatchObject({ canonicalEntriesSha256: commitment.finalize() });
     } finally {
       zeroize(fixture.rootKey);
     }
@@ -873,12 +1753,374 @@ function entries(
   return asyncIterable(values);
 }
 
-function storeFor(stager: BackupRestoreStager): BackupRestoreStore {
-  return {
-    open(): Promise<BackupRestoreStager> {
+type RestoreHarnessState = BackupRestoreStatus['state'];
+
+function createRestoreHarness(
+  fixture: Pick<Awaited<ReturnType<typeof createFixture>>, 'rootKey' | 'vault'>,
+  options: Readonly<{
+    initialState?: RestoreHarnessState;
+    summary?: BackupVerification;
+    persistedLimits?: ResolvedBackupLimits;
+    initialEntries?: readonly EncryptedBackupEntry[];
+    rawStatus?: unknown;
+    failWrite?: boolean;
+    failSeal?: boolean;
+    sealFailureState?: RestoreHarnessState;
+    failPublish?: boolean;
+    failPublishCount?: number;
+    publishFailureState?: RestoreHarnessState;
+    failFinalize?: boolean;
+    finalizeFailureState?: RestoreHarnessState;
+    failStatus?: boolean;
+    failStatusAfter?: number;
+    statusCalls?: number;
+    failReturn?: boolean;
+    failNext?: boolean;
+    failAbort?: boolean;
+    abortRaceState?: 'published' | 'committed';
+    closeFailure?: boolean;
+    divergentFrozenStatus?: boolean;
+    verifierFailure?: 'invalid' | 'unsupported' | 'unknown';
+    verifierReturnsEarly?: boolean;
+    mutateReceipt?: (receipt: RestoreKnownRecordsVerificationV1) => unknown;
+    selectedSlotOverride?: RestoreKnownRecordsVerificationV1['selectedSlot'];
+    exposeRootKey?: (rootKey: Uint8Array) => void;
+  }> = {},
+): Readonly<{
+  store: BackupRestoreStore;
+  factory: RestoreVerificationSessionFactory;
+  staged: EncryptedBackupEntry[];
+  events: string[];
+  publishedReceipt(): RestoreKnownRecordsVerificationV1 | undefined;
+  state(): RestoreHarnessState;
+}> {
+  const events: string[] = [];
+  const staged: EncryptedBackupEntry[] = [...(options.initialEntries ?? [])];
+  let writeOrdinal = 0;
+  let publishedReceipt: RestoreKnownRecordsVerificationV1 | undefined;
+  const selected = fixture.vault.keySlots[0];
+  if (selected === undefined || selected.type === 'device-key') {
+    throw new Error('Restore fixture requires a portable selected slot.');
+  }
+  const selectedSlot = {
+    id: selected.id,
+    type: selected.type,
+    keyVersion: selected.keyVersion,
+  } as const;
+  const effectiveSelectedSlot = options.selectedSlotOverride ?? selectedSlot;
+  let state: RestoreHarnessState = options.initialState ?? 'staging';
+  let statusCalls = 0;
+  let publishFailures = 0;
+  let summary = options.summary;
+  let restoreSessionId = summary?.restoreSessionId ?? DIGEST;
+  let limits: ResolvedBackupLimits = options.persistedLimits ?? {
+    maximumBytes: 16 * 1024 * 1024 * 1024,
+    maximumRecords: 2_000_000,
+  };
+  const rootKey = cloneSecretKey(fixture.rootKey);
+  options.exposeRootKey?.(rootKey);
+
+  const frozenStatusSummary = (): BackupVerification | undefined =>
+    options.divergentFrozenStatus === true && summary !== undefined
+      ? {
+          ...summary,
+          canonicalEntriesSha256: sha256DigestSchema.parse(
+            Buffer.alloc(32, 9).toString('base64url'),
+          ),
+        }
+      : summary;
+
+  const status = (): BackupRestoreStatus => {
+    if (state === 'committed') {
+      return backupRestoreStatusSchema.parse({
+        state,
+        protocolVersion: 2,
+        restoreSessionId,
+        summary: frozenStatusSummary(),
+        committedAt: CREATED_AT,
+      });
+    }
+    if (state === 'aborted') {
+      return backupRestoreStatusSchema.parse({
+        state,
+        protocolVersion: 2,
+        restoreSessionId,
+        abortedAt: CREATED_AT,
+      });
+    }
+    const common = {
+      state,
+      protocolVersion: 2,
+      restoreSessionId,
+      maximumBytes: limits.maximumBytes,
+      maximumRecords: limits.maximumRecords,
+      stagedBytes: staged.length === 0 ? 0 : 1,
+      stagedRecords: staged.length,
+      createdAt: CREATED_AT,
+      updatedAt: CREATED_AT,
+      ...(staged.length === 0 ? {} : { vaultId: fixture.vault.id }),
+    } as const;
+    if (state === 'staging') return backupRestoreStatusSchema.parse(common);
+    return backupRestoreStatusSchema.parse({
+      ...common,
+      vaultId: fixture.vault.id,
+      summary: frozenStatusSummary(),
+      sealedAt: CREATED_AT,
+      ...(state === 'published' ? { publishedAt: CREATED_AT } : {}),
+    });
+  };
+
+  const stager: BackupRestoreStager = {
+    write(entry): Promise<void> {
+      events.push(`write:${entry.kind}`);
+      if (options.failWrite === true) {
+        return Promise.reject(
+          new BackupError('BACKUP_INCOMPLETE', 'KAVRIX_STORAGE_CREDENTIAL_CANARY', {
+            cause: new Error('KAVRIX_STORAGE_CAUSE_CANARY'),
+          }),
+        );
+      }
+      const existing = staged[writeOrdinal];
+      if (existing !== undefined && canonicalJson(existing) !== canonicalJson(entry)) {
+        throw new Error('KAVRIX_PREFIX_CANARY');
+      }
+      if (writeOrdinal === staged.length) staged.push(entry);
+      writeOrdinal += 1;
+      return Promise.resolve();
+    },
+    seal(candidate): Promise<void> {
+      events.push(`seal:${String(candidate.recordCount)}`);
+      if (options.failSeal === true) {
+        state = options.sealFailureState ?? state;
+        if (state === 'sealed') summary = candidate;
+        return Promise.reject(new Error('KAVRIX_SEAL_CANARY'));
+      }
+      summary = candidate;
+      state = 'sealed';
+      return Promise.resolve();
+    },
+    readSealed(candidate): AsyncIterable<EncryptedBackupEntry> {
+      if (
+        summary === undefined ||
+        canonicalJson(candidate) !== canonicalJson(summary)
+      ) {
+        throw new Error('KAVRIX_SUMMARY_CANARY');
+      }
+      events.push('readSealed');
+      let index = 0;
+      return {
+        [Symbol.asyncIterator](): AsyncIterator<EncryptedBackupEntry> {
+          return {
+            next(): Promise<IteratorResult<EncryptedBackupEntry>> {
+              if (options.failNext === true) {
+                return Promise.reject(new Error('KAVRIX_NEXT_CANARY'));
+              }
+              const value = staged[index++];
+              if (value === undefined) {
+                events.push('readSealed:eof');
+                return Promise.resolve({ done: true, value: undefined });
+              }
+              return Promise.resolve({ done: false, value });
+            },
+            return(): Promise<IteratorResult<EncryptedBackupEntry>> {
+              events.push('readSealed:return');
+              if (options.failReturn === true) {
+                return Promise.reject(new Error('KAVRIX_RETURN_CANARY'));
+              }
+              return Promise.resolve({ done: true, value: undefined });
+            },
+          };
+        },
+      };
+    },
+    publish(candidate, receipt): Promise<void> {
+      if (
+        summary === undefined ||
+        canonicalJson(candidate) !== canonicalJson(summary)
+      ) {
+        return Promise.reject(new Error('KAVRIX_SUMMARY_CANARY'));
+      }
+      restoreKnownRecordsVerificationV1Schema.parse(receipt);
+      events.push('publish');
+      if (
+        options.failPublish === true &&
+        publishFailures < (options.failPublishCount ?? Number.POSITIVE_INFINITY)
+      ) {
+        publishFailures += 1;
+        state = options.publishFailureState ?? state;
+        if (state === 'published') publishedReceipt = receipt;
+        return Promise.reject(new Error('KAVRIX_PUBLISH_CANARY'));
+      }
+      state = 'published';
+      publishedReceipt = receipt;
+      return Promise.resolve();
+    },
+    finalize(candidate, receipt): Promise<void> {
+      if (
+        summary === undefined ||
+        canonicalJson(candidate) !== canonicalJson(summary)
+      ) {
+        return Promise.reject(new Error('KAVRIX_SUMMARY_CANARY'));
+      }
+      restoreKnownRecordsVerificationV1Schema.parse(receipt);
+      if (
+        publishedReceipt !== undefined &&
+        canonicalJson(receipt) !== canonicalJson(publishedReceipt)
+      ) {
+        return Promise.reject(new Error('KAVRIX_RECEIPT_REUSE_CANARY'));
+      }
+      publishedReceipt ??= receipt;
+      events.push('finalize');
+      if (options.failFinalize === true) {
+        state = options.finalizeFailureState ?? state;
+        return Promise.reject(new Error('KAVRIX_FINALIZE_CANARY'));
+      }
+      state = 'committed';
+      return Promise.resolve();
+    },
+    status(): Promise<BackupRestoreStatus> {
+      statusCalls += 1;
+      if (options.failStatus === true && statusCalls > (options.failStatusAfter ?? 0)) {
+        return Promise.reject(new Error('KAVRIX_STATUS_CANARY'));
+      }
+      return Promise.resolve(
+        options.rawStatus === undefined
+          ? status()
+          : (options.rawStatus as BackupRestoreStatus),
+      );
+    },
+    abort(): Promise<void> {
+      events.push('abort');
+      if (options.abortRaceState !== undefined) {
+        state = options.abortRaceState;
+        return Promise.reject(new Error('KAVRIX_ABORT_RACE_CANARY'));
+      }
+      if (options.failAbort === true) {
+        return Promise.reject(new Error('KAVRIX_ABORT_CANARY'));
+      }
+      state = 'aborted';
+      staged.length = 0;
+      return Promise.resolve();
+    },
+  };
+
+  const store: BackupRestoreStore = {
+    open(id, resolved): Promise<BackupRestoreStager> {
+      restoreSessionId = id;
+      if (options.persistedLimits === undefined) limits = resolved;
       return Promise.resolve(stager);
     },
   };
+  const factory: RestoreVerificationSessionFactory = () =>
+    Promise.resolve({
+      vaultRootKey: rootKey,
+      selectedSlot: effectiveSelectedSlot,
+      async verify(entries, candidate) {
+        if (options.verifierFailure !== undefined) {
+          if (options.verifierFailure === 'unknown') {
+            throw new Error('KAVRIX_VERIFIER_CANARY');
+          }
+          const error = new Error(
+            'Encrypted backup decryptability verification failed.',
+          ) as Error & {
+            name: string;
+            safe: true;
+            kind: 'invalid' | 'unsupported';
+          };
+          error.name = 'RestoreKnownRecordsVerificationError';
+          error.safe = true;
+          error.kind = options.verifierFailure;
+          throw error;
+        }
+        const verifiedEntries: EncryptedBackupEntry[] = [];
+        for await (const entry of entries) {
+          verifiedEntries.push(entry);
+          if (options.verifierReturnsEarly === true) break;
+        }
+        events.push('verify');
+        const counts = verifiedCounts(verifiedEntries);
+        const receipt = restoreKnownRecordsVerificationV1Schema.parse({
+          version: 1,
+          scope: 'known-v1-records',
+          vaultId: fixture.vault.id,
+          vaultRevision: fixture.vault.revision,
+          restoreSessionId: candidate.restoreSessionId,
+          transcriptSha256: candidate.transcriptSha256,
+          canonicalEntriesSha256: candidate.canonicalEntriesSha256,
+          recordCount: candidate.recordCount,
+          selectedSlot: effectiveSelectedSlot,
+          verified: counts,
+        });
+        return (options.mutateReceipt?.(receipt) ??
+          receipt) as RestoreKnownRecordsVerificationV1;
+      },
+      close() {
+        zeroize(rootKey);
+        if (options.closeFailure === true) throw new Error('KAVRIX_CLOSE_CANARY');
+      },
+    });
+  return {
+    store,
+    factory,
+    staged,
+    events,
+    publishedReceipt: () => publishedReceipt,
+    state: () => state,
+  };
+}
+
+function verifiedCounts(
+  entries: readonly EncryptedBackupEntry[],
+): RestoreKnownRecordsVerificationV1['verified'] {
+  const count = (kind: EncryptedBackupEntry['kind']): number =>
+    entries.filter((entry) => entry.kind === kind).length;
+  const predecessors = entries.filter(
+    (
+      entry,
+    ): entry is Extract<EncryptedBackupEntry, { kind: 'tombstone-predecessor' }> =>
+      entry.kind === 'tombstone-predecessor',
+  );
+  return {
+    vaults: 1,
+    groups: count('group'),
+    items: count('item'),
+    attachments: count('attachment'),
+    attachmentHeaders: count('attachment-header'),
+    attachmentChunks: count('attachment-chunk'),
+    tombstonePredecessors: {
+      groups: predecessors.filter((entry) => entry.entityType === 'group').length,
+      items: predecessors.filter((entry) => entry.entityType === 'item').length,
+      attachments: predecessors.filter((entry) => entry.entityType === 'attachment')
+        .length,
+    },
+    tombstones: count('tombstone'),
+    histories: 0,
+    audits: 0,
+  };
+}
+
+async function captureError(promise: Promise<unknown>): Promise<unknown> {
+  try {
+    await promise;
+    throw new Error('Expected operation to fail.');
+  } catch (error) {
+    return error;
+  }
+}
+
+function errorText(error: unknown): string {
+  if (error instanceof AggregateError) {
+    return [
+      error.name,
+      error.message,
+      ...error.errors.map((entry) => errorText(entry)),
+    ].join(' ');
+  }
+  if (error instanceof Error) {
+    const cause = error.cause instanceof Error ? errorText(error.cause) : '';
+    return `${error.name} ${error.message} ${cause}`;
+  }
+  return String(error);
 }
 
 function createAttachmentGraph(): {

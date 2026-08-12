@@ -1,4 +1,8 @@
 import { CryptoAuthenticationError } from '@kavrix/core';
+import type {
+  RestoreVerificationSession,
+  RestoreVerificationSessionFactory,
+} from '@kavrix/import-export';
 import {
   constantTimeEqual,
   decryptAttachmentStreamToStager,
@@ -71,19 +75,10 @@ export type RestoreKnownRecordsVerifierOptionsV1 = Readonly<{
   highestSeenVaultRevision?: VaultRevision;
 }>;
 
-export type RestoreKnownRecordsVerificationSessionV1 = Readonly<{
-  readonly vaultRootKey: VaultRootKey;
-  readonly selectedSlot: RestoreKnownRecordsVerificationV1['selectedSlot'];
-  verify(
-    entries: AsyncIterable<EncryptedBackupEntry>,
-    summary: BackupVerification,
-  ): Promise<RestoreKnownRecordsVerificationV1>;
-  close(): void;
-}>;
+export type RestoreKnownRecordsVerificationSessionV1 = RestoreVerificationSession;
 
-export type RestoreKnownRecordsVerificationSessionFactoryV1 = (
-  vault: VaultRecord,
-) => Promise<RestoreKnownRecordsVerificationSessionV1>;
+export type RestoreKnownRecordsVerificationSessionFactoryV1 =
+  RestoreVerificationSessionFactory;
 
 type OpenAttachment = Readonly<{
   record: EncryptedAttachmentRecord;

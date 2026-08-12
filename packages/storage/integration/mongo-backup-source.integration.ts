@@ -1,10 +1,16 @@
 import { createHash, randomUUID } from 'node:crypto';
 
-import { generateVaultRootKey, zeroize, type VaultRootKey } from '@kavrix/crypto';
+import {
+  cloneSecretKey,
+  generateVaultRootKey,
+  zeroize,
+  type VaultRootKey,
+} from '@kavrix/crypto';
 import {
   createEncryptedBackup,
   restoreEncryptedBackup,
   verifyEncryptedBackup,
+  type RestoreVerificationSessionFactory,
 } from '@kavrix/import-export';
 import {
   aeadEnvelopeSchema,
@@ -19,6 +25,7 @@ import {
   encryptedItemRecordSchema,
   persistedAttachmentChunkRecordSchema,
   persistedAttachmentHeaderRecordSchema,
+  restoreKnownRecordsVerificationV1Schema,
   sha256DigestSchema,
   tombstoneRecordSchema,
   vaultIdSchema,
@@ -33,6 +40,7 @@ import {
   type PersistedAttachmentChunkRecord,
   type PersistedAttachmentHeaderRecord,
   type TombstoneRecord,
+  type RestoreKnownRecordsVerificationV1,
   type VaultId,
   type VaultRecord,
 } from '@kavrix/schemas';
@@ -44,6 +52,7 @@ import {
   MongoBackupSource,
   mongoStorageCollectionNames,
   toAuditDocument,
+  toHistoryDocument,
   toItemDocument,
   toTombstoneDocument,
 } from '../src/index.js';
@@ -88,7 +97,6 @@ interface SourceFixture {
   readonly history: EncryptedHistoryRecord;
   readonly audit: EncryptedAuditRecord;
   readonly records: readonly NonVaultEntry[];
-  readonly archive: Buffer;
 }
 
 describe('MongoBackupSource against a replica-set snapshot', () => {
@@ -99,7 +107,7 @@ describe('MongoBackupSource against a replica-set snapshot', () => {
 
   beforeAll(async () => {
     await client.connect();
-    fixture = await createFixture();
+    fixture = createFixture();
   });
 
   afterAll(async () => {
@@ -107,7 +115,7 @@ describe('MongoBackupSource against a replica-set snapshot', () => {
     await client.close();
   });
 
-  it('round-trips every supported family in deterministic restore-safe order', async () => {
+  it('exports every opaque family in deterministic restore-safe order', async () => {
     await withRestoredFixture(client, fixture, async (database) => {
       const source = new MongoBackupSource(client, database);
       const first = await source.open(fixture.vaultId, LIMITS);
@@ -178,32 +186,22 @@ describe('MongoBackupSource against a replica-set snapshot', () => {
           now: () => new Date(CREATED_AT),
         });
         await restoreStore.initialize();
-        await restoreEncryptedBackup(
-          chunks(archive, 43),
-          fixture.rootKey,
-          fixture.vaultId,
-          restoreStore,
-          LIMITS,
-        );
-        const restoredSnapshot = await new MongoBackupSource(
-          client,
-          restoredDatabase,
-        ).open(fixture.vaultId, LIMITS);
-        expect(restoredSnapshot.vault).toEqual(fixture.vault);
-        const restoredRecords = await collect(restoredSnapshot.records);
-        expect(restoredRecords).toEqual(fixture.records);
+        await expect(
+          restoreEncryptedBackup(
+            chunks(archive, 43),
+            fixture.vaultId,
+            restoreStore,
+            unsupportedRestoreFactory(fixture),
+            LIMITS,
+          ),
+        ).rejects.toMatchObject({
+          code: 'BACKUP_DECRYPTABILITY_UNSUPPORTED',
+        });
         expect(
-          restoredRecords.filter((entry) => entry.kind === 'tombstone-predecessor'),
-        ).toEqual([
-          {
-            kind: 'tombstone-predecessor',
-            entityType: 'item',
-            record: fixture.deletedPredecessor,
-          },
-        ]);
-
-        const rawInspection = await inspectVaultCollections(restoredDatabase);
-        for (const canary of CANARIES) expect(rawInspection).not.toContain(canary);
+          await restoredDatabase
+            .collection(mongoStorageCollectionNames.vaults)
+            .countDocuments(),
+        ).toBe(0);
       });
 
       const inspection = canonicalJson({ vault: first.vault, records });
@@ -575,7 +573,7 @@ describe('MongoBackupSource against a replica-set snapshot', () => {
   });
 });
 
-async function createFixture(): Promise<SourceFixture> {
+function createFixture(): SourceFixture {
   const vaultId = vaultIdSchema.parse('source.vault');
   const rootKey = generateVaultRootKey();
   const vault = vaultRecordSchema.parse({
@@ -774,12 +772,6 @@ async function createFixture(): Promise<SourceFixture> {
     { kind: 'tombstone', record: restoredTombstone },
     { kind: 'audit', record: audit },
   ];
-  const archive = await collectBytes(
-    createEncryptedBackup(
-      { vault, records: asyncValues(records), createdAt: CREATED_AT, limits: LIMITS },
-      rootKey,
-    ),
-  );
   return {
     rootKey,
     vaultId,
@@ -797,7 +789,6 @@ async function createFixture(): Promise<SourceFixture> {
     history,
     audit,
     records,
-    archive,
   };
 }
 
@@ -946,17 +937,129 @@ async function withRestoredFixture(
       now: () => new Date(CREATED_AT),
     });
     await store.initialize();
-    await restoreEncryptedBackup(
-      chunks(fixture.archive, 41),
-      fixture.rootKey,
-      fixture.vaultId,
-      store,
-      LIMITS,
-    );
+    await seedOpaqueSourceFixtureForTestOnly(store, database, fixture);
     await use(database);
   } finally {
     await database.dropDatabase();
   }
+}
+
+/**
+ * Test-only opaque source seeding. This is not semantic restore evidence: the
+ * history/audit records are inserted only after the known-v1 structural subset
+ * has crossed the direct protocol-v2 storage boundary.
+ */
+async function seedOpaqueSourceFixtureForTestOnly(
+  store: MongoBackupRestoreStore,
+  database: Db,
+  fixture: SourceFixture,
+): Promise<void> {
+  const records = fixture.records.filter(
+    (entry) => entry.kind !== 'history' && entry.kind !== 'audit',
+  );
+  const archive = await collectBytes(
+    createEncryptedBackup(
+      {
+        vault: fixture.vault,
+        records: asyncValues(records),
+        createdAt: CREATED_AT,
+        limits: LIMITS,
+      },
+      fixture.rootKey,
+    ),
+  );
+  const summary = await verifyEncryptedBackup(
+    chunks(archive),
+    fixture.rootKey,
+    fixture.vaultId,
+    LIMITS,
+  );
+  const entries = [{ kind: 'vault' as const, record: fixture.vault }, ...records];
+  const selectedSlot = fixture.vault.keySlots[0];
+  if (selectedSlot === undefined || selectedSlot.type === 'device-key') {
+    throw new Error('Fixture requires a portable restore slot.');
+  }
+  const receipt = restoreKnownRecordsVerificationV1Schema.parse({
+    version: 1,
+    scope: 'known-v1-records',
+    vaultId: fixture.vaultId,
+    vaultRevision: fixture.vault.revision,
+    restoreSessionId: summary.restoreSessionId,
+    transcriptSha256: summary.transcriptSha256,
+    canonicalEntriesSha256: summary.canonicalEntriesSha256,
+    recordCount: summary.recordCount,
+    selectedSlot: {
+      id: selectedSlot.id,
+      type: selectedSlot.type,
+      keyVersion: selectedSlot.keyVersion,
+    },
+    verified: {
+      vaults: 1,
+      groups: 1,
+      items: 3,
+      attachments: 1,
+      attachmentHeaders: 1,
+      attachmentChunks: fixture.attachmentChunks.length,
+      tombstonePredecessors: { groups: 0, items: 1, attachments: 0 },
+      tombstones: 2,
+      histories: 0,
+      audits: 0,
+    },
+  });
+  const stager = await store.open(summary.restoreSessionId, LIMITS);
+  for (const entry of entries) await stager.write(entry);
+  await stager.seal(summary);
+  for await (const entry of stager.readSealed(summary)) {
+    void entry;
+    // Deliberately exhaust the fresh sealed snapshot before direct test publish.
+  }
+  await stager.publish(summary, receipt);
+  await stager.finalize(summary, receipt);
+  await database
+    .collection<ReturnType<typeof toHistoryDocument>>(
+      mongoStorageCollectionNames.histories,
+    )
+    .insertOne(toHistoryDocument(fixture.history));
+  await database
+    .collection<ReturnType<typeof toAuditDocument>>(mongoStorageCollectionNames.audits)
+    .insertOne(toAuditDocument(fixture.audit));
+}
+
+function unsupportedRestoreFactory(
+  fixture: SourceFixture,
+): RestoreVerificationSessionFactory {
+  return () => {
+    const rootKey = cloneSecretKey(fixture.rootKey);
+    const selectedSlot = fixture.vault.keySlots[0];
+    if (selectedSlot === undefined || selectedSlot.type === 'device-key') {
+      zeroize(rootKey);
+      throw new Error('Fixture requires a portable restore slot.');
+    }
+    return Promise.resolve({
+      vaultRootKey: rootKey,
+      selectedSlot: {
+        id: selectedSlot.id,
+        type: selectedSlot.type,
+        keyVersion: selectedSlot.keyVersion,
+      },
+      verify(): Promise<RestoreKnownRecordsVerificationV1> {
+        const failure = new Error(
+          'Encrypted backup decryptability verification failed.',
+        ) as Error & {
+          name: string;
+          safe: true;
+          kind: 'unsupported';
+        };
+        failure.name = 'RestoreKnownRecordsVerificationError';
+        failure.safe = true;
+        failure.kind = 'unsupported';
+        return Promise.reject(failure);
+      },
+      close(): void {
+        zeroize(rootKey);
+      },
+    });
+  };
 }
 
 async function withEmptyDatabase(
@@ -971,27 +1074,6 @@ async function withEmptyDatabase(
   } finally {
     await database.dropDatabase();
   }
-}
-
-async function inspectVaultCollections(database: Db): Promise<string> {
-  const collectionNames = [
-    mongoStorageCollectionNames.vaults,
-    mongoStorageCollectionNames.groups,
-    mongoStorageCollectionNames.items,
-    mongoStorageCollectionNames.attachments,
-    mongoStorageCollectionNames.audits,
-    mongoStorageCollectionNames.histories,
-    mongoStorageCollectionNames.tombstones,
-    mongoStorageCollectionNames.attachmentStaging,
-    mongoStorageCollectionNames.attachmentStagingChunks,
-    mongoStorageCollectionNames.changes,
-    mongoStorageCollectionNames.counters,
-  ] as const;
-  const documents: unknown[] = [];
-  for (const collectionName of collectionNames) {
-    documents.push(...(await database.collection(collectionName).find({}).toArray()));
-  }
-  return canonicalJson(documents);
 }
 
 function entryIdentity(entry: NonVaultEntry): string {

@@ -28,6 +28,7 @@
     "@kavrix/clipboard": "workspace:*",
     "@kavrix/core": "workspace:*",
     "@kavrix/crypto": "workspace:*",
+    "@kavrix/import-export": "workspace:*",
     "@kavrix/schemas": "workspace:*",
     "@kavrix/sync": "workspace:*",
     "zod": "catalog:"
