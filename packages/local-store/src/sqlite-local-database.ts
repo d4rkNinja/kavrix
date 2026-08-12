@@ -1,14 +1,46 @@
 import { stat } from 'node:fs/promises';
 import type { DatabaseSync } from 'node:sqlite';
 
+import { canonicalJson } from '@kavrix/schemas';
+
+import {
+  assertBatchPending,
+  parseBatchRow,
+  parseCursorRow,
+  parseEntityId,
+  parseEntityType,
+  parseMutationRow,
+  parseRecordRow,
+  parseVaultId,
+  type BatchRow,
+  type CursorRow,
+  type MutationRow,
+  type RecordRow,
+} from './sqlite-local-codecs.js';
+
 import { invalidState, normalizeFailure } from './sqlite-local-errors.js';
 import {
+  LEGACY_V2_VAULT_STATE_SCHEMA_DEFINITIONS,
   SqliteVaultState,
   VAULT_STATE_SCHEMA_DEFINITIONS,
 } from './sqlite-vault-state.js';
+import { migrateLegacyV2Database } from './sqlite-local-migration.js';
+import {
+  parseMutationRow as parseVaultMutationRow,
+  parsePredecessorRow,
+  parsePublicationRow,
+} from './sqlite-vault-codecs.js';
+import type {
+  PersistedMutationRow,
+  PersistedPredecessorRow,
+  PersistedPublicationRow,
+} from './sqlite-vault-schema.js';
 
 const APPLICATION_ID = 0x4b565258;
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
+const FORMAT_MARKER = 'kavrix-local-sync-v3';
+const LEGACY_SCHEMA_VERSION = 2;
+const LEGACY_FORMAT_MARKER = 'kavrix-local-sync-v2';
 const DEFAULT_LIMITS = {
   maxVaults: 128,
   maxRecords: 100_000,
@@ -61,7 +93,8 @@ const SCHEMA_DEFINITIONS = {
     vault_id TEXT PRIMARY KEY NOT NULL,
     batch_key TEXT NOT NULL UNIQUE,
     batch_json TEXT NOT NULL,
-    serialized_bytes INTEGER NOT NULL CHECK(serialized_bytes >= 2)
+    serialized_bytes INTEGER NOT NULL CHECK(serialized_bytes >= 2),
+    replay_from_server_sequence INTEGER CHECK(replay_from_server_sequence >= 0)
   ) STRICT, WITHOUT ROWID`,
   completed_push_batches: `CREATE TABLE completed_push_batches (
     sequence INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -73,6 +106,28 @@ const SCHEMA_DEFINITIONS = {
   ...VAULT_STATE_SCHEMA_DEFINITIONS,
 } as const;
 const SCHEMA_DEFINITION_SQL = `${Object.values(SCHEMA_DEFINITIONS).join(';\n')};`;
+
+const {
+  active_push_batches: _activePushBatches,
+  completed_outbound_observations: _completedOutboundObservations,
+  outbound_observation_pins: _outboundObservationPins,
+  pending_template_migrations: _pendingTemplateMigrations,
+  ...LEGACY_V2_UNCHANGED_SCHEMA_DEFINITIONS
+} = SCHEMA_DEFINITIONS;
+void _activePushBatches;
+void _completedOutboundObservations;
+void _outboundObservationPins;
+void _pendingTemplateMigrations;
+const LEGACY_V2_SCHEMA_DEFINITIONS = {
+  ...LEGACY_V2_UNCHANGED_SCHEMA_DEFINITIONS,
+  active_push_batches: `CREATE TABLE active_push_batches (
+    vault_id TEXT PRIMARY KEY NOT NULL,
+    batch_key TEXT NOT NULL UNIQUE,
+    batch_json TEXT NOT NULL,
+    serialized_bytes INTEGER NOT NULL CHECK(serialized_bytes >= 2)
+  ) STRICT, WITHOUT ROWID`,
+  ...LEGACY_V2_VAULT_STATE_SCHEMA_DEFINITIONS,
+} as const;
 
 export interface SqliteSyncLocalStoreOptions {
   readonly path: string;
@@ -143,11 +198,35 @@ export function initializeDatabase(database: DatabaseSync, limits: StoreLimits):
       database.exec(`
         ${SCHEMA_DEFINITION_SQL}
         INSERT INTO store_metadata(key, value)
-          VALUES ('format', 'kavrix-local-sync-v2');
+          VALUES ('format', '${FORMAT_MARKER}');
         PRAGMA application_id = ${String(APPLICATION_ID)};
         PRAGMA user_version = ${String(SCHEMA_VERSION)};
       `);
     });
+  } else if (
+    applicationId === APPLICATION_ID &&
+    userVersion === LEGACY_SCHEMA_VERSION
+  ) {
+    migrateLegacyV2Database(
+      database,
+      [
+        VAULT_STATE_SCHEMA_DEFINITIONS.completed_outbound_observations,
+        VAULT_STATE_SCHEMA_DEFINITIONS.outbound_observation_pins,
+      ],
+      FORMAT_MARKER,
+      SCHEMA_VERSION,
+      () => {
+        verifyDatabaseVersion(
+          database,
+          limits,
+          LEGACY_SCHEMA_VERSION,
+          LEGACY_FORMAT_MARKER,
+          LEGACY_V2_SCHEMA_DEFINITIONS,
+          true,
+        );
+        verifyLegacyCanonicalRows(database, limits);
+      },
+    );
   } else if (applicationId !== APPLICATION_ID || userVersion !== SCHEMA_VERSION) {
     throw invalidState();
   }
@@ -164,18 +243,36 @@ export function verifyDatabase(
   limits: StoreLimits,
   includeIntegrityCheck = true,
 ): void {
+  verifyDatabaseVersion(
+    database,
+    limits,
+    SCHEMA_VERSION,
+    FORMAT_MARKER,
+    SCHEMA_DEFINITIONS,
+    includeIntegrityCheck,
+  );
+}
+
+function verifyDatabaseVersion(
+  database: DatabaseSync,
+  limits: StoreLimits,
+  schemaVersion: number,
+  formatMarker: string,
+  schemaDefinitions: Readonly<Record<string, string>>,
+  includeIntegrityCheck: boolean,
+): void {
   if (
     getIntegerPragma(database, 'PRAGMA application_id', 'application_id') !==
       APPLICATION_ID ||
-    getIntegerPragma(database, 'PRAGMA user_version', 'user_version') !== SCHEMA_VERSION
+    getIntegerPragma(database, 'PRAGMA user_version', 'user_version') !== schemaVersion
   ) {
     throw invalidState();
   }
   const format = database
     .prepare(`SELECT value FROM store_metadata WHERE key = 'format'`)
     .get() as { value?: unknown } | undefined;
-  if (format?.value !== 'kavrix-local-sync-v2') throw invalidState();
-  verifySchemaObjects(database);
+  if (format?.value !== formatMarker) throw invalidState();
+  verifySchemaObjects(database, schemaDefinitions);
   if (includeIntegrityCheck) {
     const rows = database.prepare('PRAGMA integrity_check').all() as unknown as {
       integrity_check?: unknown;
@@ -215,7 +312,10 @@ export function verifyDatabase(
   vaultState.assertBounds();
 }
 
-function verifySchemaObjects(database: DatabaseSync): void {
+function verifySchemaObjects(
+  database: DatabaseSync,
+  schemaDefinitions: Readonly<Record<string, string>>,
+): void {
   const rows = database
     .prepare(
       `SELECT type, name, sql FROM sqlite_schema
@@ -235,7 +335,7 @@ function verifySchemaObjects(database: DatabaseSync): void {
       sql: normalizeSql(row.sql),
     };
   });
-  const expected = Object.entries(SCHEMA_DEFINITIONS)
+  const expected = Object.entries(schemaDefinitions)
     .map(([name, sql]) => ({
       identity: `${/^CREATE (?:UNIQUE )?INDEX\b/u.test(sql) ? 'index' : 'table'}:${name}`,
       sql: normalizeSql(sql),
@@ -249,8 +349,118 @@ function verifySchemaObjects(database: DatabaseSync): void {
   }
 }
 
+function verifyLegacyCanonicalRows(database: DatabaseSync, limits: StoreLimits): void {
+  const cursorRows = database
+    .prepare(
+      `SELECT vault_id, server_sequence, highest_revision, cursor_json,
+              last_page_hash FROM sync_cursors`,
+    )
+    .all() as unknown as CursorRow[];
+  for (const row of cursorRows) {
+    parseCursorRow(row, parseVaultId(row.vault_id));
+  }
+
+  const recordRows = database
+    .prepare(
+      `SELECT vault_id, entity_type, entity_id, revision, record_json,
+              serialized_bytes FROM opaque_records`,
+    )
+    .all() as unknown as RecordRow[];
+  for (const row of recordRows) {
+    const vaultId = parseVaultId(row.vault_id);
+    const entityType = parseEntityType(row.entity_type);
+    parseEntityId(entityType, row.entity_id);
+    parseRecordRow(row, vaultId);
+  }
+
+  const pendingRows = database
+    .prepare(
+      `SELECT vault_id, entity_type, entity_id, idempotency_key,
+              mutation_json, serialized_bytes FROM pending_mutations`,
+    )
+    .all() as unknown as MutationRow[];
+  for (const row of pendingRows) {
+    parseMutationRow(row, parseVaultId(row.vault_id));
+  }
+
+  const batchRows = database
+    .prepare(
+      `SELECT vault_id, batch_key, batch_json, serialized_bytes
+         FROM active_push_batches`,
+    )
+    .all() as unknown as BatchRow[];
+  for (const row of batchRows) {
+    const vaultId = parseVaultId(row.vault_id);
+    assertBatchPending(database, parseBatchRow(row, vaultId));
+  }
+
+  const predecessorRows = database
+    .prepare(
+      `SELECT vault_id, entity_type, entity_id, owner_key, revision,
+              record_json, serialized_bytes FROM deletion_predecessors`,
+    )
+    .all() as unknown as PersistedPredecessorRow[];
+  for (const row of predecessorRows) {
+    const vaultId = parseVaultId(row.vault_id);
+    const entityType = parseEntityType(row.entity_type);
+    if (typeof row.entity_id !== 'string' || typeof row.owner_key !== 'string') {
+      throw invalidState();
+    }
+    parseEntityId(entityType, row.entity_id);
+    parsePredecessorRow(row, vaultId, entityType, row.entity_id, row.owner_key);
+  }
+
+  const publicationRows = database
+    .prepare(
+      `SELECT vault_id, batch_key, publication_json, serialized_bytes
+         FROM pending_template_migrations`,
+    )
+    .all() as unknown as PersistedPublicationRow[];
+  for (const row of publicationRows) {
+    const vaultId = parseVaultId(row.vault_id);
+    const publication = parsePublicationRow(row, vaultId);
+    const mutationRows = database
+      .prepare(
+        `SELECT position, vault_id, entity_type, entity_id, idempotency_key,
+                mutation_json, serialized_bytes
+           FROM pending_template_migration_mutations
+          WHERE batch_key = ? ORDER BY position ASC`,
+      )
+      .all(publication.batchIdempotencyKey) as unknown as (PersistedMutationRow & {
+      position?: unknown;
+    })[];
+    if (mutationRows.length !== publication.mutations.length) throw invalidState();
+    for (const [index, mutationRow] of mutationRows.entries()) {
+      if (
+        requireNonnegativeInteger(mutationRow.position) !== index ||
+        typeof mutationRow.entity_type !== 'string' ||
+        typeof mutationRow.entity_id !== 'string'
+      ) {
+        throw invalidState();
+      }
+      const mutation = parseVaultMutationRow(
+        mutationRow,
+        vaultId,
+        parseEntityType(mutationRow.entity_type),
+        mutationRow.entity_id,
+      );
+      if (canonicalJson(mutation) !== canonicalJson(publication.mutations[index])) {
+        throw invalidState();
+      }
+    }
+  }
+
+  const vaultState = new SqliteVaultState(database, limits);
+  vaultState.assertNoQueueCoexistence();
+  vaultState.assertCanonicalState();
+  vaultState.assertBounds();
+}
+
 function normalizeSql(value: string): string {
-  return value.replace(/\s+/gu, ' ').trim();
+  return value
+    .replace(/\s+/gu, ' ')
+    .replace(/\s*([(),])\s*/gu, '$1')
+    .trim();
 }
 
 export function parseOptions(options: SqliteSyncLocalStoreOptions): StoreLimits {

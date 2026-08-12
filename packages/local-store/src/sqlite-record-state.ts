@@ -2,6 +2,7 @@ import type { DatabaseSync } from 'node:sqlite';
 
 import type { GroupMutationState, ItemMutationState } from '@kavrix/client';
 import {
+  canonicalJson,
   contentHashForRecord,
   encryptedGroupRecordSchema,
   encryptedItemRecordSchema,
@@ -326,6 +327,154 @@ export class SqliteRecordState {
       getInteger(bounds, 'total_bytes') > this.#limits.maxRecordBytes
     ) {
       throw invalidState();
+    }
+  }
+
+  assertCanonicalState(): void {
+    const baseRows = this.#database
+      .prepare(`SELECT vault_id, entity_type, entity_id FROM opaque_records`)
+      .all() as unknown as {
+      vault_id?: unknown;
+      entity_type?: unknown;
+      entity_id?: unknown;
+    }[];
+    for (const row of baseRows) {
+      if (
+        typeof row.vault_id !== 'string' ||
+        typeof row.entity_type !== 'string' ||
+        typeof row.entity_id !== 'string'
+      ) {
+        throw invalidState();
+      }
+      this.base(row.vault_id as VaultId, row.entity_type as EntityType, row.entity_id);
+    }
+
+    const identities = this.#database
+      .prepare(
+        `SELECT vault_id, entity_type, entity_id FROM pending_mutations
+         UNION
+         SELECT vault_id, entity_type, entity_id
+           FROM pending_template_migration_mutations`,
+      )
+      .all() as unknown as {
+      vault_id?: unknown;
+      entity_type?: unknown;
+      entity_id?: unknown;
+    }[];
+    for (const identity of identities) {
+      if (
+        typeof identity.vault_id !== 'string' ||
+        typeof identity.entity_type !== 'string' ||
+        typeof identity.entity_id !== 'string'
+      ) {
+        throw invalidState();
+      }
+      const vaultId = identity.vault_id as VaultId;
+      const entityType = identity.entity_type as EntityType;
+      const entityId = identity.entity_id;
+      const generic = this.#database
+        .prepare(
+          `SELECT vault_id, entity_type, entity_id, idempotency_key,
+                  mutation_json, serialized_bytes
+             FROM pending_mutations
+            WHERE vault_id = ? AND entity_type = ? AND entity_id = ?
+            ORDER BY sequence ASC`,
+        )
+        .all(vaultId, entityType, entityId) as unknown as PersistedMutationRow[];
+      const publication = this.#database
+        .prepare(
+          `SELECT vault_id, entity_type, entity_id, idempotency_key,
+                  mutation_json, serialized_bytes
+             FROM pending_template_migration_mutations
+            WHERE vault_id = ? AND entity_type = ? AND entity_id = ?
+            ORDER BY position ASC`,
+        )
+        .all(vaultId, entityType, entityId) as unknown as PersistedMutationRow[];
+      if (generic.length > 0 && publication.length > 0) throw invalidState();
+      let current = this.base(vaultId, entityType, entityId);
+      for (const row of generic.length > 0 ? generic : publication) {
+        const mutation = parseMutationRow(row, vaultId, entityType, entityId);
+        this.assertMutationApplies(current, mutation);
+        if (isDeleteMutation(mutation)) {
+          const predecessor = this.#predecessors.load(
+            vaultId,
+            entityType,
+            entityId,
+            mutation.idempotencyKey,
+          );
+          if (
+            predecessor === null ||
+            current?.state !== 'active' ||
+            canonicalJson(predecessor) !== canonicalJson(current.record)
+          ) {
+            throw invalidState();
+          }
+          current = {
+            state: 'deleted',
+            tombstone: synthesizeTombstone(mutation, predecessor),
+            predecessor,
+          };
+        } else {
+          current = { state: 'active', record: mutation.record };
+        }
+      }
+    }
+
+    const predecessorOwners = this.#database
+      .prepare(
+        `SELECT vault_id, entity_type, entity_id, owner_key
+           FROM deletion_predecessors`,
+      )
+      .all() as unknown as {
+      vault_id?: unknown;
+      entity_type?: unknown;
+      entity_id?: unknown;
+      owner_key?: unknown;
+    }[];
+    for (const row of predecessorOwners) {
+      if (
+        typeof row.vault_id !== 'string' ||
+        typeof row.entity_type !== 'string' ||
+        typeof row.entity_id !== 'string' ||
+        typeof row.owner_key !== 'string'
+      ) {
+        throw invalidState();
+      }
+      if (row.owner_key === '') {
+        if (
+          this.base(
+            row.vault_id as VaultId,
+            row.entity_type as EntityType,
+            row.entity_id,
+          )?.state !== 'deleted'
+        ) {
+          throw invalidState();
+        }
+        continue;
+      }
+      const claims = this.#database
+        .prepare(
+          `SELECT mutation_json FROM pending_mutations WHERE idempotency_key = ?
+           UNION ALL
+           SELECT mutation_json FROM pending_template_migration_mutations
+            WHERE idempotency_key = ?`,
+        )
+        .all(row.owner_key, row.owner_key) as unknown as { mutation_json?: unknown }[];
+      if (claims.length !== 1 || typeof claims[0]?.mutation_json !== 'string') {
+        throw invalidState();
+      }
+      const mutation = parseMutationInput(
+        JSON.parse(claims[0].mutation_json) as unknown,
+      );
+      if (
+        !isDeleteMutation(mutation) ||
+        mutationVaultId(mutation) !== row.vault_id ||
+        mutation.entityType !== row.entity_type ||
+        mutation.record.id !== row.entity_id ||
+        mutation.idempotencyKey !== row.owner_key
+      ) {
+        throw invalidState();
+      }
     }
   }
 

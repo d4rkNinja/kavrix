@@ -3,6 +3,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import type { OpaqueMutation, VaultId } from '@kavrix/schemas';
 
 import type { SqliteRecordState } from './sqlite-record-state.js';
+import { SqliteOutboundPins } from './sqlite-outbound-pins.js';
 import {
   encodeBounded,
   getInteger,
@@ -23,6 +24,7 @@ export class SqliteMutationQueue {
   readonly #database: DatabaseSync;
   readonly #limits: VaultStateLimits;
   readonly #records: SqliteRecordState;
+  readonly #pins: SqliteOutboundPins;
 
   constructor(
     database: DatabaseSync,
@@ -32,6 +34,7 @@ export class SqliteMutationQueue {
     this.#database = database;
     this.#limits = limits;
     this.#records = records;
+    this.#pins = new SqliteOutboundPins(database, limits);
   }
 
   enqueue(mutationsInput: readonly OpaqueMutation[]): 'duplicate' | 'queued' {
@@ -155,7 +158,10 @@ export class SqliteMutationQueue {
   }
 
   pruneCompleted(protectedKeys: readonly string[]): void {
-    const protectedSet = new Set(protectedKeys);
+    const protectedSet = new Set([
+      ...this.#pins.pinnedMutationKeys(),
+      ...protectedKeys,
+    ]);
     for (;;) {
       const bounds = this.#completedBounds();
       if (

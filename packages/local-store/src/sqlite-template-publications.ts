@@ -1,6 +1,10 @@
 import type { DatabaseSync } from 'node:sqlite';
 
-import type { TemplateMigrationPublicationRequest, VaultId } from '@kavrix/schemas';
+import {
+  canonicalJson,
+  type TemplateMigrationPublicationRequest,
+  type VaultId,
+} from '@kavrix/schemas';
 import type { CompleteTemplateMigrationPublicationInput } from '@kavrix/sync';
 
 import type { SqliteMutationQueue } from './sqlite-mutation-queue.js';
@@ -11,12 +15,14 @@ import {
   getInteger,
   invalidState,
   parseJson,
+  parseMutationRow,
   parsePublication,
   parsePublicationResponse,
   parsePublicationRow,
 } from './sqlite-vault-codecs.js';
 import type {
   PersistedCompletionRow,
+  PersistedMutationRow,
   PersistedPublicationRow,
   VaultStateLimits,
 } from './sqlite-vault-schema.js';
@@ -47,6 +53,58 @@ export class SqliteTemplatePublications {
       )
       .get(vaultId) as PersistedPublicationRow | undefined;
     return row === undefined ? null : parsePublicationRow(row, vaultId);
+  }
+
+  assertExactPending(publication: TemplateMigrationPublicationRequest): void {
+    const pending = this.load(publication.vaultId);
+    if (pending === null || canonicalJson(pending) !== canonicalJson(publication)) {
+      throw invalidState();
+    }
+    const rows = this.#database
+      .prepare(
+        `SELECT batch_key, position, vault_id, entity_type, entity_id,
+                idempotency_key, mutation_json, serialized_bytes
+           FROM pending_template_migration_mutations
+          WHERE batch_key = ? ORDER BY position ASC`,
+      )
+      .all(publication.batchIdempotencyKey) as unknown as (PersistedMutationRow & {
+      batch_key?: unknown;
+      position?: unknown;
+    })[];
+    if (rows.length !== publication.mutations.length) throw invalidState();
+    for (const [index, row] of rows.entries()) {
+      const expected = publication.mutations[index];
+      if (
+        expected === undefined ||
+        row.batch_key !== publication.batchIdempotencyKey ||
+        getInteger(row, 'position') !== index ||
+        typeof row.entity_type !== 'string' ||
+        typeof row.entity_id !== 'string'
+      ) {
+        throw invalidState();
+      }
+      const mutation = parseMutationRow(
+        row,
+        publication.vaultId,
+        expected.entityType,
+        expected.record.id,
+      );
+      if (canonicalJson(mutation) !== canonicalJson(expected)) throw invalidState();
+    }
+  }
+
+  assertCanonicalState(): void {
+    const rows = this.#database
+      .prepare(
+        `SELECT vault_id, batch_key, publication_json, serialized_bytes
+           FROM pending_template_migrations`,
+      )
+      .all() as unknown as PersistedPublicationRow[];
+    for (const row of rows) {
+      if (typeof row.vault_id !== 'string') throw invalidState();
+      const publication = parsePublicationRow(row, row.vault_id as VaultId);
+      this.assertExactPending(publication);
+    }
   }
 
   enqueue(publicationInput: TemplateMigrationPublicationRequest): void {
@@ -99,14 +157,18 @@ export class SqliteTemplatePublications {
     this.#database
       .prepare(
         `INSERT INTO pending_template_migrations
-           (vault_id, batch_key, publication_json, serialized_bytes)
-         VALUES (?, ?, ?, ?)`,
+           (vault_id, batch_key, publication_json, serialized_bytes,
+            replay_from_server_sequence)
+         VALUES (?, ?, ?, ?, COALESCE((
+           SELECT server_sequence FROM sync_cursors WHERE vault_id = ?
+         ), 0))`,
       )
       .run(
         publication.vaultId,
         publication.batchIdempotencyKey,
         encoded.json,
         encoded.bytes,
+        publication.vaultId,
       );
     const insert = this.#database.prepare(
       `INSERT INTO pending_template_migration_mutations
@@ -179,6 +241,38 @@ export class SqliteTemplatePublications {
       );
     this.#prune(publication.batchIdempotencyKey);
     this.assertBounds();
+  }
+
+  completeReconciled(input: CompleteTemplateMigrationPublicationInput): void {
+    const publication = parsePublication(input.publication);
+    const response = parsePublicationResponse(input.response, publication);
+    const publicationJson = JSON.stringify(publication);
+    const responseJson = JSON.stringify(response);
+    this.assertExactPending(publication);
+    const totalBytes =
+      Buffer.byteLength(publicationJson) + Buffer.byteLength(responseJson);
+    if (totalBytes > this.#limits.maxCompletedPublicationBytes) throw invalidState();
+    const removed = this.#database
+      .prepare(
+        `DELETE FROM pending_template_migrations
+          WHERE vault_id = ? AND batch_key = ?`,
+      )
+      .run(publication.vaultId, publication.batchIdempotencyKey);
+    if (removed.changes !== 1) throw invalidState();
+    this.#database
+      .prepare(
+        `INSERT INTO completed_template_migrations
+           (vault_id, batch_key, publication_json, response_json, serialized_bytes)
+         VALUES (?, ?, ?, ?, ?)`,
+      )
+      .run(
+        publication.vaultId,
+        publication.batchIdempotencyKey,
+        publicationJson,
+        responseJson,
+        totalBytes,
+      );
+    this.#prune(publication.batchIdempotencyKey);
   }
 
   assertNoQueueCoexistence(): void {
@@ -276,8 +370,20 @@ export class SqliteTemplatePublications {
         .prepare(
           `DELETE FROM completed_template_migrations
             WHERE sequence = (
-              SELECT sequence FROM completed_template_migrations
-               WHERE batch_key <> ? ORDER BY sequence ASC LIMIT 1
+              SELECT completion.sequence
+                FROM completed_template_migrations AS completion
+               WHERE completion.batch_key <> ? AND NOT EXISTS (
+                 SELECT 1 FROM outbound_observation_pins AS pin
+                  WHERE pin.state = 'pinned'
+                    AND pin.kind = 'template-publication'
+                    AND pin.observation_id = (
+                      SELECT receipt.observation_id
+                        FROM completed_outbound_observations AS receipt
+                       WHERE receipt.kind = 'template-publication'
+                         AND receipt.batch_key = completion.batch_key
+                    )
+               )
+               ORDER BY completion.sequence ASC LIMIT 1
             )`,
         )
         .run(currentBatchKey);

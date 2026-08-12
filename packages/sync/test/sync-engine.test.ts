@@ -711,6 +711,30 @@ class FakeLocalStore implements SyncLocalStorePort {
     this.pendingPublication = null;
     return Promise.resolve();
   }
+
+  loadOutboundReplayState(): Promise<never> {
+    return Promise.reject(new Error('Unexpected outbound replay lookup'));
+  }
+
+  ensureOutboundReplayStart(): Promise<never> {
+    return Promise.reject(new Error('Unexpected outbound replay binding'));
+  }
+
+  loadCompletedOutboundObservation(): Promise<never> {
+    return Promise.reject(new Error('Unexpected completed observation lookup'));
+  }
+
+  confirmCompletedOutboundObservation(): Promise<never> {
+    return Promise.reject(new Error('Unexpected completed observation confirmation'));
+  }
+
+  releaseCompletedOutboundObservation(): Promise<never> {
+    return Promise.reject(new Error('Unexpected completed observation release'));
+  }
+
+  reconcileOutboundObservation(): Promise<never> {
+    return Promise.reject(new Error('Unexpected outbound reconciliation'));
+  }
 }
 
 class FakeProtectedState implements ProtectedSyncStatePort {

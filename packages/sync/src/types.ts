@@ -1,8 +1,11 @@
+import { canonicalJson, syncPulledChangeSchema } from '@kavrix/schemas';
 import type {
   DeviceId,
   OpaqueMutation,
   OpaqueSyncRecord,
+  OutboundObservation,
   ProtectedLocalDeviceState,
+  Sha256Digest,
   RecordRevision,
   SyncPulledChange,
   SyncPullResponse,
@@ -146,4 +149,89 @@ export interface CompleteTemplateMigrationPublicationInput {
   readonly response: TemplateMigrationPublicationResponse;
 }
 
-export type { OpaqueMutation, OpaqueSyncRecord, ProtectedLocalDeviceState, SyncCursor };
+export const MAX_OUTBOUND_RECONCILIATION_CHANGES = 500;
+export const MAX_OUTBOUND_RECONCILIATION_BYTES = 32 * 1024 * 1024;
+
+export function measureOutboundReconciliationChanges(
+  changes: readonly PulledChange[],
+): number {
+  if (!Array.isArray(changes) || changes.length > MAX_OUTBOUND_RECONCILIATION_CHANGES) {
+    throw new TypeError('Invalid outbound reconciliation range');
+  }
+  const parsedChanges = changes.map((change) => {
+    const parsed = syncPulledChangeSchema.safeParse(change);
+    if (!parsed.success) throw new TypeError('Invalid outbound reconciliation range');
+    return parsed.data;
+  });
+  const bytes = Buffer.byteLength(canonicalJson(parsedChanges));
+  if (bytes > MAX_OUTBOUND_RECONCILIATION_BYTES) {
+    throw new TypeError('Invalid outbound reconciliation range');
+  }
+  return bytes;
+}
+
+export type OutboundReplayState = Readonly<{
+  kind: OutboundObservation['kind'];
+  vaultId: VaultId;
+  batchIdempotencyKey: string;
+  replayFromServerSequence: number | null;
+}>;
+
+export type EnsureOutboundReplayStartInput = Readonly<{
+  kind: OutboundObservation['kind'];
+  vaultId: VaultId;
+  batchIdempotencyKey: string;
+}>;
+
+type ReconcileOutboundObservationBase = Readonly<{
+  vaultId: VaultId;
+  deviceId: DeviceId;
+  observation: OutboundObservation;
+  stagedChanges: readonly PulledChange[];
+  stagedChangesBytes: number;
+  finalCursor: SyncCursor;
+}>;
+
+export type ReconcileOutboundObservationInput =
+  | (ReconcileOutboundObservationBase &
+      Readonly<{
+        kind: 'generic-push';
+        request: PushBatchRequest;
+        response: PushBatchResponse;
+      }>)
+  | (ReconcileOutboundObservationBase &
+      Readonly<{
+        kind: 'template-publication';
+        request: TemplateMigrationPublicationRequest;
+        response: TemplateMigrationPublicationResponse;
+      }>);
+
+type CompletedOutboundObservationBase = Readonly<{
+  vaultId: VaultId;
+  deviceId: DeviceId;
+  observation: OutboundObservation;
+  finalCursor: SyncCursor;
+  serializedBytes: number;
+}>;
+
+export type CompletedOutboundObservation =
+  | (CompletedOutboundObservationBase &
+      Readonly<{
+        kind: 'generic-push';
+        request: PushBatchRequest;
+        response: PushBatchResponse;
+      }>)
+  | (CompletedOutboundObservationBase &
+      Readonly<{
+        kind: 'template-publication';
+        request: TemplateMigrationPublicationRequest;
+        response: TemplateMigrationPublicationResponse;
+      }>);
+
+export type {
+  OpaqueMutation,
+  OpaqueSyncRecord,
+  ProtectedLocalDeviceState,
+  Sha256Digest,
+  SyncCursor,
+};

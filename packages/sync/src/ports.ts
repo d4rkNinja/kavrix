@@ -1,5 +1,6 @@
 import type {
   DeviceId,
+  OutboundObservation,
   Sha256Digest,
   TemplateMigrationPublicationRequest,
   TemplateMigrationPublicationResponse,
@@ -13,12 +14,16 @@ import type {
   ApplyPullPageInput,
   CompletePushBatchInput,
   CompleteTemplateMigrationPublicationInput,
+  CompletedOutboundObservation,
+  EnsureOutboundReplayStartInput,
   OpaqueMutation,
+  OutboundReplayState,
   ProtectedLocalDeviceState,
   PullPageRequest,
   PullPageResponse,
   PushBatchRequest,
   PushBatchResponse,
+  ReconcileOutboundObservationInput,
   SyncCursor,
   SyncStatus,
 } from './types.js';
@@ -57,6 +62,34 @@ export interface SyncLocalStorePort {
   completeTemplateMigrationPublication(
     input: CompleteTemplateMigrationPublicationInput,
   ): Promise<void>;
+  /** Loads the replay start bound to exact durable outbound work. */
+  loadOutboundReplayState(
+    vaultId: VaultId,
+    kind: OutboundReplayState['kind'],
+  ): Promise<OutboundReplayState | null>;
+  /** Idempotently binds migrated work to the current local cursor sequence. */
+  ensureOutboundReplayStart(input: EnsureOutboundReplayStartInput): Promise<number>;
+  /** Loads an exact full receipt without contacting the service. */
+  loadCompletedOutboundObservation(
+    vaultId: VaultId,
+    observationId: Sha256Digest,
+  ): Promise<CompletedOutboundObservation | null>;
+  /** Confirms a committed exact receipt after an ambiguous local outcome. */
+  confirmCompletedOutboundObservation(
+    vaultId: VaultId,
+    deviceId: DeviceId,
+    observation: OutboundObservation,
+  ): Promise<CompletedOutboundObservation>;
+  /** Releases only the exact durable receipt pin after protected completion. */
+  releaseCompletedOutboundObservation(
+    vaultId: VaultId,
+    deviceId: DeviceId,
+    observationId: Sha256Digest,
+  ): Promise<void>;
+  /** Applies the staged feed and finalizes its exact outbound request atomically. */
+  reconcileOutboundObservation(
+    input: ReconcileOutboundObservationInput,
+  ): Promise<CompletedOutboundObservation>;
 }
 
 /** Implementations must use protected local storage, separate from the sync server. */

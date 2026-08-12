@@ -25,7 +25,10 @@ import { SqliteRecordState } from './sqlite-record-state.js';
 import { SqliteTemplatePublications } from './sqlite-template-publications.js';
 import type { VaultStateLimits } from './sqlite-vault-schema.js';
 
-export { VAULT_STATE_SCHEMA_DEFINITIONS } from './sqlite-vault-schema.js';
+export {
+  LEGACY_V2_VAULT_STATE_SCHEMA_DEFINITIONS,
+  VAULT_STATE_SCHEMA_DEFINITIONS,
+} from './sqlite-vault-schema.js';
 export type { VaultStateLimits } from './sqlite-vault-schema.js';
 
 /**
@@ -115,6 +118,18 @@ export class SqliteVaultState {
     this.#publications.complete(input);
   }
 
+  completeReconciledPublication(
+    input: CompleteTemplateMigrationPublicationInput,
+  ): void {
+    this.#publications.completeReconciled(input);
+  }
+
+  assertExactPendingPublication(
+    publication: TemplateMigrationPublicationRequest,
+  ): void {
+    this.#publications.assertExactPending(publication);
+  }
+
   assertNoQueueCoexistence(): void {
     this.#publications.assertNoQueueCoexistence();
   }
@@ -123,6 +138,11 @@ export class SqliteVaultState {
     this.#records.assertBounds();
     this.#queue.assertBounds();
     this.#publications.assertBounds();
+  }
+
+  assertCanonicalState(): void {
+    this.#records.assertCanonicalState();
+    this.#publications.assertCanonicalState();
   }
 }
 

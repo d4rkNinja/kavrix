@@ -17,6 +17,7 @@ import {
   type ItemId,
   type OpaqueMutation,
   type OpaqueSyncRecord,
+  type OutboundObservation,
   type TemplateMigrationPublicationRequest,
   type VaultId,
   type VaultRecord,
@@ -26,6 +27,11 @@ import type {
   ApplyPullPageInput,
   CompletePushBatchInput,
   CompleteTemplateMigrationPublicationInput,
+  CompletedOutboundObservation,
+  EnsureOutboundReplayStartInput,
+  OutboundReplayState,
+  ReconcileOutboundObservationInput,
+  Sha256Digest,
   SyncCursor,
   SyncLocalStorePort,
 } from '@kavrix/sync';
@@ -64,6 +70,7 @@ import {
   type StoreLimits,
 } from './sqlite-local-database.js';
 import { invalidState, normalizeFailure } from './sqlite-local-errors.js';
+import { SqliteOutboundReconciliation } from './sqlite-outbound-reconciliation.js';
 import { prepareSecureDatabasePath, secureSqliteFiles } from './path-security.js';
 import { SqliteVaultState } from './sqlite-vault-state.js';
 
@@ -83,6 +90,7 @@ export class SqliteSyncLocalStore
   readonly #databasePath: string;
   readonly #limits: StoreLimits;
   readonly #vaultState: SqliteVaultState;
+  readonly #outbound: SqliteOutboundReconciliation;
   #closed = false;
 
   private constructor(
@@ -94,6 +102,11 @@ export class SqliteSyncLocalStore
     this.#databasePath = databasePath;
     this.#limits = limits;
     this.#vaultState = new SqliteVaultState(database, limits);
+    this.#outbound = new SqliteOutboundReconciliation(
+      database,
+      limits,
+      this.#vaultState,
+    );
   }
 
   public static async open(
@@ -112,6 +125,13 @@ export class SqliteSyncLocalStore
       initializeDatabase(database, limits);
       database.enableDefensive(true);
       verifyDatabase(database, limits);
+      const verifiedVaultState = new SqliteVaultState(database, limits);
+      verifiedVaultState.assertCanonicalState();
+      new SqliteOutboundReconciliation(
+        database,
+        limits,
+        verifiedVaultState,
+      ).assertCanonicalRows();
       await secureSqliteFiles(databasePath, true);
     } catch (error) {
       if (database !== undefined) {
@@ -314,10 +334,19 @@ export class SqliteSyncLocalStore
         this.#database
           .prepare(
             `INSERT INTO active_push_batches
-               (vault_id, batch_key, batch_json, serialized_bytes)
-             VALUES (?, ?, ?, ?)`,
+               (vault_id, batch_key, batch_json, serialized_bytes,
+                replay_from_server_sequence)
+             VALUES (?, ?, ?, ?, COALESCE((
+               SELECT server_sequence FROM sync_cursors WHERE vault_id = ?
+             ), 0))`,
           )
-          .run(batch.vaultId, batch.batchIdempotencyKey, encoded.json, encoded.bytes);
+          .run(
+            batch.vaultId,
+            batch.batchIdempotencyKey,
+            encoded.json,
+            encoded.bytes,
+            batch.vaultId,
+          );
         assertRowCount(this.#database, 'active_push_batches', this.#limits.maxVaults);
       });
       await this.#afterWrite();
@@ -566,6 +595,91 @@ export class SqliteSyncLocalStore
         this.#vaultState.completePublication(input);
       });
       await this.#afterWrite();
+    } catch (error) {
+      throw normalizeFailure(error);
+    }
+  }
+
+  public loadOutboundReplayState(
+    vaultId: VaultId,
+    kind: OutboundReplayState['kind'],
+  ): Promise<OutboundReplayState | null> {
+    try {
+      this.#assertOpen();
+      return Promise.resolve(this.#outbound.loadReplayState(vaultId, kind));
+    } catch (error) {
+      return Promise.reject(normalizeFailure(error));
+    }
+  }
+
+  public async ensureOutboundReplayStart(
+    input: EnsureOutboundReplayStartInput,
+  ): Promise<number> {
+    try {
+      this.#assertOpen();
+      const sequence = withTransaction(this.#database, () =>
+        this.#outbound.ensureReplayStart(input),
+      );
+      await this.#afterWrite();
+      return sequence;
+    } catch (error) {
+      throw normalizeFailure(error);
+    }
+  }
+
+  public loadCompletedOutboundObservation(
+    vaultId: VaultId,
+    observationId: Sha256Digest,
+  ): Promise<CompletedOutboundObservation | null> {
+    try {
+      this.#assertOpen();
+      return Promise.resolve(this.#outbound.loadCompleted(vaultId, observationId));
+    } catch (error) {
+      return Promise.reject(normalizeFailure(error));
+    }
+  }
+
+  public confirmCompletedOutboundObservation(
+    vaultId: VaultId,
+    deviceId: ReconcileOutboundObservationInput['deviceId'],
+    observation: OutboundObservation,
+  ): Promise<CompletedOutboundObservation> {
+    try {
+      this.#assertOpen();
+      return Promise.resolve(
+        this.#outbound.confirmCompleted(vaultId, deviceId, observation),
+      );
+    } catch (error) {
+      return Promise.reject(normalizeFailure(error));
+    }
+  }
+
+  public async releaseCompletedOutboundObservation(
+    vaultId: VaultId,
+    deviceId: ReconcileOutboundObservationInput['deviceId'],
+    observationId: Sha256Digest,
+  ): Promise<void> {
+    try {
+      this.#assertOpen();
+      withTransaction(this.#database, () => {
+        this.#outbound.releaseCompleted(vaultId, deviceId, observationId);
+      });
+      await this.#afterWrite();
+    } catch (error) {
+      throw normalizeFailure(error);
+    }
+  }
+
+  public async reconcileOutboundObservation(
+    input: ReconcileOutboundObservationInput,
+  ): Promise<CompletedOutboundObservation> {
+    try {
+      this.#assertOpen();
+      const result = withTransaction(this.#database, () =>
+        this.#outbound.reconcile(input),
+      );
+      await this.#afterWrite();
+      return result;
     } catch (error) {
       throw normalizeFailure(error);
     }

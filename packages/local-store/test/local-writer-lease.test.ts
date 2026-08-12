@@ -86,7 +86,8 @@ describe('local writer lease', () => {
         SyncLocalStateError,
       );
     }
-  }, 30_000);
+    // Windows validates each fixture through a separate bounded PowerShell ACL cycle.
+  }, 90_000);
 
   it('writes bounded canonical versioned owner metadata without secrets', async () => {
     const path = leasePath();
