@@ -81,31 +81,34 @@ A restore session ID is a domain-separated SHA-256 digest of the exact
 authenticated header line. Replaying the same archive therefore reopens the
 same durable session; creating another archive normally creates another session.
 
-| Code                           | Meaning                                                                           |
-| ------------------------------ | --------------------------------------------------------------------------------- |
-| `BACKUP_INVALID`               | Framing, schema, transcript, ordering, identity, or graph is inconsistent.        |
-| `BACKUP_TOO_LARGE`             | Aggregate bytes, line size, or record count exceeds the active bound.             |
-| `BACKUP_WRONG_VAULT`           | Header or entry does not match the expected vault.                                |
-| `BACKUP_AUTHENTICATION_FAILED` | Transcript authentication failed, including use of the wrong VRK.                 |
-| `BACKUP_INCOMPLETE`            | Required header/footer, parent, predecessor, vault, or attachment data is absent. |
-| `BACKUP_COMMIT_UNCERTAIN`      | Commit did not confirm and the exact restore remains staged for reconciliation.   |
+| Code                                | Meaning                                                                                                                  |
+| ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `BACKUP_INVALID`                    | Framing, schema, transcript, ordering, identity, or graph is inconsistent.                                               |
+| `BACKUP_TOO_LARGE`                  | Aggregate bytes, line size, or record count exceeds the active bound.                                                    |
+| `BACKUP_WRONG_VAULT`                | Header or entry does not match the expected vault.                                                                       |
+| `BACKUP_AUTHENTICATION_FAILED`      | Generic authentication/semantic failure, including invalid slot input, inner known-v1 validation, or rollback rejection. |
+| `BACKUP_DECRYPTABILITY_UNSUPPORTED` | The authenticated archive contains a record family whose inner known-v1 semantic contract is not implemented.            |
+| `BACKUP_INCOMPLETE`                 | Required header/footer, parent, predecessor, vault, or attachment data is absent.                                        |
+| `BACKUP_COMMIT_UNCERTAIN`           | Durable status is unreadable, divergent, or may conceal an unconfirmed publication.                                      |
 
 Callers must not print nested parser, cryptographic, record, URI, or storage
 causes to an operator-facing log.
 
 ## Implemented library operations
 
-| API                                                                             | Current behavior                                                                                                               |
-| ------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
-| `createEncryptedBackup(input, vaultRootKey)`                                    | Streams the header, vault, ordered encrypted entries, and footer while enforcing bounds and the canonical graph.               |
-| `verifyEncryptedBackup(source, vaultRootKey, expectedVaultId, limits?)`         | Authenticates and validates the complete stream without publishing records.                                                    |
-| `restoreEncryptedBackup(source, vaultRootKey, expectedVaultId, store, limits?)` | Stages parsed opaque entries, authenticates the complete stream, then asks the durable store to publish that exact transcript. |
-| `MongoBackupSource.open(vaultId, limits)`                                       | Opens a one-shot, transactionally consistent vault snapshot with a parsed `vault` and ordered non-vault `records` stream.      |
-| `MongoBackupRestoreStore.open(sessionId, limits)`                               | Opens or resumes hidden, bounded MongoDB staging for an authenticated restore.                                                 |
+| API                                                                                 | Current behavior                                                                                                                                                             |
+| ----------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `createEncryptedBackup(input, vaultRootKey)`                                        | Streams the header, vault, ordered encrypted entries, and footer while enforcing bounds and the canonical graph.                                                             |
+| `verifyEncryptedBackup(source, vaultRootKey, expectedVaultId, limits?)`             | Authenticates and validates the complete stream without publishing records.                                                                                                  |
+| `restoreEncryptedBackup(source, expectedVaultId, store, openVerification, limits?)` | Authenticates and stages the archive, freshly opens one explicit archived slot, verifies the exact sealed readback to EOF, publishes with the strict receipt, and finalizes. |
+| `MongoBackupSource.open(vaultId, limits)`                                           | Opens a one-shot, transactionally consistent vault snapshot with a parsed `vault` and ordered non-vault `records` stream.                                                    |
+| `MongoBackupRestoreStore.open(sessionId, limits)`                                   | Opens or resumes hidden, bounded MongoDB staging for an authenticated restore.                                                                                               |
 
-These APIs require a caller that already owns an unlocked VRK. They do not
-accept a portable key, passphrase, recovery key, filename, MongoDB URI, or CLI
-runtime.
+The verification factory owns protected credential input and selects one exact
+current portable-key, passphrase, or recovery-key slot from the archived vault.
+`@kavrix/import-export` receives only the one-shot factory; it does not accept a
+raw VRK or import client slot-selection code. The public APIs do not accept a
+filename, MongoDB URI, or CLI runtime.
 
 ## MongoDB source semantics
 
@@ -144,21 +147,36 @@ parsed before sizing, bound to one session/vault/ordinal/hash, and repeated
 prefix entries must match exactly. An abort deletes staged entries and leaves a
 durable `aborted` session marker.
 
-After archive authentication succeeds, one MongoDB transaction:
+Protocol v2 advances through strict durable states:
+`staging -> sealed -> published -> committed`, with `aborted` as a terminal
+pre-publication failure. `seal` freezes the authenticated summary;
+`readSealed(summary)` must be consumed to true EOF by the client semantic
+verifier; `publish(summary, receipt)` independently re-reads the complete
+staged graph; and `finalize(summary, receipt)` alone records committed success.
+The receipt binds the slot, vault revision, session, transcript, canonical entry
+commitment, record count, and per-family algebra. It is carried across the
+publication fence but is not persisted.
+
+Publication transactionally:
 
 - verifies the exact transcript/session/count and canonical record graph;
 - verifies that the target database has no normal records and no other restore
   session state;
-- inserts the vault, groups, items, attachments, attachment streams, audits,
-  histories, and tombstones without upsert or overwrite;
+- inserts the vault, groups, items, attachments, attachment streams, and
+  tombstones without upsert or overwrite;
 - creates a current-state sync feed, using exact predecessor upsert followed by
   tombstone for deleted records;
 - stores the backup vault's exact revision as the counter rollback anchor;
 - deletes staged entries and marks the session committed.
 
-A retry after confirmed commit is idempotent only when the session, vault,
-record count, and transcript digest match. A non-empty target fails closed and
-is never merged or overwritten.
+An exact committed replay returns `previously-committed` with the authenticated
+backup summary and never fabricates a receipt. A replay from `published`
+quarantine must reauthenticate the supplied archive and perform a new complete
+sealed readback before finalization. Seal/publish/finalize response loss is
+reconciled only from exact durable status. Unreadable or divergent status is
+`BACKUP_COMMIT_UNCERTAIN`; callers must retain the database and exact archive
+for investigation, not abort or claim success. A non-empty target fails closed
+and is never merged or overwritten.
 
 This is transaction atomic, but it is not protected by a database-wide writer
 fence. A concurrent API or raw MongoDB writer targeting another document can
@@ -178,17 +196,19 @@ perform the following library-level sequence:
 2. To create an archive, open `MongoBackupSource`, pass its exact `vault` and
    `records` to `createEncryptedBackup`, and always close an unconsumed snapshot.
    Do not buffer or log the opaque record stream.
-3. Obtain the archive and a valid unlock method through protected input. Unwrap
-   the expected vault's VRK without placing it in argv, an environment variable,
-   a URL, a filename, or a log.
-4. Open the archive as a stream and call `verifyEncryptedBackup` with the
-   expected opaque vault ID. Verification consumes the stream; reopen it for
-   restore.
+3. Obtain the archive and one valid protected credential plus its explicit slot
+   ID without placing either in argv, an environment variable, a URL, a filename,
+   or a log. Construct a one-shot known-v1 verification factory; supply a
+   protected highest-seen vault revision when available.
+4. `verifyEncryptedBackup` may be used for authentication-only inspection. It
+   accepts outer-valid opaque history/audit entries but proves no inner
+   decryptability. Reopen the archive for semantic restore.
 5. Create and initialize `MongoBackupRestoreStore`, then call
    `restoreEncryptedBackup` with explicit Mongo-compatible limits.
-6. On `BACKUP_COMMIT_UNCERTAIN`, inspect the stager's durable `status()`. Retry
-   only the identical archive/session when status is `staging`. Treat
-   `committed` as success. Do not substitute a newly created archive.
+6. On `BACKUP_COMMIT_UNCERTAIN`, preserve the isolated target and exact archive;
+   never infer success from a discriminator without exact summary/bounds
+   reconciliation. Retry only the identical archive/session through the
+   coordinator. Do not substitute a newly created archive.
 7. Reopen the database through `MongoVaultStorage`. Verify the exact vault ID
    and revision, expected record counts, attachment header/chunk continuity,
    tombstones, audits, and item history before starting the API.
@@ -221,37 +241,28 @@ Because the generic defaults exceed the adapter caps, Mongo restore callers must
 pass explicit lower limits. Large-vault and large-attachment restore is not yet
 supported by this atomic implementation.
 
-## Verified drill and supported record families
+## Known-v1 acceptance scope and pending live evidence
 
-The repository's real integration drills use production crypto and the real
-Mongo adapters against `mongodb://127.0.0.1:27029/?replicaSet=rs0`. They create
-an authenticated archive containing:
+The repository contains a production-crypto acceptance fixture and real-Mongo
+cases for an authenticated 12-entry archive containing:
 
 - the exact vault and revision;
 - a group, active item, deleted item, exact deletion predecessor, and tombstone;
-- one attachment with its authenticated stream header and contiguous chunks;
-- one encrypted audit record and one encrypted item-history record.
+- one restored current item and its restored tombstone;
+- one attachment with its authenticated stream header and two contiguous chunks;
+- literal zero history and zero audit entries.
 
-It verifies the archive, restores it, retries the committed session, reopens it
-through `MongoVaultStorage`, compares every supported record, checks attachment
-continuity, applies the pull feed to a clean `OpaqueVaultSnapshot`, and scans all
-raw MongoDB documents for test plaintext canaries. It also proves staging is
-invisible/abortable, divergent and cross-vault replay fails, and a non-empty
-target is not overwritten.
+The acceptance source covers all three archived slot types, committed and
+published replay, publish/finalize response loss, equal/lower/absent rollback
+anchors, eight HMAC-valid inner corruptions, both staged-substitution windows,
+and raw BSON/archive/error/log canary scanning. History and audit are separately
+authenticated as opaque outer records, then must fail semantic restore before
+publication with `BACKUP_DECRYPTABILITY_UNSUPPORTED`.
 
-The source drill restores the same families, opens a production snapshot,
-creates and verifies a second authenticated archive from that stream, restores
-that second archive into another fresh database, and compares every supported
-family and tombstone semantic. It covers deleted and restored tombstones, exact
-predecessor recovery, complete attachment streams, concurrent writes appearing
-wholly before or after a snapshot, orphan/cross-identity corruption, missing
-predecessor/chunk failure, and plaintext-canary absence from the archive, raw
-restored BSON, inspection, and generic errors.
-
-The recorded local run used Node.js 24.19.0 on Windows x64 and MongoDB 8.0.26
-`rs0`. This evidence is platform-specific. It is not a claim about other MongoDB
-versions, managed services, operating systems, very large archives, or
-power-loss timing.
+This source has not yet produced live evidence in the current workspace:
+`KAVRIX_MONGODB_URI` and the generic exact-discovery/zero-skip gate are absent.
+No MongoDB topology, final SHA, executed test count, or pass result is claimed
+until that fail-closed gate runs on the final combined tree.
 
 ## What is not recovered
 
@@ -260,8 +271,8 @@ The current format and adapter do not recover:
 - original server change-sequence history, idempotency commits, sync push
   checkpoints, attachment upload sessions, device sessions/tokens, API
   bootstrap state, or protected local rollback anchors;
-- audit/history as sync protocol families (they are preserved in dedicated
-  MongoDB collections and exposed through storage readers only);
+- semantic restore of history/audit payloads; authentication-only backup parsing
+  preserves their opaque outer records, but known-v1 publication rejects them;
 - a vault tombstone (restore rejects it);
 - original attachment upload-session timestamps or idempotency keys (the exact
   encrypted attachment records/header/chunks are preserved under a deterministic

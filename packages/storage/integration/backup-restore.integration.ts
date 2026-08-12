@@ -71,6 +71,11 @@ import {
   mongoStorageCollectionNames,
   toVaultDocument,
 } from '../src/index.js';
+import {
+  CANONICAL_RESTORE_EXPECTED_COUNTS,
+  createCanonicalKnownV1RestoreFixture,
+  type CanonicalKnownV1RestoreFixture,
+} from './canonical-known-v1-restore-fixture.js';
 
 const mongodbUri = process.env['KAVRIX_MONGODB_URI'];
 if (mongodbUri === undefined || mongodbUri.length === 0) {
@@ -129,7 +134,9 @@ function restoreProtocolFixture(fixture: BackupFixture): {
     canonicalEntriesSha256: commitment.finalize(),
   };
   const selectedSlot = fixture.vault.keySlots[0];
-  if (selectedSlot === undefined) throw new Error('Fixture has no key slot.');
+  if (selectedSlot === undefined || selectedSlot.type === 'device-key') {
+    throw new Error('Fixture has no supported restore slot.');
+  }
   const receipt: RestoreKnownRecordsVerificationV1 = {
     version: 1,
     scope: 'known-v1-records',
@@ -160,22 +167,58 @@ function restoreProtocolFixture(fixture: BackupFixture): {
   return { entries, summary, receipt };
 }
 
+function canonicalProtocolFixture(fixture: CanonicalKnownV1RestoreFixture): Readonly<{
+  entries: readonly EncryptedBackupEntry[];
+  summary: BackupVerification;
+  receipt: RestoreKnownRecordsVerificationV1;
+}> {
+  const selectedSlot = fixture.vault.keySlots.find(
+    (slot) => slot.id === fixture.slotIds['portable-key'],
+  );
+  if (selectedSlot?.type !== 'portable-key') {
+    throw new Error('Canonical fixture portable slot is missing.');
+  }
+  return {
+    entries: fixture.entries,
+    summary: fixture.summary,
+    receipt: {
+      version: 1,
+      scope: 'known-v1-records',
+      vaultId: fixture.vaultId,
+      vaultRevision: fixture.vaultRevision,
+      restoreSessionId: fixture.summary.restoreSessionId,
+      transcriptSha256: fixture.summary.transcriptSha256,
+      canonicalEntriesSha256: fixture.summary.canonicalEntriesSha256,
+      recordCount: fixture.summary.recordCount,
+      selectedSlot: {
+        id: selectedSlot.id,
+        type: selectedSlot.type,
+        keyVersion: selectedSlot.keyVersion,
+      },
+      verified: CANONICAL_RESTORE_EXPECTED_COUNTS,
+    },
+  };
+}
+
 describe('authenticated encrypted-backup restore against a MongoDB replica set', () => {
   const client = new MongoClient(mongodbUri, {
     appName: 'kavrix-backup-restore-integration',
   });
   let fixture: BackupFixture;
   let otherFixture: BackupFixture;
+  let canonicalFixture: CanonicalKnownV1RestoreFixture;
 
   beforeAll(async () => {
     await client.connect();
     fixture = await createFixture('restore-a');
     otherFixture = await createFixture('restore-b');
+    canonicalFixture = await createCanonicalKnownV1RestoreFixture();
   });
 
   afterAll(async () => {
     zeroize(fixture.rootKey);
     zeroize(otherFixture.rootKey);
+    canonicalFixture.close();
     await client.close();
   });
 
@@ -312,7 +355,10 @@ describe('authenticated encrypted-backup restore against a MongoDB replica set',
         },
         {
           ...protocol.receipt,
-          selectedSlot: { ...protocol.receipt.selectedSlot, id: 'slot.wrong' },
+          selectedSlot: {
+            ...protocol.receipt.selectedSlot,
+            id: keySlotIdSchema.parse('slot.wrong'),
+          },
         },
       ]) {
         await expect(staged.publish(protocol.summary, receipt)).rejects.toThrow();
@@ -434,6 +480,54 @@ describe('authenticated encrypted-backup restore against a MongoDB replica set',
     });
   });
 
+  it('publishes and finalizes a canonical protocol-v2 known-v1 entry set', async () => {
+    await withEmptyDatabase(client, async (database) => {
+      const store = new MongoBackupRestoreStore(client, database, {
+        now: () => new Date(CREATED_AT),
+      });
+      await store.initialize();
+      const protocol = canonicalProtocolFixture(canonicalFixture);
+      const staged = await store.open(protocol.summary.restoreSessionId, LIMITS);
+      for (const entry of protocol.entries) await staged.write(entry);
+      await staged.seal(protocol.summary);
+      await expect(collectAsync(staged.readSealed(protocol.summary))).resolves.toEqual(
+        protocol.entries,
+      );
+      await staged.publish(protocol.summary, protocol.receipt);
+      await staged.finalize(protocol.summary, protocol.receipt);
+
+      await expect(staged.status()).resolves.toMatchObject({
+        state: 'committed',
+        protocolVersion: 2,
+        summary: protocol.summary,
+      });
+      const visible = new MongoVaultStorage(client, database);
+      await expect(visible.getVault(canonicalFixture.vaultId)).resolves.toEqual(
+        canonicalFixture.vault,
+      );
+      await expect(
+        visible.getGroup(canonicalFixture.vaultId, canonicalFixture.group.id),
+      ).resolves.toEqual(canonicalFixture.group);
+      await expect(
+        visible.getItem(canonicalFixture.vaultId, canonicalFixture.activeItem.id),
+      ).resolves.toEqual(canonicalFixture.activeItem);
+      await expect(
+        visible.getItem(canonicalFixture.vaultId, canonicalFixture.deletedItem.id),
+      ).resolves.toBeNull();
+      await expect(
+        visible.getItem(canonicalFixture.vaultId, canonicalFixture.restoredItem.id),
+      ).resolves.toEqual(canonicalFixture.restoredItem);
+      await expect(
+        visible.getAttachment(canonicalFixture.vaultId, canonicalFixture.attachment.id),
+      ).resolves.toEqual(canonicalFixture.attachment);
+      await expect(
+        database
+          .collection(mongoStorageCollectionNames.backupRestoreEntries)
+          .countDocuments(),
+      ).resolves.toBe(0);
+    });
+  });
+
   it('fails closed on a non-empty target and never overwrites existing state', async () => {
     await withEmptyDatabase(client, async (database) => {
       const store = new MongoBackupRestoreStore(client, database, {
@@ -465,11 +559,11 @@ describe('authenticated encrypted-backup restore against a MongoDB replica set',
     });
   });
 
-  it('re-reads the complete entry set inside publish and rejects post-readback mutation', async () => {
+  it('re-reads the canonical entry set inside publish and rejects post-readback mutation', async () => {
     await withEmptyDatabase(client, async (database) => {
       const store = new MongoBackupRestoreStore(client, database);
       await store.initialize();
-      const protocol = restoreProtocolFixture(fixture);
+      const protocol = canonicalProtocolFixture(canonicalFixture);
       const staged = await store.open(protocol.summary.restoreSessionId, LIMITS);
       for (const entry of protocol.entries) await staged.write(entry);
       await staged.seal(protocol.summary);
@@ -525,12 +619,12 @@ describe('authenticated encrypted-backup restore against a MongoDB replica set',
   });
 
   it.each(['ordinal', 'identity', 'entryHash', 'bytes', 'vaultId'] as const)(
-    'rejects raw staged %s corruption during seal',
+    'rejects staged canonical metadata corruption during seal: %s',
     async (field) => {
       await withEmptyDatabase(client, async (database) => {
         const store = new MongoBackupRestoreStore(client, database);
         await store.initialize();
-        const protocol = restoreProtocolFixture(fixture);
+        const protocol = canonicalProtocolFixture(canonicalFixture);
         const staged = await store.open(protocol.summary.restoreSessionId, LIMITS);
         for (const entry of protocol.entries) await staged.write(entry);
         const collection = database.collection(
@@ -597,22 +691,20 @@ describe('authenticated encrypted-backup restore against a MongoDB replica set',
   });
 
   it.each(['header', 'chunk'] as const)(
-    'rejects a direct restore-store %s hash mismatch without publishing vault state',
+    'rejects canonical attachment wrapper hash corruption at write and publication: write %s',
     async (kind) => {
       await withEmptyDatabase(client, async (database) => {
         const store = new MongoBackupRestoreStore(client, database, {
           now: () => new Date(CREATED_AT),
         });
         await store.initialize();
-        const staged = await store.open(fixture.summary.restoreSessionId, LIMITS);
+        const protocol = canonicalProtocolFixture(canonicalFixture);
+        const staged = await store.open(protocol.summary.restoreSessionId, LIMITS);
         const invalidHash = sha256DigestSchema.parse(
           Buffer.alloc(32).toString('base64url'),
         );
 
-        for (const entry of [
-          { kind: 'vault' as const, record: fixture.vault },
-          ...fixture.orderedRecords,
-        ]) {
+        for (const entry of protocol.entries) {
           const candidate =
             kind === 'header' && entry.kind === 'attachment-header'
               ? { ...entry, record: { ...entry.record, contentHash: invalidHash } }
@@ -651,26 +743,23 @@ describe('authenticated encrypted-backup restore against a MongoDB replica set',
   );
 
   it.each(['header', 'chunk'] as const)(
-    'revalidates a staged %s hash at commit before publishing vault state',
+    'rejects canonical attachment wrapper hash corruption at write and publication: publication %s',
     async (kind) => {
       await withEmptyDatabase(client, async (database) => {
         const store = new MongoBackupRestoreStore(client, database, {
           now: () => new Date(CREATED_AT),
         });
         await store.initialize();
-        const staged = await store.open(fixture.summary.restoreSessionId, LIMITS);
-        for (const entry of [
-          { kind: 'vault' as const, record: fixture.vault },
-          ...fixture.orderedRecords,
-        ]) {
-          await staged.write(entry);
-        }
+        const protocol = canonicalProtocolFixture(canonicalFixture);
+        const staged = await store.open(protocol.summary.restoreSessionId, LIMITS);
+        for (const entry of protocol.entries) await staged.write(entry);
+        await staged.seal(protocol.summary);
 
         const entriesCollection = database.collection(
           mongoStorageCollectionNames.backupRestoreEntries,
         );
         const stored = await entriesCollection.findOne({
-          restoreSessionId: fixture.summary.restoreSessionId,
+          restoreSessionId: protocol.summary.restoreSessionId,
           'entry.kind': kind === 'header' ? 'attachment-header' : 'attachment-chunk',
         });
         if (stored === null) throw new Error('Staged attachment entry is missing.');
@@ -696,7 +785,9 @@ describe('authenticated encrypted-backup restore against a MongoDB replica set',
           },
         );
 
-        await expect(staged.seal(fixture.summary)).rejects.toThrow();
+        await expect(
+          staged.publish(protocol.summary, protocol.receipt),
+        ).rejects.toThrow();
         for (const collectionName of [
           mongoStorageCollectionNames.vaults,
           mongoStorageCollectionNames.groups,
@@ -711,7 +802,7 @@ describe('authenticated encrypted-backup restore against a MongoDB replica set',
             database.collection(collectionName).countDocuments(),
           ).resolves.toBe(0);
         }
-        await expect(staged.status()).resolves.toMatchObject({ state: 'staging' });
+        await expect(staged.status()).resolves.toMatchObject({ state: 'sealed' });
         await staged.abort();
         await expect(staged.status()).resolves.toMatchObject({ state: 'aborted' });
       });

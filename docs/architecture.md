@@ -214,6 +214,31 @@ encrypted pending changes. Decrypted search indexes and normal drafts stay in
 memory; a crash-recovery draft is allowed only when encrypted before writing.
 Files use OS application-data directories and restrictive permissions.
 
+### Backup/restore trust boundary
+
+Archive HMAC and graph verification proves only that the opaque archive is
+complete and authenticated by its VRK. It does not prove that inner payloads can
+be decrypted or interpreted. Known-v1 semantic restore therefore freshly
+unwraps one explicit current portable-key, passphrase, or recovery-key slot from
+the archived vault, seals hidden storage staging, and has the client verify the
+exact `readSealed` stream through true EOF before storage may publish. The
+strict receipt binds the selected slot, vault revision, session, transcript,
+canonical entry commitment, record count, and supported-family algebra;
+finalization alone yields committed success.
+
+The supported semantic subset is canonical preferences, groups, items,
+attachments, and deleted/restored tombstones, with literal-zero history and
+audit entries. Authentication-only parsing still preserves structurally valid
+opaque history/audit records, but semantic restore rejects either family before
+publication. MongoDB remains unable to decrypt any record and never receives
+the credential or VRK.
+
+This boundary does not automatically fence concurrent normal writers. Until
+Task 5B's shared writer epoch is implemented and proven, restore requires a new
+isolated database with the API and every other writer stopped. The Commit 6
+acceptance source exists, but its final real-Mongo exact-discovery/zero-skip run
+is pending because `KAVRIX_MONGODB_URI` is not configured in this workspace.
+
 Remembered unlock material is optional and uses only macOS Keychain, Windows
 Credential Manager/DPAPI-backed storage, or Linux Secret Service/libsecret. A
 missing or broken keychain causes a prompt on every unlock; it never causes a

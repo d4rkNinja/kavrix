@@ -202,6 +202,35 @@ supported. Do not use an in-memory imitation as the only evidence.
 - Restore to a clean real MongoDB instance and independently unlock with
   portable, passphrase, and recovery slots as applicable.
 
+The known-v1 backup/recovery acceptance gate must execute every discovered
+storage integration file with zero skipped, pending, todo, or focused tests. It
+uses one canonical zero-history/zero-audit production-crypto graph and requires:
+
+- independent fresh restore through archived portable-key, Argon2id passphrase,
+  and recovery-key slots;
+- exact `staging -> sealed -> published -> committed` evidence, committed replay
+  without a fabricated receipt, and publish/finalize response-loss
+  reconciliation;
+- rollback anchors absent/equal (integrity/decryptability and freshness
+  respectively) and a lower archive revision rejected before publication;
+- authentication-only success but semantic publication failure for each opaque
+  history/audit family;
+- HMAC-valid inner corruption at preferences, wrapped group key, group payload,
+  wrapped item key, item payload, wrapped attachment key, attachment manifest,
+  and attachment stream;
+- staged substitution after seal both before client readback and before storage
+  publication, plus an observational no-tamper wrapper control;
+- zero visible mutation and an exact aborted marker for every definite
+  pre-publication failure; and
+- raw archive, hidden staging BSON, committed BSON, source/change-feed output,
+  errors, and captured logs free of plaintext and credential canaries.
+
+History/audit semantic restore remains unsupported; no test may describe opaque
+HMAC verification as payload decryptability. The acceptance source is present,
+but the current workspace has neither `KAVRIX_MONGODB_URI` nor the generic
+exact-discovery/zero-skip evidence gate, so no live pass, topology, SHA, or test
+count is recorded here.
+
 ## Plaintext-canary test
 
 The canary test is a release gate, not a grep of source fixtures alone.
@@ -307,7 +336,7 @@ The product specification's acceptance scenarios are release gates:
 | Database credentials       | Multiple engines, SSH reference, `creds run` argv/log safety, item rotation, passphrase change                            |
 | Template deletion safety   | Ten-item archive/restore exactness and separate explicit purge                                                            |
 | Corruption/tampering       | Nonce/ciphertext/ID/group/key swaps all fail closed with no output                                                        |
-| Backup/recovery            | Clean-database restore, independent slots, history/attachments/key versions verified                                      |
+| Backup/recovery            | Clean-database known-v1 restore, independent supported slots, attachment/tombstone semantics; history/audit unsupported   |
 | Cross-platform             | Installation and smoke tests on Windows x64, macOS x64/arm64, Linux x64/arm64                                             |
 | Direct show/copy/update    | Complete masked view, clipboard clear, piping, ambiguity, Unicode, narrow terminal, no argv/history leak                  |
 | Same key on two devices    | Invite hash/expiry/single use, independent token, local unwrap, rotation/confirmation, revocation, end-to-end canary scan |

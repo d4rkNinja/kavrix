@@ -6,10 +6,12 @@ import {
   zeroize,
   type VaultRootKey,
 } from '@kavrix/crypto';
+import { OpaqueVaultSnapshot } from '@kavrix/client';
 import {
   createEncryptedBackup,
   restoreEncryptedBackup,
   verifyEncryptedBackup,
+  type RestoreEncryptedBackupResult,
   type RestoreVerificationSessionFactory,
 } from '@kavrix/import-export';
 import {
@@ -20,6 +22,7 @@ import {
   contentHashForRecord,
   encryptedAttachmentRecordSchema,
   encryptedAuditRecordSchema,
+  encryptedBackupEntrySchema,
   encryptedGroupRecordSchema,
   encryptedHistoryRecordSchema,
   encryptedItemRecordSchema,
@@ -27,9 +30,12 @@ import {
   persistedAttachmentHeaderRecordSchema,
   restoreKnownRecordsVerificationV1Schema,
   sha256DigestSchema,
+  syncCursorSchema,
   tombstoneRecordSchema,
   vaultIdSchema,
   vaultRecordSchema,
+  vaultRevisionSchema,
+  backupRestoreStatusSchema,
   type AeadEnvelope,
   type EncryptedAttachmentRecord,
   type EncryptedAuditRecord,
@@ -40,22 +46,37 @@ import {
   type PersistedAttachmentChunkRecord,
   type PersistedAttachmentHeaderRecord,
   type TombstoneRecord,
+  type BackupRestoreStager,
+  type BackupRestoreStore,
+  type BackupVerification,
   type RestoreKnownRecordsVerificationV1,
   type VaultId,
   type VaultRecord,
 } from '@kavrix/schemas';
-import { MongoClient, type Db } from 'mongodb';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { BSON, MongoClient, type Db } from 'mongodb';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import {
   MongoBackupRestoreStore,
   MongoBackupSource,
+  MongoVaultStorage,
+  backupRestoreSessionDocumentSchema,
+  hashCanonical,
   mongoStorageCollectionNames,
   toAuditDocument,
   toHistoryDocument,
   toItemDocument,
   toTombstoneDocument,
 } from '../src/index.js';
+import {
+  CANONICAL_RESTORE_EXPECTED_COUNTS,
+  CANONICAL_RESTORE_LIMITS,
+  CANONICAL_RESTORE_PLAINTEXT_CANARIES,
+  createCanonicalKnownV1RestoreFixture,
+  type CanonicalKnownV1RestoreFixture,
+  type CanonicalInnerCorruption,
+  type CanonicalRestoreSlotType,
+} from './canonical-known-v1-restore-fixture.js';
 
 const mongodbUri = process.env['KAVRIX_MONGODB_URI'];
 if (mongodbUri === undefined || mongodbUri.length === 0) {
@@ -573,6 +594,496 @@ describe('MongoBackupSource against a replica-set snapshot', () => {
   });
 });
 
+describe('canonical known-v1 restore coordinator against a replica-set target', () => {
+  const client = new MongoClient(mongodbUri, {
+    appName: 'kavrix-canonical-restore-acceptance',
+  });
+  let canonical: CanonicalKnownV1RestoreFixture;
+
+  beforeAll(async () => {
+    await client.connect();
+    canonical = await createCanonicalKnownV1RestoreFixture();
+  });
+
+  afterAll(async () => {
+    canonical.close();
+    await client.close();
+  });
+
+  it.each(['portable-key', 'passphrase', 'recovery-key'] as const)(
+    'restores one canonical archive through each supported archived slot and semantically reopens it: %s',
+    async (slotType) => {
+      await withEmptyDatabase(client, async (database) => {
+        const store = new MongoBackupRestoreStore(client, database);
+        await store.initialize();
+        const result = await restoreEncryptedBackup(
+          chunks(canonical.archive, 41),
+          canonical.vaultId,
+          store,
+          canonical.verificationFactory(slotType),
+          CANONICAL_RESTORE_LIMITS,
+        );
+        expect(result.disposition).toBe('verified-and-committed');
+        if (result.disposition !== 'verified-and-committed') {
+          throw new Error('Canonical restore did not produce a fresh receipt.');
+        }
+        const receipt = restoreKnownRecordsVerificationV1Schema.parse(
+          result.verification,
+        );
+        expect(receipt).toMatchObject({
+          vaultId: canonical.vaultId,
+          vaultRevision: canonical.vaultRevision,
+          restoreSessionId: canonical.summary.restoreSessionId,
+          transcriptSha256: canonical.summary.transcriptSha256,
+          canonicalEntriesSha256: canonical.summary.canonicalEntriesSha256,
+          recordCount: 12,
+          selectedSlot: {
+            id: canonical.slotIds[slotType],
+            type: slotType,
+            keyVersion: canonical.vault.currentKeyVersion,
+          },
+          verified: CANONICAL_RESTORE_EXPECTED_COUNTS,
+        });
+        const reopened = await store.open(
+          canonical.summary.restoreSessionId,
+          CANONICAL_RESTORE_LIMITS,
+        );
+        expect(backupRestoreStatusSchema.parse(await reopened.status())).toMatchObject({
+          state: 'committed',
+          summary: canonical.summary,
+        });
+        await expect(
+          database
+            .collection(mongoStorageCollectionNames.backupRestoreEntries)
+            .countDocuments(),
+        ).resolves.toBe(0);
+        await expectCanonicalVisibleCounts(database);
+
+        const firstSource = await new MongoBackupSource(client, database).open(
+          canonical.vaultId,
+          CANONICAL_RESTORE_LIMITS,
+        );
+        const sourceRecords = await collect(firstSource.records);
+        expect(firstSource.vault).toEqual(canonical.vault);
+        expect(sourceRecords).toEqual(canonical.records);
+        const freshArchive = await canonical.createArchive(sourceRecords);
+        const freshSummary = await canonical.authenticate(freshArchive);
+        const secondSource = await new MongoBackupSource(client, database).open(
+          canonical.vaultId,
+          CANONICAL_RESTORE_LIMITS,
+        );
+        const semanticSession = await canonical.verificationFactory(slotType)(
+          secondSource.vault,
+        );
+        try {
+          await expect(
+            semanticSession.verify(
+              prependVault(secondSource.vault, secondSource.records),
+              freshSummary,
+            ),
+          ).resolves.toMatchObject({
+            recordCount: 12,
+            verified: CANONICAL_RESTORE_EXPECTED_COUNTS,
+          });
+        } finally {
+          semanticSession.close();
+        }
+
+        const visible = new MongoVaultStorage(client, database);
+        const page = await visible.pullSyncPage(
+          syncCursorSchema.parse({
+            vaultId: canonical.vaultId,
+            serverSequence: 0,
+            highestSeenVaultRevision: 0,
+          }),
+          100,
+        );
+        const snapshot = new OpaqueVaultSnapshot(canonical.vaultId);
+        snapshot.applyPullPage(page);
+        await expect(
+          snapshot.getItem(canonical.vaultId, canonical.activeItem.id),
+        ).resolves.toEqual(canonical.activeItem);
+        await expect(
+          snapshot.getItem(canonical.vaultId, canonical.deletedItem.id),
+        ).resolves.toBeNull();
+        await expect(
+          snapshot.getItem(canonical.vaultId, canonical.restoredItem.id),
+        ).resolves.toEqual(canonical.restoredItem);
+
+        const durable = await readAllBson(database);
+        for (const canary of [
+          ...CANONICAL_RESTORE_PLAINTEXT_CANARIES,
+          ...canonical.credentialCanaries(),
+        ]) {
+          expect(Buffer.from(canonical.archive).toString('utf8')).not.toContain(canary);
+          expect(durable).not.toContain(canary);
+          expect(JSON.stringify(sourceRecords)).not.toContain(canary);
+        }
+      });
+    },
+  );
+
+  it('returns previously-committed for an exact archive without fabricating a receipt', async () => {
+    await withEmptyDatabase(client, async (database) => {
+      const store = new MongoBackupRestoreStore(client, database);
+      await store.initialize();
+      const first = await restoreCanonical(canonical, store, 'portable-key');
+      expect(first.disposition).toBe('verified-and-committed');
+      const before = await readAllBson(database);
+      const replay = await restoreCanonical(canonical, store, 'portable-key');
+      expect(replay).toEqual({
+        disposition: 'previously-committed',
+        backup: canonical.summary,
+      });
+      expect('verification' in replay).toBe(false);
+      expect(await readAllBson(database)).toBe(before);
+      await expect(
+        database
+          .collection(mongoStorageCollectionNames.backupRestoreEntries)
+          .countDocuments(),
+      ).resolves.toBe(0);
+    });
+  });
+
+  it.each(['publish', 'finalize'] as const)(
+    'reconciles publish and finalize response loss from durable Mongo state: %s',
+    async (phase) => {
+      await withEmptyDatabase(client, async (database) => {
+        const realStore = new MongoBackupRestoreStore(client, database);
+        await realStore.initialize();
+        const result = await restoreEncryptedBackup(
+          chunks(canonical.archive, 53),
+          canonical.vaultId,
+          responseLossStore(realStore, phase),
+          canonical.verificationFactory('portable-key'),
+          CANONICAL_RESTORE_LIMITS,
+        );
+        expect(result).toMatchObject({
+          disposition: 'verified-and-committed',
+          backup: canonical.summary,
+        });
+        if (result.disposition !== 'verified-and-committed') {
+          throw new Error('Response-loss reconciliation omitted its receipt.');
+        }
+        expect(
+          restoreKnownRecordsVerificationV1Schema.parse(result.verification),
+        ).toMatchObject({
+          vaultId: canonical.vaultId,
+          vaultRevision: canonical.vaultRevision,
+          restoreSessionId: canonical.summary.restoreSessionId,
+          transcriptSha256: canonical.summary.transcriptSha256,
+          canonicalEntriesSha256: canonical.summary.canonicalEntriesSha256,
+          recordCount: 12,
+          selectedSlot: {
+            id: canonical.slotIds['portable-key'],
+            type: 'portable-key',
+            keyVersion: canonical.vault.currentKeyVersion,
+          },
+          verified: CANONICAL_RESTORE_EXPECTED_COUNTS,
+        });
+        const status = await (
+          await realStore.open(
+            canonical.summary.restoreSessionId,
+            CANONICAL_RESTORE_LIMITS,
+          )
+        ).status();
+        expect(status).toMatchObject({ state: 'committed' });
+        await expect(
+          database
+            .collection(mongoStorageCollectionNames.backupRestoreEntries)
+            .countDocuments(),
+        ).resolves.toBe(0);
+        expect(JSON.stringify(result)).not.toContain('response-loss-canary');
+      });
+    },
+  );
+
+  it('reconciles a later top-level replay from durable published state', async () => {
+    await withEmptyDatabase(client, async (database) => {
+      const store = new MongoBackupRestoreStore(client, database);
+      await store.initialize();
+      const stager = await store.open(
+        canonical.summary.restoreSessionId,
+        CANONICAL_RESTORE_LIMITS,
+      );
+      for (const entry of canonical.entries) await stager.write(entry);
+      await stager.seal(canonical.summary);
+      const session = await canonical.verificationFactory('portable-key')(
+        canonical.vault,
+      );
+      let receipt: RestoreKnownRecordsVerificationV1;
+      try {
+        receipt = await session.verify(
+          stager.readSealed(canonical.summary),
+          canonical.summary,
+        );
+      } finally {
+        session.close();
+      }
+      await stager.publish(canonical.summary, receipt);
+      await expect(stager.status()).resolves.toMatchObject({ state: 'published' });
+
+      const reconciled = await restoreCanonical(canonical, store, 'portable-key');
+      expect(reconciled).toMatchObject({
+        disposition: 'verified-and-committed',
+        backup: canonical.summary,
+      });
+      await expect(stager.status()).resolves.toMatchObject({ state: 'committed' });
+      await expectCanonicalVisibleCounts(database);
+    });
+  });
+
+  it('accepts an equal rollback anchor and rejects a lower archived revision before publication', async () => {
+    await withEmptyDatabase(client, async (database) => {
+      const store = new MongoBackupRestoreStore(client, database);
+      await store.initialize();
+      const accepted = await restoreEncryptedBackup(
+        chunks(canonical.archive),
+        canonical.vaultId,
+        store,
+        canonical.verificationFactory('recovery-key', canonical.vaultRevision),
+        CANONICAL_RESTORE_LIMITS,
+      );
+      expect(accepted.disposition).toBe('verified-and-committed');
+    });
+    await withEmptyDatabase(client, async (database) => {
+      const store = new MongoBackupRestoreStore(client, database);
+      await store.initialize();
+      const caught = await restoreEncryptedBackup(
+        chunks(canonical.archive),
+        canonical.vaultId,
+        store,
+        canonical.verificationFactory(
+          'recovery-key',
+          vaultRevisionAbove(canonical.vaultRevision),
+        ),
+        CANONICAL_RESTORE_LIMITS,
+      ).catch((error: unknown) => error);
+      expect(caught).toMatchObject({ code: 'BACKUP_AUTHENTICATION_FAILED' });
+      expect(String(caught)).not.toContain(String(canonical.vaultRevision));
+      await expectNoVisibleRestore(client, database, canonical);
+    });
+  });
+
+  it.each(['history', 'audit'] as const)(
+    'authenticates opaque history and audit but rejects either from semantic publication: %s',
+    async (family) => {
+      const archive = await canonical.unsupportedArchive(family);
+      const summary = await canonical.authenticate(archive);
+      expect(summary.recordCount).toBe(13);
+      await withEmptyDatabase(client, async (database) => {
+        const store = new MongoBackupRestoreStore(client, database);
+        await store.initialize();
+        const caught = await restoreEncryptedBackup(
+          chunks(archive, 47),
+          canonical.vaultId,
+          store,
+          canonical.verificationFactory('portable-key'),
+          CANONICAL_RESTORE_LIMITS,
+        ).catch((error: unknown) => error);
+        expect(caught).toMatchObject({
+          code: 'BACKUP_DECRYPTABILITY_UNSUPPORTED',
+        });
+        expect(String(caught)).not.toContain(family);
+        await expectNoVisibleRestore(client, database, canonical, summary);
+      });
+    },
+  );
+
+  it.each([
+    'preferences',
+    'wrapped-group-key',
+    'group-payload',
+    'wrapped-item-key',
+    'item-payload',
+    'wrapped-attachment-key',
+    'attachment-manifest',
+    'attachment-stream',
+  ] as const)(
+    'rejects each HMAC-valid inner corruption without visible target mutation: %s',
+    async (kind: CanonicalInnerCorruption) => {
+      const archive = await canonical.innerCorruptionArchive(kind);
+      const summary = await canonical.authenticate(archive);
+      expect(summary.recordCount).toBe(12);
+      await withEmptyDatabase(client, async (database) => {
+        const store = new MongoBackupRestoreStore(client, database);
+        await store.initialize();
+        const capture = captureConsoleOutput();
+        const caught = await restoreEncryptedBackup(
+          chunks(archive, 37),
+          canonical.vaultId,
+          store,
+          canonical.verificationFactory('portable-key'),
+          CANONICAL_RESTORE_LIMITS,
+        )
+          .catch((error: unknown) => error)
+          .finally(capture.restore);
+        expect(caught).toMatchObject({ code: 'BACKUP_AUTHENTICATION_FAILED' });
+        expect(String(caught)).not.toContain(kind);
+        for (const canary of [
+          ...CANONICAL_RESTORE_PLAINTEXT_CANARIES,
+          ...canonical.credentialCanaries(),
+        ]) {
+          expect(String(caught)).not.toContain(canary);
+          expect(capture.output()).not.toContain(canary);
+        }
+        await expectNoVisibleRestore(client, database, canonical, summary);
+      });
+    },
+  );
+
+  it.each(['before-readback', 'before-publication'] as const)(
+    'rejects sealed staging substitution before readback and before publication: %s',
+    async (window) => {
+      await withEmptyDatabase(client, async (database) => {
+        const realStore = new MongoBackupRestoreStore(client, database);
+        await realStore.initialize();
+        const caught = await restoreEncryptedBackup(
+          chunks(canonical.archive, 59),
+          canonical.vaultId,
+          stagingSubstitutionStore(realStore, database, window),
+          canonical.verificationFactory('portable-key'),
+          CANONICAL_RESTORE_LIMITS,
+        ).catch((error: unknown) => error);
+        expect(caught).toMatchObject({ code: 'BACKUP_AUTHENTICATION_FAILED' });
+        await expectNoVisibleRestore(client, database, canonical);
+      });
+    },
+  );
+
+  it('keeps the staging wrapper observational when no tamper is injected', async () => {
+    let controlResult: unknown;
+    let controlStatus: unknown;
+    await withEmptyDatabase(client, async (database) => {
+      const control = new MongoBackupRestoreStore(client, database, {
+        now: () => new Date(CREATED_AT),
+      });
+      await control.initialize();
+      controlResult = await restoreCanonical(canonical, control, 'portable-key');
+      controlStatus = await (
+        await control.open(canonical.summary.restoreSessionId, CANONICAL_RESTORE_LIMITS)
+      ).status();
+    });
+    await withEmptyDatabase(client, async (database) => {
+      const realStore = new MongoBackupRestoreStore(client, database, {
+        now: () => new Date(CREATED_AT),
+      });
+      await realStore.initialize();
+      const result = await restoreEncryptedBackup(
+        chunks(canonical.archive, 61),
+        canonical.vaultId,
+        stagingSubstitutionStore(realStore, database, 'no-tamper'),
+        canonical.verificationFactory('portable-key'),
+        CANONICAL_RESTORE_LIMITS,
+      );
+      expect(result).toMatchObject({
+        disposition: 'verified-and-committed',
+        backup: canonical.summary,
+      });
+      await expectCanonicalVisibleCounts(database);
+      const status = await (
+        await realStore.open(
+          canonical.summary.restoreSessionId,
+          CANONICAL_RESTORE_LIMITS,
+        )
+      ).status();
+      expect(status).toMatchObject({ state: 'committed', summary: canonical.summary });
+      expect(result).toEqual(controlResult);
+      expect(status).toEqual(controlStatus);
+    });
+  });
+
+  it('keeps plaintext and credential canaries out of archive staging BSON source errors and logs', async () => {
+    await withEmptyDatabase(client, async (database) => {
+      const store = new MongoBackupRestoreStore(client, database);
+      await store.initialize();
+      const stager = await store.open(
+        canonical.summary.restoreSessionId,
+        CANONICAL_RESTORE_LIMITS,
+      );
+      for (const entry of canonical.entries) await stager.write(entry);
+      await stager.seal(canonical.summary);
+      const hiddenScan = await collectDurableScanValues(database);
+      const archiveBytes = Buffer.from(canonical.archive);
+      const canaries = [
+        ...CANONICAL_RESTORE_PLAINTEXT_CANARIES,
+        ...canonical.credentialCanaries(),
+      ];
+      assertNoRawCanaries([archiveBytes, ...hiddenScan], canaries);
+
+      const session = await canonical.verificationFactory('passphrase')(
+        canonical.vault,
+      );
+      let receipt: RestoreKnownRecordsVerificationV1;
+      try {
+        receipt = await session.verify(
+          stager.readSealed(canonical.summary),
+          canonical.summary,
+        );
+      } finally {
+        session.close();
+      }
+      await stager.publish(canonical.summary, receipt);
+      await stager.finalize(canonical.summary, receipt);
+
+      const source = await new MongoBackupSource(client, database).open(
+        canonical.vaultId,
+        CANONICAL_RESTORE_LIMITS,
+      );
+      const sourceRecords = await collect(source.records);
+      const visible = new MongoVaultStorage(client, database);
+      const page = await visible.pullSyncPage(
+        syncCursorSchema.parse({
+          vaultId: canonical.vaultId,
+          serverSequence: 0,
+          highestSeenVaultRevision: 0,
+        }),
+        100,
+      );
+      const committedScan = await collectDurableScanValues(database);
+      assertNoRawCanaries(
+        [
+          ...committedScan,
+          Buffer.from(JSON.stringify(sourceRecords)),
+          Buffer.from(JSON.stringify(page)),
+        ],
+        canaries,
+      );
+
+      const capture = captureConsoleOutput();
+      const failure = await restoreEncryptedBackup(
+        chunks(await canonical.innerCorruptionArchive('preferences')),
+        canonical.vaultId,
+        store,
+        canonical.verificationFactory('portable-key'),
+        CANONICAL_RESTORE_LIMITS,
+      )
+        .catch((error: unknown) => error)
+        .finally(capture.restore);
+      for (const canary of [...canaries]) {
+        expect(String(failure)).not.toContain(canary);
+        expect(capture.output()).not.toContain(canary);
+      }
+      for (const forbidden of [
+        canonical.vaultId,
+        canonical.group.id,
+        canonical.activeItem.id,
+        'portable-key',
+        'passphrase',
+        'recovery-key',
+        'history',
+        'audit',
+        'response-loss-canary',
+      ]) {
+        expect(String(failure)).not.toContain(forbidden);
+        expect(capture.output()).not.toContain(forbidden);
+      }
+      expect(failure).toBeInstanceOf(Error);
+      expect((failure as Error & { cause?: unknown }).cause).toBeUndefined();
+    });
+  });
+});
+
 function createFixture(): SourceFixture {
   const vaultId = vaultIdSchema.parse('source.vault');
   const rootKey = generateVaultRootKey();
@@ -1074,6 +1585,299 @@ async function withEmptyDatabase(
   } finally {
     await database.dropDatabase();
   }
+}
+
+function restoreCanonical(
+  fixture: CanonicalKnownV1RestoreFixture,
+  store: BackupRestoreStore,
+  slotType: CanonicalRestoreSlotType,
+): Promise<RestoreEncryptedBackupResult> {
+  return restoreEncryptedBackup(
+    chunks(fixture.archive, 43),
+    fixture.vaultId,
+    store,
+    fixture.verificationFactory(slotType),
+    CANONICAL_RESTORE_LIMITS,
+  );
+}
+
+function responseLossStore(
+  realStore: BackupRestoreStore,
+  phase: 'publish' | 'finalize',
+): BackupRestoreStore {
+  let injected = false;
+  return {
+    async open(restoreSessionId, limits): Promise<BackupRestoreStager> {
+      const real = await realStore.open(restoreSessionId, limits);
+      return {
+        write: (entry) => real.write(entry),
+        seal: (summary) => real.seal(summary),
+        readSealed: (summary) => real.readSealed(summary),
+        async publish(summary, receipt) {
+          await real.publish(summary, receipt);
+          if (phase === 'publish' && !injected) {
+            injected = true;
+            throw new Error('response-loss-canary');
+          }
+        },
+        async finalize(summary, receipt) {
+          await real.finalize(summary, receipt);
+          if (phase === 'finalize' && !injected) {
+            injected = true;
+            throw new Error('response-loss-canary');
+          }
+        },
+        status: () => real.status(),
+        abort: () => real.abort(),
+      };
+    },
+  };
+}
+
+function stagingSubstitutionStore(
+  realStore: BackupRestoreStore,
+  database: Db,
+  window: 'before-readback' | 'before-publication' | 'no-tamper',
+): BackupRestoreStore {
+  let mutated = false;
+  const mutate = async (restoreSessionId: string): Promise<void> => {
+    if (mutated) return;
+    mutated = true;
+    const collection = database.collection(
+      mongoStorageCollectionNames.backupRestoreEntries,
+    );
+    const stored = await collection.findOne({
+      restoreSessionId,
+      'entry.kind': 'group',
+    });
+    if (stored === null) throw new Error('Sealed group entry is missing.');
+    const entry = encryptedBackupEntrySchema.parse(stored['entry']);
+    if (entry.kind !== 'group') throw new Error('Sealed entry is not a group.');
+    const mutatedEntry = encryptedBackupEntrySchema.parse({
+      ...entry,
+      record: {
+        ...entry.record,
+        recordRevision: entry.record.recordRevision + 1,
+      },
+    });
+    await collection.replaceOne(
+      { _id: stored._id },
+      {
+        ...stored,
+        entry: mutatedEntry,
+        entryHash: hashCanonical(mutatedEntry),
+        bytes: Buffer.byteLength(canonicalJson(mutatedEntry), 'utf8') + 1,
+      },
+      { bypassDocumentValidation: true },
+    );
+  };
+  return {
+    async open(restoreSessionId, limits): Promise<BackupRestoreStager> {
+      const real = await realStore.open(restoreSessionId, limits);
+      return {
+        write: (entry) => real.write(entry),
+        async seal(summary) {
+          await real.seal(summary);
+          if (window === 'before-readback') await mutate(restoreSessionId);
+        },
+        readSealed(summary) {
+          const source = real.readSealed(summary);
+          if (window !== 'before-publication') return source;
+          return (async function* () {
+            for await (const entry of source) yield entry;
+            await mutate(restoreSessionId);
+          })();
+        },
+        publish: (summary, receipt) => real.publish(summary, receipt),
+        finalize: (summary, receipt) => real.finalize(summary, receipt),
+        status: () => real.status(),
+        abort: () => real.abort(),
+      };
+    },
+  };
+}
+
+function captureConsoleOutput(): Readonly<{
+  output(): string;
+  restore(): void;
+}> {
+  const values: unknown[][] = [];
+  const spies = (['log', 'warn', 'error'] as const).map((method) =>
+    vi.spyOn(console, method).mockImplementation((...args: unknown[]) => {
+      values.push(args);
+    }),
+  );
+  return {
+    output: () => values.map((args) => args.map(String).join(' ')).join('\n'),
+    restore: () => {
+      for (const spy of spies) spy.mockRestore();
+    },
+  };
+}
+
+function vaultRevisionAbove(
+  revision: number,
+): ReturnType<typeof vaultRevisionSchema.parse> {
+  return vaultRevisionSchema.parse(revision + 1);
+}
+
+async function expectNoVisibleRestore(
+  client: MongoClient,
+  database: Db,
+  fixture: CanonicalKnownV1RestoreFixture,
+  summary: BackupVerification = fixture.summary,
+): Promise<void> {
+  for (const collectionName of [
+    mongoStorageCollectionNames.vaults,
+    mongoStorageCollectionNames.groups,
+    mongoStorageCollectionNames.items,
+    mongoStorageCollectionNames.attachments,
+    mongoStorageCollectionNames.histories,
+    mongoStorageCollectionNames.audits,
+    mongoStorageCollectionNames.tombstones,
+    mongoStorageCollectionNames.changes,
+    mongoStorageCollectionNames.counters,
+    mongoStorageCollectionNames.idempotency,
+    mongoStorageCollectionNames.syncPushBatches,
+    mongoStorageCollectionNames.templateMigrationPublications,
+    mongoStorageCollectionNames.attachmentStaging,
+    mongoStorageCollectionNames.attachmentStagingChunks,
+  ]) {
+    await expect(database.collection(collectionName).countDocuments()).resolves.toBe(0);
+  }
+  await expect(
+    database
+      .collection(mongoStorageCollectionNames.backupRestoreEntries)
+      .countDocuments(),
+  ).resolves.toBe(0);
+  const sessions = await database
+    .collection(mongoStorageCollectionNames.backupRestoreSessions)
+    .find({})
+    .toArray();
+  expect(sessions).toHaveLength(1);
+  const session = backupRestoreSessionDocumentSchema.parse(sessions[0]);
+  if (session.state !== 'aborted') {
+    throw new Error('Failed restore did not leave an aborted marker.');
+  }
+  expect(session).toEqual({
+    _id: summary.restoreSessionId,
+    state: 'aborted',
+    protocolVersion: 2,
+    restoreSessionId: summary.restoreSessionId,
+    abortedAt: session.abortedAt,
+  });
+  expect('summary' in session).toBe(false);
+  expect('receiptCommitment' in session).toBe(false);
+  expect('publishedAt' in session).toBe(false);
+  expect('committedAt' in session).toBe(false);
+  await expect(
+    new MongoBackupSource(client, database).open(
+      fixture.vaultId,
+      CANONICAL_RESTORE_LIMITS,
+    ),
+  ).rejects.toThrow();
+}
+
+async function expectCanonicalVisibleCounts(database: Db): Promise<void> {
+  const expected = new Map<string, number>([
+    [mongoStorageCollectionNames.vaults, 1],
+    [mongoStorageCollectionNames.groups, 1],
+    [mongoStorageCollectionNames.items, 3],
+    [mongoStorageCollectionNames.attachments, 1],
+    [mongoStorageCollectionNames.tombstones, 2],
+    [mongoStorageCollectionNames.changes, 7],
+    [mongoStorageCollectionNames.counters, 1],
+    [mongoStorageCollectionNames.histories, 0],
+    [mongoStorageCollectionNames.audits, 0],
+    [mongoStorageCollectionNames.attachmentStaging, 1],
+    [mongoStorageCollectionNames.attachmentStagingChunks, 2],
+    [mongoStorageCollectionNames.backupRestoreSessions, 1],
+    [mongoStorageCollectionNames.backupRestoreEntries, 0],
+  ]);
+  for (const [name, count] of expected) {
+    await expect(database.collection(name).countDocuments()).resolves.toBe(count);
+  }
+  const deleted = await database
+    .collection(mongoStorageCollectionNames.tombstones)
+    .findOne({ entityId: canonicalDeletedItemId() });
+  const changes = await database
+    .collection(mongoStorageCollectionNames.changes)
+    .find({ 'record.entityId': canonicalDeletedItemId() })
+    .sort({ serverSequence: 1 })
+    .toArray();
+  expect(deleted).not.toBeNull();
+  if (deleted === null) throw new Error('Deleted tombstone is missing.');
+  expect(requireRecord(deleted)['record']).toEqual(
+    expect.objectContaining({
+      state: 'deleted',
+      lastRecordRevision: 2,
+    }),
+  );
+  expect(changes).toHaveLength(2);
+  const predecessorChange = changes[0];
+  if (predecessorChange === undefined) {
+    throw new Error('Deleted predecessor change is missing.');
+  }
+  expect(changes.map((value) => requireRecord(value['record'])['operation'])).toEqual([
+    'upsert',
+    'tombstone',
+  ]);
+  expect(requireRecord(predecessorChange)['payload']).toEqual(
+    expect.objectContaining({
+      id: canonicalDeletedItemId(),
+      recordRevision: 2,
+    }),
+  );
+  const chunks = await database
+    .collection(mongoStorageCollectionNames.attachmentStagingChunks)
+    .find({})
+    .sort({ chunkIndex: 1 })
+    .toArray();
+  expect(chunks.map((value) => Number(requireRecord(value)['chunkIndex']))).toEqual([
+    0, 1,
+  ]);
+}
+
+function canonicalDeletedItemId(): string {
+  return 'restore.acceptance.item.deleted';
+}
+
+function prependVault(
+  vault: VaultRecord,
+  records: AsyncIterable<NonVaultEntry>,
+): AsyncIterable<EncryptedBackupEntry> {
+  return (async function* () {
+    yield encryptedBackupEntrySchema.parse({ kind: 'vault', record: vault });
+    for await (const entry of records) yield encryptedBackupEntrySchema.parse(entry);
+  })();
+}
+
+async function collectDurableScanValues(database: Db): Promise<readonly Uint8Array[]> {
+  const result: Uint8Array[] = [];
+  for (const { name } of await database
+    .listCollections({}, { nameOnly: true })
+    .toArray()) {
+    for (const document of await database.collection(name).find({}).toArray()) {
+      result.push(BSON.serialize(document));
+    }
+  }
+  return result;
+}
+
+function assertNoRawCanaries(
+  values: readonly Uint8Array[],
+  canaries: readonly string[],
+): void {
+  for (const canary of canaries) {
+    const bytes = Buffer.from(canary, 'utf8');
+    expect(values.some((value) => Buffer.from(value).includes(bytes))).toBe(false);
+  }
+}
+
+async function readAllBson(database: Db): Promise<string> {
+  return (await collectDurableScanValues(database))
+    .map((value) => Buffer.from(value).toString('base64url'))
+    .join('.');
 }
 
 function entryIdentity(entry: NonVaultEntry): string {
