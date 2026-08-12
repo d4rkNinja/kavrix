@@ -1,5 +1,6 @@
 export * from './control-plane-client.js';
 export * from './attachment-transfer-transport.js';
+export * from './backup-restore-verifier.js';
 export * from './errors.js';
 export * from './fetch-sync-transport.js';
 export * from './opaque-vault-snapshot.js';
