@@ -46,7 +46,11 @@ import {
 import type {
   ActivePushBatch,
   ApplyPullPageInput,
+  CompletedOutboundObservation,
+  EnsureOutboundReplayStartInput,
+  OutboundReplayState,
   ProtectedSyncStatePort,
+  ReconcileOutboundObservationInput,
   SyncStatusPort,
   SyncEngineOptions,
 } from '@kavrix/sync';
@@ -469,6 +473,52 @@ describe('VaultClientSession', () => {
     material.dispose();
   });
 
+  it('terminally locks and hides a protected-state adapter canary', async () => {
+    const material = await sessionFixture();
+    const remote = await startRemote(material.fixture.vault);
+    const store = new SessionStore(material.fixture);
+    const sessions = new MemorySessions(material.sessionSecret);
+    const keychain = new MemoryKeychain(material.deviceSecret);
+    const clipboard = new RecordingClipboard();
+    const canary = 'protected-load-session-canary-82f1';
+    const protectedFailure = new Error('protected adapter failed', {
+      cause: { canary },
+    });
+    Object.assign(protectedFailure, { canary });
+    const base = syncOptions();
+    const session = new VaultClientSession({
+      ...dependencySet(material),
+      profile: profile(material, `${remote.server.url}/`),
+      sessions,
+      keychain,
+      store,
+      sync: {
+        ...base,
+        protectedState: {
+          ...base.protectedState,
+          load: () => Promise.reject(protectedFailure),
+        },
+      },
+      clipboard,
+      interaction: { clearAfterMs: 30_000 },
+      network: { timeoutMs: 2_000, maximumResponseBytes: 1024 * 1024 },
+      allowInsecureLoopbackDevelopment: true,
+    });
+    const readLock = vi.spyOn(VaultReadSession.prototype, 'lock');
+    await session.unlockPortable(material.portableFormatted);
+
+    const error = await rejected(session.synchronize());
+
+    expect(error).toMatchObject({ kind: 'terminal-sync' });
+    expect(error).not.toHaveProperty('cause');
+    expect(`${String(error)}${JSON.stringify(error)}`).not.toContain(canary);
+    expect(session.locked).toBe(true);
+    expect(clipboard.lockCalls).toBe(1);
+    expect(readLock).toHaveBeenCalledTimes(1);
+    expect(sessions.lastLoaded?.every((byte) => byte === 0)).toBe(true);
+    material.dispose();
+  });
+
   it('blocks concurrent operations and lock aborts an in-flight sync graph', async () => {
     const material = await sessionFixture();
     const remote = await startRemote(material.fixture.vault);
@@ -714,27 +764,36 @@ class SessionStore extends MemoryReadSource {
     return Promise.resolve();
   }
 
-  loadOutboundReplayState(): Promise<never> {
-    return Promise.reject(new Error('Unexpected outbound replay lookup'));
+  loadOutboundReplayState(
+    vaultId: VaultRecord['id'],
+    kind: OutboundReplayState['kind'],
+  ): Promise<OutboundReplayState | null> {
+    void vaultId;
+    void kind;
+    return Promise.resolve(null);
   }
 
-  ensureOutboundReplayStart(): Promise<never> {
+  ensureOutboundReplayStart(input: EnsureOutboundReplayStartInput): Promise<number> {
+    void input;
     return Promise.reject(new Error('Unexpected outbound replay binding'));
   }
 
-  loadCompletedOutboundObservation(): Promise<never> {
-    return Promise.reject(new Error('Unexpected completed observation lookup'));
+  loadCompletedOutboundObservation(): Promise<CompletedOutboundObservation | null> {
+    return Promise.resolve(null);
   }
 
-  confirmCompletedOutboundObservation(): Promise<never> {
+  confirmCompletedOutboundObservation(): Promise<CompletedOutboundObservation> {
     return Promise.reject(new Error('Unexpected completed observation confirmation'));
   }
 
-  releaseCompletedOutboundObservation(): Promise<never> {
-    return Promise.reject(new Error('Unexpected completed observation release'));
+  releaseCompletedOutboundObservation(): Promise<void> {
+    return Promise.resolve();
   }
 
-  reconcileOutboundObservation(): Promise<never> {
+  reconcileOutboundObservation(
+    input: ReconcileOutboundObservationInput,
+  ): Promise<CompletedOutboundObservation> {
+    void input;
     return Promise.reject(new Error('Unexpected outbound reconciliation'));
   }
 }

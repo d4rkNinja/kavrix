@@ -22,11 +22,13 @@ import type {
   TemplateMigrationPublicationRequest,
   TemplateMigrationPublicationResponse,
   VaultId,
+  Sha256Digest,
 } from '@kavrix/schemas';
 import { describe, expect, it } from 'vitest';
 
 import {
   classifySyncFailure,
+  createOutboundObservation,
   SyncEngine,
   SyncLocalStateError,
   SyncProtocolError,
@@ -38,11 +40,15 @@ import type {
   ApplyPullPageInput,
   CompletePushBatchInput,
   CompleteTemplateMigrationPublicationInput,
+  CompletedOutboundObservation,
+  EnsureOutboundReplayStartInput,
+  OutboundReplayState,
   ProtectedSyncStatePort,
   PullPageRequest,
   PullPageResponse,
   PushBatchRequest,
   PushBatchResponse,
+  ReconcileOutboundObservationInput,
   SyncClockPort,
   SyncIdempotencyKeyPort,
   SyncLocalStorePort,
@@ -58,6 +64,59 @@ const vaultId = 'vault.1' as VaultId;
 const deviceId = 'device.1' as DeviceId;
 
 describe('SyncEngine pull', () => {
+  it('protects a validated pull revision before publishing it locally', async () => {
+    const events: string[] = [];
+    const change = purgeChange(1, 'group.1', 1);
+    const local = new FakeLocalStore([], null, events);
+    const protectedState = new FakeProtectedState(events);
+    protectedState.failNextSave = true;
+    const harness = makeHarness({
+      local,
+      protectedState,
+      transport: new FakeTransport(
+        [pullPage(1, 1, [{ change, record: null }], false)],
+        [],
+        [],
+        events,
+      ),
+    });
+
+    await expect(
+      harness.engine.synchronize({ vaultId, deviceId }),
+    ).rejects.toBeInstanceOf(SyncLocalStateError);
+    expect(events).toEqual(['transport.pull', 'protected.save']);
+    expect(local.cursor).toBeNull();
+    expect(local.applied).toHaveLength(0);
+  });
+
+  it('sanitizes protected adapter failures and status cannot mask them', async () => {
+    const canary = { message: 'enumerable-protected-canary', secret: 'nested' };
+    const protectedState = new FakeProtectedState();
+    protectedState.loadFailure = canary;
+    const status = new FakeStatus();
+    status.failNext = true;
+    const harness = makeHarness({
+      protectedState,
+      status,
+      transport: new FakeTransport([]),
+    });
+
+    let thrown: unknown;
+    try {
+      await harness.engine.synchronize({ vaultId, deviceId });
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(SyncLocalStateError);
+    expect(thrown).not.toBe(canary);
+    expect(Object.prototype.hasOwnProperty.call(thrown, 'cause')).toBe(false);
+    const serialized = `${String(thrown)}${JSON.stringify(thrown)}${JSON.stringify(
+      status.values,
+    )}`;
+    expect(serialized).not.toContain(canary.message);
+    expect(serialized).not.toContain(canary.secret);
+  });
+
   it('pulls every ordered page and advances cursor and protected revision', async () => {
     const firstChange = purgeChange(1, 'group.1', 1);
     const secondChange = purgeChange(2, 'group.2', 1);
@@ -93,9 +152,9 @@ describe('SyncEngine pull', () => {
     const harness = makeHarness({ transport });
     harness.local.failNextApply = true;
 
-    await expect(harness.engine.synchronize({ vaultId, deviceId })).rejects.toThrow(
-      'interrupted apply',
-    );
+    await expect(
+      harness.engine.synchronize({ vaultId, deviceId }),
+    ).rejects.toBeInstanceOf(SyncLocalStateError);
     expect(harness.local.cursor).toBeNull();
 
     const result = await harness.engine.synchronize({ vaultId, deviceId });
@@ -186,7 +245,302 @@ describe('SyncEngine pull', () => {
 });
 
 describe('SyncEngine push', () => {
-  it('retries an interrupted batch with identical keys and accepts duplicate success', async () => {
+  it('publishes success only after reconcile, protected clear, and pin release', async () => {
+    const events: string[] = [];
+    const mutation = groupMutation(0, null, 'barrier-mutation-key-0001');
+    const response = acceptedPushResponse(
+      mutation,
+      'batch-key-0000001',
+      'committed',
+      1,
+    );
+    const local = new FakeLocalStore([mutation], null, events);
+    const protectedState = new FakeProtectedState(events);
+    const status = new FakeStatus(events);
+    const harness = makeHarness({
+      local,
+      protectedState,
+      status,
+      transport: new FakeTransport(
+        [
+          pullPage(0, 0, [], false),
+          acceptedFeedPage(response, [mutation]),
+          pullPage(1, 1, [], false),
+        ],
+        [response],
+        [],
+        events,
+      ),
+    });
+
+    await expect(
+      harness.engine.synchronize({ vaultId, deviceId }),
+    ).resolves.toMatchObject({
+      state: 'synced',
+      pushedMutations: 1,
+      pulledChanges: 1,
+    });
+    expect(events.indexOf('local.reconcile')).toBeLessThan(
+      events.indexOf('protected.complete'),
+    );
+    expect(events.indexOf('protected.complete')).toBeLessThan(
+      events.indexOf('local.release'),
+    );
+    expect(events.indexOf('local.release')).toBeLessThan(
+      events.indexOf('status.synced'),
+    );
+  });
+
+  it('recovers a committed receipt without network before exact clear', async () => {
+    const mutation = groupMutation(0, null, 'receipt-recovery-key-0001');
+    const response = acceptedPushResponse(
+      mutation,
+      'batch-key-0000001',
+      'committed',
+      1,
+    );
+    const local = new FakeLocalStore([mutation]);
+    const protectedState = new FakeProtectedState();
+    protectedState.failNextComplete = true;
+    const transport = new FakeTransport(
+      [
+        pullPage(0, 0, [], false),
+        acceptedFeedPage(response, [mutation]),
+        pullPage(1, 1, [], false),
+      ],
+      [response],
+    );
+    const harness = makeHarness({ local, protectedState, transport });
+
+    await expect(
+      harness.engine.synchronize({ vaultId, deviceId }),
+    ).rejects.toBeInstanceOf(SyncLocalStateError);
+    expect(local.active).toBeNull();
+    expect(local.pending).toHaveLength(0);
+    expect(protectedState.value?.outboundObservation).toBeDefined();
+    expect(transport.pushRequests).toHaveLength(1);
+
+    await expect(
+      harness.engine.synchronize({ vaultId, deviceId }),
+    ).resolves.toMatchObject({
+      state: 'synced',
+      pushedMutations: 1,
+      pulledChanges: 1,
+    });
+    expect(transport.pushRequests).toHaveLength(1);
+    expect(protectedState.value?.outboundObservation).toBeUndefined();
+  });
+
+  it('keeps descriptor and publication barrier closed when clear fails', async () => {
+    const mutation = groupMutation(0, null, 'clear-failure-key-0001');
+    const response = acceptedPushResponse(
+      mutation,
+      'batch-key-0000001',
+      'committed',
+      1,
+    );
+    const events: string[] = [];
+    const local = new FakeLocalStore([mutation], null, events);
+    const protectedState = new FakeProtectedState(events);
+    protectedState.failNextComplete = true;
+    const status = new FakeStatus(events);
+    const harness = makeHarness({
+      local,
+      protectedState,
+      status,
+      transport: new FakeTransport(
+        [pullPage(0, 0, [], false), acceptedFeedPage(response, [mutation])],
+        [response],
+        [],
+        events,
+      ),
+    });
+
+    await expect(
+      harness.engine.synchronize({ vaultId, deviceId }),
+    ).rejects.toBeInstanceOf(SyncLocalStateError);
+    expect(protectedState.value?.outboundObservation).toBeDefined();
+    expect(events).toContain('local.reconcile');
+    expect(events).toContain('protected.complete');
+    expect(events).not.toContain('local.release');
+    expect(events).not.toContain('status.synced');
+  });
+
+  it('rejects a cursor/replay mismatch before transport or protected mutation', async () => {
+    const mutation = groupMutation(1, 0, 'cursor-mismatch-key-0001');
+    const local = new FakeLocalStore([mutation]);
+    local.cursor = syncCursorSchema.parse({
+      vaultId,
+      serverSequence: 2,
+      highestSeenVaultRevision: 2,
+    });
+    local.active = {
+      vaultId,
+      batchIdempotencyKey: 'cursor-mismatch-batch-0001',
+      mutationIdempotencyKeys: [mutation.idempotencyKey],
+    };
+    local.replayStart = 1;
+    const protectedState = new FakeProtectedState();
+    const transport = new FakeTransport([]);
+    const harness = makeHarness({ local, protectedState, transport });
+
+    await expect(
+      harness.engine.synchronize({ vaultId, deviceId }),
+    ).rejects.toBeInstanceOf(SyncLocalStateError);
+    expect(transport.pushRequests).toHaveLength(0);
+    expect(transport.pullRequests).toHaveLength(0);
+    expect(protectedState.value).toBeNull();
+  });
+
+  it('rejects a changed staged accepted entry and keeps descriptor/work durable', async () => {
+    const mutation = groupMutation(0, null, 'changed-feed-key-0001');
+    const response = acceptedPushResponse(
+      mutation,
+      'batch-key-0000001',
+      'committed',
+      1,
+    );
+    const changed = acceptedFeedPage(response, [mutation]);
+    const original = changed.changes[0];
+    if (original === undefined) throw new Error('fixture');
+    changed.changes[0] = {
+      ...original,
+      change: { ...original.change, id: 'change.changed-feed' },
+    } as PullPageResponse['changes'][number];
+    const local = new FakeLocalStore([mutation]);
+    const protectedState = new FakeProtectedState();
+    const harness = makeHarness({
+      local,
+      protectedState,
+      transport: new FakeTransport([pullPage(0, 0, [], false), changed], [response]),
+    });
+
+    await expect(
+      harness.engine.synchronize({ vaultId, deviceId }),
+    ).rejects.toBeInstanceOf(SyncProtocolError);
+    expect(protectedState.value?.outboundObservation).toBeDefined();
+    expect(local.active).not.toBeNull();
+    expect(local.pending).toEqual([mutation]);
+    expect(local.cursor?.serverSequence).toBe(0);
+  });
+
+  it('rejects a premature terminal recovery page without local reconciliation', async () => {
+    const mutation = groupMutation(0, null, 'premature-feed-key-0001');
+    const response = acceptedPushResponse(
+      mutation,
+      'batch-key-0000001',
+      'committed',
+      1,
+    );
+    const local = new FakeLocalStore([mutation]);
+    const harness = makeHarness({
+      local,
+      transport: new FakeTransport(
+        [pullPage(0, 0, [], false), pullPage(1, 0, [], false)],
+        [response],
+      ),
+    });
+
+    await expect(
+      harness.engine.synchronize({ vaultId, deviceId }),
+    ).rejects.toBeInstanceOf(SyncProtocolError);
+    expect(local.active).not.toBeNull();
+    expect(local.cursor?.serverSequence).toBe(0);
+  });
+
+  it('rejects an unprotected historical accepted receipt before staging', async () => {
+    const mutation = groupMutation(1, 0, 'historical-mutation-key-0001');
+    const response = acceptedPushResponse(
+      mutation,
+      'historical-batch-key-0001',
+      'duplicate',
+      2,
+    );
+    const local = new FakeLocalStore([mutation]);
+    local.cursor = syncCursorSchema.parse({
+      vaultId,
+      serverSequence: 1,
+      highestSeenVaultRevision: 2,
+    });
+    local.active = {
+      vaultId,
+      batchIdempotencyKey: response.batchIdempotencyKey,
+      mutationIdempotencyKeys: [mutation.idempotencyKey],
+    };
+    local.replayStart = 1;
+    const harness = makeHarness({
+      local,
+      transport: new FakeTransport([], [response]),
+    });
+
+    await expect(
+      harness.engine.synchronize({ vaultId, deviceId }),
+    ).rejects.toBeInstanceOf(SyncRollbackError);
+    expect(harness.local.cursor?.serverSequence).toBe(1);
+  });
+
+  it('resolves an exact protected receipt before loading durable work', async () => {
+    const mutation = groupMutation(0, null, 'receipt-mutation-key-0001');
+    const request: PushBatchRequest = {
+      vaultId,
+      batchIdempotencyKey: 'receipt-batch-key-0001',
+      mutations: [mutation],
+    };
+    const response = acceptedPushResponse(
+      mutation,
+      request.batchIdempotencyKey,
+      'committed',
+      1,
+    );
+    const observation = createOutboundObservation({
+      kind: 'generic-push',
+      vaultId,
+      deviceId,
+      request,
+      response,
+      replayFromServerSequence: 0,
+    });
+    const finalCursor = syncCursorSchema.parse({
+      vaultId,
+      serverSequence: 1,
+      highestSeenVaultRevision: 1,
+    });
+    const receipt = {
+      kind: 'generic-push',
+      vaultId,
+      deviceId,
+      observation,
+      request,
+      response,
+      finalCursor,
+      serializedBytes: 1,
+    } as const;
+    const local = new FakeLocalStore();
+    local.cursor = finalCursor;
+    local.completed.set(observation.observationId, receipt);
+    local.failIfDurableWorkLoads = true;
+    const protectedState = new FakeProtectedState();
+    protectedState.value = protectedLocalDeviceStateSchema.parse({
+      version: 2,
+      vaultId,
+      deviceId,
+      highestSeenVaultRevision: 1,
+      updatedAt: timestamp,
+      outboundObservation: observation,
+    });
+    const harness = makeHarness({
+      local,
+      protectedState,
+      transport: new FakeTransport([pullPage(1, 1, [], false)]),
+    });
+
+    await expect(
+      harness.engine.synchronize({ vaultId, deviceId }),
+    ).resolves.toMatchObject({ state: 'synced', pushedMutations: 1 });
+    expect(harness.protectedState.value?.outboundObservation).toBeUndefined();
+  });
+
+  it('retries an interrupted batch with the exact stored response and real feed', async () => {
     const mutation = groupMutation(0, null, 'mutation-key-0001');
     const accepted = acceptedPushResponse(
       mutation,
@@ -194,23 +548,18 @@ describe('SyncEngine push', () => {
       'committed',
       1,
     );
-    const duplicate = acceptedPushResponse(
-      mutation,
-      'batch-key-0000001',
-      'duplicate',
-      1,
-    );
+    const feed = acceptedFeedPage(accepted, [mutation]);
     const transport = new FakeTransport(
-      [pullPage(0, 0, [], false), pullPage(1, 0, [], false)],
-      [accepted, duplicate],
+      [pullPage(0, 0, [], false), feed, feed, pullPage(1, 1, [], false)],
+      [accepted, accepted],
     );
     const local = new FakeLocalStore([mutation]);
-    local.failNextComplete = true;
+    local.failNextReconcile = true;
     const harness = makeHarness({ transport, local });
 
-    await expect(harness.engine.synchronize({ vaultId, deviceId })).rejects.toThrow(
-      'interrupted completion',
-    );
+    await expect(
+      harness.engine.synchronize({ vaultId, deviceId }),
+    ).rejects.toBeInstanceOf(SyncLocalStateError);
     expect(local.active?.batchIdempotencyKey).toBe('batch-key-0000001');
     expect(local.pending).toHaveLength(1);
 
@@ -314,7 +663,14 @@ describe('SyncEngine push', () => {
     );
     const mutation = groupMutation(0, null, 'mutation-key-0004');
     const transport = new FakeTransport(
-      [pullPage(0, 0, [], false)],
+      [
+        pullPage(0, 0, [], false),
+        acceptedFeedPage(
+          acceptedPushResponse(mutation, 'batch-key-0000001', 'committed', 1),
+          [mutation],
+        ),
+        pullPage(1, 1, [], false),
+      ],
       [acceptedPushResponse(mutation, 'batch-key-0000001', 'committed', 1)],
     );
     const harness = makeHarness({
@@ -346,7 +702,7 @@ describe('SyncEngine atomic template migration publication', () => {
     const response = templateMigrationResponse(publication, 3);
     const local = new FakeLocalStore([], publication);
     const transport = new FakeTransport(
-      [pullPage(0, 0, [], false), pullPage(3, 0, [], false)],
+      [templateFeedPage(publication, response), pullPage(3, 3, [], false)],
       [],
       [new SyncTransportFailure('timeout'), response],
     );
@@ -364,7 +720,7 @@ describe('SyncEngine atomic template migration publication', () => {
     expect(transport.publicationRequests).toEqual([publication, publication]);
     expect(transport.pushRequests).toHaveLength(0);
     expect(local.pendingPublication).toBeNull();
-    expect(local.promotedPublications).toEqual([{ publication, response }]);
+    expect(local.promotedPublications).toEqual([]);
     expect(publication.mutations.map((mutation) => mutation.entityType)).toEqual([
       'item',
       'item',
@@ -586,18 +942,22 @@ class FakeTransport implements SyncTransportPort {
   readonly #pull: (PullPageResponse | Error)[];
   readonly #push: (PushBatchResponse | Error)[];
   readonly #publications: (TemplateMigrationPublicationResponse | Error)[];
+  readonly #events: string[] | undefined;
 
   constructor(
     pull: (PullPageResponse | Error)[],
     push: (PushBatchResponse | Error)[] = [],
     publications: (TemplateMigrationPublicationResponse | Error)[] = [],
+    events?: string[],
   ) {
     this.#pull = pull;
     this.#push = push;
     this.#publications = publications;
+    this.#events = events;
   }
 
   pull(request: PullPageRequest): Promise<PullPageResponse> {
+    this.#events?.push('transport.pull');
     this.pullRequests.push(structuredClone(request));
     const next = this.#pull.shift();
     if (next === undefined) return Promise.reject(new Error('Unexpected pull'));
@@ -606,6 +966,7 @@ class FakeTransport implements SyncTransportPort {
   }
 
   push(request: PushBatchRequest): Promise<PushBatchResponse> {
+    this.#events?.push('transport.push');
     this.pushRequests.push(structuredClone(request));
     const next = this.#push.shift();
     if (next === undefined) return Promise.reject(new Error('Unexpected push'));
@@ -633,15 +994,22 @@ class FakeLocalStore implements SyncLocalStorePort {
   readonly applied: ApplyPullPageInput[] = [];
   failNextApply = false;
   failNextComplete = false;
+  failNextReconcile = false;
+  failIfDurableWorkLoads = false;
   pendingPublication: TemplateMigrationPublicationRequest | null;
   readonly promotedPublications: CompleteTemplateMigrationPublicationInput[] = [];
+  readonly #events: string[] | undefined;
+  readonly completed = new Map<string, CompletedOutboundObservation>();
+  replayStart: number | null = null;
 
   constructor(
     pending: OpaqueMutation[] = [],
     pendingPublication: TemplateMigrationPublicationRequest | null = null,
+    events?: string[],
   ) {
     this.pending = pending;
     this.pendingPublication = pendingPublication;
+    this.#events = events;
   }
 
   loadCursor(): Promise<SyncCursor | null> {
@@ -649,6 +1017,7 @@ class FakeLocalStore implements SyncLocalStorePort {
   }
 
   applyPullPage(input: ApplyPullPageInput): Promise<void> {
+    this.#events?.push('local.apply');
     if (this.failNextApply) {
       this.failNextApply = false;
       return Promise.reject(new Error('interrupted apply'));
@@ -663,11 +1032,15 @@ class FakeLocalStore implements SyncLocalStorePort {
   }
 
   loadActivePushBatch(): Promise<ActivePushBatch | null> {
+    if (this.failIfDurableWorkLoads) {
+      return Promise.reject(new Error('durable-work-load-canary'));
+    }
     return Promise.resolve(this.active);
   }
 
   saveActivePushBatch(batch: ActivePushBatch): Promise<void> {
     this.active = batch;
+    this.replayStart = this.cursor?.serverSequence ?? 0;
     return Promise.resolve();
   }
 
@@ -695,6 +1068,7 @@ class FakeLocalStore implements SyncLocalStorePort {
     publication: TemplateMigrationPublicationRequest,
   ): Promise<void> {
     this.pendingPublication = publication;
+    this.replayStart = this.cursor?.serverSequence ?? 0;
     return Promise.resolve();
   }
 
@@ -712,53 +1086,173 @@ class FakeLocalStore implements SyncLocalStorePort {
     return Promise.resolve();
   }
 
-  loadOutboundReplayState(): Promise<never> {
-    return Promise.reject(new Error('Unexpected outbound replay lookup'));
+  loadOutboundReplayState(
+    _vaultId: VaultId,
+    kind: OutboundReplayState['kind'],
+  ): Promise<OutboundReplayState | null> {
+    const key =
+      kind === 'generic-push'
+        ? this.active?.batchIdempotencyKey
+        : this.pendingPublication?.batchIdempotencyKey;
+    return Promise.resolve(
+      key === undefined
+        ? null
+        : {
+            kind,
+            vaultId,
+            batchIdempotencyKey: key,
+            replayFromServerSequence: this.replayStart,
+          },
+    );
   }
 
-  ensureOutboundReplayStart(): Promise<never> {
-    return Promise.reject(new Error('Unexpected outbound replay binding'));
+  ensureOutboundReplayStart(input: EnsureOutboundReplayStartInput): Promise<number> {
+    const expected =
+      input.kind === 'generic-push'
+        ? this.active?.batchIdempotencyKey
+        : this.pendingPublication?.batchIdempotencyKey;
+    if (expected !== input.batchIdempotencyKey) {
+      return Promise.reject(new Error('Wrong replay work'));
+    }
+    this.replayStart ??= this.cursor?.serverSequence ?? 0;
+    return Promise.resolve(this.replayStart);
   }
 
-  loadCompletedOutboundObservation(): Promise<never> {
-    return Promise.reject(new Error('Unexpected completed observation lookup'));
+  loadCompletedOutboundObservation(
+    _vaultId: VaultId,
+    observationId: Sha256Digest,
+  ): Promise<CompletedOutboundObservation | null> {
+    return Promise.resolve(this.completed.get(observationId) ?? null);
   }
 
-  confirmCompletedOutboundObservation(): Promise<never> {
-    return Promise.reject(new Error('Unexpected completed observation confirmation'));
+  confirmCompletedOutboundObservation(
+    _vaultId: VaultId,
+    _deviceId: DeviceId,
+    observation: ReconcileOutboundObservationInput['observation'],
+  ): Promise<CompletedOutboundObservation> {
+    const receipt = this.completed.get(observation.observationId);
+    return receipt === undefined
+      ? Promise.reject(new Error('Missing receipt'))
+      : Promise.resolve(receipt);
   }
 
-  releaseCompletedOutboundObservation(): Promise<never> {
-    return Promise.reject(new Error('Unexpected completed observation release'));
+  releaseCompletedOutboundObservation(): Promise<void> {
+    this.#events?.push('local.release');
+    return Promise.resolve();
   }
 
-  reconcileOutboundObservation(): Promise<never> {
-    return Promise.reject(new Error('Unexpected outbound reconciliation'));
+  reconcileOutboundObservation(
+    input: ReconcileOutboundObservationInput,
+  ): Promise<CompletedOutboundObservation> {
+    this.#events?.push('local.reconcile');
+    if (this.failNextReconcile) {
+      this.failNextReconcile = false;
+      return Promise.reject(new Error('interrupted reconciliation'));
+    }
+    this.cursor = input.finalCursor;
+    if (input.kind === 'generic-push') {
+      const accepted = new Set(
+        input.response.results
+          .filter((result) => result.status === 'accepted')
+          .map((result) => result.idempotencyKey),
+      );
+      this.pending = this.pending.filter(
+        (mutation) => !accepted.has(mutation.idempotencyKey),
+      );
+      this.active = null;
+    } else {
+      this.pendingPublication = null;
+    }
+    const receipt = {
+      kind: input.kind,
+      vaultId: input.vaultId,
+      deviceId: input.deviceId,
+      observation: input.observation,
+      request: input.request,
+      response: input.response,
+      finalCursor: input.finalCursor,
+      serializedBytes: 1,
+    } as CompletedOutboundObservation;
+    this.completed.set(input.observation.observationId, receipt);
+    return Promise.resolve(receipt);
   }
 }
 
 class FakeProtectedState implements ProtectedSyncStatePort {
   value: ProtectedLocalDeviceState | null = null;
+  failNextSave = false;
+  failNextComplete = false;
+  loadFailure: unknown;
+  readonly #events: string[] | undefined;
+
+  constructor(events?: string[]) {
+    this.#events = events;
+  }
 
   load(): Promise<ProtectedLocalDeviceState | null> {
+    if (this.loadFailure !== undefined) {
+      return Promise.reject(
+        this.loadFailure instanceof Error
+          ? this.loadFailure
+          : new Error('Protected state load failed'),
+      );
+    }
     return Promise.resolve(this.value);
   }
 
   save(state: ProtectedLocalDeviceState): Promise<void> {
+    this.#events?.push('protected.save');
+    if (this.failNextSave) {
+      this.failNextSave = false;
+      return Promise.reject(new Error('protected-save-canary'));
+    }
     this.value = state;
     return Promise.resolve();
   }
 
-  completeObservation(): Promise<void> {
-    return Promise.reject(new Error('Unexpected observation completion'));
+  completeObservation(
+    _vaultId: VaultId,
+    _deviceId: DeviceId,
+    expectedObservationId: Sha256Digest,
+    candidateRevision: ProtectedLocalDeviceState['highestSeenVaultRevision'],
+    updatedAt: ProtectedLocalDeviceState['updatedAt'],
+  ): Promise<void> {
+    this.#events?.push('protected.complete');
+    if (this.failNextComplete) {
+      this.failNextComplete = false;
+      return Promise.reject(new Error('protected-complete-canary'));
+    }
+    if (this.value?.outboundObservation?.observationId !== expectedObservationId) {
+      return Promise.reject(new Error('Wrong observation completion'));
+    }
+    this.value = protectedLocalDeviceStateSchema.parse({
+      version: 2,
+      vaultId,
+      deviceId,
+      highestSeenVaultRevision: candidateRevision,
+      updatedAt,
+      lastCompletedObservationId: expectedObservationId,
+    });
+    return Promise.resolve();
   }
 }
 
 class FakeStatus implements SyncStatusPort {
   readonly values: SyncStatus[] = [];
+  failNext = false;
+  readonly #events: string[] | undefined;
+
+  constructor(events?: string[]) {
+    this.#events = events;
+  }
 
   set(status: SyncStatus): Promise<void> {
+    this.#events?.push(`status.${status.state}`);
     this.values.push(status);
+    if (this.failNext) {
+      this.failNext = false;
+      return Promise.reject(new Error('status-sink-canary'));
+    }
     return Promise.resolve();
   }
 }
@@ -782,6 +1276,7 @@ function makeHarness(options: {
   transport: FakeTransport;
   local?: FakeLocalStore;
   protectedState?: FakeProtectedState;
+  status?: FakeStatus;
   pullPageSize?: number;
 }): {
   engine: SyncEngine;
@@ -791,7 +1286,7 @@ function makeHarness(options: {
 } {
   const local = options.local ?? new FakeLocalStore();
   const protectedState = options.protectedState ?? new FakeProtectedState();
-  const status = new FakeStatus();
+  const status = options.status ?? new FakeStatus();
   return {
     engine: new SyncEngine({
       transport: options.transport,
@@ -909,6 +1404,32 @@ function acceptedPushResponse(
       },
     ],
   };
+}
+
+function acceptedFeedPage(
+  response: PushBatchResponse,
+  mutations: readonly OpaqueMutation[],
+): PullPageResponse {
+  const changes = response.results.flatMap((result, index) => {
+    if (result.status !== 'accepted') return [];
+    const mutation = mutations[index];
+    if (mutation === undefined) throw new Error('Missing mutation fixture');
+    return [{ change: result.change, record: mutation.record }];
+  });
+  const sequence = Math.max(0, ...changes.map(({ change }) => change.serverSequence));
+  return pullPage(response.serverVaultRevision, sequence, changes, false);
+}
+
+function templateFeedPage(
+  publication: TemplateMigrationPublicationRequest,
+  response: TemplateMigrationPublicationResponse,
+): PullPageResponse {
+  const changes = response.results.map((result, index) => {
+    const mutation = publication.mutations[index];
+    if (mutation === undefined) throw new Error('Missing publication fixture');
+    return { change: result.change, record: mutation.record };
+  });
+  return pullPage(response.serverVaultRevision, changes.length, changes, false);
 }
 
 function templateMigrationPublication(): TemplateMigrationPublicationRequest {

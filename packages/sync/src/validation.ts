@@ -1,4 +1,5 @@
 import {
+  canonicalJson,
   contentHashForRecord,
   opaqueMutationSchema,
   recordRevisionSchema,
@@ -26,8 +27,10 @@ import type {
   PullPageResponse,
   PushBatchResponse,
   PushMutationResult,
+  ReconcileOutboundObservationInput,
   SyncCursor,
 } from './types.js';
+import { measureOutboundReconciliationChanges } from './types.js';
 
 const IDEMPOTENCY_KEY_MIN_LENGTH = 16;
 const IDEMPOTENCY_KEY_MAX_LENGTH = 256;
@@ -193,6 +196,67 @@ export function parseTemplateMigrationPublicationResponse(
     }
   }
   return parsed.data;
+}
+
+/**
+ * Revalidates the complete non-mutating recovery range before either the
+ * protected page anchor or SQLite is advanced.
+ */
+export function validateOutboundStagedRange(
+  input: ReconcileOutboundObservationInput,
+): void {
+  try {
+    if (
+      input.finalCursor.vaultId !== input.vaultId ||
+      input.finalCursor.serverSequence !==
+        input.observation.requiredThroughServerSequence ||
+      input.finalCursor.highestSeenVaultRevision <
+        input.observation.responseVaultRevision ||
+      input.stagedChanges.length !==
+        input.observation.requiredThroughServerSequence -
+          input.observation.replayFromServerSequence ||
+      measureOutboundReconciliationChanges(input.stagedChanges) !==
+        input.stagedChangesBytes
+    ) {
+      throw new SyncProtocolError();
+    }
+    let expected = input.observation.replayFromServerSequence + 1;
+    for (const pulled of input.stagedChanges) {
+      if (pulled.change.serverSequence !== expected) {
+        throw new SyncProtocolError();
+      }
+      expected += 1;
+    }
+    const acceptedSequences = new Set<number>();
+    for (const [index, result] of input.response.results.entries()) {
+      if ('status' in result && result.status === 'conflict') continue;
+      const mutation = input.request.mutations[index];
+      if (mutation === undefined) throw new SyncProtocolError();
+      const sequence = result.change.serverSequence;
+      if (acceptedSequences.has(sequence)) throw new SyncProtocolError();
+      acceptedSequences.add(sequence);
+      if (sequence <= input.observation.replayFromServerSequence) continue;
+      const pulled =
+        input.stagedChanges[sequence - input.observation.replayFromServerSequence - 1];
+      if (
+        pulled === undefined ||
+        canonicalJson(pulled.change) !== canonicalJson(result.change)
+      ) {
+        throw new SyncProtocolError();
+      }
+      if (
+        (result.change.operation === 'upsert' ||
+          result.change.operation === 'restore') &&
+        (pulled.record === null ||
+          canonicalJson(pulled.record) !== canonicalJson(mutation.record))
+      ) {
+        throw new SyncProtocolError();
+      }
+    }
+  } catch (error) {
+    if (error instanceof SyncProtocolError) throw error;
+    throw new SyncProtocolError();
+  }
 }
 
 function parsePushResult(
