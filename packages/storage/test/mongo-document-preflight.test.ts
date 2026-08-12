@@ -305,6 +305,39 @@ describe('Mongo document compatibility preflight', () => {
 });
 
 describe('Mongo storage preflight composition', () => {
+  it('rejects a versionless legacy restore session and closes its scan cursor', async () => {
+    const restoreSessionId = 'AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
+    const fixture = scannerDatabase({
+      backup_restore_sessions: {
+        rows: [
+          {
+            _id: restoreSessionId,
+            restoreSessionId,
+            state: 'staging',
+            maximumBytes: 1024,
+            maximumRecords: 10,
+            stagedBytes: 0,
+            stagedRecords: 0,
+            createdAt: '2026-08-10T00:00:00.000Z',
+            updatedAt: '2026-08-10T00:00:00.000Z',
+          },
+        ],
+      },
+    });
+
+    const error = await assertMongoDocumentCompatibility(fixture.database, {
+      backup_restore_sessions: backupRestoreSessionDocumentSchema,
+    }).catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(MongoDocumentCompatibilityError);
+    expect(error).toMatchObject({
+      collectionName: 'backup_restore_sessions',
+      documentId: restoreSessionId,
+    });
+    expect(fixture.cursors[0]?.close).toHaveBeenCalledOnce();
+    expect(publicErrorText(error)).not.toContain('maximumBytes');
+  });
+
   it('maps every declared storage collection to its exact canonical parser', () => {
     expect(Object.keys(mongoStorageDocumentSchemas).sort()).toEqual(
       Object.values(mongoStorageCollectionNames).sort(),

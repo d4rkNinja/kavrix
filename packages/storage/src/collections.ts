@@ -144,6 +144,7 @@ const nullableSemanticRevisionFragment: MongoJsonSchema = {
   oneOf: [nonnegativeSemanticRevisionFragment, { bsonType: 'null' }],
 };
 const versionOneFragment = literalInteger(1);
+const versionTwoFragment = literalInteger(2);
 
 const vaultRecordFragment = strictObject(
   [
@@ -613,6 +614,7 @@ const backupEntryFragment: MongoJsonSchema = {
 
 const restoreSessionCommonProperties = {
   _id: sha256DigestFragment,
+  protocolVersion: versionTwoFragment,
   restoreSessionId: sha256DigestFragment,
   maximumBytes: safeInteger({ minimum: 1, maximum: MAX_SUPPORTED_BACKUP_BYTES }),
   maximumRecords: safeInteger({
@@ -630,6 +632,7 @@ const restoreSessionCommonProperties = {
 } satisfies Readonly<Record<string, MongoJsonSchema>>;
 const restoreSessionCommonRequired = [
   '_id',
+  'protocolVersion',
   'restoreSessionId',
   'maximumBytes',
   'maximumRecords',
@@ -639,34 +642,89 @@ const restoreSessionCommonRequired = [
   'createdAt',
   'updatedAt',
 ] as const;
+const backupHeaderFragment = strictObject(
+  [
+    'type',
+    'format',
+    'version',
+    'vaultId',
+    'schemaVersion',
+    'createdAt',
+    'authentication',
+  ],
+  {
+    type: stringEnum(['header']),
+    format: stringEnum(['kavrix-encrypted-backup']),
+    version: versionOneFragment,
+    vaultId: opaqueIdentifierFragment,
+    schemaVersion: supportedSchemaVersionFragment,
+    createdAt: canonicalTimestampFragment,
+    authentication: strictObject(['algorithm', 'salt'], {
+      algorithm: stringEnum(['hkdf-sha256+hmac-sha256']),
+      salt: sha256DigestFragment,
+    }),
+  },
+);
+const backupVerificationFragment = strictObject(
+  [
+    'header',
+    'restoreSessionId',
+    'recordCount',
+    'transcriptSha256',
+    'canonicalEntriesSha256',
+  ],
+  {
+    header: backupHeaderFragment,
+    restoreSessionId: sha256DigestFragment,
+    recordCount: safeInteger({ minimum: 1, maximum: DEFAULT_MAX_BACKUP_RECORDS }),
+    transcriptSha256: sha256DigestFragment,
+    canonicalEntriesSha256: sha256DigestFragment,
+  },
+);
 const backupRestoreSessionFragment: MongoJsonSchema = {
   oneOf: [
     strictObject(restoreSessionCommonRequired, {
       ...restoreSessionCommonProperties,
       state: stringEnum(['staging']),
     }),
+    strictObject([...restoreSessionCommonRequired, 'vaultId', 'summary', 'sealedAt'], {
+      ...restoreSessionCommonProperties,
+      state: stringEnum(['sealed']),
+      summary: backupVerificationFragment,
+      sealedAt: canonicalTimestampFragment,
+    }),
     strictObject(
       [
         ...restoreSessionCommonRequired,
         'vaultId',
-        'transcriptSha256',
-        'summaryRecordCount',
-        'committedAt',
+        'summary',
+        'sealedAt',
+        'publishedAt',
       ],
       {
         ...restoreSessionCommonProperties,
+        state: stringEnum(['published']),
+        summary: backupVerificationFragment,
+        sealedAt: canonicalTimestampFragment,
+        publishedAt: canonicalTimestampFragment,
+      },
+    ),
+    strictObject(
+      ['_id', 'state', 'protocolVersion', 'restoreSessionId', 'summary', 'committedAt'],
+      {
+        _id: sha256DigestFragment,
         state: stringEnum(['committed']),
-        transcriptSha256: sha256DigestFragment,
-        summaryRecordCount: safeInteger({
-          minimum: 1,
-          maximum: DEFAULT_MAX_BACKUP_RECORDS,
-        }),
+        protocolVersion: versionTwoFragment,
+        restoreSessionId: sha256DigestFragment,
+        summary: backupVerificationFragment,
         committedAt: canonicalTimestampFragment,
       },
     ),
-    strictObject([...restoreSessionCommonRequired, 'abortedAt'], {
-      ...restoreSessionCommonProperties,
+    strictObject(['_id', 'state', 'protocolVersion', 'restoreSessionId', 'abortedAt'], {
+      _id: sha256DigestFragment,
       state: stringEnum(['aborted']),
+      protocolVersion: versionTwoFragment,
+      restoreSessionId: sha256DigestFragment,
       abortedAt: canonicalTimestampFragment,
     }),
   ],

@@ -17,7 +17,6 @@ import {
 } from '@kavrix/crypto';
 import {
   createEncryptedBackup,
-  restoreEncryptedBackup,
   verifyEncryptedBackup,
   type BackupVerification,
 } from '@kavrix/import-export';
@@ -25,6 +24,7 @@ import {
   associatedDataSchema,
   canonicalJson,
   contentHashForRecord,
+  createBackupStagedEntryCommitment,
   encryptedAttachmentRecordSchema,
   encryptedAuditRecordSchema,
   encryptedGroupRecordSchema,
@@ -39,6 +39,7 @@ import {
   timestampSchema,
   tombstoneRecordSchema,
   vaultRecordSchema,
+  vaultRevisionSchema,
   vaultIdSchema,
   type AeadEnvelope,
   type AttachmentSecretStreamChunkRecord,
@@ -52,13 +53,14 @@ import {
   type EncryptedItemRecord,
   type PersistedAttachmentChunkRecord,
   type PersistedAttachmentHeaderRecord,
+  type RestoreKnownRecordsVerificationV1,
   type Sha256Digest,
   type TombstoneRecord,
   type VaultId,
   type VaultRecord,
 } from '@kavrix/schemas';
-import { MongoClient, type Db } from 'mongodb';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { FindCursor, MongoClient, type Db } from 'mongodb';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { OpaqueVaultSnapshot } from '@kavrix/client';
 
@@ -108,6 +110,56 @@ interface BackupFixture {
   readonly summary: BackupVerification;
 }
 
+function restoreProtocolFixture(fixture: BackupFixture): {
+  readonly entries: readonly EncryptedBackupEntry[];
+  readonly summary: BackupVerification;
+  readonly receipt: RestoreKnownRecordsVerificationV1;
+} {
+  const entries = [
+    { kind: 'vault' as const, record: fixture.vault },
+    ...fixture.orderedRecords.filter(
+      (entry) => entry.kind !== 'history' && entry.kind !== 'audit',
+    ),
+  ];
+  const commitment = createBackupStagedEntryCommitment();
+  for (const entry of entries) commitment.update(entry);
+  const summary = {
+    ...fixture.summary,
+    recordCount: entries.length,
+    canonicalEntriesSha256: commitment.finalize(),
+  };
+  const selectedSlot = fixture.vault.keySlots[0];
+  if (selectedSlot === undefined) throw new Error('Fixture has no key slot.');
+  const receipt: RestoreKnownRecordsVerificationV1 = {
+    version: 1,
+    scope: 'known-v1-records',
+    vaultId: fixture.vaultId,
+    vaultRevision: fixture.vault.revision,
+    restoreSessionId: summary.restoreSessionId,
+    transcriptSha256: summary.transcriptSha256,
+    canonicalEntriesSha256: summary.canonicalEntriesSha256,
+    recordCount: summary.recordCount,
+    selectedSlot: {
+      id: selectedSlot.id,
+      type: selectedSlot.type,
+      keyVersion: selectedSlot.keyVersion,
+    },
+    verified: {
+      vaults: 1,
+      groups: 1,
+      items: 2,
+      attachments: 1,
+      attachmentHeaders: 1,
+      attachmentChunks: fixture.attachmentChunks.length,
+      tombstonePredecessors: { groups: 0, items: 1, attachments: 0 },
+      tombstones: 1,
+      histories: 0,
+      audits: 0,
+    },
+  };
+  return { entries, summary, receipt };
+}
+
 describe('authenticated encrypted-backup restore against a MongoDB replica set', () => {
   const client = new MongoClient(mongodbUri, {
     appName: 'kavrix-backup-restore-integration',
@@ -141,7 +193,7 @@ describe('authenticated encrypted-backup restore against a MongoDB replica set',
           record: { ...fixture.group, plaintext: CANARIES[0] },
         } as never),
       ).rejects.toThrow('Invalid encrypted backup entry');
-      await expect(first.commit(null as never)).rejects.toThrow(
+      await expect(first.seal(null as never)).rejects.toThrow(
         'restore summary is invalid',
       );
 
@@ -157,6 +209,12 @@ describe('authenticated encrypted-backup restore against a MongoDB replica set',
       ).resolves.toBe(1);
 
       const resumed = await store.open(fixture.summary.restoreSessionId, LIMITS);
+      await expect(
+        store.open(fixture.summary.restoreSessionId, {
+          ...LIMITS,
+          maximumRecords: LIMITS.maximumRecords - 1,
+        }),
+      ).rejects.toThrow('different bounds');
       await resumed.write({ kind: 'vault', record: fixture.vault });
       await resumed.write({ kind: 'group', record: fixture.group });
 
@@ -179,8 +237,8 @@ describe('authenticated encrypted-backup restore against a MongoDB replica set',
       ).rejects.toThrow('different vault');
 
       await resumed.abort();
-      await expect(resumed.status()).resolves.toBe('aborted');
-      await expect(resumed.abort()).resolves.toBeUndefined();
+      await expect(resumed.status()).resolves.toMatchObject({ state: 'aborted' });
+      await expect(resumed.abort()).rejects.toThrow();
       await expect(
         database
           .collection(mongoStorageCollectionNames.backupRestoreEntries)
@@ -190,38 +248,100 @@ describe('authenticated encrypted-backup restore against a MongoDB replica set',
     });
   });
 
-  it('verifies, atomically restores, reopens, and exactly reads every supported record family', async () => {
+  it('aborts a sealed restore but rejects every operation after abort', async () => {
     await withEmptyDatabase(client, async (database) => {
-      const verified = await verifyEncryptedBackup(
-        chunks(fixture.archive, 29),
-        fixture.rootKey,
-        fixture.vaultId,
-        LIMITS,
-      );
-      expect(verified).toEqual(fixture.summary);
+      const store = new MongoBackupRestoreStore(client, database);
+      await store.initialize();
+      const protocol = restoreProtocolFixture(fixture);
+      const staged = await store.open(protocol.summary.restoreSessionId, LIMITS);
+      for (const entry of protocol.entries) await staged.write(entry);
+      await staged.seal(protocol.summary);
+      await staged.abort();
+      await expect(staged.status()).resolves.toMatchObject({ state: 'aborted' });
+      const entry = protocol.entries[0];
+      if (entry === undefined) throw new Error('Fixture has no entries.');
+      await expect(staged.write(entry)).rejects.toThrow();
+      await expect(staged.seal(protocol.summary)).rejects.toThrow();
+      await expect(collectAsync(staged.readSealed(protocol.summary))).rejects.toThrow();
+      await expect(
+        staged.publish(protocol.summary, protocol.receipt),
+      ).rejects.toThrow();
+      await expect(
+        staged.finalize(protocol.summary, protocol.receipt),
+      ).rejects.toThrow();
+      await expect(staged.abort()).rejects.toThrow();
+    });
+  });
 
+  it('publishes and finalizes an exact protocol-v2 zero-history/audit entry set', async () => {
+    await withEmptyDatabase(client, async (database) => {
       const store = new MongoBackupRestoreStore(client, database, {
         now: () => new Date(CREATED_AT),
       });
       await store.initialize();
+      const protocol = restoreProtocolFixture(fixture);
+      const staged = await store.open(protocol.summary.restoreSessionId, LIMITS);
+      for (const entry of protocol.entries) await staged.write(entry);
+      await staged.seal(protocol.summary);
+      await expect(staged.seal(protocol.summary)).resolves.toBeUndefined();
+      const firstEntry = protocol.entries[0];
+      if (firstEntry === undefined) throw new Error('Fixture has no entries.');
+      await expect(staged.write(firstEntry)).rejects.toThrow();
       await expect(
-        restoreEncryptedBackup(
-          chunks(fixture.archive, 31),
-          fixture.rootKey,
-          fixture.vaultId,
-          store,
-          LIMITS,
-        ),
-      ).resolves.toEqual(fixture.summary);
+        staged.seal({
+          ...protocol.summary,
+          recordCount: protocol.summary.recordCount + 1,
+        }),
+      ).rejects.toThrow();
+      const cursorClose = vi.spyOn(FindCursor.prototype, 'close');
+      await expect(collectAsync(staged.readSealed(protocol.summary))).resolves.toEqual(
+        protocol.entries,
+      );
+      expect(cursorClose).toHaveBeenCalled();
+      cursorClose.mockClear();
+      for await (const entry of staged.readSealed(protocol.summary)) {
+        void entry;
+        break;
+      }
+      expect(cursorClose).toHaveBeenCalled();
+      cursorClose.mockRestore();
+      for (const receipt of [
+        {
+          ...protocol.receipt,
+          vaultRevision: vaultRevisionSchema.parse(protocol.receipt.vaultRevision + 1),
+        },
+        {
+          ...protocol.receipt,
+          selectedSlot: { ...protocol.receipt.selectedSlot, id: 'slot.wrong' },
+        },
+      ]) {
+        await expect(staged.publish(protocol.summary, receipt)).rejects.toThrow();
+      }
+      await staged.publish(protocol.summary, protocol.receipt);
+      await expect(staged.status()).resolves.toMatchObject({ state: 'published' });
+      await expect(staged.abort()).rejects.toThrow();
       await expect(
-        restoreEncryptedBackup(
-          chunks(fixture.archive, 37),
-          fixture.rootKey,
-          fixture.vaultId,
-          store,
-          LIMITS,
-        ),
-      ).resolves.toEqual(fixture.summary);
+        staged.publish(protocol.summary, protocol.receipt),
+      ).rejects.toThrow();
+      await expect(
+        database
+          .collection(mongoStorageCollectionNames.backupRestoreEntries)
+          .countDocuments({ restoreSessionId: protocol.summary.restoreSessionId }),
+      ).resolves.toBe(protocol.entries.length);
+      await expect(collectAsync(staged.readSealed(protocol.summary))).resolves.toEqual(
+        protocol.entries,
+      );
+      await expect(
+        staged.finalize(protocol.summary, {
+          ...protocol.receipt,
+          vaultRevision: vaultRevisionSchema.parse(protocol.receipt.vaultRevision + 1),
+        }),
+      ).rejects.toThrow();
+      await staged.finalize(protocol.summary, protocol.receipt);
+      await expect(staged.status()).resolves.toMatchObject({ state: 'committed' });
+      await expect(
+        staged.finalize(protocol.summary, protocol.receipt),
+      ).rejects.toThrow();
 
       const reopened = new MongoVaultStorage(client, database);
       await expect(reopened.getVault(fixture.vaultId)).resolves.toEqual(fixture.vault);
@@ -250,16 +370,16 @@ describe('authenticated encrypted-backup restore against a MongoDB replica set',
       ).resolves.toEqual(fixture.attachmentChunks);
       await expect(
         reopened.getAudit(fixture.vaultId, fixture.audit.id),
-      ).resolves.toEqual(fixture.audit);
+      ).resolves.toBeNull();
       await expect(collectAsync(reopened.listAudits(fixture.vaultId))).resolves.toEqual(
-        [fixture.audit],
+        [],
       );
       await expect(
         reopened.getHistory(fixture.vaultId, fixture.history.id),
-      ).resolves.toEqual(fixture.history);
+      ).resolves.toBeNull();
       await expect(
         collectAsync(reopened.listItemHistory(fixture.vaultId, fixture.activeItem.id)),
-      ).resolves.toEqual([fixture.history]);
+      ).resolves.toEqual([]);
 
       const page = await reopened.pullSyncPage(
         syncCursorSchema.parse({
@@ -308,10 +428,8 @@ describe('authenticated encrypted-backup restore against a MongoDB replica set',
           .findOne({ _id: fixture.summary.restoreSessionId }),
       ).resolves.toMatchObject({
         state: 'committed',
-        stagedBytes: 0,
-        stagedRecords: 0,
-        vaultId: fixture.vaultId,
-        transcriptSha256: fixture.summary.transcriptSha256,
+        protocolVersion: 2,
+        summary: protocol.summary,
       });
     });
   });
@@ -327,15 +445,13 @@ describe('authenticated encrypted-backup restore against a MongoDB replica set',
         .collection<typeof original>(mongoStorageCollectionNames.vaults)
         .insertOne(original);
 
-      await expect(
-        restoreEncryptedBackup(
-          chunks(fixture.archive),
-          fixture.rootKey,
-          fixture.vaultId,
-          store,
-          LIMITS,
-        ),
-      ).rejects.toMatchObject({ code: 'BACKUP_COMMIT_UNCERTAIN' });
+      const protocol = restoreProtocolFixture(fixture);
+      const staged = await store.open(protocol.summary.restoreSessionId, LIMITS);
+      for (const entry of protocol.entries) await staged.write(entry);
+      await staged.seal(protocol.summary);
+      await expect(staged.publish(protocol.summary, protocol.receipt)).rejects.toThrow(
+        'empty, isolated target',
+      );
       await expect(
         database
           .collection<typeof original>(mongoStorageCollectionNames.vaults)
@@ -344,8 +460,138 @@ describe('authenticated encrypted-backup restore against a MongoDB replica set',
       await expect(
         database.collection(mongoStorageCollectionNames.vaults).countDocuments(),
       ).resolves.toBe(1);
-      const staged = await store.open(fixture.summary.restoreSessionId, LIMITS);
-      await expect(staged.status()).resolves.toBe('staging');
+      await expect(staged.status()).resolves.toMatchObject({ state: 'sealed' });
+      await staged.abort();
+    });
+  });
+
+  it('re-reads the complete entry set inside publish and rejects post-readback mutation', async () => {
+    await withEmptyDatabase(client, async (database) => {
+      const store = new MongoBackupRestoreStore(client, database);
+      await store.initialize();
+      const protocol = restoreProtocolFixture(fixture);
+      const staged = await store.open(protocol.summary.restoreSessionId, LIMITS);
+      for (const entry of protocol.entries) await staged.write(entry);
+      await staged.seal(protocol.summary);
+      await expect(collectAsync(staged.readSealed(protocol.summary))).resolves.toEqual(
+        protocol.entries,
+      );
+
+      const collection = database.collection(
+        mongoStorageCollectionNames.backupRestoreEntries,
+      );
+      const stored = await collection.findOne({
+        restoreSessionId: protocol.summary.restoreSessionId,
+        'entry.kind': 'group',
+      });
+      if (stored === null) throw new Error('Staged group entry is missing.');
+      const entry = stored['entry'] as EncryptedBackupEntry;
+      if (entry.kind !== 'group') throw new Error('Unexpected staged entry kind.');
+      const mutatedEntry = {
+        ...entry,
+        record: {
+          ...entry.record,
+          recordRevision: recordRevisionSchema.parse(entry.record.recordRevision + 1),
+        },
+      };
+      await collection.replaceOne(
+        { _id: stored._id },
+        {
+          ...stored,
+          entry: mutatedEntry,
+          entryHash: hashCanonical(mutatedEntry),
+          bytes: Buffer.byteLength(canonicalJson(mutatedEntry), 'utf8') + 1,
+        },
+        { bypassDocumentValidation: true },
+      );
+
+      let readError: unknown;
+      try {
+        await collectAsync(staged.readSealed(protocol.summary));
+      } catch (caught: unknown) {
+        readError = caught;
+      }
+      expect(readError).toBeInstanceOf(Error);
+      expect(String(readError)).toBe(
+        'ValidationError: The sealed restore stream could not be read safely.',
+      );
+      expect(String(readError)).not.toMatch(/group|revision|canary/iu);
+      await expect(staged.publish(protocol.summary, protocol.receipt)).rejects.toThrow(
+        'entry set is inconsistent',
+      );
+      await expect(staged.status()).resolves.toMatchObject({ state: 'sealed' });
+      await staged.abort();
+    });
+  });
+
+  it.each(['ordinal', 'identity', 'entryHash', 'bytes', 'vaultId'] as const)(
+    'rejects raw staged %s corruption during seal',
+    async (field) => {
+      await withEmptyDatabase(client, async (database) => {
+        const store = new MongoBackupRestoreStore(client, database);
+        await store.initialize();
+        const protocol = restoreProtocolFixture(fixture);
+        const staged = await store.open(protocol.summary.restoreSessionId, LIMITS);
+        for (const entry of protocol.entries) await staged.write(entry);
+        const collection = database.collection(
+          mongoStorageCollectionNames.backupRestoreEntries,
+        );
+        const stored = await collection.findOne({
+          restoreSessionId: protocol.summary.restoreSessionId,
+          ordinal: 1,
+        });
+        if (stored === null) throw new Error('Staged entry is missing.');
+        const corrupted = {
+          ...stored,
+          ...(field === 'ordinal' ? { ordinal: 99 } : {}),
+          ...(field === 'identity' ? { identity: 'group.wrong' } : {}),
+          ...(field === 'entryHash' ? { entryHash: '0'.repeat(64) } : {}),
+          ...(field === 'bytes' ? { bytes: Number(stored['bytes']) + 1 } : {}),
+          ...(field === 'vaultId' ? { vaultId: otherFixture.vaultId } : {}),
+        };
+        await collection.replaceOne({ _id: stored._id }, corrupted, {
+          bypassDocumentValidation: true,
+        });
+        await expect(staged.seal(protocol.summary)).rejects.toThrow();
+        await expect(staged.status()).resolves.toMatchObject({ state: 'staging' });
+        await staged.abort();
+      });
+    },
+  );
+
+  it('rejects history/audit publication even when a schema-valid receipt lies about counts', async () => {
+    await withEmptyDatabase(client, async (database) => {
+      const store = new MongoBackupRestoreStore(client, database);
+      await store.initialize();
+      const entries = [
+        { kind: 'vault' as const, record: fixture.vault },
+        ...fixture.orderedRecords,
+      ];
+      const commitment = createBackupStagedEntryCommitment();
+      for (const entry of entries) commitment.update(entry);
+      const summary = {
+        ...fixture.summary,
+        recordCount: entries.length,
+        canonicalEntriesSha256: commitment.finalize(),
+      };
+      const base = restoreProtocolFixture(fixture).receipt;
+      const receipt = {
+        ...base,
+        recordCount: summary.recordCount,
+        canonicalEntriesSha256: summary.canonicalEntriesSha256,
+        verified: { ...base.verified, groups: base.verified.groups + 2 },
+      } as RestoreKnownRecordsVerificationV1;
+      const staged = await store.open(summary.restoreSessionId, LIMITS);
+      for (const entry of entries) await staged.write(entry);
+      await staged.seal(summary);
+      let error: unknown;
+      try {
+        await staged.publish(summary, receipt);
+      } catch (caught: unknown) {
+        error = caught;
+      }
+      expect(error).toBeInstanceOf(Error);
+      expect(String(error)).not.toMatch(/history|audit|canary/iu);
       await staged.abort();
     });
   });
@@ -398,7 +644,7 @@ describe('authenticated encrypted-backup restore against a MongoDB replica set',
             database.collection(collectionName).countDocuments(),
           ).resolves.toBe(0);
         }
-        await expect(staged.status()).resolves.toBe('staging');
+        await expect(staged.status()).resolves.toMatchObject({ state: 'staging' });
         await staged.abort();
       });
     },
@@ -450,7 +696,7 @@ describe('authenticated encrypted-backup restore against a MongoDB replica set',
           },
         );
 
-        await expect(staged.commit(fixture.summary)).rejects.toThrow();
+        await expect(staged.seal(fixture.summary)).rejects.toThrow();
         for (const collectionName of [
           mongoStorageCollectionNames.vaults,
           mongoStorageCollectionNames.groups,
@@ -465,9 +711,9 @@ describe('authenticated encrypted-backup restore against a MongoDB replica set',
             database.collection(collectionName).countDocuments(),
           ).resolves.toBe(0);
         }
-        await expect(staged.status()).resolves.toBe('staging');
+        await expect(staged.status()).resolves.toMatchObject({ state: 'staging' });
         await staged.abort();
-        await expect(staged.status()).resolves.toBe('aborted');
+        await expect(staged.status()).resolves.toMatchObject({ state: 'aborted' });
       });
     },
   );

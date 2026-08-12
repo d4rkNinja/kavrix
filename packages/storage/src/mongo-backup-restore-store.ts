@@ -8,17 +8,19 @@ import {
   DEFAULT_MAX_BACKUP_RECORDS,
   MAX_SUPPORTED_BACKUP_BYTES,
   attachmentRecordHashMatchesCanonicalContent,
+  backupVerificationSchema,
   canonicalJson,
   changeRecordSchema,
   contentHashForRecord,
-  encryptedBackupHeaderSchema,
+  createBackupStagedEntryCommitment,
   recordRevisionSchema,
+  restoreKnownRecordsVerificationV1Schema,
   sha256DigestSchema,
   timestampSchema,
   type AttachmentStreamProgress,
   type BackupRestoreStager,
   type BackupRestoreStore,
-  type BackupStagingStatus,
+  type BackupRestoreStatus,
   type BackupVerification,
   type EncryptedAttachmentRecord,
   type EncryptedBackupEntry,
@@ -28,6 +30,7 @@ import {
   type PersistedAttachmentChunkRecord,
   type PersistedAttachmentHeaderRecord,
   type ResolvedBackupLimits,
+  type RestoreKnownRecordsVerificationV1,
   type RecordRevision,
   type Sha256Digest,
   type TombstoneRecord,
@@ -77,6 +80,7 @@ import {
   MAX_MONGO_RESTORE_ENTRY_BYTES,
   backupEntryVaultId,
   backupRestoreSessionDocumentSchema,
+  backupRestoreStatusFromDocument,
   makeRestoreEntryDocument,
   parseRestoreEntry,
   parseRestoreEntryDocument,
@@ -126,6 +130,7 @@ export class MongoBackupRestoreStore implements BackupRestoreStore {
     const now = this.#timestamp();
     const candidate = backupRestoreSessionDocumentSchema.parse({
       _id: restoreSessionId,
+      protocolVersion: 2,
       restoreSessionId,
       maximumBytes: limits.maximumBytes,
       maximumRecords: limits.maximumRecords,
@@ -146,8 +151,9 @@ export class MongoBackupRestoreStore implements BackupRestoreStore {
       }
       const existing = parseRestoreSessionDocument(existingValue);
       if (
-        existing.maximumBytes !== limits.maximumBytes ||
-        existing.maximumRecords !== limits.maximumRecords
+        'maximumBytes' in existing &&
+        (existing.maximumBytes !== limits.maximumBytes ||
+          existing.maximumRecords !== limits.maximumRecords)
       ) {
         throw new ValidationError(
           'A restore session cannot be reopened with different bounds.',
@@ -179,9 +185,8 @@ export class MongoBackupRestoreStore implements BackupRestoreStore {
         throw new ValidationError('The restore session does not exist.');
       }
       const restore = parseRestoreSessionDocument(sessionValue);
-      if (restore.state === 'committed') return;
-      if (restore.state === 'aborted') {
-        throw new ValidationError('An aborted restore session cannot be resumed.');
+      if (restore.state !== 'staging') {
+        throw new ValidationError('Restore entries can only be written while staging.');
       }
 
       const candidate = makeRestoreEntryDocument(
@@ -212,9 +217,12 @@ export class MongoBackupRestoreStore implements BackupRestoreStore {
       if (existingValue !== null) {
         const existing = parseRestoreEntryDocument(existingValue);
         if (
+          position >= restore.stagedRecords ||
           existing.ordinal !== position ||
+          existing.identity !== candidate.identity ||
           existing.entryHash !== candidate.entryHash ||
-          existing.bytes !== candidate.bytes
+          existing.bytes !== candidate.bytes ||
+          canonicalJson(existing.entry) !== canonicalJson(candidate.entry)
         ) {
           throw new ValidationError(
             'A repeated restore entry must exactly match its staged value.',
@@ -261,7 +269,7 @@ export class MongoBackupRestoreStore implements BackupRestoreStore {
     });
   }
 
-  async commit(
+  async seal(
     restoreSessionId: Sha256Digest,
     summaryInput: BackupVerification,
   ): Promise<void> {
@@ -279,12 +287,12 @@ export class MongoBackupRestoreStore implements BackupRestoreStore {
         throw new ValidationError('The restore session does not exist.');
       }
       const restore = parseRestoreSessionDocument(sessionValue);
-      if (restore.state === 'aborted') {
-        throw new ValidationError('An aborted restore session cannot be committed.');
-      }
-      if (restore.state === 'committed') {
-        assertCommittedSummary(restore, summary);
+      if (restore.state === 'sealed') {
+        assertExactSummary(restore.summary, summary);
         return;
+      }
+      if (restore.state !== 'staging') {
+        throw new ValidationError('Only a staging restore session can be sealed.');
       }
       if (
         restore.vaultId === undefined ||
@@ -298,33 +306,169 @@ export class MongoBackupRestoreStore implements BackupRestoreStore {
         .find({ restoreSessionId }, { session })
         .sort({ ordinal: 1 })
         .toArray();
-      const entries = entryValues.map((value) => parseRestoreEntryDocument(value));
       if (summary.recordCount > restore.maximumRecords) {
         throw new ValidationError('The restore summary exceeds its record limit.');
       }
-      const publication = buildPublication(entries, summary);
-      await this.#assertEmptyTarget(restoreSessionId, session);
-      await this.#publish(publication, session);
-
-      await this.#entries().deleteMany({ restoreSessionId }, { session });
+      validateEntrySet(entryValues, summary, restore.stagedBytes);
       const now = this.#timestamp();
-      const committed = backupRestoreSessionDocumentSchema.parse({
-        _id: restore._id,
-        restoreSessionId: restore.restoreSessionId,
-        maximumBytes: restore.maximumBytes,
-        maximumRecords: restore.maximumRecords,
-        state: 'committed',
-        stagedBytes: 0,
-        stagedRecords: 0,
-        vaultId: restore.vaultId,
-        transcriptSha256: summary.transcriptSha256,
-        summaryRecordCount: summary.recordCount,
-        createdAt: restore.createdAt,
+      const sealed = backupRestoreSessionDocumentSchema.parse({
+        ...restore,
+        state: 'sealed',
+        summary,
+        sealedAt: now,
         updatedAt: now,
-        committedAt: now,
       });
       const update = await this.#sessions().replaceOne(
         { _id: restoreSessionId, state: 'staging' },
+        sealed,
+        { session },
+      );
+      if (update.modifiedCount !== 1) {
+        throw new ValidationError('The restore session changed concurrently.');
+      }
+    });
+  }
+
+  async *readSealed(
+    restoreSessionId: Sha256Digest,
+    summaryInput: BackupVerification,
+  ): AsyncIterable<EncryptedBackupEntry> {
+    const summary = parseSummary(summaryInput);
+    if (summary.restoreSessionId !== restoreSessionId) {
+      throw new ValidationError('The restore summary identifies a different session.');
+    }
+    const value = await this.#sessions().findOne({ _id: restoreSessionId });
+    if (value === null)
+      throw new ValidationError('The restore session does not exist.');
+    const restore = parseRestoreSessionDocument(value);
+    if (restore.state !== 'sealed' && restore.state !== 'published') {
+      throw new ValidationError('Only a sealed restore session can be read.');
+    }
+    assertExactSummary(restore.summary, summary);
+    const cursor = this.#entries().find({ restoreSessionId }).sort({ ordinal: 1 });
+    const commitment = createBackupStagedEntryCommitment({
+      maximumEntryBytes: MAX_MONGO_RESTORE_ENTRY_BYTES,
+    });
+    let ordinal = 0;
+    let bytes = 0;
+    let failed = false;
+    try {
+      for await (const raw of cursor) {
+        const document = validateEntryDocument(raw, summary, ordinal);
+        commitment.update(document.entry);
+        bytes += document.bytes;
+        ordinal += 1;
+        yield document.entry;
+      }
+      if (
+        ordinal !== summary.recordCount ||
+        ordinal !== restore.stagedRecords ||
+        bytes !== restore.stagedBytes ||
+        commitment.finalize() !== summary.canonicalEntriesSha256
+      ) {
+        throw new ValidationError('The sealed restore entry set is inconsistent.');
+      }
+    } catch {
+      failed = true;
+      throw sanitizeSealedReadError();
+    } finally {
+      await closeRestoreCursor(cursor, failed);
+    }
+  }
+
+  async publish(
+    restoreSessionId: Sha256Digest,
+    summaryInput: BackupVerification,
+    receiptInput: RestoreKnownRecordsVerificationV1,
+  ): Promise<void> {
+    const summary = parseSummary(summaryInput);
+    const receipt = parseReceipt(receiptInput);
+    assertReceiptSummary(receipt, summary);
+    await this.#withTransaction(async (session) => {
+      const value = await this.#sessions().findOne(
+        { _id: restoreSessionId },
+        { session },
+      );
+      if (value === null)
+        throw new ValidationError('The restore session does not exist.');
+      const restore = parseRestoreSessionDocument(value);
+      if (restore.state !== 'sealed') {
+        throw new ValidationError('Only a sealed restore session can be published.');
+      }
+      assertExactSummary(restore.summary, summary);
+      assertReceiptSummary(receipt, restore.summary);
+      const rawEntries = await this.#entries()
+        .find({ restoreSessionId }, { session })
+        .sort({ ordinal: 1 })
+        .toArray();
+      const entries = validateEntrySet(rawEntries, summary, restore.stagedBytes);
+      const publication = buildPublication(entries, summary);
+      assertReceiptPublication(receipt, entries, publication, summary);
+      await this.#assertEmptyTarget(restoreSessionId, session);
+      await this.#publish(publication, session);
+      const now = this.#timestamp();
+      const published = backupRestoreSessionDocumentSchema.parse({
+        ...restore,
+        state: 'published',
+        publishedAt: now,
+        updatedAt: now,
+      });
+      const update = await this.#sessions().replaceOne(
+        { _id: restoreSessionId, state: 'sealed' },
+        published,
+        { session },
+      );
+      if (update.modifiedCount !== 1) {
+        throw new ValidationError('The restore session changed concurrently.');
+      }
+    });
+  }
+
+  async finalize(
+    restoreSessionId: Sha256Digest,
+    summaryInput: BackupVerification,
+    receiptInput: RestoreKnownRecordsVerificationV1,
+  ): Promise<void> {
+    const summary = parseSummary(summaryInput);
+    const receipt = parseReceipt(receiptInput);
+    assertReceiptSummary(receipt, summary);
+    await this.#withTransaction(async (session) => {
+      const value = await this.#sessions().findOne(
+        { _id: restoreSessionId },
+        { session },
+      );
+      if (value === null)
+        throw new ValidationError('The restore session does not exist.');
+      const restore = parseRestoreSessionDocument(value);
+      if (restore.state !== 'published') {
+        throw new ValidationError('Only a published restore session can be finalized.');
+      }
+      assertExactSummary(restore.summary, summary);
+      assertReceiptSummary(receipt, restore.summary);
+      const rawEntries = await this.#entries()
+        .find({ restoreSessionId }, { session })
+        .sort({ ordinal: 1 })
+        .toArray();
+      const entries = validateEntrySet(rawEntries, summary, restore.stagedBytes);
+      const publication = buildPublication(entries, summary);
+      assertReceiptPublication(receipt, entries, publication, summary);
+      const deletion = await this.#entries().deleteMany(
+        { restoreSessionId },
+        { session },
+      );
+      if (deletion.deletedCount !== restore.stagedRecords) {
+        throw new ValidationError('The restore session changed concurrently.');
+      }
+      const committed = backupRestoreSessionDocumentSchema.parse({
+        _id: restore._id,
+        state: 'committed',
+        protocolVersion: 2,
+        restoreSessionId,
+        summary: restore.summary,
+        committedAt: this.#timestamp(),
+      });
+      const update = await this.#sessions().replaceOne(
+        { _id: restoreSessionId, state: 'published' },
         committed,
         { session },
       );
@@ -334,11 +478,11 @@ export class MongoBackupRestoreStore implements BackupRestoreStore {
     });
   }
 
-  async status(restoreSessionId: Sha256Digest): Promise<BackupStagingStatus> {
+  async status(restoreSessionId: Sha256Digest): Promise<BackupRestoreStatus> {
     const value = await this.#sessions().findOne({ _id: restoreSessionId });
     if (value === null)
       throw new ValidationError('The restore session does not exist.');
-    return parseRestoreSessionDocument(value).state;
+    return backupRestoreStatusFromDocument(value);
   }
 
   async abort(restoreSessionId: Sha256Digest): Promise<void> {
@@ -347,30 +491,33 @@ export class MongoBackupRestoreStore implements BackupRestoreStore {
         { _id: restoreSessionId },
         { session },
       );
-      if (value === null) return;
+      if (value === null) {
+        throw new ValidationError('The restore session does not exist.');
+      }
       const restore = parseRestoreSessionDocument(value);
-      if (restore.state === 'aborted') return;
-      if (restore.state === 'committed') {
-        throw new ValidationError('A committed restore session cannot be aborted.');
+      if (restore.state === 'published' || restore.state === 'committed') {
+        throw new ValidationError('A published restore session cannot be aborted.');
+      }
+      if (restore.state === 'aborted') {
+        throw new ValidationError('Only a staging or sealed restore can be aborted.');
       }
       await this.#entries().deleteMany({ restoreSessionId }, { session });
       const now = this.#timestamp();
       const aborted = backupRestoreSessionDocumentSchema.parse({
         _id: restore._id,
+        protocolVersion: 2,
         restoreSessionId: restore.restoreSessionId,
-        maximumBytes: restore.maximumBytes,
-        maximumRecords: restore.maximumRecords,
         state: 'aborted',
-        stagedBytes: 0,
-        stagedRecords: 0,
-        ...(restore.vaultId === undefined ? {} : { vaultId: restore.vaultId }),
-        createdAt: restore.createdAt,
-        updatedAt: now,
         abortedAt: now,
       });
-      await this.#sessions().replaceOne({ _id: restoreSessionId }, aborted, {
-        session,
-      });
+      const update = await this.#sessions().replaceOne(
+        { _id: restoreSessionId, state: restore.state },
+        aborted,
+        { session },
+      );
+      if (update.modifiedCount !== 1) {
+        throw new ValidationError('The restore session changed concurrently.');
+      }
     });
   }
 
@@ -523,11 +670,29 @@ class MongoBackupRestoreStager implements BackupRestoreStager {
     this.#position += 1;
   }
 
-  async commit(summary: BackupVerification): Promise<void> {
-    await this.#store.commit(this.#restoreSessionId, summary);
+  async seal(summary: BackupVerification): Promise<void> {
+    await this.#store.seal(this.#restoreSessionId, summary);
   }
 
-  async status(): Promise<BackupStagingStatus> {
+  readSealed(summary: BackupVerification): AsyncIterable<EncryptedBackupEntry> {
+    return this.#store.readSealed(this.#restoreSessionId, summary);
+  }
+
+  async publish(
+    summary: BackupVerification,
+    receipt: RestoreKnownRecordsVerificationV1,
+  ): Promise<void> {
+    await this.#store.publish(this.#restoreSessionId, summary, receipt);
+  }
+
+  async finalize(
+    summary: BackupVerification,
+    receipt: RestoreKnownRecordsVerificationV1,
+  ): Promise<void> {
+    await this.#store.finalize(this.#restoreSessionId, summary, receipt);
+  }
+
+  async status(): Promise<BackupRestoreStatus> {
     return this.#store.status(this.#restoreSessionId);
   }
 
@@ -958,6 +1123,132 @@ function assertTombstoneCoverage(
   }
 }
 
+function validateEntryDocument(
+  input: unknown,
+  summary: BackupVerification,
+  expectedOrdinal: number,
+): BackupRestoreEntryDocument {
+  const document = parseRestoreEntryDocument(input);
+  if (
+    document.restoreSessionId !== summary.restoreSessionId ||
+    document.ordinal !== expectedOrdinal ||
+    document.vaultId !== summary.header.vaultId
+  ) {
+    throw new ValidationError('A staged restore entry has inconsistent metadata.');
+  }
+  assertCanonicalAttachmentHash(document.entry);
+  return document;
+}
+
+function validateEntrySet(
+  inputs: readonly unknown[],
+  summary: BackupVerification,
+  expectedBytes: number,
+): readonly BackupRestoreEntryDocument[] {
+  const commitment = createBackupStagedEntryCommitment({
+    maximumEntryBytes: MAX_MONGO_RESTORE_ENTRY_BYTES,
+  });
+  let bytes = 0;
+  const entries = inputs.map((input, ordinal) => {
+    const document = validateEntryDocument(input, summary, ordinal);
+    commitment.update(document.entry);
+    bytes += document.bytes;
+    return document;
+  });
+  if (
+    entries.length !== summary.recordCount ||
+    bytes !== expectedBytes ||
+    commitment.finalize() !== summary.canonicalEntriesSha256
+  ) {
+    throw new ValidationError('The staged restore entry set is inconsistent.');
+  }
+  return entries;
+}
+
+function assertReceiptPublication(
+  receipt: RestoreKnownRecordsVerificationV1,
+  entries: readonly BackupRestoreEntryDocument[],
+  publication: Publication,
+  summary: BackupVerification,
+): void {
+  if (publication.histories.length !== 0 || publication.audits.length !== 0) {
+    throw new ValidationError(
+      'The restore verification receipt does not match publication.',
+    );
+  }
+  const counts = {
+    vaults: 0,
+    groups: 0,
+    items: 0,
+    attachments: 0,
+    attachmentHeaders: 0,
+    attachmentChunks: 0,
+    tombstonePredecessors: { groups: 0, items: 0, attachments: 0 },
+    tombstones: 0,
+    histories: 0,
+    audits: 0,
+  };
+  for (const { entry } of entries) {
+    switch (entry.kind) {
+      case 'vault':
+        counts.vaults += 1;
+        break;
+      case 'group':
+        counts.groups += 1;
+        break;
+      case 'item':
+        counts.items += 1;
+        break;
+      case 'attachment':
+        counts.attachments += 1;
+        break;
+      case 'attachment-header':
+        counts.attachmentHeaders += 1;
+        break;
+      case 'attachment-chunk':
+        counts.attachmentChunks += 1;
+        break;
+      case 'tombstone-predecessor':
+        counts.tombstonePredecessors[`${entry.entityType}s`] += 1;
+        break;
+      case 'tombstone':
+        counts.tombstones += 1;
+        break;
+      case 'history':
+        counts.histories += 1;
+        break;
+      case 'audit':
+        counts.audits += 1;
+        break;
+    }
+  }
+  const vault = publication.vault.record;
+  const slot = vault.keySlots.find(({ id }) => id === receipt.selectedSlot.id);
+  if (
+    canonicalJson(counts) !== canonicalJson(receipt.verified) ||
+    receipt.vaultRevision !== vault.revision ||
+    !slotMatchesReceipt(slot, receipt, vault.currentKeyVersion) ||
+    receipt.recordCount !== summary.recordCount
+  ) {
+    throw new ValidationError(
+      'The restore verification receipt does not match publication.',
+    );
+  }
+}
+
+function slotMatchesReceipt(
+  slot: VaultRecord['keySlots'][number] | undefined,
+  receipt: RestoreKnownRecordsVerificationV1,
+  currentKeyVersion: number,
+): boolean {
+  return (
+    slot?.type === receipt.selectedSlot.type &&
+    slot.keyVersion === receipt.selectedSlot.keyVersion &&
+    slot.state === 'active' &&
+    slot.keyVersion === currentKeyVersion
+  );
+}
+
 function parseMongoLimits(limits: ResolvedBackupLimits): ResolvedBackupLimits {
   if (
     !Number.isSafeInteger(limits.maximumBytes) ||
@@ -975,48 +1266,57 @@ function parseMongoLimits(limits: ResolvedBackupLimits): ResolvedBackupLimits {
 }
 
 function parseSummary(summary: unknown): BackupVerification {
-  if (typeof summary !== 'object' || summary === null) {
-    throw new ValidationError('The restore summary is invalid.');
-  }
-  const headerResult = encryptedBackupHeaderSchema.safeParse(
-    Reflect.get(summary, 'header'),
-  );
-  const restoreSessionIdResult = sha256DigestSchema.safeParse(
-    Reflect.get(summary, 'restoreSessionId'),
-  );
-  const transcriptResult = sha256DigestSchema.safeParse(
-    Reflect.get(summary, 'transcriptSha256'),
-  );
-  const recordCount = Reflect.get(summary, 'recordCount') as unknown;
-  if (
-    !headerResult.success ||
-    !restoreSessionIdResult.success ||
-    !transcriptResult.success ||
-    typeof recordCount !== 'number' ||
-    !Number.isSafeInteger(recordCount) ||
-    recordCount < 1 ||
-    recordCount > DEFAULT_MAX_BACKUP_RECORDS
-  ) {
-    throw new ValidationError('The restore summary is invalid.');
-  }
-  return {
-    header: headerResult.data,
-    restoreSessionId: restoreSessionIdResult.data,
-    recordCount,
-    transcriptSha256: transcriptResult.data,
-  };
+  const result = backupVerificationSchema.safeParse(summary);
+  if (!result.success) throw new ValidationError('The restore summary is invalid.');
+  return result.data;
 }
 
-function assertCommittedSummary(
-  restore: Extract<BackupRestoreSessionDocument, { state: 'committed' }>,
+function parseReceipt(input: unknown): RestoreKnownRecordsVerificationV1 {
+  const result = restoreKnownRecordsVerificationV1Schema.safeParse(input);
+  if (!result.success) {
+    throw new ValidationError('The restore verification receipt is invalid.');
+  }
+  return result.data;
+}
+
+function assertExactSummary(
+  persisted: BackupVerification,
+  summary: BackupVerification,
+): void {
+  if (canonicalJson(persisted) !== canonicalJson(summary)) {
+    throw new ValidationError('The restore summary does not match sealed state.');
+  }
+}
+
+function assertReceiptSummary(
+  receipt: RestoreKnownRecordsVerificationV1,
   summary: BackupVerification,
 ): void {
   if (
-    restore.vaultId !== summary.header.vaultId ||
-    restore.transcriptSha256 !== summary.transcriptSha256 ||
-    restore.summaryRecordCount !== summary.recordCount
+    receipt.vaultId !== summary.header.vaultId ||
+    receipt.restoreSessionId !== summary.restoreSessionId ||
+    receipt.transcriptSha256 !== summary.transcriptSha256 ||
+    receipt.canonicalEntriesSha256 !== summary.canonicalEntriesSha256 ||
+    receipt.recordCount !== summary.recordCount
   ) {
-    throw new ValidationError('A committed restore cannot accept another summary.');
+    throw new ValidationError(
+      'The restore verification receipt does not match its summary.',
+    );
+  }
+}
+
+function sanitizeSealedReadError(): ValidationError {
+  return new ValidationError('The sealed restore stream could not be read safely.');
+}
+
+async function closeRestoreCursor(
+  cursor: Readonly<{ close(): Promise<void> }>,
+  preservePrimaryError: boolean,
+): Promise<void> {
+  try {
+    await cursor.close();
+  } catch {
+    if (!preservePrimaryError) throw sanitizeSealedReadError();
   }
 }
 

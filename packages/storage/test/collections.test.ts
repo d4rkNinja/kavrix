@@ -311,6 +311,7 @@ describe('Mongo collection definitions', () => {
 
     const restoreCommon = [
       '_id',
+      'protocolVersion',
       'restoreSessionId',
       'maximumBytes',
       'maximumRecords',
@@ -327,25 +328,69 @@ describe('Mongo collection definitions', () => {
       restoreCommon,
       ['vaultId'],
     );
+    expectExactBranch(collectionSchema('backup_restore_sessions'), 'state', 'sealed', [
+      ...restoreCommon,
+      'vaultId',
+      'summary',
+      'sealedAt',
+    ]);
+    expectExactBranch(
+      collectionSchema('backup_restore_sessions'),
+      'state',
+      'published',
+      [...restoreCommon, 'vaultId', 'summary', 'sealedAt', 'publishedAt'],
+    );
     expectExactBranch(
       collectionSchema('backup_restore_sessions'),
       'state',
       'committed',
-      [
-        ...restoreCommon,
-        'vaultId',
-        'transcriptSha256',
-        'summaryRecordCount',
-        'committedAt',
-      ],
+      ['_id', 'state', 'protocolVersion', 'restoreSessionId', 'summary', 'committedAt'],
     );
-    expectExactBranch(
-      collectionSchema('backup_restore_sessions'),
+    expectExactBranch(collectionSchema('backup_restore_sessions'), 'state', 'aborted', [
+      '_id',
       'state',
-      'aborted',
-      [...restoreCommon, 'abortedAt'],
-      ['vaultId'],
-    );
+      'protocolVersion',
+      'restoreSessionId',
+      'abortedAt',
+    ]);
+
+    const restoreSessions = collectionSchema('backup_restore_sessions');
+    for (const state of ['staging', 'sealed', 'published', 'committed', 'aborted']) {
+      expect(
+        property(branch(restoreSessions, 'state', state), 'protocolVersion').enum,
+      ).toEqual([2]);
+    }
+    for (const state of ['sealed', 'published', 'committed']) {
+      const summary = property(branch(restoreSessions, 'state', state), 'summary');
+      expect(summary.additionalProperties).toBe(false);
+      expect([...(summary.required ?? [])].sort()).toEqual(
+        [
+          'header',
+          'restoreSessionId',
+          'recordCount',
+          'transcriptSha256',
+          'canonicalEntriesSha256',
+        ].sort(),
+      );
+      const header = property(summary, 'header');
+      expect(header.additionalProperties).toBe(false);
+      expect([...(header.required ?? [])].sort()).toEqual(
+        [
+          'type',
+          'format',
+          'version',
+          'vaultId',
+          'schemaVersion',
+          'createdAt',
+          'authentication',
+        ].sort(),
+      );
+      const authentication = property(header, 'authentication');
+      expect(authentication.additionalProperties).toBe(false);
+      expect([...(authentication.required ?? [])].sort()).toEqual(
+        ['algorithm', 'salt'].sort(),
+      );
+    }
 
     const tombstone = property(collectionSchema('tombstones'), 'record');
     for (const entityType of ['vault', 'group', 'item', 'attachment']) {

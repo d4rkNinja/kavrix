@@ -1,7 +1,11 @@
 import {
   DEFAULT_MAX_BACKUP_RECORDS,
   MAX_SUPPORTED_BACKUP_BYTES,
+  backupRestoreStatusSchema,
+  backupVerificationSchema,
+  canonicalJson,
   encryptedBackupEntrySchema,
+  type BackupRestoreStatus,
   type EncryptedBackupEntry,
   sha256DigestSchema,
   timestampSchema,
@@ -17,9 +21,10 @@ import { hashCanonical } from './documents.js';
 export const MAX_MONGO_RESTORE_ENTRY_BYTES = 15 * 1024 * 1024;
 
 const sha256HexSchema = z.string().regex(/^[a-f0-9]{64}$/u);
-const sessionCommonSchema = z
+const progressSessionDocumentSchema = z
   .object({
     _id: sha256DigestSchema,
+    protocolVersion: z.literal(2),
     restoreSessionId: sha256DigestSchema,
     maximumBytes: z.number().int().positive().max(MAX_SUPPORTED_BACKUP_BYTES),
     maximumRecords: z.number().int().positive().max(DEFAULT_MAX_BACKUP_RECORDS),
@@ -30,27 +35,49 @@ const sessionCommonSchema = z
   })
   .strict();
 
-const stagingRestoreSessionSchema = sessionCommonSchema
+const stagingRestoreSessionSchema = progressSessionDocumentSchema
   .extend({
     state: z.literal('staging'),
     vaultId: vaultIdSchema.optional(),
   })
   .strict();
 
-const committedRestoreSessionSchema = sessionCommonSchema
+const sealedRestoreSessionSchema = progressSessionDocumentSchema
   .extend({
-    state: z.literal('committed'),
+    state: z.literal('sealed'),
     vaultId: vaultIdSchema,
-    transcriptSha256: sha256DigestSchema,
-    summaryRecordCount: z.number().int().positive().max(DEFAULT_MAX_BACKUP_RECORDS),
+    summary: backupVerificationSchema,
+    sealedAt: timestampSchema,
+  })
+  .strict();
+
+const publishedRestoreSessionSchema = progressSessionDocumentSchema
+  .extend({
+    state: z.literal('published'),
+    vaultId: vaultIdSchema,
+    summary: backupVerificationSchema,
+    sealedAt: timestampSchema,
+    publishedAt: timestampSchema,
+  })
+  .strict();
+
+const committedRestoreSessionSchema = z
+  .object({
+    _id: sha256DigestSchema,
+    state: z.literal('committed'),
+    protocolVersion: z.literal(2),
+    restoreSessionId: sha256DigestSchema,
+    summary: backupVerificationSchema,
     committedAt: timestampSchema,
   })
   .strict();
 
-const abortedRestoreSessionSchema = sessionCommonSchema
-  .extend({
+const abortedRestoreSessionSchema = z
+  .object({
+    _id: sha256DigestSchema,
     state: z.literal('aborted'),
-    vaultId: vaultIdSchema.optional(),
+    protocolVersion: z.literal(2),
+    restoreSessionId: sha256DigestSchema,
     abortedAt: timestampSchema,
   })
   .strict();
@@ -58,6 +85,8 @@ const abortedRestoreSessionSchema = sessionCommonSchema
 export const backupRestoreSessionDocumentSchema = z
   .discriminatedUnion('state', [
     stagingRestoreSessionSchema,
+    sealedRestoreSessionSchema,
+    publishedRestoreSessionSchema,
     committedRestoreSessionSchema,
     abortedRestoreSessionSchema,
   ])
@@ -69,24 +98,12 @@ export const backupRestoreSessionDocumentSchema = z
         message: 'Restore session identity is inconsistent',
       });
     }
-    if (
-      document.stagedBytes > document.maximumBytes ||
-      document.stagedRecords > document.maximumRecords
-    ) {
+    const { _id: documentId, ...status } = document;
+    void documentId;
+    if (!backupRestoreStatusSchema.safeParse(status).success) {
       context.addIssue({
         code: 'custom',
-        path: ['stagedRecords'],
-        message: 'Restore session staging exceeds its bounds',
-      });
-    }
-    if (
-      (document.state === 'committed' || document.state === 'aborted') &&
-      (document.stagedBytes !== 0 || document.stagedRecords !== 0)
-    ) {
-      context.addIssue({
-        code: 'custom',
-        path: ['stagedRecords'],
-        message: 'Closed restore sessions cannot retain staged counters',
+        message: 'Restore session status is inconsistent',
       });
     }
   });
@@ -113,7 +130,8 @@ export const backupRestoreEntryDocumentSchema = z
         restoreEntryDocumentId(document.restoreSessionId, document.identity) ||
       document.identity !== restoreEntryIdentity(document.entry) ||
       document.entryHash !== hashCanonical(document.entry) ||
-      document.vaultId !== backupEntryVaultId(document.entry)
+      document.vaultId !== backupEntryVaultId(document.entry) ||
+      document.bytes !== Buffer.byteLength(canonicalJson(document.entry), 'utf8') + 1
     ) {
       context.addIssue({
         code: 'custom',
@@ -200,6 +218,12 @@ export function parseRestoreSessionDocument(
     input,
     'backup restore session',
   );
+}
+
+export function backupRestoreStatusFromDocument(input: unknown): BackupRestoreStatus {
+  const { _id: documentId, ...status } = parseRestoreSessionDocument(input);
+  void documentId;
+  return parseStored(backupRestoreStatusSchema, status, 'backup restore status');
 }
 
 export function parseRestoreEntryDocument(input: unknown): BackupRestoreEntryDocument {
