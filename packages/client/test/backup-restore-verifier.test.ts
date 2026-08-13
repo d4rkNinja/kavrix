@@ -135,7 +135,7 @@ describe('known-record restore verifier', () => {
     try {
       const cases: readonly AsyncIterable<EncryptedBackupEntry>[] = [
         tracked(material.entries.slice(1)),
-        tracked([...material.entries, material.entries[1]]),
+        tracked([...material.entries, required(material.entries[1])]),
         throwingIterable('record-id-canary'),
       ];
       for (const entries of cases) {
@@ -519,7 +519,7 @@ describe('known-record restore verifier', () => {
         encryptedBackupEntrySchema.parse({ kind: 'history', record: history }),
         encryptedBackupEntrySchema.parse({ kind: 'audit', record: audit }),
       ]) {
-        const entries = [material.entries[0], unsupportedEntry];
+        const entries = [required(material.entries[0]), unsupportedEntry];
         const source = tracked(entries);
         const session = await material.makeFactory()(material.vault);
         await expect(
@@ -572,7 +572,7 @@ describe('known-record restore verifier', () => {
         deletedAt,
       };
       const entries = [
-        material.entries[0],
+        required(material.entries[0]),
         encryptedBackupEntrySchema.parse({ kind: 'group', record: current }),
         encryptedBackupEntrySchema.parse({
           kind: 'tombstone-predecessor',
@@ -622,7 +622,7 @@ describe('known-record restore verifier', () => {
         predecessor.wrappedGroupKey,
       );
       const restoredEntries = [
-        material.entries[0],
+        required(material.entries[0]),
         encryptedBackupEntrySchema.parse({ kind: 'group', record: restored }),
         encryptedBackupEntrySchema.parse({
           kind: 'tombstone',
@@ -702,8 +702,8 @@ describe('known-record restore verifier', () => {
         },
       });
       const base = [
-        material.entries[0],
-        material.entries[1],
+        required(material.entries[0]),
+        required(material.entries[1]),
         encryptedBackupEntrySchema.parse({ kind: 'item', record: current }),
       ];
       const predecessorEntry = encryptedBackupEntrySchema.parse({
@@ -901,13 +901,12 @@ async function fixture(): Promise<
       }),
     ),
   });
+  const group = required(source.groups[0]);
+  const item = required(source.items.get(group.id)?.[0]);
   const entries = [
     encryptedBackupEntrySchema.parse({ kind: 'vault', record: vault }),
-    encryptedBackupEntrySchema.parse({ kind: 'group', record: source.groups[0] }),
-    encryptedBackupEntrySchema.parse({
-      kind: 'item',
-      record: source.items.get(source.groups[0]?.id ?? '')?.[0],
-    }),
+    encryptedBackupEntrySchema.parse({ kind: 'group', record: group }),
+    encryptedBackupEntrySchema.parse({ kind: 'item', record: item }),
   ] as const;
   const commitment = createBackupStagedEntryCommitment();
   for (const entry of entries) commitment.update(entry);
