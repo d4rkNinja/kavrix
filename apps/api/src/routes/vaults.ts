@@ -58,12 +58,17 @@ export const vaultRoutes: ApiRoutePlugin = (app, context) => {
       throw new ApiValidationError();
     }
     assertSlotPublish(current, body.record, slotId, body.expectedVaultRevision);
-    await commitOpaqueMutation(context.ports.storage, {
+    const mutation = {
       entityType: 'vault',
       expectedVaultRevision: body.expectedVaultRevision,
       idempotencyKey: body.idempotencyKey,
       record: body.record,
-    });
+    } as const;
+    if (body.audit === undefined) {
+      await commitOpaqueMutation(context.ports.storage, mutation);
+    } else {
+      await context.ports.storage.commitKeySlotMutation(mutation, body.audit);
+    }
     return reply.status(204).send();
   });
 
@@ -77,12 +82,17 @@ export const vaultRoutes: ApiRoutePlugin = (app, context) => {
       throw new ApiValidationError();
     }
     assertSlotRevocation(current, body.record, slotId, body.expectedVaultRevision);
-    await commitOpaqueMutation(context.ports.storage, {
+    const mutation = {
       entityType: 'vault',
       expectedVaultRevision: body.expectedVaultRevision,
       idempotencyKey: body.idempotencyKey,
       record: body.record,
-    });
+    } as const;
+    if (body.audit === undefined) {
+      await commitOpaqueMutation(context.ports.storage, mutation);
+    } else {
+      await context.ports.storage.commitKeySlotMutation(mutation, body.audit);
+    }
     return reply.status(204).send();
   });
   return Promise.resolve();

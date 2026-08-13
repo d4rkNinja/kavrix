@@ -33,6 +33,10 @@ encrypted mutation against the unlocked local store. Its current surface is:
 | `creds generate passphrase [options]`                                             | Available in the built package | Generates one passphrase from the attributed EFF short word list.                                                                                                                         |
 | `creds totp [options]`                                                            | Available in the built package | Reads a masked or explicit-stdin Base32 seed and emits one canonical TOTP code.                                                                                                           |
 | `creds key create --file <path> [options]`                                        | Available in the built package | Creates one unbound v1 portable-key file, refuses overwrite, and never displays the portable key.                                                                                         |
+| `creds key slot list [--json]`                                                    | Available in the built package | Lists only redacted slot ID/type/state/version/timestamps and public device IDs; derivation metadata and wrapped keys are excluded.                                                       |
+| `creds key slot create <slot-type> [options]`                                     | Available in the built package | Adds a portable-key, passphrase, recovery-key, or device-key slot after explicit local reauthentication, remote readback, and encrypted audit publication.                                |
+| `creds key slot disable <slot-id> [options]`                                      | Available in the built package | Removes only this device's protected device-slot secret; the remote vault record is unchanged and the remembered current slot requires a verified replacement.                            |
+| `creds key slot revoke <slot-id> [options]`                                       | Available in the built package | Revokes one remote slot through the revision-bound control plane, with last-current-slot protection and encrypted audit publication.                                                      |
 | `creds init [options]`                                                            | Available in the built package | Creates one vault/profile/device/session with durable recovery material and a global writer lease; `--key-file` accepts a guarded unprotected or passphrase-protected unbound v1 file.    |
 | `creds init resume <operation-id>`                                                | Available in the built package | Resumes one durable initialization journal operation.                                                                                                                                     |
 | `creds init cancel <operation-id>`                                                | Available in the built package | Cancels one safely cancellable prepared initialization operation.                                                                                                                         |
@@ -95,6 +99,15 @@ is explicit.
 matching masked entries of at least 12 UTF-8 bytes; `--passphrase-stdin` requires
 exactly two bounded frames followed by EOF. Success emits only `Portable key file
 created.` Existing targets are never replaced.
+
+`key slot` commands require an explicit `--reauth` method. Portable, recovery,
+and passphrase credentials are accepted through masked input, bounded stdin, or
+guarded portable-key files; `device-key` reauthentication reads only the
+protected local keychain. Slot creation and remote revocation publish an
+encrypted audit sidecar containing metadata only. `disable` is local-only and
+removes a same-device device-slot secret without changing the server record.
+All rendered slot output is redacted and never includes derivation parameters,
+wrapped-root envelopes, credentials, or device secrets.
 
 `status` accepts `--json`, `--secret-backend <native|sealed-file>`, and
 `--backend-passphrase-stdin`. The backend defaults to `native`; a missing native
@@ -202,8 +215,8 @@ The following surfaces are not available from the packed executable and must not
 be treated as released behavior, even where a tested injected descriptor or
 lower-level use case exists:
 
-- standalone portable-key import, rotation, recovery, and device lifecycle
-  beyond `creds init --key-file` and the catalog contracts above;
+- standalone portable-key import, rotation, and device-token lifecycle beyond
+  the composed `key slot` commands and `creds init --key-file`;
 - backup, verify, restore, history, and attachment commands;
 - `set`, `update`, `run`, and the TUI entrypoint.
 

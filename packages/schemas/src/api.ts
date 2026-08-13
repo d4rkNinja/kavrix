@@ -13,6 +13,7 @@ import {
 import {
   MAX_ATTACHMENT_CHUNKS,
   encryptedAttachmentRecordSchema,
+  encryptedAuditRecordSchema,
   encryptedDeviceLabelSchema,
   encryptedGroupRecordSchema,
   encryptedItemRecordSchema,
@@ -346,6 +347,8 @@ export const vaultKeySlotUpdateRequestSchema = z
       .min(MIN_IDEMPOTENCY_KEY_CHARS)
       .max(MAX_IDEMPOTENCY_KEY_CHARS),
     record: vaultRecordSchema,
+    /** New slot mutations carry an opaque encrypted audit sidecar. */
+    audit: encryptedAuditRecordSchema.optional(),
   })
   .strict()
   .refine((value) => value.record.revision === value.expectedVaultRevision + 1, {

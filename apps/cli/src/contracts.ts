@@ -11,7 +11,11 @@ import {
   inviteListPageResponseSchema,
   deviceIdSchema,
   inviteIdSchema,
+  keySlotIdSchema,
+  keyVersionSchema,
+  MAX_VAULT_KEY_SLOTS,
   schemaVersionSchema,
+  timestampSchema,
   vaultIdSchema,
   type ControlListPageOptions,
   type GroupPayload,
@@ -122,6 +126,51 @@ export const cliRecoverResultSchema = z
   })
   .strict();
 
+const cliKeySlotTypeSchema = z.enum([
+  'portable-key',
+  'passphrase',
+  'recovery-key',
+  'device-key',
+]);
+const cliKeySlotStateSchema = z.enum(['pending', 'active', 'superseded', 'revoked']);
+
+/** Public slot metadata; derivation and wrapped-root fields are intentionally absent. */
+export const cliKeySlotSchema = z
+  .object({
+    id: keySlotIdSchema,
+    type: cliKeySlotTypeSchema,
+    state: cliKeySlotStateSchema,
+    keyVersion: keyVersionSchema,
+    createdAt: timestampSchema,
+    revokedAt: timestampSchema.optional(),
+    deviceId: deviceIdSchema.optional(),
+  })
+  .strict()
+  .superRefine((slot, context) => {
+    if (slot.type === 'device-key' && slot.deviceId === undefined) {
+      context.addIssue({
+        code: 'custom',
+        path: ['deviceId'],
+        message: 'Device slots require a device ID.',
+      });
+    }
+    if (slot.type !== 'device-key' && slot.deviceId !== undefined) {
+      context.addIssue({
+        code: 'custom',
+        path: ['deviceId'],
+        message: 'Only device slots may expose a device ID.',
+      });
+    }
+  });
+
+export const cliKeySlotListSchema = z.array(cliKeySlotSchema).max(MAX_VAULT_KEY_SLOTS);
+export const cliKeySlotResultSchema = z
+  .object({
+    action: z.enum(['created', 'disabled', 'revoked']),
+    slot: cliKeySlotSchema,
+  })
+  .strict();
+
 /**
  * The invite redemption request.
  *
@@ -157,6 +206,8 @@ export type CliConnectRequest = z.infer<typeof cliConnectRequestSchema>;
 export type CliConnectResult = z.infer<typeof cliConnectResultSchema>;
 export type CliRecoverRequest = z.infer<typeof cliRecoverRequestSchema>;
 export type CliRecoverResult = z.infer<typeof cliRecoverResultSchema>;
+export type CliKeySlot = z.infer<typeof cliKeySlotSchema>;
+export type CliKeySlotResult = z.infer<typeof cliKeySlotResultSchema>;
 export type CliShowResult = CredentialShowProjection;
 export type CliInviteJoinRequest = z.infer<typeof cliInviteJoinRequestSchema>;
 export type CliInviteJoinResult = z.infer<typeof cliInviteJoinResultSchema>;
@@ -241,6 +292,10 @@ export interface CliUseCasePorts {
     inviteToken: string,
     portableKey: string,
   ): Promise<CliRecoverResult>;
+  listKeySlots?(): Promise<readonly CliKeySlot[]>;
+  createKeySlot?(request: unknown): Promise<CliKeySlotResult>;
+  disableKeySlot?(slotId: string): Promise<CliKeySlotResult>;
+  revokeKeySlot?(slotId: string, request: unknown): Promise<CliKeySlotResult>;
 }
 
 export function parseStatus(value: unknown): CliStatus {

@@ -1,9 +1,10 @@
 # Portable Key and Device Enrollment
 
 > Design status: this document specifies required user and protocol behavior.
-> The fresh-home `creds recover` composition is implemented and covered by
-> focused production tests; later device-management and rotation flows remain
-> planned until marked verified in [implementation-status.md](./implementation-status.md).
+> The fresh-home `creds recover` and command-only unlock-slot lifecycle
+> compositions are implemented and covered by focused production tests; durable
+> rotation and device-token management remain planned until marked verified in
+> [implementation-status.md](./implementation-status.md).
 
 ## The three credentials are different
 
@@ -284,6 +285,29 @@ The lifecycle operations have intentionally different effects:
 | Remove a device-specific unlock slot | That slot becomes unusable            | Device token may remain until separately revoked       | Other slots unaffected                |
 
 The UI must explain these distinctions before destructive actions.
+
+## Command-only unlock-slot lifecycle
+
+The composed `creds key slot` commands expose the four documented slot types:
+
+- `creds key slot list` renders only opaque IDs, type/state, key version,
+  timestamps, and public device IDs.
+- `creds key slot create <portable-key|passphrase|recovery-key|device-key>`
+  requires explicit local reauthentication, creates the wrapped slot locally,
+  verifies protected device-secret readback where applicable, publishes a
+  revision-bound update, and verifies the remote slot.
+- `creds key slot disable <slot-id>` is local-only and removes a same-device
+  device-slot secret. It never changes the server vault record.
+- `creds key slot revoke <slot-id>` performs the canonical remote revoked-state
+  transition and refuses to remove the last active current-version slot.
+
+Create and revoke requests include an encrypted audit sidecar. Its authenticated
+plaintext contains only slot metadata, action/state, actor device ID, key
+version, and time. The API and Mongo adapter bind that sidecar to the exact
+vault revision and commit it with the opaque slot mutation. No derivation input,
+portable key, passphrase, recovery key, device secret, or wrapped-root envelope
+is included. Local disable has no remote mutation and therefore no remote audit
+sidecar.
 
 ## Portable-key rotation
 

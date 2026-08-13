@@ -10,6 +10,8 @@ import type {
   DeviceRecord,
   InviteId,
   PublicInviteRecord,
+  EncryptedAuditRecord,
+  OpaqueMutation,
   SchemaVersion,
   Sha256Digest,
   Timestamp,
@@ -162,7 +164,13 @@ export type ApiStoragePort = Pick<
   | 'abortAttachmentStream'
   | 'getAttachmentStreamHeader'
   | 'getAttachmentChunk'
->;
+> & {
+  /** Atomically commits one revision-bound key-slot change and its opaque audit sidecar. */
+  commitKeySlotMutation(
+    mutation: Extract<OpaqueMutation, { entityType: 'vault' }>,
+    audit: EncryptedAuditRecord,
+  ): Promise<void>;
+};
 
 export interface ApiPorts {
   readonly storage: ApiStoragePort;

@@ -13,6 +13,8 @@ import type {
   CliConnectResult,
   CliConflict,
   CliConflictResolutionResult,
+  CliKeySlot,
+  CliKeySlotResult,
   CliRecoverResult,
   CliShowResult,
   CliStatus,
@@ -106,6 +108,49 @@ export function renderRecover(result: CliRecoverResult, json: boolean): string {
   };
   if (json) return safeJson(safe);
   return `Vault recovered ${safe.vaultId} on device ${safe.deviceId}.\n`;
+}
+
+export function renderKeySlots(slots: readonly CliKeySlot[], json: boolean): string {
+  const safe = slots.map((slot) => ({
+    id: sanitizeTerminalText(slot.id),
+    type: slot.type,
+    state: slot.state,
+    keyVersion: slot.keyVersion,
+    createdAt: slot.createdAt,
+    ...(slot.revokedAt === undefined ? {} : { revokedAt: slot.revokedAt }),
+    ...(slot.deviceId === undefined
+      ? {}
+      : { deviceId: sanitizeTerminalText(slot.deviceId) }),
+  }));
+  if (json) return safeJson(safe);
+  if (safe.length === 0) return 'No unlock slots.\n';
+  return `${safe
+    .map(
+      (slot) =>
+        `${slot.id}\t${slot.type}\t${slot.state}\tv${String(slot.keyVersion)}\t${slot.createdAt}${slot.deviceId === undefined ? '' : `\t${slot.deviceId}`}`,
+    )
+    .join('\n')}\n`;
+}
+
+export function renderKeySlotResult(result: CliKeySlotResult, json: boolean): string {
+  const safe = {
+    action: result.action,
+    slot: {
+      id: sanitizeTerminalText(result.slot.id),
+      type: result.slot.type,
+      state: result.slot.state,
+      keyVersion: result.slot.keyVersion,
+      createdAt: result.slot.createdAt,
+      ...(result.slot.revokedAt === undefined
+        ? {}
+        : { revokedAt: result.slot.revokedAt }),
+      ...(result.slot.deviceId === undefined
+        ? {}
+        : { deviceId: sanitizeTerminalText(result.slot.deviceId) }),
+    },
+  };
+  if (json) return safeJson(safe);
+  return `Unlock slot ${safe.slot.id} ${safe.action}.\n`;
 }
 
 export function renderShow(result: CliShowResult, json: boolean): string {

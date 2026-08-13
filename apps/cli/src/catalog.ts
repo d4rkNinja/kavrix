@@ -4,8 +4,10 @@ import { Command } from 'commander';
 import {
   controlListPageQuerySchema,
   deviceIdSchema,
+  keySlotIdSchema,
   type GroupPayload,
   type ItemPayload,
+  type KeySlotId,
   vaultIdSchema,
 } from '@kavrix/schemas';
 import { z } from 'zod';
@@ -14,6 +16,8 @@ import type { SqliteSyncLocalStore } from '@kavrix/local-store';
 import { lifecycleOperationIdSchema, type LifecycleOperationId } from '@kavrix/client';
 
 import {
+  cliKeySlotListSchema,
+  cliKeySlotResultSchema,
   parseRecoverRequest,
   type CliStatus,
   type CliUseCasePorts,
@@ -31,6 +35,7 @@ import {
 } from './public-security-tools.js';
 import {
   SECRET_INPUT_OPTIONS,
+  acquiredSecretSchema,
   type AcquiredSecret,
   type SecretInputPort,
 } from './secret-input.js';
@@ -39,6 +44,11 @@ import { CLI_VERSION } from './version.js';
 import type { SecretBackendPolicy } from './production/secret-backend.js';
 import type { ProductionStatusRequest } from './production/status.js';
 import type { ProductionUnlockedContext } from './production/unlock.js';
+import type {
+  KeySlotOperation,
+  NewSlotCredential,
+  SlotReauthentication,
+} from './production/slot-lifecycle.js';
 
 const querySchema = z.string().trim().min(1).max(512);
 const schemaVersionOptionSchema = z
@@ -274,6 +284,128 @@ const keyCommand: CliCommandDescriptor = Object.freeze({
         context.stdout.write('Portable key file created.\n');
       },
     },
+    {
+      name: 'slot',
+      description: 'List and manage authenticated vault unlock slots.',
+      children: [
+        {
+          name: 'list',
+          description: 'List redacted public unlock-slot metadata.',
+          options: [jsonOption, secretBackendOption, backendPassphraseStdinOption],
+          execute: async (context, _arguments, options) => {
+            const raw =
+              context.ports?.listKeySlots === undefined
+                ? await executeProductionKeySlotOperation(context, options, {
+                    kind: 'list',
+                  })
+                : await context.ports.listKeySlots();
+            const { renderKeySlots } = await import('./render.js');
+            context.stdout.write(
+              renderKeySlots(
+                cliKeySlotListSchema.parse(raw),
+                optionBoolean(options, 'json'),
+              ),
+            );
+          },
+        },
+        {
+          name: 'create',
+          description:
+            'Create a portable, passphrase, recovery, or device unlock slot.',
+          arguments: [
+            {
+              syntax: '<portable-key|passphrase|recovery-key|device-key>',
+              description: 'Credential type for the new slot.',
+            },
+          ],
+          options: slotLifecycleOptions(true),
+          execute: async (context, arguments_, options) => {
+            const slotType = parseInput(
+              z.enum(['portable-key', 'passphrase', 'recovery-key', 'device-key']),
+              requiredArgument(arguments_[0], 'slot type'),
+              'slot type',
+            );
+            const operation = await acquireCreateSlotOperation(
+              context,
+              options,
+              slotType,
+            );
+            const raw =
+              context.ports?.createKeySlot === undefined
+                ? await executeProductionKeySlotOperation(context, options, operation)
+                : await context.ports.createKeySlot(operation);
+            const { renderKeySlotResult } = await import('./render.js');
+            context.stdout.write(
+              renderKeySlotResult(
+                cliKeySlotResultSchema.parse(raw),
+                optionBoolean(options, 'json'),
+              ),
+            );
+          },
+        },
+        {
+          name: 'disable',
+          description:
+            'Remove a local device-slot secret without changing the server record.',
+          arguments: [
+            { syntax: '<slot-id>', description: 'Opaque unlock-slot identifier.' },
+          ],
+          options: slotLifecycleOptions(false),
+          execute: async (context, arguments_, options) => {
+            const slotId = parseInputValue(
+              requiredArgument(arguments_[0], 'slot ID'),
+              'slot ID',
+              (value) => keySlotIdSchema.parse(value),
+            );
+            const operation = await acquireLifecycleSlotOperation(context, options, {
+              kind: 'disable',
+              slotId,
+            });
+            const raw =
+              context.ports?.disableKeySlot === undefined
+                ? await executeProductionKeySlotOperation(context, options, operation)
+                : await context.ports.disableKeySlot(slotId);
+            const { renderKeySlotResult } = await import('./render.js');
+            context.stdout.write(
+              renderKeySlotResult(
+                cliKeySlotResultSchema.parse(raw),
+                optionBoolean(options, 'json'),
+              ),
+            );
+          },
+        },
+        {
+          name: 'revoke',
+          description: 'Revoke a server unlock slot after last-slot protection checks.',
+          arguments: [
+            { syntax: '<slot-id>', description: 'Opaque unlock-slot identifier.' },
+          ],
+          options: slotLifecycleOptions(false),
+          execute: async (context, arguments_, options) => {
+            const slotId = parseInputValue(
+              requiredArgument(arguments_[0], 'slot ID'),
+              'slot ID',
+              (value) => keySlotIdSchema.parse(value),
+            );
+            const operation = await acquireLifecycleSlotOperation(context, options, {
+              kind: 'revoke',
+              slotId,
+            });
+            const raw =
+              context.ports?.revokeKeySlot === undefined
+                ? await executeProductionKeySlotOperation(context, options, operation)
+                : await context.ports.revokeKeySlot(slotId, operation);
+            const { renderKeySlotResult } = await import('./render.js');
+            context.stdout.write(
+              renderKeySlotResult(
+                cliKeySlotResultSchema.parse(raw),
+                optionBoolean(options, 'json'),
+              ),
+            );
+          },
+        },
+      ],
+    },
   ],
 });
 const initializationCommand: CliCommandDescriptor = Object.freeze({
@@ -480,12 +612,11 @@ const recoverCommand: CliCommandDescriptor = Object.freeze({
             '--invite-stdin is valid only when starting recovery.',
           );
         }
-        let raw: unknown;
         if (context.environment === undefined) {
           throw new CliUnavailableError('recover');
         }
         const { executeProductionRecovery } = await import('./production/recovery.js');
-        raw = await executeProductionRecovery({
+        const raw = await executeProductionRecovery({
           environment: context.environment,
           secrets: secretInput(context, 'recover'),
           backendPolicy: parseStatusBackendPolicy(options),
@@ -2821,8 +2952,8 @@ function parseRecoverySourceOptions(
   if (rawKeyFilePath !== undefined && typeof rawKeyFilePath !== 'string') {
     throw new CliUsageError('The portable key file path is invalid.');
   }
-  const keyFilePath = rawKeyFilePath as string | undefined;
-  if (keyFilePath !== undefined && keyFilePath.length === 0) {
+  const keyFilePath = rawKeyFilePath;
+  if (keyFilePath?.length === 0) {
     throw new CliUsageError('The portable key file path is invalid.');
   }
   if (resume && inviteFromStdin) {
@@ -2866,7 +2997,7 @@ function parseRecoveryOperationId(value: string | undefined): LifecycleOperation
     requiredArgument(value, 'operation ID'),
   );
   if (!parsed.success) throw new CliUsageError('The operation ID is invalid.');
-  return parsed.data as LifecycleOperationId;
+  return parsed.data;
 }
 
 function useCases(context: CliCommandContext, feature: CliFeature): CliUseCasePorts {
@@ -2889,6 +3020,488 @@ function secretInput(context: CliCommandContext, feature: CliFeature): SecretInp
     throw new CliUnavailableError(feature);
   }
   return context.secrets;
+}
+
+function slotLifecycleOptions(
+  includeCredential: boolean,
+): readonly CliOptionDescriptor[] {
+  return [
+    {
+      flags: '--reauth <device-key|portable-key|passphrase|recovery-key>',
+      description: 'Explicit local reauthentication method.',
+    },
+    {
+      flags: '--reauth-slot <slot-id>',
+      description: 'Existing slot used when reauthentication selection is ambiguous.',
+    },
+    {
+      flags: '--reauth-stdin',
+      description: 'Read the reauthentication credential from a bounded stdin frame.',
+    },
+    {
+      flags: '--auth-key-file <path>',
+      description: 'Guarded portable-key file used for portable reauthentication.',
+    },
+    keyFilePassphraseStdinOption,
+    ...(includeCredential
+      ? [
+          {
+            flags: '--credential-stdin',
+            description: 'Read the new credential from bounded stdin frames.',
+          },
+          {
+            flags: '--credential-file <path>',
+            description: 'Guarded portable-key file for a new portable slot.',
+          },
+          {
+            flags: '--credential-file-passphrase-stdin',
+            description:
+              'Read a credential-file passphrase from a bounded stdin frame.',
+          },
+          {
+            flags: '--device-provider <name>',
+            description: 'Public native provider label for a new device slot.',
+          },
+        ]
+      : []),
+    jsonOption,
+    secretBackendOption,
+    backendPassphraseStdinOption,
+  ];
+}
+
+type SlotCredentialType = 'portable-key' | 'passphrase' | 'recovery-key' | 'device-key';
+
+async function acquireCreateSlotOperation(
+  context: CliCommandContext,
+  options: Readonly<Record<string, unknown>>,
+  slotType: SlotCredentialType,
+): Promise<KeySlotOperation> {
+  const authKeyFile = optionString(options, 'authKeyFile');
+  const authFilePassphraseFromStdin = optionBoolean(options, 'keyFilePassphraseStdin');
+  const authFromStdin = optionBoolean(options, 'reauthStdin');
+  const credentialFile = optionString(options, 'credentialFile');
+  const credentialFromStdin = optionBoolean(options, 'credentialStdin');
+  const credentialFilePassphraseFromStdin = optionBoolean(
+    options,
+    'credentialFilePassphraseStdin',
+  );
+  const stdinConsumers =
+    Number(authFromStdin) +
+    Number(authKeyFile !== undefined && authFilePassphraseFromStdin) +
+    Number(credentialFromStdin) +
+    Number(credentialFile !== undefined && credentialFilePassphraseFromStdin);
+  if (stdinConsumers > 1) {
+    return acquireCreateSlotOperationFromFrames(context, options, slotType);
+  }
+  const reauthentication = await acquireReauthentication(context, options);
+  const deviceProvider = optionString(options, 'deviceProvider');
+  if (slotType === 'device-key') {
+    if (
+      optionBoolean(options, 'credentialStdin') ||
+      options['credentialFile'] !== undefined
+    ) {
+      throw new CliUsageError(
+        'Device slots generate their protected credential locally.',
+      );
+    }
+    return {
+      kind: 'create',
+      slotType,
+      reauthentication,
+      ...(deviceProvider === undefined ? {} : { deviceProvider }),
+    };
+  }
+
+  const credential = await acquireNewSlotCredential(context, options, slotType);
+  return {
+    kind: 'create',
+    slotType,
+    credential,
+    reauthentication,
+    ...(deviceProvider === undefined ? {} : { deviceProvider }),
+  };
+}
+
+async function acquireCreateSlotOperationFromFrames(
+  context: CliCommandContext,
+  options: Readonly<Record<string, unknown>>,
+  slotType: SlotCredentialType,
+): Promise<KeySlotOperation> {
+  if (slotType === 'device-key') {
+    throw new CliUsageError(
+      'Device slots generate their protected credential locally.',
+    );
+  }
+  const authType = parseInput(
+    z.enum(['device-key', 'portable-key', 'passphrase', 'recovery-key']),
+    requiredOption(options, 'reauth', 'reauthentication method'),
+    'reauthentication method',
+  );
+  const authSlot = optionalKeySlotId(options, 'reauthSlot');
+  const authKeyFile = optionString(options, 'authKeyFile');
+  const authFromStdin = optionBoolean(options, 'reauthStdin');
+  const authFilePassphraseFromStdin = optionBoolean(options, 'keyFilePassphraseStdin');
+  const credentialFile = optionString(options, 'credentialFile');
+  const credentialFromStdin = optionBoolean(options, 'credentialStdin');
+  const credentialFilePassphraseFromStdin = optionBoolean(
+    options,
+    'credentialFilePassphraseStdin',
+  );
+  if (authType === 'device-key' && (authFromStdin || authKeyFile !== undefined)) {
+    throw new CliUsageError('Device reauthentication does not consume secret input.');
+  }
+  if (authKeyFile !== undefined && authType !== 'portable-key') {
+    throw new CliUsageError('The selected reauthentication source is invalid.');
+  }
+  if (authKeyFile !== undefined && authFromStdin) {
+    throw new CliUsageError('Choose either --auth-key-file or --reauth-stdin.');
+  }
+  if (authType === 'passphrase' && authSlot === undefined) {
+    throw new CliUsageError('Passphrase reauthentication requires --reauth-slot.');
+  }
+  if (credentialFile !== undefined && slotType !== 'portable-key') {
+    throw new CliUsageError(
+      'A credential file can be used only for a portable-key slot.',
+    );
+  }
+  if (credentialFile !== undefined && credentialFromStdin) {
+    throw new CliUsageError('Choose either --credential-file or --credential-stdin.');
+  }
+  if (credentialFilePassphraseFromStdin && credentialFile === undefined) {
+    throw new CliUsageError(
+      '--credential-file-passphrase-stdin requires --credential-file.',
+    );
+  }
+  const frameKinds: ('passphrase' | 'portable-key' | 'recovery-key')[] = [];
+  if (authFromStdin) {
+    if (authType === 'device-key') {
+      throw new CliUsageError('Device reauthentication does not consume secret input.');
+    }
+    frameKinds.push(authType);
+  }
+  if (authKeyFile !== undefined && authFilePassphraseFromStdin) {
+    frameKinds.push('passphrase');
+  }
+  if (credentialFile !== undefined && credentialFilePassphraseFromStdin) {
+    frameKinds.push('passphrase');
+  } else if (credentialFromStdin) {
+    frameKinds.push(slotType);
+    if (slotType === 'passphrase') frameKinds.push('passphrase');
+  }
+  const frames = await secretInput(context, 'key slot create').readBatch({
+    kinds: frameKinds,
+    fromStdin: true,
+    requireEnd: true,
+  });
+  let frameIndex = 0;
+  const takeFrame = (): AcquiredSecret => {
+    const frame = frames[frameIndex];
+    frameIndex += 1;
+    if (frame === undefined)
+      throw new CliUsageError('Secret input used invalid framing.');
+    return frame;
+  };
+  const authFrame = authFromStdin ? takeFrame() : undefined;
+  const authFilePassphrase =
+    authKeyFile !== undefined && authFilePassphraseFromStdin ? takeFrame() : undefined;
+  let reauthentication: SlotReauthentication;
+  if (authType === 'device-key') {
+    reauthentication = {
+      kind: 'device-key',
+      ...(authSlot === undefined ? {} : { slotId: authSlot }),
+    };
+  } else if (authKeyFile !== undefined) {
+    reauthentication = {
+      kind: 'portable-key',
+      formattedKey: await readPortableKeyFileForSlot(
+        authKeyFile,
+        secretInput(context, 'key slot create'),
+        authFilePassphraseFromStdin,
+        authFilePassphrase,
+      ),
+      ...(authSlot === undefined ? {} : { slotId: authSlot }),
+    };
+  } else {
+    const value =
+      authFrame ??
+      (await secretInput(context, 'key slot create').read({
+        kind: authType,
+        fromStdin: false,
+      }));
+    reauthentication =
+      authType === 'passphrase'
+        ? (() => {
+            if (authSlot === undefined) {
+              throw new CliUsageError(
+                'Passphrase reauthentication requires --reauth-slot.',
+              );
+            }
+            return { kind: 'passphrase', passphrase: value, slotId: authSlot };
+          })()
+        : {
+            kind: authType,
+            formattedKey: value,
+            ...(authSlot === undefined ? {} : { slotId: authSlot }),
+          };
+  }
+
+  let credential: NewSlotCredential;
+  if (credentialFile !== undefined) {
+    const credentialFilePassphrase = credentialFilePassphraseFromStdin
+      ? takeFrame()
+      : undefined;
+    credential = {
+      kind: 'portable-key',
+      formattedKey: await readPortableKeyFileForSlot(
+        credentialFile,
+        secretInput(context, 'key slot create'),
+        credentialFilePassphraseFromStdin,
+        credentialFilePassphrase,
+      ),
+    };
+  } else {
+    const maskedPassphraseValues =
+      !credentialFromStdin && slotType === 'passphrase'
+        ? await secretInput(context, 'key slot create').readBatch({
+            kinds: ['passphrase', 'passphrase'],
+            fromStdin: false,
+            requireEnd: false,
+          })
+        : undefined;
+    const first = credentialFromStdin
+      ? takeFrame()
+      : (maskedPassphraseValues?.[0] ??
+        (await readCredential(context, slotType, false)));
+    if (slotType === 'passphrase') {
+      const confirmation = credentialFromStdin
+        ? takeFrame()
+        : maskedPassphraseValues?.[1];
+      if (confirmation === undefined) {
+        throw new CliUsageError('Passphrase confirmation is incomplete.');
+      }
+      await assertMatchingPassphrases(first, confirmation);
+      credential = { kind: 'passphrase', passphrase: first };
+    } else {
+      credential = { kind: slotType, formattedKey: first };
+    }
+  }
+  const deviceProvider = optionString(options, 'deviceProvider');
+  return {
+    kind: 'create',
+    slotType,
+    credential,
+    reauthentication,
+    ...(deviceProvider === undefined ? {} : { deviceProvider }),
+  };
+}
+
+async function acquireLifecycleSlotOperation(
+  context: CliCommandContext,
+  options: Readonly<Record<string, unknown>>,
+  operation: Readonly<{
+    kind: 'disable' | 'revoke';
+    slotId: KeySlotId;
+  }>,
+): Promise<KeySlotOperation> {
+  return {
+    ...operation,
+    reauthentication: await acquireReauthentication(context, options),
+  };
+}
+
+async function acquireReauthentication(
+  context: CliCommandContext,
+  options: Readonly<Record<string, unknown>>,
+): Promise<SlotReauthentication> {
+  const authType = parseInput(
+    z.enum(['device-key', 'portable-key', 'passphrase', 'recovery-key']),
+    requiredOption(options, 'reauth', 'reauthentication method'),
+    'reauthentication method',
+  );
+  const slotId = optionalKeySlotId(options, 'reauthSlot');
+  const keyFile = optionString(options, 'authKeyFile');
+  const fromStdin = optionBoolean(options, 'reauthStdin');
+  const passphraseFromStdin = optionBoolean(options, 'keyFilePassphraseStdin');
+  if (authType === 'device-key') {
+    if (fromStdin || keyFile !== undefined || passphraseFromStdin) {
+      throw new CliUsageError('Device reauthentication does not consume secret input.');
+    }
+    return { kind: 'device-key', ...(slotId === undefined ? {} : { slotId }) };
+  }
+  if (authType !== 'portable-key' && keyFile !== undefined) {
+    throw new CliUsageError('A key file can reauthenticate only a portable-key slot.');
+  }
+  if (keyFile !== undefined && fromStdin) {
+    throw new CliUsageError('Choose either --auth-key-file or --reauth-stdin.');
+  }
+  if (authType === 'passphrase' && slotId === undefined) {
+    throw new CliUsageError('Passphrase reauthentication requires --reauth-slot.');
+  }
+  const acquired =
+    keyFile === undefined
+      ? await secretInput(context, 'key slot create').read({
+          kind: authType,
+          fromStdin,
+        })
+      : await readPortableKeyFileForSlot(
+          keyFile,
+          secretInput(context, 'key slot create'),
+          passphraseFromStdin,
+        );
+  if (authType === 'passphrase') {
+    if (slotId === undefined) {
+      throw new CliUsageError('Passphrase reauthentication requires --reauth-slot.');
+    }
+    return {
+      kind: 'passphrase',
+      passphrase: acquired,
+      slotId,
+    };
+  }
+  return {
+    kind: authType,
+    formattedKey: acquired,
+    ...(slotId === undefined ? {} : { slotId }),
+  };
+}
+
+async function acquireNewSlotCredential(
+  context: CliCommandContext,
+  options: Readonly<Record<string, unknown>>,
+  slotType: Exclude<SlotCredentialType, 'device-key'>,
+): Promise<NewSlotCredential> {
+  const keyFile = optionString(options, 'credentialFile');
+  const fromStdin = optionBoolean(options, 'credentialStdin');
+  const passphraseFromStdin = optionBoolean(options, 'credentialFilePassphraseStdin');
+  if (keyFile !== undefined && slotType !== 'portable-key') {
+    throw new CliUsageError(
+      'A credential file can be used only for a portable-key slot.',
+    );
+  }
+  if (keyFile !== undefined && fromStdin) {
+    throw new CliUsageError('Choose either --credential-file or --credential-stdin.');
+  }
+  if (passphraseFromStdin && keyFile === undefined) {
+    throw new CliUsageError(
+      '--credential-file-passphrase-stdin requires --credential-file.',
+    );
+  }
+  const acquired =
+    keyFile === undefined
+      ? await readCredential(context, slotType, fromStdin)
+      : await readPortableKeyFileForSlot(
+          keyFile,
+          secretInput(context, 'key slot create'),
+          passphraseFromStdin,
+        );
+  return slotType === 'passphrase'
+    ? { kind: 'passphrase', passphrase: acquired }
+    : { kind: slotType, formattedKey: acquired };
+}
+
+async function readCredential(
+  context: CliCommandContext,
+  slotType: Exclude<SlotCredentialType, 'device-key'>,
+  fromStdin: boolean,
+): Promise<AcquiredSecret> {
+  const secrets = secretInput(context, 'key slot create');
+  if (slotType !== 'passphrase') {
+    return secrets.read({ kind: slotType, fromStdin });
+  }
+  const values = await secrets.readBatch({
+    kinds: ['passphrase', 'passphrase'],
+    fromStdin,
+    requireEnd: fromStdin,
+  });
+  const first = values[0];
+  const second = values[1];
+  if (first === undefined || second === undefined) {
+    throw new CliUsageError('Passphrase confirmation is incomplete.');
+  }
+  const crypto = await import('@kavrix/crypto');
+  const firstBytes = new TextEncoder().encode(first);
+  const secondBytes = new TextEncoder().encode(second);
+  try {
+    if (!crypto.constantTimeEqual(firstBytes, secondBytes)) {
+      throw new CliUsageError('Passphrase confirmation did not match.');
+    }
+  } finally {
+    crypto.zeroize(firstBytes);
+    crypto.zeroize(secondBytes);
+  }
+  return first;
+}
+
+async function readPortableKeyFileForSlot(
+  path: string,
+  secrets: SecretInputPort,
+  passphraseFromStdin: boolean,
+  stagedPassphrase?: AcquiredSecret,
+): Promise<AcquiredSecret> {
+  const { createProductionPortableKeyFileReader } =
+    await import('./production/portable-key-files.js');
+  const reader = createProductionPortableKeyFileReader({
+    secrets,
+    passphraseFromStdin,
+  });
+  return acquiredSecretSchema.parse(
+    String(
+      await reader.readFormattedPortableKey(
+        path,
+        { kind: 'unbound' },
+        stagedPassphrase === undefined
+          ? undefined
+          : () => Promise.resolve(stagedPassphrase),
+      ),
+    ),
+  );
+}
+
+async function assertMatchingPassphrases(
+  first: AcquiredSecret,
+  second: AcquiredSecret,
+): Promise<void> {
+  const crypto = await import('@kavrix/crypto');
+  const firstBytes = new TextEncoder().encode(first);
+  const secondBytes = new TextEncoder().encode(second);
+  try {
+    if (!crypto.constantTimeEqual(firstBytes, secondBytes)) {
+      throw new CliUsageError('Passphrase confirmation did not match.');
+    }
+  } finally {
+    crypto.zeroize(firstBytes);
+    crypto.zeroize(secondBytes);
+  }
+}
+
+function optionalKeySlotId(
+  options: Readonly<Record<string, unknown>>,
+  key: string,
+): KeySlotId | undefined {
+  const value = options[key];
+  if (value === undefined) return undefined;
+  return parseInputValue(value, 'slot ID', (candidate) =>
+    keySlotIdSchema.parse(candidate),
+  );
+}
+
+async function executeProductionKeySlotOperation(
+  context: CliCommandContext,
+  options: Readonly<Record<string, unknown>>,
+  operation: KeySlotOperation,
+): Promise<unknown> {
+  if (context.environment === undefined) {
+    throw new CliUnavailableError(`key slot ${operation.kind}` as CliFeature);
+  }
+  const { executeProductionKeySlotLifecycle } =
+    await import('./production/slot-lifecycle.js');
+  return executeProductionKeySlotLifecycle({
+    environment: context.environment,
+    secrets: secretInput(context, `key slot ${operation.kind}` as CliFeature),
+    backendPolicy: parseStatusBackendPolicy(options),
+    operation,
+  });
 }
 
 async function withInitialization<Output>(
