@@ -359,8 +359,10 @@ describe('production CLI mutation adapters', () => {
       // 8.9. Execute Production Sync
       const syncStatus = await executeProductionSync({
         environment: paths.env,
-        secrets: secretBackend.secrets,
-        backendPolicy: secretBackend.backendPolicy,
+        secrets: {
+          read: () => Promise.reject(new Error('unexpected secrets read')),
+        },
+        backendPolicy: { kind: 'unprotected' },
       });
       expect(syncStatus.state).toBe('unlocked');
 
