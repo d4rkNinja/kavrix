@@ -27,7 +27,7 @@ import {
   type AcquiredSecret,
   type SecretInputPort,
 } from './secret-input.js';
-import { safeJson } from './terminal.js';
+import { safeJson, sanitizeTerminalText } from './terminal.js';
 import { CLI_VERSION } from './version.js';
 import type { SecretBackendPolicy } from './production/secret-backend.js';
 import type { ProductionStatusRequest } from './production/status.js';
@@ -1969,6 +1969,93 @@ const copyCommand: CliCommandDescriptor = Object.freeze({
   },
 });
 
+const revealCommand: CliCommandDescriptor = Object.freeze({
+  name: 'reveal',
+  description: 'Reveal an authorized credential field value.',
+  arguments: [
+    { syntax: '<group>', description: 'Group ID, unique name, or alias.' },
+    {
+      syntax: '<credential>',
+      description: 'Credential ID, unique name, or alias within the group.',
+    },
+    {
+      syntax: '<field>',
+      description: 'Field ID, stable key, exact label, or unique prefix.',
+    },
+  ],
+  options: [
+    {
+      flags: '--index <number>',
+      description: 'Select a one-based element from a repeatable field.',
+    },
+    {
+      flags: '--stdout',
+      description:
+        'Explicitly allow writing revealed secret to non-interactive stdout stream.',
+    },
+    secretBackendOption,
+    backendPassphraseStdinOption,
+  ],
+  execute: async (context, arguments_, options) => {
+    const groupQuery = parseInput(querySchema, arguments_[0], 'group query');
+    const credentialQuery = parseInput(querySchema, arguments_[1], 'credential query');
+    const fieldQuery = parseInput(querySchema, arguments_[2], 'field query');
+    const rawIndex = options['index'];
+    const index =
+      rawIndex === undefined
+        ? undefined
+        : parseInput(fieldIndexOptionSchema, rawIndex, 'field index');
+
+    const allowStdout = optionBoolean(options, 'stdout');
+    if (!allowStdout && (context.stdout as { isTTY?: boolean }).isTTY !== true) {
+      throw new CliUsageError(
+        'Redirection is denied by default for revealed secrets. Use --stdout to explicitly allow streaming.',
+      );
+    }
+
+    const revealOpts = index === undefined ? {} : { index };
+    let revealedValue: string;
+
+    if (context.ports?.reveal !== undefined) {
+      const res = await context.ports.reveal(
+        groupQuery,
+        credentialQuery,
+        fieldQuery,
+        revealOpts,
+      );
+      revealedValue = res.value;
+    } else {
+      const { executeProductionReveal } = await import('./production/reveal.js');
+      let resultVal: string | undefined;
+      await withUnlockedVault(
+        context,
+        'reveal',
+        options,
+        async (unlocked, store, rootKey) => {
+          const res = await executeProductionReveal(
+            {
+              source: store,
+              vaultId: unlocked.profile.vaultId,
+              rootKey,
+            },
+            groupQuery,
+            credentialQuery,
+            fieldQuery,
+            revealOpts,
+          );
+          resultVal = res.value;
+        },
+      );
+      if (resultVal === undefined) {
+        throw new Error('Failed to reveal value');
+      }
+      revealedValue = resultVal;
+    }
+
+    context.stdout.write(`${sanitizeTerminalText(revealedValue)}\n`);
+  },
+});
+
 export const CLI_COMMAND_CATALOG: readonly CliCommandDescriptor[] = Object.freeze([
   versionCommand,
   generationCommand,
@@ -1984,6 +2071,7 @@ export const CLI_COMMAND_CATALOG: readonly CliCommandDescriptor[] = Object.freez
   noteCommand,
   showCommand,
   copyCommand,
+  revealCommand,
   {
     name: 'device',
     description: 'Manage this device and zero-knowledge enrollment.',
@@ -2145,6 +2233,7 @@ export const PUBLIC_CLI_COMMAND_CATALOG: readonly CliCommandDescriptor[] =
     noteCommand,
     showCommand,
     copyCommand,
+    revealCommand,
     completionCommand(() => PUBLIC_CLI_COMMAND_CATALOG),
   ]);
 
