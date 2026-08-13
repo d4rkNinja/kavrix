@@ -305,7 +305,7 @@ describe('production CLI mutation adapters', () => {
           source: store,
           vaultId: mutationOptions.vaultId,
           rootKey,
-          clipboard: unlocked.environment.clipboard,
+          clipboard: environment.clipboard,
         },
         'Infrastructure',
         'AWS Production Root',
