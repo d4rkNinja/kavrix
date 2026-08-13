@@ -2805,6 +2805,56 @@ const backupCommand: CliCommandDescriptor = Object.freeze({
         );
       },
     },
+    {
+      name: 'restore',
+      description: 'Restore one authenticated archive into an isolated target.',
+      options: [
+        {
+          flags: '--file <path>',
+          description: 'Existing archive path; it is opened read-only.',
+        },
+        vaultOption,
+        {
+          flags: '--slot <slot-id>',
+          description: 'Exact archived portable, passphrase, or recovery slot to use.',
+        },
+        jsonOption,
+        secretBackendOption,
+        backendPassphraseStdinOption,
+      ],
+      execute: async (context, _arguments, options) => {
+        const { parseBackupRestoreRequest, parseBackupRestoreResult } =
+          await import('./contracts.js');
+        const request = parseBackupRestoreRequest({
+          source: requiredOption(options, 'file', 'backup archive'),
+          ...(options['vault'] === undefined
+            ? {}
+            : {
+                vaultId: parseInputString(options, 'vault', (value) =>
+                  vaultIdSchema.parse(value),
+                ),
+              }),
+          ...(options['slot'] === undefined
+            ? {}
+            : {
+                slotId: parseInputString(options, 'slot', (value) =>
+                  keySlotIdSchema.parse(value),
+                ),
+              }),
+        });
+        if (context.ports?.restoreBackup === undefined) {
+          throw new CliUnavailableError('backup restore');
+        }
+        const raw = await context.ports.restoreBackup(request);
+        const { renderBackupRestore } = await import('./render.js');
+        context.stdout.write(
+          renderBackupRestore(
+            parseBackupRestoreResult(raw),
+            optionBoolean(options, 'json'),
+          ),
+        );
+      },
+    },
   ],
 });
 
@@ -3192,10 +3242,19 @@ export const PUBLIC_CLI_COMMAND_CATALOG: readonly CliCommandDescriptor[] =
     revealCommand,
     getCommand,
     syncCommand,
-    backupCommand,
+    publicBackupCommand(),
     publicDeviceCommand(),
     completionCommand(() => PUBLIC_CLI_COMMAND_CATALOG),
   ]);
+
+function publicBackupCommand(): CliCommandDescriptor {
+  const children = backupCommand.children;
+  if (children === undefined) throw new Error('The backup catalog is incomplete');
+  return Object.freeze({
+    ...backupCommand,
+    children: Object.freeze(children.filter(({ name }) => name !== 'restore')),
+  });
+}
 
 function publicDeviceCommand(): CliCommandDescriptor {
   const device = CLI_COMMAND_CATALOG.find((descriptor) => descriptor.name === 'device');

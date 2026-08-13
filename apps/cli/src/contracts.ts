@@ -159,6 +159,14 @@ export const cliBackupVerifyRequestSchema = z
   })
   .strict();
 
+export const cliBackupRestoreRequestSchema = z
+  .object({
+    source: cliBackupPathSchema,
+    vaultId: vaultIdSchema.optional(),
+    slotId: keySlotIdSchema.optional(),
+  })
+  .strict();
+
 export const cliBackupCreateResultSchema = z
   .object({
     action: z.literal('created'),
@@ -185,6 +193,21 @@ export const cliBackupVerifyResultSchema = z
     schemaVersion: schemaVersionSchema,
     createdAt: timestampSchema,
     restoreSessionId: sha256DigestSchema,
+  })
+  .strict();
+
+export const cliBackupRestoreResultSchema = z
+  .object({
+    action: z.enum(['restored', 'already-committed']),
+    vaultId: vaultIdSchema,
+    recordCount: z.number().int().positive().max(10_000),
+    bytes: z
+      .number()
+      .int()
+      .positive()
+      .max(128 * 1024 * 1024),
+    restoreSessionId: sha256DigestSchema,
+    selectedSlotId: keySlotIdSchema.optional(),
   })
   .strict();
 
@@ -303,6 +326,8 @@ export type CliBackupCreateRequest = z.infer<typeof cliBackupCreateRequestSchema
 export type CliBackupCreateResult = z.infer<typeof cliBackupCreateResultSchema>;
 export type CliBackupVerifyRequest = z.infer<typeof cliBackupVerifyRequestSchema>;
 export type CliBackupVerifyResult = z.infer<typeof cliBackupVerifyResultSchema>;
+export type CliBackupRestoreRequest = z.infer<typeof cliBackupRestoreRequestSchema>;
+export type CliBackupRestoreResult = z.infer<typeof cliBackupRestoreResultSchema>;
 export type CliKeySlot = z.infer<typeof cliKeySlotSchema>;
 export type CliKeySlotResult = z.infer<typeof cliKeySlotResultSchema>;
 export type CliPortableKeyRotationListing = z.infer<
@@ -409,6 +434,7 @@ export interface CliUseCasePorts {
   ): Promise<CliRecoverResult>;
   createBackup?(request: CliBackupCreateRequest): Promise<CliBackupCreateResult>;
   verifyBackup?(request: CliBackupVerifyRequest): Promise<CliBackupVerifyResult>;
+  restoreBackup?(request: CliBackupRestoreRequest): Promise<CliBackupRestoreResult>;
   listKeySlots?(): Promise<readonly CliKeySlot[]>;
   createKeySlot?(request: unknown): Promise<CliKeySlotResult>;
   disableKeySlot?(slotId: string): Promise<CliKeySlotResult>;
@@ -465,6 +491,14 @@ export function parseBackupVerifyRequest(value: unknown): CliBackupVerifyRequest
 
 export function parseBackupVerifyResult(value: unknown): CliBackupVerifyResult {
   return cliBackupVerifyResultSchema.parse(value);
+}
+
+export function parseBackupRestoreRequest(value: unknown): CliBackupRestoreRequest {
+  return cliBackupRestoreRequestSchema.parse(value);
+}
+
+export function parseBackupRestoreResult(value: unknown): CliBackupRestoreResult {
+  return cliBackupRestoreResultSchema.parse(value);
 }
 
 export function parseShowResult(value: unknown): CliShowResult {

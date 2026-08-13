@@ -7,6 +7,7 @@ import {
   encodeControlListCursor,
   inviteIssueResponseSchema,
   inviteIdSchema,
+  keySlotIdSchema,
   publicDeviceRecordSchema,
   publicInviteRecordSchema,
   schemaVersionSchema,
@@ -981,6 +982,13 @@ describe('CLI command shell', () => {
       publishedCommands.split(' '),
     );
     const help = await executePublic(['--help']);
+    const backupHelp = await executePublic(['backup', '--help']);
+    const unavailableRestore = await executePublic([
+      'backup',
+      'restore',
+      '--file',
+      'D:\\backups\\vault.cvkx',
+    ]);
     expect(help.exitCode).toBe(CLI_EXIT_CODES.success);
     expect(
       [...help.stdout.matchAll(/^ {2}([a-z][a-z-]*)(?:\s|$)/gmu)].map(
@@ -991,6 +999,10 @@ describe('CLI command shell', () => {
       expect(help.stdout).toContain(command);
     }
     expect(help.stdout).toContain('device');
+    expect(backupHelp.stdout).toContain('create');
+    expect(backupHelp.stdout).toContain('verify');
+    expect(backupHelp.stdout).not.toContain('restore');
+    expect(unavailableRestore.exitCode).toBe(CLI_EXIT_CODES.usage);
 
     const expectedCompletions = {
       bash: `_creds_complete() { COMPREPLY=( $(compgen -W '${publishedCommands}' -- "\${COMP_WORDS[COMP_CWORD]}") ); }\ncomplete -F _creds_complete creds\n`,
@@ -1285,6 +1297,62 @@ describe('CLI command shell', () => {
     const missing = await execute(['backup', 'verify'], { verifyBackup });
     expect(missing.exitCode).toBe(CLI_EXIT_CODES.usage);
     expect(verifyBackup).toHaveBeenCalledTimes(2);
+  });
+
+  it('restores a backup through the injected isolated-target port without printing its path', async () => {
+    const restoreBackup = vi.fn(() =>
+      Promise.resolve({
+        action: 'restored' as const,
+        vaultId: vaultIdSchema.parse('vault.primary'),
+        recordCount: 2,
+        bytes: 512,
+        restoreSessionId: sha256DigestSchema.parse('A'.repeat(43)),
+        selectedSlotId: keySlotIdSchema.parse('slot.restore.cli0001'),
+      }),
+    );
+
+    const text = await execute(
+      [
+        'backup',
+        'restore',
+        '--file',
+        'D:\\backups\\vault.cvkx',
+        '--vault',
+        'vault.primary',
+        '--slot',
+        'slot.restore.cli0001',
+      ],
+      { restoreBackup },
+    );
+    expect(text).toEqual({
+      exitCode: CLI_EXIT_CODES.success,
+      stdout:
+        'Encrypted backup restored for vault vault.primary (2 records, 512 bytes).\n',
+      stderr: '',
+    });
+    expect(restoreBackup).toHaveBeenCalledWith({
+      source: 'D:\\backups\\vault.cvkx',
+      vaultId: 'vault.primary',
+      slotId: 'slot.restore.cli0001',
+    });
+
+    const json = await execute(
+      ['backup', 'restore', '--file', 'D:\\backups\\vault.cvkx', '--json'],
+      { restoreBackup },
+    );
+    expect(JSON.parse(json.stdout)).toEqual({
+      action: 'restored',
+      vaultId: 'vault.primary',
+      recordCount: 2,
+      bytes: 512,
+      restoreSessionId: 'A'.repeat(43),
+      selectedSlotId: 'slot.restore.cli0001',
+    });
+    expect(json.stdout).not.toContain('D:\\backups');
+
+    const missing = await execute(['backup', 'restore'], { restoreBackup });
+    expect(missing.exitCode).toBe(CLI_EXIT_CODES.usage);
+    expect(restoreBackup).toHaveBeenCalledTimes(2);
   });
 });
 
