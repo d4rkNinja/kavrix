@@ -232,6 +232,16 @@ export function createProductionPorts(
         syncState: lastSyncStatus.value,
       }),
 
+    sync: async () => {
+      await withUnlocked((session) => session.synchronize(), true);
+      return readProductionStatus({
+        profile: options.profile,
+        environment: options.environment,
+        protectedSyncState: options.secrets.protectedSyncState,
+        syncState: lastSyncStatus.value,
+      });
+    },
+
     lock: async () => {
       // Keys never outlive the process; clearing the clipboard is the only
       // cross-process state a lock can still reach.

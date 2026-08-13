@@ -49,7 +49,8 @@ export type CliFeature =
   | 'note restore'
   | 'note remove'
   | 'reveal'
-  | 'get';
+  | 'get'
+  | 'sync';
 
 export class CliUsageError extends Error {
   readonly code = 'CLI_USAGE' as const;
