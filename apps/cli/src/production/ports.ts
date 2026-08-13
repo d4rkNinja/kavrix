@@ -233,7 +233,7 @@ export function createProductionPorts(
       }),
 
     sync: async () => {
-      await withUnlocked((session) => session.synchronize(), true);
+      await withUnlocked((session) => session.synchronize());
       return readProductionStatus({
         profile: options.profile,
         environment: options.environment,

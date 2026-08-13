@@ -152,6 +152,40 @@ describe('production CLI ports', () => {
     expect(events).toEqual(['open-store', 'open', 'unlock', 'sync', 'show', 'lock']);
   });
 
+  it('synchronizes exactly once for the explicit sync command', async () => {
+    const events: string[] = [];
+    const synchronize = vi.fn(() => {
+      events.push('sync');
+      return Promise.resolve({});
+    });
+    const options = productionOptions(events, {
+      unlockRememberedDevice: () => {
+        events.push('unlock');
+        return Promise.resolve();
+      },
+      synchronize,
+      show: () => Promise.reject(new Error('show should not run')),
+      lock: () => {
+        events.push('lock');
+        return Promise.resolve();
+      },
+    });
+
+    const ports = createProductionPorts(options);
+    if (ports.sync === undefined) throw new Error('Sync port unavailable');
+    await ports.sync();
+
+    expect(synchronize).toHaveBeenCalledTimes(1);
+    expect(events).toEqual([
+      'open-store',
+      'open',
+      'unlock',
+      'sync',
+      'lock',
+      'open-store',
+    ]);
+  });
+
   it('does not show after synchronization failure and preserves cleanup failure too', async () => {
     const events: string[] = [];
     const operationFailure = new Error('sync-secret-canary');
