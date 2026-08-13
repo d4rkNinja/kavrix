@@ -10,5 +10,6 @@ export * from './keychain.js';
 export * from './notes.js';
 export * from './payloads.js';
 export * from './primitives.js';
+export * from './rotation.js';
 export * from './sync.js';
 export * from './templates.js';

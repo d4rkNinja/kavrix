@@ -1,10 +1,10 @@
 # Portable Key and Device Enrollment
 
 > Design status: this document specifies required user and protocol behavior.
-> The fresh-home `creds recover` and command-only unlock-slot lifecycle
-> compositions are implemented and covered by focused production tests; durable
-> rotation and device-token management remain planned until marked verified in
-> [implementation-status.md](./implementation-status.md).
+> The fresh-home `creds recover`, command-only unlock-slot lifecycle, and
+> command-only portable-key rotation compositions are implemented with focused
+> tests. SQLite/Windows ACL execution and release acceptance remain in progress;
+> see [implementation-status.md](./implementation-status.md).
 
 ## The three credentials are different
 
@@ -312,19 +312,26 @@ sidecar.
 ## Portable-key rotation
 
 Portable-key rotation changes the wrapping credential, not the data-encryption
-keys:
+keys. The composed command-only path is:
 
 1. Authenticate with an active slot and unwrap the existing VRK locally.
-2. Generate or import a replacement portable key and require save/possession
-   confirmation.
-3. Derive a new portable KEK with a fresh salt and wrap the same VRK into a new
-   key version/slot.
-4. Fully unwrap and compare the replacement before activation.
-5. Publish the new wrapped slot and show per-device confirmation of the new key
-   version.
-6. Keep the old slot only during an explicitly chosen bounded grace period.
-7. Revoke the old slot only after the last-valid-slot check and a clear warning
-   for devices not yet updated.
+2. Generate a fresh bound file or import an existing unbound portable-key file;
+   read it back to confirm possession.
+3. Derive a fresh portable KEK and wrap the same VRK in a pending replacement
+   slot at the current key version.
+4. Persist a public journal record with an HMAC-authenticated checkpoint, then
+   publish and read back the pending slot.
+5. Promote the exact pending envelope to active, read it back, and unlock that
+   fetched active envelope locally with the replacement key.
+6. Revoke the old slot only after the replacement confirmation and the
+   last-valid-slot check. The old slot remains active if any earlier step fails.
+
+Use `creds key rotate resume <operation-id>` with the replacement file after an
+interruption. Resume rejects a changed source/replacement snapshot, revision,
+or checkpoint and never guesses across a concurrent vault mutation. `creds key
+rotate list` exposes only operation IDs, public states, slot IDs, and times.
+The operation journal never stores the portable key, passphrase, VRK, or
+decrypted payload data.
 
 Group/item payloads remain unchanged. If exposure is suspected, also revoke
 affected device tokens; rotating the portable slot alone does not revoke API

@@ -15,6 +15,7 @@ import type {
   CliConflictResolutionResult,
   CliKeySlot,
   CliKeySlotResult,
+  CliPortableKeyRotationResult,
   CliRecoverResult,
   CliShowResult,
   CliStatus,
@@ -151,6 +152,45 @@ export function renderKeySlotResult(result: CliKeySlotResult, json: boolean): st
   };
   if (json) return safeJson(safe);
   return `Unlock slot ${safe.slot.id} ${safe.action}.\n`;
+}
+
+export function renderPortableKeyRotation(
+  result: CliPortableKeyRotationResult,
+  json: boolean,
+): string {
+  const safe =
+    result.action === 'listed'
+      ? {
+          action: result.action,
+          operations: result.operations.map((operation) => ({
+            operationId: sanitizeTerminalText(operation.operationId),
+            state: operation.state,
+            vaultId: sanitizeTerminalText(operation.vaultId),
+            deviceId: sanitizeTerminalText(operation.deviceId),
+            sourceSlotId: sanitizeTerminalText(operation.sourceSlotId),
+            replacementSlotId: sanitizeTerminalText(operation.replacementSlotId),
+            createdAt: operation.createdAt,
+            updatedAt: operation.updatedAt,
+          })),
+        }
+      : {
+          action: result.action,
+          operationId: sanitizeTerminalText(result.operationId),
+          sourceSlotId: sanitizeTerminalText(result.sourceSlotId),
+          replacementSlotId: sanitizeTerminalText(result.replacementSlotId),
+          state: result.state,
+        };
+  if (json) return safeJson(safe);
+  if (safe.action === 'listed') {
+    if (safe.operations.length === 0) return 'No portable-key rotations.\n';
+    return `${safe.operations
+      .map(
+        (operation) =>
+          `${operation.operationId}\t${operation.state}\t${operation.vaultId}\t${operation.sourceSlotId}\t${operation.replacementSlotId}\t${operation.updatedAt}`,
+      )
+      .join('\n')}\n`;
+  }
+  return `Portable-key rotation ${safe.action} (${safe.operationId}).\n`;
 }
 
 export function renderShow(result: CliShowResult, json: boolean): string {

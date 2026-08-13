@@ -630,9 +630,11 @@ describe('CLI command shell', () => {
       show,
     });
     const joinHelp = await execute(['device', 'invite', 'join', '--help'], { show });
+    const keyHelp = await execute(['key', '--help'], { show });
     expect(help.exitCode).toBe(CLI_EXIT_CODES.success);
     expect(help.stdout).toContain('show [options] <group> <credential>');
     expect(help.stdout).toContain('copy [options] <group> <credential> <field>');
+    expect(keyHelp.stdout).toContain('rotate [options]');
     expect(joinHelp.stdout).toContain('--invite-stdin');
     expect(joinHelp.stdout).not.toContain('--invite <');
     expect(joinHelp.stdout).not.toContain('--passphrase <');

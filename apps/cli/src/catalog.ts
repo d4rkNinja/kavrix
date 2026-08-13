@@ -18,6 +18,7 @@ import { lifecycleOperationIdSchema, type LifecycleOperationId } from '@kavrix/c
 import {
   cliKeySlotListSchema,
   cliKeySlotResultSchema,
+  cliPortableKeyRotationResultSchema,
   parseRecoverRequest,
   type CliStatus,
   type CliUseCasePorts,
@@ -49,6 +50,7 @@ import type {
   NewSlotCredential,
   SlotReauthentication,
 } from './production/slot-lifecycle.js';
+import type { PortableKeyRotationOperation } from './production/portable-key-rotation.js';
 
 const querySchema = z.string().trim().min(1).max(512);
 const schemaVersionOptionSchema = z
@@ -399,6 +401,89 @@ const keyCommand: CliCommandDescriptor = Object.freeze({
             context.stdout.write(
               renderKeySlotResult(
                 cliKeySlotResultSchema.parse(raw),
+                optionBoolean(options, 'json'),
+              ),
+            );
+          },
+        },
+      ],
+    },
+    {
+      name: 'rotate',
+      description: 'Rotate one portable-key wrapping credential with crash resume.',
+      options: portableKeyRotationOptions(),
+      execute: async (context, _arguments, options) => {
+        const operation = await acquirePortableKeyRotationStart(context, options);
+        const raw = await executeProductionPortableKeyRotationOperation(
+          context,
+          options,
+          operation,
+        );
+        const { renderPortableKeyRotation } = await import('./render.js');
+        context.stdout.write(
+          renderPortableKeyRotation(
+            cliPortableKeyRotationResultSchema.parse(raw),
+            optionBoolean(options, 'json'),
+          ),
+        );
+      },
+      children: [
+        {
+          name: 'resume',
+          description: 'Resume an interrupted portable-key rotation.',
+          arguments: [
+            {
+              syntax: '<operation-id>',
+              description: 'Opaque rotation operation identifier.',
+            },
+          ],
+          options: portableKeyRotationResumeOptions(),
+          execute: async (context, arguments_, options) => {
+            rejectRotationStdinCollision(options);
+            const operation: PortableKeyRotationOperation = {
+              kind: 'resume',
+              operationId: parseRotationOperationId(arguments_[0]),
+              replacementFile: {
+                path: requiredOption(
+                  options,
+                  'replacementFile',
+                  'replacement key file',
+                ),
+                passphraseFromStdin: optionBoolean(
+                  options,
+                  'replacementFilePassphraseStdin',
+                ),
+              },
+              reauthentication: await acquireReauthentication(context, options),
+            };
+            const raw = await executeProductionPortableKeyRotationOperation(
+              context,
+              options,
+              operation,
+            );
+            const { renderPortableKeyRotation } = await import('./render.js');
+            context.stdout.write(
+              renderPortableKeyRotation(
+                cliPortableKeyRotationResultSchema.parse(raw),
+                optionBoolean(options, 'json'),
+              ),
+            );
+          },
+        },
+        {
+          name: 'list',
+          description: 'List redacted portable-key rotation journal entries.',
+          options: [jsonOption, secretBackendOption, backendPassphraseStdinOption],
+          execute: async (context, _arguments, options) => {
+            const raw = await executeProductionPortableKeyRotationOperation(
+              context,
+              options,
+              { kind: 'list' },
+            );
+            const { renderPortableKeyRotation } = await import('./render.js');
+            context.stdout.write(
+              renderPortableKeyRotation(
+                cliPortableKeyRotationResultSchema.parse(raw),
                 optionBoolean(options, 'json'),
               ),
             );
@@ -3000,6 +3085,14 @@ function parseRecoveryOperationId(value: string | undefined): LifecycleOperation
   return parsed.data;
 }
 
+function parseRotationOperationId(value: string | undefined): LifecycleOperationId {
+  const parsed = lifecycleOperationIdSchema.safeParse(
+    requiredArgument(value, 'operation ID'),
+  );
+  if (!parsed.success) throw new CliUsageError('The rotation operation ID is invalid.');
+  return parsed.data;
+}
+
 function useCases(context: CliCommandContext, feature: CliFeature): CliUseCasePorts {
   if (context.ports === undefined) throw new CliUnavailableError(feature);
   return context.ports;
@@ -3068,6 +3161,161 @@ function slotLifecycleOptions(
     secretBackendOption,
     backendPassphraseStdinOption,
   ];
+}
+
+function portableKeyRotationOptions(): readonly CliOptionDescriptor[] {
+  return [
+    ...slotLifecycleOptions(false),
+    {
+      flags: '--slot <slot-id>',
+      description: 'Existing active portable-key slot to replace.',
+    },
+    {
+      flags: '--generate-file <path>',
+      description: 'Generate a fresh bound replacement key file at this path.',
+    },
+    {
+      flags: '--replacement-file <path>',
+      description: 'Import an existing unbound portable-key file.',
+    },
+    {
+      flags: '--protect-with-passphrase',
+      description: 'Encrypt a generated replacement file with a confirmed passphrase.',
+    },
+    {
+      flags: '--replacement-passphrase-stdin',
+      description: 'Read generated-file passphrase and confirmation from stdin frames.',
+    },
+    {
+      flags: '--replacement-file-passphrase-stdin',
+      description: 'Read an imported replacement-file passphrase from stdin.',
+    },
+  ];
+}
+
+function portableKeyRotationResumeOptions(): readonly CliOptionDescriptor[] {
+  return [
+    ...slotLifecycleOptions(false),
+    {
+      flags: '--replacement-file <path>',
+      description: 'The original replacement portable-key file.',
+    },
+    {
+      flags: '--replacement-file-passphrase-stdin',
+      description: 'Read the replacement-file passphrase from stdin.',
+    },
+  ];
+}
+
+async function acquirePortableKeyRotationStart(
+  context: CliCommandContext,
+  options: Readonly<Record<string, unknown>>,
+): Promise<PortableKeyRotationOperation> {
+  const generateFile = optionString(options, 'generateFile');
+  const replacementFile = optionString(options, 'replacementFile');
+  if ((generateFile === undefined) === (replacementFile === undefined)) {
+    throw new CliUsageError(
+      'Choose exactly one of --generate-file or --replacement-file.',
+    );
+  }
+  const generatedPassphraseFromStdin = optionBoolean(
+    options,
+    'replacementPassphraseStdin',
+  );
+  const replacementFilePassphraseFromStdin = optionBoolean(
+    options,
+    'replacementFilePassphraseStdin',
+  );
+  if (generateFile !== undefined) {
+    if (replacementFilePassphraseFromStdin) {
+      throw new CliUsageError(
+        '--replacement-file-passphrase-stdin applies only to imported files.',
+      );
+    }
+    if (
+      generatedPassphraseFromStdin &&
+      !optionBoolean(options, 'protectWithPassphrase')
+    ) {
+      throw new CliUsageError(
+        '--replacement-passphrase-stdin requires --protect-with-passphrase.',
+      );
+    }
+  } else if (
+    optionBoolean(options, 'protectWithPassphrase') ||
+    generatedPassphraseFromStdin
+  ) {
+    throw new CliUsageError(
+      'Generated-file protection options require --generate-file.',
+    );
+  }
+  rejectRotationStdinCollision(options);
+  const reauthentication = await acquireReauthentication(context, options);
+  const sourceSlotId = optionalKeySlotId(options, 'slot');
+  return {
+    kind: 'start',
+    ...(sourceSlotId === undefined ? {} : { sourceSlotId }),
+    replacement:
+      generateFile === undefined
+        ? {
+            kind: 'import-file',
+            path: requiredValue(replacementFile, 'replacement key file'),
+            passphraseFromStdin: replacementFilePassphraseFromStdin,
+          }
+        : {
+            kind: 'generate-file',
+            path: generateFile,
+            protectWithPassphrase: optionBoolean(options, 'protectWithPassphrase'),
+            passphraseFromStdin: generatedPassphraseFromStdin,
+          },
+    reauthentication,
+  };
+}
+
+function rejectRotationStdinCollision(
+  options: Readonly<Record<string, unknown>>,
+): void {
+  const reauthenticationUsesStdin =
+    optionBoolean(options, 'reauthStdin') ||
+    (optionString(options, 'authKeyFile') !== undefined &&
+      optionBoolean(options, 'keyFilePassphraseStdin'));
+  const replacementUsesStdin =
+    optionBoolean(options, 'replacementPassphraseStdin') ||
+    optionBoolean(options, 'replacementFilePassphraseStdin');
+  if (reauthenticationUsesStdin && replacementUsesStdin) {
+    throw new CliUsageError(
+      'Reauthentication and replacement-file secrets cannot share stdin in one command.',
+    );
+  }
+}
+
+async function executeProductionPortableKeyRotationOperation(
+  context: CliCommandContext,
+  options: Readonly<Record<string, unknown>>,
+  operation: PortableKeyRotationOperation,
+): Promise<unknown> {
+  if (context.environment === undefined) {
+    throw new CliUnavailableError(
+      operation.kind === 'list' ? 'key rotate list' : 'key rotate',
+    );
+  }
+  const { executeProductionPortableKeyRotation } =
+    await import('./production/portable-key-rotation.js');
+  return executeProductionPortableKeyRotation({
+    environment: context.environment,
+    secrets: secretInput(
+      context,
+      `key rotate${operation.kind === 'resume' ? ' resume' : ''}` as CliFeature,
+    ),
+    backendPolicy: parseStatusBackendPolicy(options),
+    operation,
+  });
+}
+
+function requiredValue(value: string | undefined, label: string): string {
+  if (value === undefined || value.length === 0) {
+    throw new CliUsageError(`A ${label} is required.`);
+  }
+  return value;
 }
 
 type SlotCredentialType = 'portable-key' | 'passphrase' | 'recovery-key' | 'device-key';

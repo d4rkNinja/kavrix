@@ -857,8 +857,8 @@ async function revokeAndConfirm(
   throw new VaultLifecycleError('protocol');
 }
 
-async function createSlotAudit(
-  options: KeySlotLifecycleOptions,
+export async function createSlotAudit(
+  options: Pick<KeySlotLifecycleOptions, 'auditIds' | 'profile'>,
   rootKey: VaultRootKey,
   vault: VaultRecord,
   slot: KeySlot,

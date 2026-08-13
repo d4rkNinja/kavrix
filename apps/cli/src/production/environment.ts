@@ -4,12 +4,14 @@ import {
   acquireLocalWriterLease,
   openSqliteInitializationJournal,
   openSqliteJoinLifecycleJournal,
+  openSqlitePortableKeyRotationJournal,
   openSqliteSyncLocalStore,
   openSqliteVaultProfileStore,
   recoverStaleLocalWriterLease,
   type LocalWriterLease,
   type SqliteInitializationJournal,
   type SqliteJoinLifecycleJournal,
+  type SqlitePortableKeyRotationJournal,
   type SqliteSyncLocalStore,
   type SqliteVaultProfileStore,
 } from '@kavrix/local-store';
@@ -28,6 +30,7 @@ export interface ProductionEnvironment {
   readonly profiles: SqliteVaultProfileStore;
   readonly initializationJournal: SqliteInitializationJournal;
   readonly joinJournal: SqliteJoinLifecycleJournal;
+  readonly rotationJournal: SqlitePortableKeyRotationJournal;
   readonly clipboard: SecureClipboard;
   openSyncStore(profile: VaultProfile): Promise<SqliteSyncLocalStore>;
   close(): Promise<void>;
@@ -47,6 +50,7 @@ export interface ProductionEnvironmentDependencies {
   readonly openProfiles: typeof openSqliteVaultProfileStore;
   readonly openInitializationJournal: typeof openSqliteInitializationJournal;
   readonly openJoinJournal: typeof openSqliteJoinLifecycleJournal;
+  readonly openRotationJournal: typeof openSqlitePortableKeyRotationJournal;
   readonly openSyncStore: typeof openSqliteSyncLocalStore;
   readonly createClipboard: typeof createSecureClipboard;
 }
@@ -67,6 +71,7 @@ const DEFAULT_DEPENDENCIES: ProductionEnvironmentDependencies = {
   openProfiles: openSqliteVaultProfileStore,
   openInitializationJournal: openSqliteInitializationJournal,
   openJoinJournal: openSqliteJoinLifecycleJournal,
+  openRotationJournal: openSqlitePortableKeyRotationJournal,
   openSyncStore: openSqliteSyncLocalStore,
   createClipboard: createSecureClipboard,
 };
@@ -88,6 +93,7 @@ export async function openProductionEnvironment(
   let profiles: SqliteVaultProfileStore | undefined;
   let initializationJournal: SqliteInitializationJournal | undefined;
   let joinJournal: SqliteJoinLifecycleJournal | undefined;
+  let rotationJournal: SqlitePortableKeyRotationJournal | undefined;
   let clipboard: SecureClipboard | undefined;
   try {
     await dependencies.ensureDataDirectory(paths.home);
@@ -100,12 +106,19 @@ export async function openProductionEnvironment(
       path: paths.joinJournal,
       protectedSecrets: secrets.joinJournalSecrets,
     });
+    rotationJournal = await dependencies.openRotationJournal({
+      path: paths.rotationJournal,
+    });
     clipboard = dependencies.createClipboard();
   } catch (openFailure) {
     const cleanupOperations: (() => unknown)[] = [];
     if (clipboard !== undefined) {
       const acquired = clipboard;
       cleanupOperations.push(() => acquired.dispose());
+    }
+    if (rotationJournal !== undefined) {
+      const acquired = rotationJournal;
+      cleanupOperations.push(() => acquired.close());
     }
     if (joinJournal !== undefined) {
       const acquired = joinJournal;
@@ -134,6 +147,7 @@ export async function openProductionEnvironment(
   const ownedProfiles = requiredResource(profiles);
   const ownedInitializationJournal = requiredResource(initializationJournal);
   const ownedJoinJournal = requiredResource(joinJournal);
+  const ownedRotationJournal = requiredResource(rotationJournal);
   const ownedClipboard = requiredResource(clipboard);
   const ownedLease = requiredResource(lease);
   const syncStores = createSyncStoreCache(paths, dependencies.openSyncStore);
@@ -143,6 +157,7 @@ export async function openProductionEnvironment(
     profiles: ownedProfiles,
     initializationJournal: ownedInitializationJournal,
     joinJournal: ownedJoinJournal,
+    rotationJournal: ownedRotationJournal,
     clipboard: ownedClipboard,
     openSyncStore: syncStores.open,
     close: () => {
@@ -150,6 +165,7 @@ export async function openProductionEnvironment(
         const failures = await cleanup([
           ...syncStores.closeOperations(),
           () => ownedClipboard.dispose(),
+          () => ownedRotationJournal.close(),
           () => ownedJoinJournal.close(),
           () => ownedInitializationJournal.close(),
           () => ownedProfiles.close(),

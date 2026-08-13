@@ -14,6 +14,7 @@ import {
   keySlotIdSchema,
   keyVersionSchema,
   MAX_VAULT_KEY_SLOTS,
+  portableKeyRotationStateSchema,
   schemaVersionSchema,
   timestampSchema,
   vaultIdSchema,
@@ -171,6 +172,37 @@ export const cliKeySlotResultSchema = z
   })
   .strict();
 
+export const cliPortableKeyRotationListingSchema = z
+  .object({
+    operationId: lifecycleOperationIdSchema,
+    state: portableKeyRotationStateSchema,
+    vaultId: vaultIdSchema,
+    deviceId: deviceIdSchema,
+    sourceSlotId: keySlotIdSchema,
+    replacementSlotId: keySlotIdSchema,
+    createdAt: timestampSchema,
+    updatedAt: timestampSchema,
+  })
+  .strict();
+
+export const cliPortableKeyRotationResultSchema = z.discriminatedUnion('action', [
+  z
+    .object({
+      action: z.enum(['rotated', 'resumed']),
+      operationId: lifecycleOperationIdSchema,
+      sourceSlotId: keySlotIdSchema,
+      replacementSlotId: keySlotIdSchema,
+      state: z.literal('completed'),
+    })
+    .strict(),
+  z
+    .object({
+      action: z.literal('listed'),
+      operations: z.array(cliPortableKeyRotationListingSchema).max(256),
+    })
+    .strict(),
+]);
+
 /**
  * The invite redemption request.
  *
@@ -208,6 +240,12 @@ export type CliRecoverRequest = z.infer<typeof cliRecoverRequestSchema>;
 export type CliRecoverResult = z.infer<typeof cliRecoverResultSchema>;
 export type CliKeySlot = z.infer<typeof cliKeySlotSchema>;
 export type CliKeySlotResult = z.infer<typeof cliKeySlotResultSchema>;
+export type CliPortableKeyRotationListing = z.infer<
+  typeof cliPortableKeyRotationListingSchema
+>;
+export type CliPortableKeyRotationResult = z.infer<
+  typeof cliPortableKeyRotationResultSchema
+>;
 export type CliShowResult = CredentialShowProjection;
 export type CliInviteJoinRequest = z.infer<typeof cliInviteJoinRequestSchema>;
 export type CliInviteJoinResult = z.infer<typeof cliInviteJoinResultSchema>;
