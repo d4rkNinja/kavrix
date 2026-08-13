@@ -3,8 +3,8 @@
 Kavrix is not published. The public-package build produces a `creds` executable,
 but its installed command surface is intentionally limited to production-backed
 local operations. Vault operations exist in a separately tested,
-dependency-injected catalog in the repository; only the narrow locked `status`
-slice is composed into the packed executable.
+dependency-injected catalog in the repository; only the production-composed
+commands below are available in the packed executable.
 
 This distinction is security-relevant: a command listed as "catalog only" below
 is not usable from the current public executable.
@@ -14,22 +14,41 @@ is not usable from the current public executable.
 The packed executable never reads MongoDB or contacts a vault server. Local
 generation uses the production cryptographic RNG, TOTP consumes a locally
 supplied seed, and `key create` writes one protected or unprotected portable-key
-file. `status` reads a single canonical local profile, the opaque SQLite queue,
-and protected rollback state without unlocking or decrypting the vault. Its
-current surface is:
+file. `init` composes a crash-safe initialization coordinator; `unlock`/`lock`
+compose the invocation-scoped unlocked lifecycle; `status` reads a single
+canonical local profile, the opaque SQLite queue, and protected rollback state
+without unlocking or decrypting the vault; and `group`/`credential` compose local
+encrypted mutation against the unlocked local store. Its current surface is:
 
-| Command                                    | Status                         | Behavior                                                                                          |
-| ------------------------------------------ | ------------------------------ | ------------------------------------------------------------------------------------------------- |
-| `creds`                                    | Available in the built package | Prints help.                                                                                      |
-| `creds --help`                             | Available in the built package | Prints static help.                                                                               |
-| `creds --version`                          | Available in the built package | Prints package version `0.1.0`.                                                                   |
-| `creds version`                            | Available in the built package | Prints package version `0.1.0`.                                                                   |
-| `creds completion <shell>`                 | Available in the built package | Prints static top-level completion for `bash`, `zsh`, `fish`, or `powershell`.                    |
-| `creds generate password [options]`        | Available in the built package | Generates one policy-validated password with production randomness.                               |
-| `creds generate passphrase [options]`      | Available in the built package | Generates one passphrase from the attributed EFF short word list.                                 |
-| `creds totp [options]`                     | Available in the built package | Reads a masked or explicit-stdin Base32 seed and emits one canonical TOTP code.                   |
-| `creds key create --file <path> [options]` | Available in the built package | Creates one unbound v1 portable-key file, refuses overwrite, and never displays the portable key. |
-| `creds status [options]`                   | Available in the built package | Reports redacted locked/offline state for exactly one enrolled local profile without networking.  |
+| Command                                                    | Status                         | Behavior                                                                                           |
+| ---------------------------------------------------------- | ------------------------------ | -------------------------------------------------------------------------------------------------- |
+| `creds`                                                    | Available in the built package | Prints help.                                                                                       |
+| `creds --help`                                             | Available in the built package | Prints static help.                                                                                |
+| `creds --version`                                          | Available in the built package | Prints package version `0.1.0`.                                                                    |
+| `creds version`                                            | Available in the built package | Prints package version `0.1.0`.                                                                    |
+| `creds completion <shell>`                                 | Available in the built package | Prints static top-level completion for `bash`, `zsh`, `fish`, or `powershell`.                     |
+| `creds generate password [options]`                        | Available in the built package | Generates one policy-validated password with production randomness.                                |
+| `creds generate passphrase [options]`                      | Available in the built package | Generates one passphrase from the attributed EFF short word list.                                  |
+| `creds totp [options]`                                     | Available in the built package | Reads a masked or explicit-stdin Base32 seed and emits one canonical TOTP code.                    |
+| `creds key create --file <path> [options]`                 | Available in the built package | Creates one unbound v1 portable-key file, refuses overwrite, and never displays the portable key.  |
+| `creds init [options]`                                     | Available in the built package | Creates one vault/profile/device/session with durable recovery material and a global writer lease. |
+| `creds init resume <operation-id>`                         | Available in the built package | Resumes one durable initialization journal operation.                                              |
+| `creds init cancel <operation-id>`                         | Available in the built package | Cancels one safely cancellable prepared initialization operation.                                  |
+| `creds unlock --check [options]`                           | Available in the built package | Verifies unlock material and immediately relocks; no daemon persists.                              |
+| `creds lock [options]`                                     | Available in the built package | Locks the active vault and clears use-case-managed secret state.                                   |
+| `creds status [options]`                                   | Available in the built package | Reports redacted locked/offline state for exactly one enrolled local profile without networking.   |
+| `creds group create <name>`                                | Available in the built package | Creates an encrypted local group container.                                                        |
+| `creds group list [--json]`                                | Available in the built package | Lists active groups with redacted names.                                                           |
+| `creds group rename <query> <new-name>`                    | Available in the built package | Renames an active group by ID, name, or alias.                                                     |
+| `creds group archive <query>`                              | Available in the built package | Archives an active group as a tombstone.                                                           |
+| `creds group restore <group-id>`                           | Available in the built package | Restores an archived group by exact ID.                                                            |
+| `creds group delete <query> --force`                       | Available in the built package | Permanently deletes a group with an explicit `--force` authorization.                              |
+| `creds credential create <group> <title>`                  | Available in the built package | Creates an encrypted credential item inside a group.                                               |
+| `creds credential list <group> [--json]`                   | Available in the built package | Lists active credentials in a group with redacted titles.                                          |
+| `creds credential rename <group> <credential> <new-title>` | Available in the built package | Renames an active credential.                                                                      |
+| `creds credential archive <group> <credential>`            | Available in the built package | Archives an active credential as a tombstone.                                                      |
+| `creds credential restore <group> <credential-id>`         | Available in the built package | Restores an archived credential by exact ID.                                                       |
+| `creds credential delete <group> <credential> --force`     | Available in the built package | Permanently deletes a credential with an explicit `--force` authorization.                         |
 
 The generated completion is derived from the static public catalog. It never
 loads runtime vault names, aliases, fields, IDs, or secrets. Inspect output
@@ -74,6 +93,21 @@ Zero/multiple profiles, corruption, wrong passphrases, and lease contention fail
 closed. This command is not an unlock, online-sync, credential-read, or
 native-keychain portability claim.
 
+`unlock --check` acquires unlock material through a masked prompt or explicit
+stdin, opens one protected session and local store, derives the vault root key
+only inside the locked lifecycle, and relocks immediately; no daemon persists.
+`lock` releases owned buffers and clears use-case-managed secret state. Both hold
+the global writer lease and close every opened resource, surfacing an aggregate
+error when an operation and its cleanup both fail.
+
+`group` and `credential` mutate the encrypted local store through the same
+invocation-scoped unlocked lifecycle. Secrets never enter argv, environment,
+completion, or logs: titles and names are sanitized plain text, field values are
+set only through protected stdin or a masked prompt in later commands, and
+archive/restore operate on opaque tombstones. Permanent deletion requires the
+explicit `--force` flag. Ambiguous or missing names fail closed, and list output
+renders only sanitized titles and opaque IDs.
+
 The deterministic package build emits one ESM executable entry and
 content-hashed lazy chunks. Version, completion, public help, `status --help`,
 and invalid commands do not evaluate the production-status chunk; version and
@@ -89,16 +123,12 @@ EFF word list as a separate CC-BY-4.0 data component. See the
 [`CLI_COMMAND_CATALOG`](../apps/cli/src/catalog.ts) and
 [`runCli`](../apps/cli/src/cli.ts) implement and test the following parser,
 validation, rendering, and use-case boundaries. They require real
-`CliUseCasePorts` and, where applicable, a `SecretInputPort`. Except for the
-narrow status callback described above, no production composition supplies
-those ports to the executable.
+`CliUseCasePorts` and, where applicable, a `SecretInputPort`. Commands listed
+here without production composition are exercised only through injected use-case
+ports and never reach the packed executable.
 
 | Syntax                                                                                                 | Status       | Implemented boundary behavior                                                                                                               |
 | ------------------------------------------------------------------------------------------------------ | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| `creds init [options]`                                                                                 | Catalog only | Drives the injected crash-safe initialization coordinator and dedicated sensitive-display boundary.                                         |
-| `creds init resume <operation-id>`                                                                     | Catalog only | Resumes one durable initialization journal operation without redisplaying creation material.                                                |
-| `creds init cancel <operation-id>`                                                                     | Catalog only | Requests safe cancellation; unsafe states fail generically.                                                                                 |
-| `creds lock`                                                                                           | Catalog only | Calls the injected lock use case and prints `Vault locked.` after success.                                                                  |
 | `creds show <group-query> <credential-query> [--json]`                                                 | Catalog only | Calls one redacted, schema-validated show use case. See [Direct access CLI](./direct-access-cli.md).                                        |
 | `creds copy <group-query> <credential-query> <field-query> [--index <number>]`                         | Catalog only | Delegates authorized clipboard copy and returns only a safe label/deadline receipt, never the copied value.                                 |
 | `creds device invite list --vault <vault-id> [--json]`                                                 | Catalog only | Lists canonical public invite metadata, never invite tokens or hashes.                                                                      |
@@ -132,9 +162,8 @@ The following surfaces are not available from the packed executable and must not
 be treated as released behavior, even where a tested injected descriptor or
 lower-level use case exists:
 
-- initialization, resume/cancel, connect, unlock, and lock;
 - direct `show`, `copy`, and `reveal`;
-- group, item, dynamic-field, and note CRUD;
+- credential field (dynamic-field) values and note CRUD;
 - portable-key import, rotation, recovery, and device lifecycle beyond the
   catalog contracts above;
 - backup, verify, restore, history, and attachment commands;

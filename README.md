@@ -48,14 +48,16 @@ Do not treat that command as available until a signed release and matching npm
 provenance are linked from this repository. The prepared packed executable
 exposes only production-backed local behavior: help, `--version`/`creds
 version`, static Bash/Zsh/Fish/PowerShell completion, password and passphrase
-generation, TOTP generation, create-only portable key-file creation, and a
-locked local `creds status` diagnostic for one already-enrolled data home.
+generation, TOTP generation, create-only portable key-file creation, crash-safe
+local initialization with resume/cancel, guarded unlock/lock, a locked local
+`creds status` diagnostic for one already-enrolled data home, and encrypted
+local group and credential CRUD.
 Status reads only the canonical profile, opaque pending-mutation count, and
 protected rollback timestamp. With `sealed-file`, it authenticates and unseals
 only that local protected rollback metadata; it never obtains vault
-root/group/item keys or decrypts credential records. It does not unlock, contact
-the stored server, or open clipboard/lifecycle-journal resources. Public
-initialization, unlock, online sync, show, copy, and device workflows remain
+root/group/item keys or decrypts credential records. It does not contact
+the stored server or open clipboard/lifecycle-journal resources. Public
+online sync, show, copy, and device workflows remain
 unavailable. See the [CLI Reference](./docs/cli-reference.md) and
 [Public Release Process](./docs/release.md).
 
@@ -71,14 +73,21 @@ creds generate password
 creds generate passphrase
 creds totp
 creds key create --file portable-key.cvk
+creds init
+creds unlock --check
 creds status
+creds group create "Engineering"
+creds credential create "Engineering" "Database Admin"
+creds credential list "Engineering"
 ```
 
 Generated values and TOTP codes require an interactive output stream unless
 `--stdout` is explicit. TOTP seeds, protected-file passphrases, and sealed
 status-backend passphrases use masked input or explicit bounded stdin modes;
 they are never accepted as arguments or environment settings. `key create`
-never prints the portable key and refuses to replace an existing file.
+never prints the portable key and refuses to replace an existing file. Local
+group/credential creation is encrypted at rest and requires an unlocked local
+lifecycle (see [CLI Reference](./docs/cli-reference.md)).
 
 ## Planned vault quick start
 

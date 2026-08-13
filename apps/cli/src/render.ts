@@ -285,3 +285,32 @@ export function renderGroupList(
   ];
   return lines.join('\n').concat('\n');
 }
+
+export function renderCredentialList(
+  items: readonly {
+    id: string;
+    title: string;
+    subtitle?: string | undefined;
+    favorite?: boolean | undefined;
+  }[],
+  json: boolean,
+): string {
+  const safeItems = items.map((item) => ({
+    id: sanitizeTerminalText(item.id),
+    title: sanitizeTerminalText(item.title),
+    ...(item.subtitle === undefined
+      ? {}
+      : { subtitle: sanitizeTerminalText(item.subtitle) }),
+    ...(item.favorite === undefined ? {} : { favorite: item.favorite }),
+  }));
+  if (json) return safeJson(safeItems);
+  if (safeItems.length === 0) return 'No credentials found.\n';
+  const lines = [
+    `Credentials (${String(safeItems.length)}):`,
+    ...safeItems.map(
+      (item) =>
+        `  - ${item.title} (${item.id})${item.subtitle ? `: ${item.subtitle}` : ''}`,
+    ),
+  ];
+  return lines.join('\n').concat('\n');
+}

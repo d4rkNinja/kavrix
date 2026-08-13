@@ -559,7 +559,7 @@ describe('injectable initialization commands', () => {
 
     const publicCompletion = await executePublic(['completion', 'bash']);
     expect(publicCompletion.stdout).toContain(
-      "'version generate totp key init unlock lock status group completion'",
+      "'version generate totp key init unlock lock status group credential completion'",
     );
     expect(publicCompletion.stdout).not.toContain(PORTABLE);
 

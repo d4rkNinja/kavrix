@@ -1,7 +1,11 @@
 import type { Writable } from 'node:stream';
 
 import { Command } from 'commander';
-import { controlListPageQuerySchema, type GroupPayload } from '@kavrix/schemas';
+import {
+  controlListPageQuerySchema,
+  type GroupPayload,
+  type ItemPayload,
+} from '@kavrix/schemas';
 import { z } from 'zod';
 import type { VaultRootKey } from '@kavrix/crypto';
 import type { SqliteSyncLocalStore } from '@kavrix/local-store';
@@ -771,6 +775,307 @@ const groupCommand: CliCommandDescriptor = Object.freeze({
   ],
 });
 
+const credentialCommand: CliCommandDescriptor = Object.freeze({
+  name: 'credential',
+  description: 'Manage credential items inside groups.',
+  options: [secretBackendOption, backendPassphraseStdinOption],
+  children: [
+    {
+      name: 'create',
+      description: 'Create a new credential item in a group.',
+      arguments: [
+        { syntax: '<group>', description: 'Group ID, unique name, or alias.' },
+        { syntax: '<title>', description: 'Credential title.' },
+      ],
+      options: [secretBackendOption, backendPassphraseStdinOption],
+      execute: async (context, arguments_, options) => {
+        const groupQuery = requiredArgument(arguments_[0], 'group query');
+        const title = requiredArgument(arguments_[1], 'credential title');
+        const { cliCreateCredentialRequestSchema } =
+          await import('./mutation-contracts.js');
+        const request = cliCreateCredentialRequestSchema.parse({
+          groupQuery,
+          title,
+        });
+
+        let result: { credentialId: string };
+        if (context.ports?.createCredential !== undefined) {
+          result = await context.ports.createCredential(request);
+        } else {
+          const { executeProductionCreateCredential } =
+            await import('./production/mutations.js');
+          result = await withUnlockedVault(
+            context,
+            'credential create',
+            options,
+            async (unlocked, store, rootKey) =>
+              executeProductionCreateCredential(
+                {
+                  source: store,
+                  queue: store,
+                  vaultId: unlocked.profile.vaultId,
+                  rootKey,
+                },
+                request,
+              ),
+          );
+        }
+        context.stdout.write(
+          `Credential "${request.title}" created (${result.credentialId}).\n`,
+        );
+      },
+    },
+    {
+      name: 'list',
+      description: 'List active credentials in a group.',
+      arguments: [
+        { syntax: '<group>', description: 'Group ID, unique name, or alias.' },
+      ],
+      options: [jsonOption, secretBackendOption, backendPassphraseStdinOption],
+      execute: async (context, arguments_, options) => {
+        const groupQuery = requiredArgument(arguments_[0], 'group query');
+        let items: readonly ItemPayload[];
+        if (context.ports?.listCredentials !== undefined) {
+          items = await context.ports.listCredentials(groupQuery);
+        } else {
+          const { VaultReadSession } = await import('@kavrix/client');
+          items = await withUnlockedVault(
+            context,
+            'credential list',
+            options,
+            async (unlocked, store, rootKey) => {
+              const readSession = new VaultReadSession(store, unlocked.profile.vaultId);
+              try {
+                await readSession.unlock(rootKey);
+                return await readSession.listItems(groupQuery);
+              } finally {
+                readSession.lock();
+              }
+            },
+          );
+        }
+        const { renderCredentialList } = await import('./render.js');
+        context.stdout.write(
+          renderCredentialList(items, optionBoolean(options, 'json')),
+        );
+      },
+    },
+    {
+      name: 'rename',
+      description: 'Rename an active credential.',
+      arguments: [
+        { syntax: '<group>', description: 'Group ID, unique name, or alias.' },
+        {
+          syntax: '<credential>',
+          description: 'Credential ID, unique name, or alias.',
+        },
+        { syntax: '<new-title>', description: 'New credential title.' },
+      ],
+      options: [secretBackendOption, backendPassphraseStdinOption],
+      execute: async (context, arguments_, options) => {
+        const groupQuery = requiredArgument(arguments_[0], 'group query');
+        const credentialQuery = requiredArgument(arguments_[1], 'credential query');
+        const newTitle = requiredArgument(arguments_[2], 'new credential title');
+
+        if (context.ports?.renameCredential !== undefined) {
+          await context.ports.renameCredential(groupQuery, credentialQuery, newTitle);
+        } else {
+          const { VaultReadSession, VaultMutationService } =
+            await import('@kavrix/client');
+          const { createDefaultMutationDependencies } =
+            await import('./production/mutations.js');
+          await withUnlockedVault(
+            context,
+            'credential rename',
+            options,
+            async (unlocked, store, rootKey) => {
+              const readSession = new VaultReadSession(store, unlocked.profile.vaultId);
+              let found: { group: GroupPayload; item: ItemPayload };
+              try {
+                await readSession.unlock(rootKey);
+                found = await readSession.show(groupQuery, credentialQuery);
+              } finally {
+                readSession.lock();
+              }
+              const service = new VaultMutationService(
+                store,
+                store,
+                unlocked.profile.vaultId,
+                rootKey,
+                createDefaultMutationDependencies(),
+              );
+              await service.updateItem(found.group.id, {
+                ...found.item,
+                title: newTitle,
+              });
+            },
+          );
+        }
+        context.stdout.write(`Credential renamed to "${newTitle}".\n`);
+      },
+    },
+    {
+      name: 'archive',
+      description: 'Archive an active credential.',
+      arguments: [
+        { syntax: '<group>', description: 'Group ID, unique name, or alias.' },
+        {
+          syntax: '<credential>',
+          description: 'Credential ID, unique name, or alias.',
+        },
+      ],
+      options: [secretBackendOption, backendPassphraseStdinOption],
+      execute: async (context, arguments_, options) => {
+        const groupQuery = requiredArgument(arguments_[0], 'group query');
+        const credentialQuery = requiredArgument(arguments_[1], 'credential query');
+        const { cliArchiveEntityRequestSchema } =
+          await import('./mutation-contracts.js');
+        const request = cliArchiveEntityRequestSchema.parse({
+          groupQuery,
+          credentialQuery,
+        });
+
+        if (context.ports?.archiveEntity !== undefined) {
+          await context.ports.archiveEntity(request);
+        } else {
+          const { executeProductionArchiveEntity } =
+            await import('./production/mutations.js');
+          await withUnlockedVault(
+            context,
+            'credential archive',
+            options,
+            async (unlocked, store, rootKey) => {
+              await executeProductionArchiveEntity(
+                {
+                  source: store,
+                  queue: store,
+                  vaultId: unlocked.profile.vaultId,
+                  rootKey,
+                },
+                request,
+              );
+            },
+          );
+        }
+        context.stdout.write(`Credential "${credentialQuery}" archived.\n`);
+      },
+    },
+    {
+      name: 'restore',
+      description: 'Restore an archived credential.',
+      arguments: [
+        { syntax: '<group>', description: 'Group ID, unique name, or alias.' },
+        { syntax: '<credential-id>', description: 'Archived credential ID.' },
+      ],
+      options: [secretBackendOption, backendPassphraseStdinOption],
+      execute: async (context, arguments_, options) => {
+        const groupQuery = requiredArgument(arguments_[0], 'group query');
+        const credentialId = requiredArgument(arguments_[1], 'credential ID');
+        const { cliRestoreEntityRequestSchema } =
+          await import('./mutation-contracts.js');
+        const request = cliRestoreEntityRequestSchema.parse({
+          groupQuery,
+          credentialQuery: credentialId,
+        });
+
+        if (context.ports?.restoreEntity !== undefined) {
+          await context.ports.restoreEntity(request);
+        } else {
+          const { executeProductionRestoreEntity } =
+            await import('./production/mutations.js');
+          await withUnlockedVault(
+            context,
+            'credential restore',
+            options,
+            async (unlocked, store, rootKey) => {
+              await executeProductionRestoreEntity(
+                {
+                  source: store,
+                  queue: store,
+                  vaultId: unlocked.profile.vaultId,
+                  rootKey,
+                },
+                request,
+              );
+            },
+          );
+        }
+        context.stdout.write(`Credential "${credentialId}" restored.\n`);
+      },
+    },
+    {
+      name: 'delete',
+      description: 'Permanently delete a credential.',
+      arguments: [
+        { syntax: '<group>', description: 'Group ID, unique name, or alias.' },
+        {
+          syntax: '<credential>',
+          description: 'Credential ID, unique name, or alias.',
+        },
+      ],
+      options: [
+        { flags: '--force', description: 'Confirm permanent deletion.' },
+        secretBackendOption,
+        backendPassphraseStdinOption,
+      ],
+      execute: async (context, arguments_, options) => {
+        const groupQuery = requiredArgument(arguments_[0], 'group query');
+        const credentialQuery = requiredArgument(arguments_[1], 'credential query');
+        const force = optionBoolean(options, 'force');
+        if (!force) {
+          throw new CliUsageError(
+            'The --force flag is required for permanent credential deletion.',
+          );
+        }
+        if (context.ports?.deleteCredential !== undefined) {
+          await context.ports.deleteCredential(groupQuery, credentialQuery);
+        } else {
+          const { VaultReadSession, VaultMutationService } =
+            await import('@kavrix/client');
+          const { createDefaultMutationDependencies } =
+            await import('./production/mutations.js');
+          const { recordRevisionSchema } = await import('@kavrix/schemas');
+          await withUnlockedVault(
+            context,
+            'credential delete',
+            options,
+            async (unlocked, store, rootKey) => {
+              const readSession = new VaultReadSession(store, unlocked.profile.vaultId);
+              let found: { group: GroupPayload; item: ItemPayload };
+              try {
+                await readSession.unlock(rootKey);
+                found = await readSession.show(groupQuery, credentialQuery);
+              } finally {
+                readSession.lock();
+              }
+              const state = await store.getCurrentItem(
+                unlocked.profile.vaultId,
+                found.item.id,
+              );
+              if (state?.state !== 'active') {
+                throw new Error('Credential item is not active or found');
+              }
+              const service = new VaultMutationService(
+                store,
+                store,
+                unlocked.profile.vaultId,
+                rootKey,
+                createDefaultMutationDependencies(),
+              );
+              await service.deleteItem(
+                found.group.id,
+                found.item.id,
+                recordRevisionSchema.parse(state.record.recordRevision),
+              );
+            },
+          );
+        }
+        context.stdout.write(`Credential "${credentialQuery}" deleted.\n`);
+      },
+    },
+  ],
+});
+
 export const CLI_COMMAND_CATALOG: readonly CliCommandDescriptor[] = Object.freeze([
   versionCommand,
   generationCommand,
@@ -781,6 +1086,7 @@ export const CLI_COMMAND_CATALOG: readonly CliCommandDescriptor[] = Object.freez
   lockCommand,
   statusCommand,
   groupCommand,
+  credentialCommand,
   {
     name: 'show',
     description: 'Show a schema-driven item with secret fields redacted.',
@@ -1013,6 +1319,7 @@ export const PUBLIC_CLI_COMMAND_CATALOG: readonly CliCommandDescriptor[] =
     lockCommand,
     statusCommand,
     groupCommand,
+    credentialCommand,
     completionCommand(() => PUBLIC_CLI_COMMAND_CATALOG),
   ]);
 
