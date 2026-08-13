@@ -91,6 +91,7 @@ export async function runProductionUnlocked<Output>(
       profile,
       environment,
       secrets: backend,
+      secretsInput: request.secrets,
       unlockMethod,
       join: () => Promise.reject(new Error('Join unavailable during unlocked runner')),
       ...(request.allowInsecureLoopbackDevelopment !== undefined
@@ -127,4 +128,28 @@ export async function runProductionUnlocked<Output>(
 
   if (!outcome.succeeded) throw outcome.error;
   return outcome.value;
+}
+
+/** Locks the vault and clears managed clipboard state in production. */
+export async function runProductionLock(
+  request: Pick<ProductionUnlockedRequest, 'environment' | 'secrets' | 'backendPolicy'>,
+): Promise<void> {
+  const paths = resolveCliDataPaths(request.environment);
+  const backend = await createSecretBackend(
+    paths,
+    request.secrets,
+    request.backendPolicy,
+  );
+
+  let environment: ProductionEnvironment | undefined;
+  try {
+    environment = await openProductionEnvironment(paths, backend);
+    await environment.clipboard.lock();
+  } finally {
+    if (environment !== undefined) {
+      await environment.close();
+    } else {
+      await backend.close();
+    }
+  }
 }

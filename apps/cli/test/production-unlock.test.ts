@@ -9,7 +9,11 @@ import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
 
 import { resolveCliDataPaths } from '../src/production/paths.js';
 import { ensureDataDirectory } from '../src/production/runtime-adapters.js';
-import { runProductionUnlocked, unlockMethodSchema } from '../src/production/unlock.js';
+import {
+  runProductionLock,
+  runProductionUnlocked,
+  unlockMethodSchema,
+} from '../src/production/unlock.js';
 
 describe('production unlocked command runner', () => {
   let tempHome: string;
@@ -105,6 +109,22 @@ describe('production unlocked command runner', () => {
     );
 
     expect(result).toBe('operation-result');
+  });
+
+  it('locks vault and clears managed clipboard state in production', async () => {
+    const mockSecretsInput = {
+      read: vi.fn(),
+      readBatch: vi.fn(),
+      clear: vi.fn(),
+    };
+
+    await expect(
+      runProductionLock({
+        environment: { CREDS_HOME: tempHome },
+        secrets: mockSecretsInput,
+        backendPolicy: { kind: 'native' },
+      }),
+    ).resolves.toBeUndefined();
   });
 
   it('surfaces aggregate error when operation and cleanup both fail', async () => {

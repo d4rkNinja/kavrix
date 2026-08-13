@@ -13,6 +13,7 @@ export const CLI_EXIT_CODES = Object.freeze({
 
 export type CliFeature =
   | 'status'
+  | 'unlock'
   | 'lock'
   | 'show'
   | 'copy'

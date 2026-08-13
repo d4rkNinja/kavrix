@@ -369,21 +369,76 @@ const statusCommand: CliCommandDescriptor = Object.freeze({
   },
 });
 
+const unlockCommand: CliCommandDescriptor = Object.freeze({
+  name: 'unlock',
+  description: 'Verify vault unlock material without leaving an unlocked daemon.',
+  options: [
+    secretBackendOption,
+    backendPassphraseStdinOption,
+    {
+      flags: '--check',
+      description: 'Verify unlock material and immediately relock.',
+    },
+  ],
+  execute: async (context, _arguments, options) => {
+    const check = optionBoolean(options, 'check');
+    if (!check) {
+      throw new CliUsageError('The --check flag is required for unlock verification.');
+    }
+    if (context.ports !== undefined) {
+      await context.ports.status();
+    } else {
+      if (context.environment === undefined) {
+        throw new CliUnavailableError('unlock');
+      }
+      const backendPolicy = parseStatusBackendPolicy(options);
+      const { runProductionUnlocked } = await import('./production/unlock.js');
+      await runProductionUnlocked(
+        {
+          environment: context.environment,
+          secrets: secretInput(context, 'unlock'),
+          backendPolicy,
+          unlockMethod: { kind: 'remembered-device' },
+        },
+        async () => Promise.resolve(),
+      );
+    }
+    context.stdout.write('Vault unlock verified and relocked.\n');
+  },
+});
+
+const lockCommand: CliCommandDescriptor = Object.freeze({
+  name: 'lock',
+  description: 'Lock the active vault and clear use-case-managed secret state.',
+  options: [secretBackendOption, backendPassphraseStdinOption],
+  execute: async (context, _arguments, options) => {
+    if (context.ports !== undefined) {
+      await context.ports.lock();
+    } else {
+      if (context.environment === undefined) {
+        throw new CliUnavailableError('lock');
+      }
+      const backendPolicy = parseStatusBackendPolicy(options);
+      const { runProductionLock } = await import('./production/unlock.js');
+      await runProductionLock({
+        environment: context.environment,
+        secrets: secretInput(context, 'lock'),
+        backendPolicy,
+      });
+    }
+    context.stdout.write('Vault locked.\n');
+  },
+});
+
 export const CLI_COMMAND_CATALOG: readonly CliCommandDescriptor[] = Object.freeze([
   versionCommand,
   generationCommand,
   totpCommand,
   keyCommand,
   initializationCommand,
+  unlockCommand,
+  lockCommand,
   statusCommand,
-  {
-    name: 'lock',
-    description: 'Lock the active vault and clear use-case-managed secret state.',
-    execute: async (context) => {
-      await useCases(context, 'lock').lock();
-      context.stdout.write('Vault locked.\n');
-    },
-  },
   {
     name: 'show',
     description: 'Show a schema-driven item with secret fields redacted.',
@@ -612,6 +667,8 @@ export const PUBLIC_CLI_COMMAND_CATALOG: readonly CliCommandDescriptor[] =
     totpCommand,
     keyCommand,
     initializationCommand,
+    unlockCommand,
+    lockCommand,
     statusCommand,
     completionCommand(() => PUBLIC_CLI_COMMAND_CATALOG),
   ]);
