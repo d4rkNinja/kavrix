@@ -2,6 +2,8 @@ import {
   fieldTypeSchema,
   groupIdSchema,
   itemIdSchema,
+  noteIdSchema,
+  secretValueSchema,
   vaultIdSchema,
 } from '@kavrix/schemas';
 import { z } from 'zod';
@@ -139,6 +141,63 @@ export const cliCredentialMutationResultSchema = z
   })
   .strict();
 
+export const cliAddNoteRequestSchema = z
+  .object({
+    groupQuery: cleanNameSchema,
+    credentialQuery: cleanNameSchema.optional(),
+    title: cleanNameSchema,
+    content: secretValueSchema.optional(),
+    isSensitive: z.boolean().optional(),
+    isPinned: z.boolean().optional(),
+  })
+  .strict();
+
+export const cliUpdateNoteRequestSchema = z
+  .object({
+    groupQuery: cleanNameSchema,
+    credentialQuery: cleanNameSchema.optional(),
+    noteQuery: cleanNameSchema,
+    title: cleanNameSchema.optional(),
+    content: secretValueSchema.optional(),
+    isSensitive: z.boolean().optional(),
+    isPinned: z.boolean().optional(),
+  })
+  .strict();
+
+export const cliArchiveNoteRequestSchema = z
+  .object({
+    groupQuery: cleanNameSchema,
+    credentialQuery: cleanNameSchema.optional(),
+    noteQuery: cleanNameSchema,
+  })
+  .strict();
+
+export const cliRestoreNoteRequestSchema = z
+  .object({
+    groupQuery: cleanNameSchema,
+    credentialQuery: cleanNameSchema.optional(),
+    noteQuery: cleanNameSchema,
+  })
+  .strict();
+
+export const cliRemoveNoteRequestSchema = z
+  .object({
+    groupQuery: cleanNameSchema,
+    credentialQuery: cleanNameSchema.optional(),
+    noteQuery: cleanNameSchema,
+  })
+  .strict();
+
+export const cliNoteMutationResultSchema = z
+  .object({
+    vaultId: vaultIdSchema,
+    groupId: groupIdSchema,
+    credentialId: itemIdSchema.optional(),
+    noteId: noteIdSchema,
+    title: cleanNameSchema,
+  })
+  .strict();
+
 export type CliCreateGroupRequest = z.infer<typeof cliCreateGroupRequestSchema>;
 export type CliCreateCredentialRequest = z.infer<
   typeof cliCreateCredentialRequestSchema
@@ -149,9 +208,15 @@ export type CliUpdateFieldRequest = z.infer<typeof cliUpdateFieldRequestSchema>;
 export type CliArchiveFieldRequest = z.infer<typeof cliArchiveFieldRequestSchema>;
 export type CliRestoreFieldRequest = z.infer<typeof cliRestoreFieldRequestSchema>;
 export type CliRemoveFieldRequest = z.infer<typeof cliRemoveFieldRequestSchema>;
+export type CliAddNoteRequest = z.infer<typeof cliAddNoteRequestSchema>;
+export type CliUpdateNoteRequest = z.infer<typeof cliUpdateNoteRequestSchema>;
+export type CliArchiveNoteRequest = z.infer<typeof cliArchiveNoteRequestSchema>;
+export type CliRestoreNoteRequest = z.infer<typeof cliRestoreNoteRequestSchema>;
+export type CliRemoveNoteRequest = z.infer<typeof cliRemoveNoteRequestSchema>;
 export type CliArchiveEntityRequest = z.infer<typeof cliArchiveEntityRequestSchema>;
 export type CliRestoreEntityRequest = z.infer<typeof cliRestoreEntityRequestSchema>;
 export type CliGroupMutationResult = z.infer<typeof cliGroupMutationResultSchema>;
 export type CliCredentialMutationResult = z.infer<
   typeof cliCredentialMutationResultSchema
 >;
+export type CliNoteMutationResult = z.infer<typeof cliNoteMutationResultSchema>;

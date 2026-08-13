@@ -51,7 +51,7 @@ version`, static Bash/Zsh/Fish/PowerShell completion, password and passphrase
 generation, TOTP generation, create-only portable key-file creation, crash-safe
 local initialization with resume/cancel, guarded unlock/lock, a locked local
 `creds status` diagnostic for one already-enrolled data home, encrypted
-local group and credential CRUD, and dynamic credential field operations.
+local group and credential CRUD, dynamic field operations, and encrypted note CRUD.
 Status reads only the canonical profile, opaque pending-mutation count, and
 protected rollback timestamp. With `sealed-file`, it authenticates and unseals
 only that local protected rollback metadata; it never obtains vault
@@ -80,6 +80,7 @@ creds group create "Engineering"
 creds credential create "Engineering" "Database Admin"
 creds credential list "Engineering"
 creds field set "Engineering" "Database Admin" "password" --value-stdin
+creds note add "Engineering" "Database Admin" --title "Rotation SOP" --content-stdin
 ```
 
 Generated values and TOTP codes require an interactive output stream unless

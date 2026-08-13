@@ -507,7 +507,7 @@ describe('CLI command shell', () => {
 
   it('limits the production bin catalog to commands with real static behavior', async () => {
     const publishedCommands =
-      'version generate totp key init unlock lock status group credential field completion';
+      'version generate totp key init unlock lock status group credential field note completion';
     const unavailableCommands = /\b(?:show|copy|device)\b/u;
     expect(PUBLIC_CLI_COMMAND_CATALOG.map(({ name }) => name)).toEqual(
       publishedCommands.split(' '),
