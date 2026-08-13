@@ -1,8 +1,8 @@
 # `kavrix` CLI shell
 
-The injectable CLI catalog exposes schema-driven `show` and guarded `copy` commands for a
-production composition layer. `show` accepts only the strict redacted projection exported by
-`@kavrix/client`. `copy` accepts only a safe label/deadline receipt and prints:
+The production CLI catalog exposes the command-only vault lifecycle together with schema-driven
+`show` and guarded `copy` commands. `show` accepts only the strict redacted projection exported
+by `@kavrix/client`. `copy` accepts only a safe label/deadline receipt and prints:
 
 ```text
 Copied <label> — clipboard clears in N seconds.
@@ -85,7 +85,7 @@ or macOS/Linux evidence. Node 24 may emit its own built-in SQLite `ExperimentalW
 packed fixture disables that warning class only for child-stderr assertions, and the CLI does not
 suppress runtime warnings itself.
 
-## Injectable vault initialization
+## Vault initialization and command-only lifecycle
 
 The internal catalog also exposes `creds init` when a composition root injects the client
 lifecycle coordinator, durable journal, protected session/device storage, and a dedicated
@@ -107,8 +107,11 @@ lifecycle journal; unsafe cancellation is reported generically. JavaScript can r
 immutable string copies, so production ports must minimize lifetime and never log, serialize, or
 redisplay them.
 
-The public packed executable advertises only version, static completion, local generation, TOTP,
-portable key-file creation, and the locked local status slice above. Vault initialization, unlock,
-online sync, show, copy/clipboard, and device authorization remain injectable until their native
-composition is available. Sensitive-display and complete lifecycle composition remain outside
-this package slice.
+The public packed executable advertises the production-backed command families listed in
+[`docs/cli-reference.md`](../../docs/cli-reference.md), including initialization, unlock/lock,
+encrypted local mutations, online sync, redacted reads, guarded copy, and device authorization.
+`apps/cli/test/basic-vault-acceptance.test.ts` verifies Scenario A through the source-level
+production composition with real SQLite/client adapters and an opaque HTTPS fixture. The packed
+archive build and Windows launcher smoke also pass, but that smoke does not claim a native-
+keychain or packed online-vault journey; interruption, recovery/device-B, backup/restore, and
+whole-system canary coverage remain assigned to issues #46-#49.

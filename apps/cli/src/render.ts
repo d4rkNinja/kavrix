@@ -2,7 +2,7 @@ import type {
   CredentialCopyReceipt,
   CredentialShowField,
   CredentialShowNote,
-} from '@kavrix/client';
+} from '@kavrix/client/cli-contracts';
 import {
   isSensitiveFieldType,
   type DeviceListPageResponse,

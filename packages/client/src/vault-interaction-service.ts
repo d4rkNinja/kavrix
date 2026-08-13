@@ -256,7 +256,7 @@ export class VaultInteractionService {
     groupQuery: string,
     credentialQuery: string,
   ): Promise<CredentialShowProjection> {
-    return projectShow(await this.#session.show(groupQuery, credentialQuery));
+    return projectCredentialShow(await this.#session.show(groupQuery, credentialQuery));
   }
 
   async copy(
@@ -327,7 +327,9 @@ export class VaultInteractionService {
   }
 }
 
-function projectShow(result: CredentialShowResult): CredentialShowProjection {
+export function projectCredentialShow(
+  result: CredentialShowResult,
+): CredentialShowProjection {
   const { group, item, template } = result;
   const templateValues = new Map(
     item.templateValues.map((stored) => [stored.fieldId, stored]),

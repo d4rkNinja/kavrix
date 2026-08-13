@@ -4,13 +4,12 @@ Last reviewed: 2026-08-14
 
 This file records implementation evidence, not architectural intent. Kavrix is
 still **not approved for real credentials**: the security-critical libraries and
-server are substantial and the current repository/platform/package gates pass,
-but the public `creds` executable does not yet compose a complete
-show/copy/device/online-sync lifecycle. First-release ownership, reporting,
-authorization, and operational acceptance gates also remain. Its public vault
-surface is locked: local, redacted `status`, crash-safe `init`, masked
-`unlock`/`lock`, and local `group`/`credential` mutation. None of these are a
-show/copy/read or online-sync workflow.
+server are substantial and first-release ownership, reporting, authorization,
+and operational acceptance gates remain. The public `creds` executable now
+composes the command-only initialization, unlock/lock, encrypted mutation,
+online-sync, redacted read, guarded-copy, and device-management surface; the
+full packed online journey and later acceptance scenarios still require their
+recorded gates.
 
 ## Status definitions
 
@@ -99,6 +98,16 @@ explicitly unsupported. Receipt algebra and Mongo publication now include both
 families; focused client/schema/import-export/storage tests pass. The remote
 issue remains open because external push/PR/closure actions are not authorized
 in this run.
+
+Issue #45 is implemented locally on `feat/issue-45-basic-vault-acceptance`: the
+source-level production CLI composition now passes the single-device Scenario A
+journey through real SQLite/client adapters and an opaque HTTPS fixture, including
+init, unlock, encrypted group/item/field mutations, sync, masked show, guarded
+copy, lock, reopen, rename, archive/restore, and field reads. The generated
+package build and Windows launcher smoke pass, while a packed online-vault
+journey, native-keychain evidence, and the later interruption/recovery/backup/
+canary scenarios remain separate gates. The remote issue remains open because
+external push/PR/closure actions are not authorized in this run.
 
 | Scope                                                                                                                          | Status      | Evidence                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | Remaining limitation                                                                                                 |
 | ------------------------------------------------------------------------------------------------------------------------------ | ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
