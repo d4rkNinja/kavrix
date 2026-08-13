@@ -158,6 +158,7 @@ describe('production initialization adapter factory', () => {
           environment: { CREDS_HOME: tempHome },
           secrets: mockSecretsInput,
           backendPolicy: { kind: 'native' },
+          serverUrl: 'https://vault.example/',
         },
         async (deps) => {
           await expect(deps.coordinator.cancel(opId)).resolves.toBeUndefined();
