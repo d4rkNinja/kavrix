@@ -58,6 +58,7 @@ const RECEIPT: VaultInitializationReceipt = {
 };
 const PORTABLE = acquiredSecretSchema.parse('KAVRIX-PORTABLE-CLI-CANARY');
 const RECOVERY = acquiredSecretSchema.parse('KAVRIX-RECOVERY-CLI-CANARY');
+const FILE_PASSPHRASE = acquiredSecretSchema.parse('KAVRIX-FILE-PASSPHRASE-CANARY');
 
 describe('injectable initialization commands', () => {
   it('runs generated initialization only after acknowledged display and two-key re-entry', async () => {
@@ -165,9 +166,10 @@ describe('injectable initialization commands', () => {
   it('supports protected key-file import and two-frame stdin confirmation', async () => {
     const events: string[] = [];
     const keyFiles: ProtectedPortableKeyFileReaderPort = {
-      readFormattedPortableKey: (path) => {
+      readFormattedPortableKey: (path, expectedBinding) => {
         events.push('key-file');
         expect(path).toBe('D:\\protected\\vault.cvk');
+        expect(expectedBinding).toEqual({ kind: 'unbound' });
         return Promise.resolve(PORTABLE);
       },
     };
@@ -203,6 +205,56 @@ describe('injectable initialization commands', () => {
       'confirm-read',
       'confirm',
     ]);
+  });
+
+  it('stages a protected key-file passphrase before stdin confirmation frames', async () => {
+    const events: string[] = [];
+    const keyFiles: ProtectedPortableKeyFileReaderPort = {
+      readFormattedPortableKey: async (_path, expectedBinding, acquirePassphrase) => {
+        events.push('key-file');
+        expect(expectedBinding).toEqual({ kind: 'unbound' });
+        if (acquirePassphrase === undefined)
+          throw new Error('Missing passphrase reader');
+        await expect(acquirePassphrase()).resolves.toBe(FILE_PASSPHRASE);
+        events.push('passphrase-read');
+        return PORTABLE;
+      },
+    };
+    const coordinator = coordinatorWith({
+      beginImportedPortable: vi.fn(() => {
+        events.push('begin-import');
+        return importedAttempt(events);
+      }),
+    });
+    let batch = 0;
+    const result = await executeInit(
+      [
+        'init',
+        '--key-file',
+        'D:\\protected\\vault.cvk',
+        '--key-file-passphrase-stdin',
+        '--confirmation-stdin',
+      ],
+      { coordinator, sensitiveDisplay: recordingDisplay(events).port, keyFiles },
+      secretInput({
+        readBatch: ({ kinds, fromStdin, requireEnd }) => {
+          batch += 1;
+          expect(fromStdin).toBe(true);
+          if (batch === 1) {
+            expect(kinds).toEqual(['passphrase']);
+            expect(requireEnd).toBe(false);
+            return Promise.resolve([FILE_PASSPHRASE]);
+          }
+          expect(kinds).toEqual(['portable-key', 'recovery-key']);
+          expect(requireEnd).toBe(true);
+          return Promise.resolve([PORTABLE, RECOVERY]);
+        },
+      }),
+    );
+
+    expect(result.exitCode).toBe(CLI_EXIT_CODES.success);
+    expect(batch).toBe(2);
+    expect(`${result.stdout}${result.stderr}`).not.toContain(FILE_PASSPHRASE);
   });
 
   it('supports generated initialization with exact stdin confirmation frames', async () => {

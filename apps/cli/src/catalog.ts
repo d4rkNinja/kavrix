@@ -105,6 +105,11 @@ const backendPassphraseStdinOption = Object.freeze({
   flags: '--backend-passphrase-stdin',
   description: 'Read the sealed-file backend passphrase from standard input.',
 });
+const keyFilePassphraseStdinOption = Object.freeze({
+  flags: '--key-file-passphrase-stdin',
+  description:
+    'Read a protected portable-key file passphrase from the leading stdin frame.',
+});
 const vaultOption = Object.freeze({
   flags: '--vault <vault-id>',
   description: 'Target an opaque vault ID.',
@@ -281,6 +286,7 @@ const initializationCommand: CliCommandDescriptor = Object.freeze({
       flags: '--key-file <path>',
       description: 'Import through the injected protected portable-key file reader.',
     },
+    keyFilePassphraseStdinOption,
     {
       flags: '--key-stdin',
       description:
@@ -2647,6 +2653,7 @@ async function withInitialization<Output>(
       environment: context.environment,
       secrets: secretInput(context, 'init'),
       backendPolicy,
+      keyFilePassphraseFromStdin: optionBoolean(options, 'keyFilePassphraseStdin'),
       ...(serverUrl !== undefined ? { serverUrl } : {}),
     },
     action,
@@ -2709,18 +2716,25 @@ function parseInitializationStartOptions(
   const masked = optionBoolean(options, 'existingPortable');
   const stdin = optionBoolean(options, 'keyStdin');
   const keyFile = options['keyFile'];
+  const keyFilePassphraseStdin = optionBoolean(options, 'keyFilePassphraseStdin');
   const confirmationFromStdin = optionBoolean(options, 'confirmationStdin');
   const sourceCount = Number(masked) + Number(stdin) + Number(keyFile !== undefined);
   if (sourceCount > 1) {
     throw new CliUsageError('Choose exactly one existing portable-key source.');
   }
   if (stdin) {
+    if (keyFilePassphraseStdin) {
+      throw new CliUsageError('--key-file-passphrase-stdin requires --key-file.');
+    }
     if (confirmationFromStdin) {
       throw new CliUsageError('--key-stdin already includes both confirmation frames.');
     }
     return { source: 'stdin-protocol', confirmationFromStdin: true };
   }
   if (masked) {
+    if (keyFilePassphraseStdin) {
+      throw new CliUsageError('--key-file-passphrase-stdin requires --key-file.');
+    }
     if (confirmationFromStdin) {
       throw new CliUsageError('Masked portable import requires masked confirmation.');
     }
@@ -2730,7 +2744,15 @@ function parseInitializationStartOptions(
     if (typeof keyFile !== 'string') {
       throw new CliUsageError('The portable key file path is invalid.');
     }
-    return { source: 'key-file', path: keyFile, confirmationFromStdin };
+    return {
+      source: 'key-file',
+      path: keyFile,
+      confirmationFromStdin,
+      passphraseFromStdin: keyFilePassphraseStdin,
+    };
+  }
+  if (keyFilePassphraseStdin) {
+    throw new CliUsageError('--key-file-passphrase-stdin requires --key-file.');
   }
   return { source: 'generated', confirmationFromStdin };
 }

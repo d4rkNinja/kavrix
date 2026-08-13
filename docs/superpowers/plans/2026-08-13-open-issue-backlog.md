@@ -79,6 +79,7 @@ For each next open granular issue, create a fresh issue branch from the latest `
 
 - [x] Issue #32: expose explicit CLI conflict listing and resolution locally; durable v4 ledger, migration, redacted CLI contracts, revision-bound policies, and focused tests pass. Push/PR remains pending explicit external authorization.
 - [x] Issue #74: compose a non-destructive existing-vault `connect` flow after #32; validate exact session/vault/device binding and active device slot, persist only the canonical profile, bootstrap the opaque local sync store, and close resources on success/failure. Push/PR remains pending explicit external authorization.
+- [x] Issue #33: compose protected/unprotected `init --key-file` import with guarded filesystem I/O, required unbound binding, masked/stdin passphrase handling, and staged confirmation frames. Push/PR remains pending explicit external authorization.
 - [ ] Verify/close parent #8 after #30–#32 evidence is complete.
 - [ ] Issues #33–#36: protected import/recovery/unlock-slot/portable-key rotation composition.
 - [ ] Issues #37–#40: device invite/join/list/revoke/remember/forget composition.

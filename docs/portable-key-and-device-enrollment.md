@@ -96,8 +96,10 @@ still apply while enabled.
 
 The server-side bootstrap/Mongo transaction and the distinct native session
 credential adapter are implemented and have real MongoDB replica-set and
-Windows Credential Manager tests. `creds init` composition is not yet wired,
-and real macOS Keychain/Linux Secret Service behavior remains unverified.
+Windows Credential Manager tests. Production `creds init --key-file` now
+composes the guarded unprotected/passphrase-protected reader and requires an
+unbound file for fresh initialization; real macOS Keychain/Linux Secret Service
+behavior remains unverified.
 
 ### Import an existing key
 

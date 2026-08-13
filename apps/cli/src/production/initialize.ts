@@ -22,6 +22,7 @@ import {
   type SecretBackendPolicy,
 } from './secret-backend.js';
 import { NodeSensitiveInitializationDisplay } from './sensitive-display.js';
+import { createProductionPortableKeyFileReader } from './portable-key-files.js';
 
 export interface ProductionInitializationPortOptions {
   readonly environment: ProductionEnvironment;
@@ -38,6 +39,7 @@ export interface ProductionInitializationRequest {
   readonly secrets: SecretInputPort;
   readonly backendPolicy: SecretBackendPolicy;
   readonly serverUrl?: string;
+  readonly keyFilePassphraseFromStdin?: boolean;
   readonly allowInsecureLoopbackDevelopment?: boolean;
 }
 
@@ -156,6 +158,10 @@ export async function runProductionInitialization<Output>(
   const dependencies: CliInitializationDependencies = {
     coordinator: coordinatorPort,
     sensitiveDisplay,
+    keyFiles: createProductionPortableKeyFileReader({
+      secrets: request.secrets,
+      passphraseFromStdin: request.keyFilePassphraseFromStdin === true,
+    }),
   };
 
   let outcome:
