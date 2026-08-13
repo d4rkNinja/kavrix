@@ -93,6 +93,12 @@ export interface CliUseCasePorts {
     portableKey: string,
     serverUrl?: string,
   ): Promise<CliInviteJoinResult>;
+  createGroup?(request: any): Promise<any>;
+  listGroups?(): Promise<readonly any[]>;
+  renameGroup?(query: string, newName: string): Promise<void>;
+  archiveEntity?(request: any): Promise<void>;
+  restoreEntity?(request: any): Promise<void>;
+  deleteGroup?(query: string): Promise<void>;
 }
 
 export function parseStatus(value: unknown): CliStatus {

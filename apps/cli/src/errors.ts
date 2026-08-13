@@ -22,7 +22,14 @@ export type CliFeature =
   | 'key create'
   | 'device invite list'
   | 'device invite revoke'
-  | 'device invite join';
+  | 'device invite join'
+  | 'group'
+  | 'group create'
+  | 'group list'
+  | 'group rename'
+  | 'group archive'
+  | 'group restore'
+  | 'group delete';
 
 export class CliUsageError extends Error {
   readonly code = 'CLI_USAGE' as const;

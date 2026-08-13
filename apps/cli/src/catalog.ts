@@ -430,6 +430,362 @@ const lockCommand: CliCommandDescriptor = Object.freeze({
   },
 });
 
+async function unwrapVaultRootKeyFromContext(unlocked: any): Promise<any> {
+  const { unlockDeviceKeySlot } = await import('@kavrix/crypto');
+  const store = await unlocked.environment.openSyncStore(unlocked.profile);
+  const vaultRecord = await store.getVault(unlocked.profile.vaultId);
+  if (vaultRecord === null) {
+    throw new Error('Vault record not found');
+  }
+  const deviceSecret = await unlocked.environment.backend.keychain.load(
+    unlocked.profile.deviceLocator,
+  );
+  if (deviceSecret === null) {
+    throw new Error('Device secret not found');
+  }
+  const slot = vaultRecord.keySlots.find(
+    (s: any) => s.id === unlocked.profile.deviceLocator.keySlotId,
+  );
+  if (slot === undefined || slot.kind !== 'device') {
+    throw new Error('Device key slot not found');
+  }
+  try {
+    return await unlockDeviceKeySlot(slot, deviceSecret);
+  } finally {
+    deviceSecret.fill(0);
+  }
+}
+
+const groupCommand: CliCommandDescriptor = Object.freeze({
+  name: 'group',
+  description: 'Manage group containers.',
+  options: [secretBackendOption, backendPassphraseStdinOption],
+  children: [
+    {
+      name: 'create',
+      description: 'Create a new group container.',
+      arguments: [{ syntax: '<name>', description: 'Group name.' }],
+      options: [
+        { flags: '--description <text>', description: 'Optional group description.' },
+        secretBackendOption,
+        backendPassphraseStdinOption,
+      ],
+      execute: async (context, arguments_, options) => {
+        const name = requiredArgument(arguments_[0], 'group name');
+        const description = optionString(options, 'description');
+        const { cliCreateGroupRequestSchema } = await import('./mutation-contracts.js');
+        const request = cliCreateGroupRequestSchema.parse({
+          name,
+          ...(description ? { description } : {}),
+        });
+
+        if (context.ports !== undefined && context.ports.createGroup !== undefined) {
+          await context.ports.createGroup(request);
+        } else {
+          if (context.environment === undefined) {
+            throw new CliUnavailableError('group create');
+          }
+          const backendPolicy = parseStatusBackendPolicy(options);
+          const { runProductionUnlocked } = await import('./production/unlock.js');
+          const { executeProductionCreateGroup } = await import('./production/mutations.js');
+          const { zeroize } = await import('@kavrix/crypto');
+          await runProductionUnlocked(
+            {
+              environment: context.environment,
+              secrets: secretInput(context, 'group create'),
+              backendPolicy,
+            },
+            async (unlocked) => {
+              const store = await unlocked.environment.openSyncStore(unlocked.profile);
+              const rootKey = await unwrapVaultRootKeyFromContext(unlocked);
+              try {
+                await executeProductionCreateGroup(
+                  {
+                    source: store,
+                    queue: store,
+                    vaultId: unlocked.profile.vaultId,
+                    rootKey,
+                  },
+                  request,
+                );
+              } finally {
+                zeroize(rootKey);
+              }
+            },
+          );
+        }
+        context.stdout.write(`Group "${request.name}" created.\n`);
+      },
+    },
+    {
+      name: 'list',
+      description: 'List active groups in the vault.',
+      options: [jsonOption, secretBackendOption, backendPassphraseStdinOption],
+      execute: async (context, _arguments, options) => {
+        let groups: readonly any[];
+        if (context.ports !== undefined && context.ports.listGroups !== undefined) {
+          groups = await context.ports.listGroups();
+        } else {
+          if (context.environment === undefined) {
+            throw new CliUnavailableError('group list');
+          }
+          const backendPolicy = parseStatusBackendPolicy(options);
+          const { runProductionUnlocked } = await import('./production/unlock.js');
+          const { VaultReadSession } = await import('@kavrix/client');
+          const { zeroize } = await import('@kavrix/crypto');
+          groups = await runProductionUnlocked(
+            {
+              environment: context.environment,
+              secrets: secretInput(context, 'group list'),
+              backendPolicy,
+            },
+            async (unlocked) => {
+              const store = await unlocked.environment.openSyncStore(unlocked.profile);
+              const rootKey = await unwrapVaultRootKeyFromContext(unlocked);
+              const readSession = new VaultReadSession(store, unlocked.profile.vaultId);
+              try {
+                await readSession.unlock(rootKey);
+                return await readSession.listGroups();
+              } finally {
+                readSession.lock();
+                zeroize(rootKey);
+              }
+            },
+          );
+        }
+        const { renderGroupList } = await import('./render.js');
+        context.stdout.write(renderGroupList(groups, optionBoolean(options, 'json')));
+      },
+    },
+    {
+      name: 'rename',
+      description: 'Rename an active group.',
+      arguments: [
+        { syntax: '<query>', description: 'Group ID, name, or alias.' },
+        { syntax: '<new-name>', description: 'New group name.' },
+      ],
+      options: [secretBackendOption, backendPassphraseStdinOption],
+      execute: async (context, arguments_, options) => {
+        const query = requiredArgument(arguments_[0], 'group query');
+        const newName = requiredArgument(arguments_[1], 'new group name');
+
+        if (context.ports !== undefined && context.ports.renameGroup !== undefined) {
+          await context.ports.renameGroup(query, newName);
+        } else {
+          if (context.environment === undefined) {
+            throw new CliUnavailableError('group rename');
+          }
+          const backendPolicy = parseStatusBackendPolicy(options);
+          const { runProductionUnlocked } = await import('./production/unlock.js');
+          const { VaultReadSession, VaultMutationService } = await import('@kavrix/client');
+          const { createDefaultMutationDependencies } = await import('./production/mutations.js');
+          const { zeroize } = await import('@kavrix/crypto');
+          await runProductionUnlocked(
+            {
+              environment: context.environment,
+              secrets: secretInput(context, 'group rename'),
+              backendPolicy,
+            },
+            async (unlocked) => {
+              const store = await unlocked.environment.openSyncStore(unlocked.profile);
+              const rootKey = await unwrapVaultRootKeyFromContext(unlocked);
+              const readSession = new VaultReadSession(store, unlocked.profile.vaultId);
+              let group: any;
+              try {
+                await readSession.unlock(rootKey);
+                group = await readSession.showGroup(query);
+              } finally {
+                readSession.lock();
+              }
+              try {
+                const service = new VaultMutationService(
+                  store,
+                  store,
+                  unlocked.profile.vaultId,
+                  rootKey,
+                  createDefaultMutationDependencies(),
+                );
+                await service.updateGroup({
+                  ...group,
+                  name: newName,
+                });
+              } finally {
+                zeroize(rootKey);
+              }
+            },
+          );
+        }
+        context.stdout.write(`Group renamed to "${newName}".\n`);
+      },
+    },
+    {
+      name: 'archive',
+      description: 'Archive an active group.',
+      arguments: [{ syntax: '<query>', description: 'Group ID, name, or alias.' }],
+      options: [secretBackendOption, backendPassphraseStdinOption],
+      execute: async (context, arguments_, options) => {
+        const query = requiredArgument(arguments_[0], 'group query');
+        const { cliArchiveEntityRequestSchema } = await import('./mutation-contracts.js');
+        const request = cliArchiveEntityRequestSchema.parse({ groupQuery: query });
+
+        if (context.ports !== undefined && context.ports.archiveEntity !== undefined) {
+          await context.ports.archiveEntity(request);
+        } else {
+          if (context.environment === undefined) {
+            throw new CliUnavailableError('group archive');
+          }
+          const backendPolicy = parseStatusBackendPolicy(options);
+          const { runProductionUnlocked } = await import('./production/unlock.js');
+          const { executeProductionArchiveEntity } = await import('./production/mutations.js');
+          const { zeroize } = await import('@kavrix/crypto');
+          await runProductionUnlocked(
+            {
+              environment: context.environment,
+              secrets: secretInput(context, 'group archive'),
+              backendPolicy,
+            },
+            async (unlocked) => {
+              const store = await unlocked.environment.openSyncStore(unlocked.profile);
+              const rootKey = await unwrapVaultRootKeyFromContext(unlocked);
+              try {
+                await executeProductionArchiveEntity(
+                  {
+                    source: store,
+                    queue: store,
+                    vaultId: unlocked.profile.vaultId,
+                    rootKey,
+                  },
+                  request,
+                );
+              } finally {
+                zeroize(rootKey);
+              }
+            },
+          );
+        }
+        context.stdout.write(`Group "${query}" archived.\n`);
+      },
+    },
+    {
+      name: 'restore',
+      description: 'Restore an archived group.',
+      arguments: [{ syntax: '<group-id>', description: 'Archived group ID.' }],
+      options: [secretBackendOption, backendPassphraseStdinOption],
+      execute: async (context, arguments_, options) => {
+        const groupId = requiredArgument(arguments_[0], 'group ID');
+        const { cliRestoreEntityRequestSchema } = await import('./mutation-contracts.js');
+        const request = cliRestoreEntityRequestSchema.parse({ groupQuery: groupId });
+
+        if (context.ports !== undefined && context.ports.restoreEntity !== undefined) {
+          await context.ports.restoreEntity(request);
+        } else {
+          if (context.environment === undefined) {
+            throw new CliUnavailableError('group restore');
+          }
+          const backendPolicy = parseStatusBackendPolicy(options);
+          const { runProductionUnlocked } = await import('./production/unlock.js');
+          const { executeProductionRestoreEntity } = await import('./production/mutations.js');
+          const { zeroize } = await import('@kavrix/crypto');
+          await runProductionUnlocked(
+            {
+              environment: context.environment,
+              secrets: secretInput(context, 'group restore'),
+              backendPolicy,
+            },
+            async (unlocked) => {
+              const store = await unlocked.environment.openSyncStore(unlocked.profile);
+              const rootKey = await unwrapVaultRootKeyFromContext(unlocked);
+              try {
+                await executeProductionRestoreEntity(
+                  {
+                    source: store,
+                    queue: store,
+                    vaultId: unlocked.profile.vaultId,
+                    rootKey,
+                  },
+                  request,
+                );
+              } finally {
+                zeroize(rootKey);
+              }
+            },
+          );
+        }
+        context.stdout.write(`Group "${groupId}" restored.\n`);
+      },
+    },
+    {
+      name: 'delete',
+      description: 'Permanently delete a group.',
+      arguments: [{ syntax: '<query>', description: 'Group ID, name, or alias.' }],
+      options: [
+        { flags: '--force', description: 'Confirm permanent deletion.' },
+        secretBackendOption,
+        backendPassphraseStdinOption,
+      ],
+      execute: async (context, arguments_, options) => {
+        const query = requiredArgument(arguments_[0], 'group query');
+        const force = optionBoolean(options, 'force');
+        if (!force) {
+          throw new CliUsageError('The --force flag is required for permanent group deletion.');
+        }
+        if (context.ports !== undefined && context.ports.deleteGroup !== undefined) {
+          await context.ports.deleteGroup(query);
+        } else {
+          if (context.environment === undefined) {
+            throw new CliUnavailableError('group delete');
+          }
+          const backendPolicy = parseStatusBackendPolicy(options);
+          const { runProductionUnlocked } = await import('./production/unlock.js');
+          const { VaultReadSession, VaultMutationService } = await import('@kavrix/client');
+          const { createDefaultMutationDependencies } = await import('./production/mutations.js');
+          const { recordRevisionSchema } = await import('@kavrix/schemas');
+          const { zeroize } = await import('@kavrix/crypto');
+          await runProductionUnlocked(
+            {
+              environment: context.environment,
+              secrets: secretInput(context, 'group delete'),
+              backendPolicy,
+            },
+            async (unlocked) => {
+              const store = await unlocked.environment.openSyncStore(unlocked.profile);
+              const rootKey = await unwrapVaultRootKeyFromContext(unlocked);
+              const readSession = new VaultReadSession(store, unlocked.profile.vaultId);
+              let group: any;
+              try {
+                await readSession.unlock(rootKey);
+                group = await readSession.showGroup(query);
+              } finally {
+                readSession.lock();
+              }
+              const state = await store.getCurrentGroup(unlocked.profile.vaultId, group.id);
+              if (state === null || state.state !== 'active') {
+                throw new Error('Group not found or inactive');
+              }
+              try {
+                const service = new VaultMutationService(
+                  store,
+                  store,
+                  unlocked.profile.vaultId,
+                  rootKey,
+                  createDefaultMutationDependencies(),
+                );
+                await service.deleteGroup(
+                  group.id,
+                  recordRevisionSchema.parse(state.record.recordRevision),
+                );
+              } finally {
+                zeroize(rootKey);
+              }
+            },
+          );
+        }
+        context.stdout.write(`Group "${query}" deleted.\n`);
+      },
+    },
+  ],
+});
+
 export const CLI_COMMAND_CATALOG: readonly CliCommandDescriptor[] = Object.freeze([
   versionCommand,
   generationCommand,
@@ -439,6 +795,7 @@ export const CLI_COMMAND_CATALOG: readonly CliCommandDescriptor[] = Object.freez
   unlockCommand,
   lockCommand,
   statusCommand,
+  groupCommand,
   {
     name: 'show',
     description: 'Show a schema-driven item with secret fields redacted.',
@@ -670,6 +1027,7 @@ export const PUBLIC_CLI_COMMAND_CATALOG: readonly CliCommandDescriptor[] =
     unlockCommand,
     lockCommand,
     statusCommand,
+    groupCommand,
     completionCommand(() => PUBLIC_CLI_COMMAND_CATALOG),
   ]);
 
