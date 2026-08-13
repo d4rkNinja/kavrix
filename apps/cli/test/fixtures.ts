@@ -1,13 +1,16 @@
 import type { CredentialShowProjection } from '@kavrix/client';
 import {
-  fieldIdSchema,
   groupIdSchema,
+  groupPayloadSchema,
+  fieldIdSchema,
   itemIdSchema,
   noteIdSchema,
   recordRevisionSchema,
   stableFieldKeySchema,
   templateIdSchema,
   templateVersionSchema,
+  vaultIdSchema,
+  type GroupPayload,
 } from '@kavrix/schemas';
 
 const NOW = '2026-08-10T00:00:00.000Z';
@@ -15,6 +18,35 @@ const NOW = '2026-08-10T00:00:00.000Z';
 export const PUBLIC_CANARY = 'visible-user';
 export const SECRET_CANARY = 'secret-password-canary';
 export const NOTE_CANARY = 'secret-note-canary';
+
+/** A canonical, schema-validated group for list presentation fixtures. */
+export function groupFixture(
+  id: string,
+  name: string,
+  description?: string,
+): GroupPayload {
+  return groupPayloadSchema.parse({
+    id: groupIdSchema.parse(id),
+    vaultId: vaultIdSchema.parse('vault.1'),
+    name,
+    aliases: [],
+    description,
+    tags: [],
+    notes: [],
+    template: {
+      id: templateIdSchema.parse('template.default0001'),
+      name: 'Default',
+      version: templateVersionSchema.parse(1),
+      fields: [],
+      createdAt: NOW,
+      updatedAt: NOW,
+    },
+    sortOrder: 0,
+    revision: recordRevisionSchema.parse(1),
+    createdAt: NOW,
+    updatedAt: NOW,
+  });
+}
 
 export function showFixture(): CredentialShowProjection {
   return {

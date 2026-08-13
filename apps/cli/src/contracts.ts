@@ -13,11 +13,19 @@ import {
   schemaVersionSchema,
   vaultIdSchema,
   type ControlListPageOptions,
+  type GroupPayload,
   type InviteId,
   type InviteListPageResponse,
   type VaultId,
 } from '@kavrix/schemas';
 import { z } from 'zod';
+
+import type {
+  CliArchiveEntityRequest,
+  CliCreateGroupRequest,
+  CliGroupMutationResult,
+  CliRestoreEntityRequest,
+} from './mutation-contracts.js';
 
 export const cliStatusSchema = z
   .object({
@@ -93,11 +101,11 @@ export interface CliUseCasePorts {
     portableKey: string,
     serverUrl?: string,
   ): Promise<CliInviteJoinResult>;
-  createGroup?(request: any): Promise<any>;
-  listGroups?(): Promise<readonly any[]>;
+  createGroup?(request: CliCreateGroupRequest): Promise<CliGroupMutationResult>;
+  listGroups?(): Promise<readonly GroupPayload[]>;
   renameGroup?(query: string, newName: string): Promise<void>;
-  archiveEntity?(request: any): Promise<void>;
-  restoreEntity?(request: any): Promise<void>;
+  archiveEntity?(request: CliArchiveEntityRequest): Promise<void>;
+  restoreEntity?(request: CliRestoreEntityRequest): Promise<void>;
   deleteGroup?(query: string): Promise<void>;
 }
 

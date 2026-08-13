@@ -259,13 +259,20 @@ function safeInvite(invite: PublicInviteRecord): SafeInvite {
 }
 
 export function renderGroupList(
-  groups: readonly { id: string; name: string; description?: string; slug?: string }[],
+  groups: readonly {
+    id: string;
+    name: string;
+    description?: string | undefined;
+    slug?: string | undefined;
+  }[],
   json: boolean,
 ): string {
   const safeGroups = groups.map((g) => ({
     id: sanitizeTerminalText(g.id),
     name: sanitizeTerminalText(g.name),
-    ...(g.description === undefined ? {} : { description: sanitizeTerminalText(g.description) }),
+    ...(g.description === undefined
+      ? {}
+      : { description: sanitizeTerminalText(g.description) }),
     ...(g.slug === undefined ? {} : { slug: sanitizeTerminalText(g.slug) }),
   }));
   if (json) return safeJson(safeGroups);

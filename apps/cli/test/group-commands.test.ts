@@ -1,7 +1,14 @@
 import { describe, expect, it, vi } from 'vitest';
 import { Readable, Writable } from 'node:stream';
 
-import { CLI_EXIT_CODES, runCli, type CliDependencies, type CliUseCasePorts, type SecretInputPort } from '../src/index.js';
+import {
+  CLI_EXIT_CODES,
+  runCli,
+  type CliDependencies,
+  type CliUseCasePorts,
+} from '../src/index.js';
+import { groupFixture } from './fixtures.js';
+import { groupIdSchema, vaultIdSchema } from '@kavrix/schemas';
 
 type MemoryWritable = Readonly<{ stream: Writable; value: () => string }>;
 
@@ -47,7 +54,6 @@ async function execute(
     secrets: {
       read: () => Promise.reject(new Error('secrets unneeded')),
       readBatch: () => Promise.reject(new Error('secrets unneeded')),
-      clear: () => Promise.resolve(),
     },
     runtime: {
       stdin: Readable.from([]),
@@ -61,8 +67,12 @@ async function execute(
 
 describe('CLI group commands', () => {
   it('executes group create using ports and outputs formatted text', async () => {
-    const createGroup = vi.fn((request) =>
-      Promise.resolve({ id: 'group.101', name: request.name }),
+    const createGroup = vi.fn((request: { name: string; description?: string }) =>
+      Promise.resolve({
+        vaultId: vaultIdSchema.parse('vault.1'),
+        groupId: groupIdSchema.parse('group.101'),
+        name: request.name,
+      }),
     );
 
     const result = await execute(
@@ -80,8 +90,8 @@ describe('CLI group commands', () => {
 
   it('executes group list and renders text list or JSON', async () => {
     const groups = [
-      { id: 'group.1', name: 'Infrastructure', description: 'Cloud servers' },
-      { id: 'group.2', name: 'Finance', description: 'Banking' },
+      groupFixture('group.1', 'Infrastructure', 'Cloud servers'),
+      groupFixture('group.2', 'Finance', 'Banking'),
     ];
     const listGroups = vi.fn(() => Promise.resolve(groups));
 
@@ -141,9 +151,12 @@ describe('CLI group commands', () => {
     expect(resultNoForce.stderr).toContain('The --force flag is required');
     expect(deleteGroup).not.toHaveBeenCalled();
 
-    const resultForce = await execute(['group', 'delete', 'Infrastructure', '--force'], {
-      deleteGroup,
-    });
+    const resultForce = await execute(
+      ['group', 'delete', 'Infrastructure', '--force'],
+      {
+        deleteGroup,
+      },
+    );
     expect(resultForce.exitCode).toBe(CLI_EXIT_CODES.success);
     expect(deleteGroup).toHaveBeenCalledWith('Infrastructure');
     expect(resultForce.stdout).toBe('Group "Infrastructure" deleted.\n');

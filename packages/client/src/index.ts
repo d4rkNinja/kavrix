@@ -5,6 +5,7 @@ export * from './errors.js';
 export * from './fetch-sync-transport.js';
 export * from './opaque-vault-snapshot.js';
 export * from './portable-enrollment.js';
+export * from './restore-slot-selection.js';
 export * from './vault-interaction-service.js';
 export * from './vault-initialization.js';
 export * from './vault-join.js';

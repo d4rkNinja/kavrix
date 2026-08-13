@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
-import { delimiter, resolve } from 'node:path';
+import { delimiter, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
@@ -185,14 +185,18 @@ function resolvePnpmEntrypoint(): string {
   const pathDirectories = (process.env['PATH'] ?? '')
     .split(delimiter)
     .filter((value) => value.length > 0);
+  const nodeDirectory = dirname(process.execPath);
   const candidates = [
     process.env['npm_execpath'],
     process.env['PNPM_HOME'] === undefined
       ? undefined
       : resolve(process.env['PNPM_HOME'], '..', 'pnpm', 'bin', 'pnpm.cjs'),
+    // Corepack ships pnpm as a managed shim inside the Node installation.
+    resolve(nodeDirectory, 'node_modules', 'corepack', 'dist', 'pnpm.js'),
     ...pathDirectories.flatMap((directory) => [
       resolve(directory, '..', 'pnpm', 'bin', 'pnpm.cjs'),
       resolve(directory, '..', 'dist', 'pnpm.js'),
+      resolve(directory, 'node_modules', 'corepack', 'dist', 'pnpm.js'),
     ]),
   ];
   const entrypoint = candidates.find(

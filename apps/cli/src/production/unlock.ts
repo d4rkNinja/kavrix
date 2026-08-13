@@ -11,7 +11,11 @@ import {
 } from './environment.js';
 import { resolveCliDataPaths } from './paths.js';
 import { createProductionPorts } from './ports.js';
-import { createSecretBackend, type SecretBackendPolicy } from './secret-backend.js';
+import {
+  createSecretBackend,
+  type SecretBackend,
+  type SecretBackendPolicy,
+} from './secret-backend.js';
 
 export const unlockMethodSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('remembered-device') }).strict(),
@@ -51,6 +55,11 @@ export interface ProductionUnlockedContext {
   readonly profile: VaultProfile;
   readonly ports: CliUseCasePorts;
   readonly environment: ProductionEnvironment;
+  /**
+   * The protected secret backend backing this invocation. It is owned by the
+   * environment and closed with it; callers must never close it themselves.
+   */
+  readonly backend: SecretBackend;
 }
 
 /**
@@ -100,7 +109,7 @@ export async function runProductionUnlocked<Output>(
     });
     outcome = {
       succeeded: true,
-      value: await operation({ profile, ports, environment }),
+      value: await operation({ profile, ports, environment, backend }),
     };
   } catch (error) {
     outcome = { succeeded: false, error };
