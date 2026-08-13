@@ -16,19 +16,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # Narrowed to Windows x64 while the account's Actions spending limit is
+        # resolved. Reintroduce the Linux and macOS runners once billing permits.
         include:
-          - label: Linux x64
-            runner: ubuntu-24.04
-            expected_arch: x64
-          - label: Linux arm64
-            runner: ubuntu-24.04-arm
-            expected_arch: arm64
-          - label: macOS x64
-            runner: macos-15-intel
-            expected_arch: x64
-          - label: macOS arm64
-            runner: macos-15
-            expected_arch: arm64
           - label: Windows x64
             runner: windows-2025
             expected_arch: x64
@@ -65,9 +55,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # `verify` covers every runner at one development baseline. This job
-        # covers the other axis: the range `engines.node` actually promises to
-        # anyone running `npm install -g kavrix`. Both edges are load-bearing.
+        # `verify` covers the development baseline on Windows. This job covers
+        # the other axis: the range `engines.node` actually promises to anyone
+        # running `npm install -g kavrix`. Both edges are load-bearing.
         # 24.12.0 is the oldest runtime a user can install on, because
         # DatabaseSync.enableDefensive — which the local store calls to refuse
         # SQL that can corrupt the database file — was added in v25.1.0 and
@@ -75,31 +65,17 @@ jobs:
         # excluded, so both edges of that gap are pinned here. The range is
         # deliberately open above 25.1.0, so the newest release guards against
         # drift in the release-candidate APIs the CLI depends on: node:sqlite is
-        # stability 1.2, and crypto.argon2 only became stable in 24.19.0. macOS
-        # runs the floor only: newer-Node risk is API drift rather than anything
-        # platform-specific, while the launcher shape and path handling that do
-        # differ per OS are covered on Linux and Windows at every version. Bump
+        # stability 1.2, and crypto.argon2 only became stable in 24.19.0. Bump
         # `newest` when a Node major ships; a break there is a real break for
-        # users already on it.
+        # users already on it. Other operating systems are reintroduced once the
+        # account's Actions spending limit permits.
         include:
-          - label: Linux · Node 24.12.0 · engines floor
-            runner: ubuntu-24.04
-            node: 24.12.0
           - label: Windows · Node 24.12.0 · engines floor
             runner: windows-2025
             node: 24.12.0
-          - label: macOS · Node 24.12.0 · engines floor
-            runner: macos-15
-            node: 24.12.0
-          - label: Linux · Node 25.1.0
-            runner: ubuntu-24.04
-            node: 25.1.0
           - label: Windows · Node 25.1.0
             runner: windows-2025
             node: 25.1.0
-          - label: Linux · Node 26.7.0 · newest
-            runner: ubuntu-24.04
-            node: 26.7.0
           - label: Windows · Node 26.7.0 · newest
             runner: windows-2025
             node: 26.7.0
