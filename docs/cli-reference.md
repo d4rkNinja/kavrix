@@ -49,6 +49,12 @@ encrypted mutation against the unlocked local store. Its current surface is:
 | `creds credential archive <group> <credential>`            | Available in the built package | Archives an active credential as a tombstone.                                                      |
 | `creds credential restore <group> <credential-id>`         | Available in the built package | Restores an archived credential by exact ID.                                                       |
 | `creds credential delete <group> <credential> --force`     | Available in the built package | Permanently deletes a credential with an explicit `--force` authorization.                         |
+| `creds field add <group> <credential> <field-key> [opts]`  | Available in the built package | Adds a new dynamic field definition to a credential.                                               |
+| `creds field set <group> <credential> <field-key> [val]`   | Available in the built package | Sets or updates a field value using positional text or `--value-stdin`.                            |
+| `creds field update <group> <credential> <field-key>`      | Available in the built package | Updates dynamic field definition metadata (label, type, sensitive).                                |
+| `creds field archive <group> <credential> <field-key>`     | Available in the built package | Archives a field value into archivedFieldValues.                                                   |
+| `creds field restore <group> <credential> <field-key>`     | Available in the built package | Restores an archived field value back to active field values.                                      |
+| `creds field remove <group> <credential> <key> --force`    | Available in the built package | Permanently removes an item-specific field definition and value.                                   |
 
 The generated completion is derived from the static public catalog. It never
 loads runtime vault names, aliases, fields, IDs, or secrets. Inspect output
@@ -163,7 +169,7 @@ be treated as released behavior, even where a tested injected descriptor or
 lower-level use case exists:
 
 - direct `show`, `copy`, and `reveal`;
-- credential field (dynamic-field) values and note CRUD;
+- credential note CRUD;
 - portable-key import, rotation, recovery, and device lifecycle beyond the
   catalog contracts above;
 - backup, verify, restore, history, and attachment commands;

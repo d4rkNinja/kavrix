@@ -35,7 +35,13 @@ export type CliFeature =
   | 'credential rename'
   | 'credential archive'
   | 'credential restore'
-  | 'credential delete';
+  | 'credential delete'
+  | 'field add'
+  | 'field set'
+  | 'field update'
+  | 'field archive'
+  | 'field restore'
+  | 'field remove';
 
 export class CliUsageError extends Error {
   readonly code = 'CLI_USAGE' as const;
