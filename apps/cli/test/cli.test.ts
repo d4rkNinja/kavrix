@@ -26,6 +26,7 @@ import {
   type SecretInputPort,
 } from '../src/index.js';
 import { NOTE_CANARY, PUBLIC_CANARY, SECRET_CANARY, showFixture } from './fixtures.js';
+import { cliKeySlotResultSchema } from '../src/contracts.js';
 
 const TOKEN = apiBearerTokenSchema.parse('A'.repeat(43));
 const ACQUIRED_TOKEN = acquiredSecretSchema.parse(TOKEN);
@@ -654,6 +655,92 @@ describe('CLI command shell', () => {
     expect(revokeDevice).toHaveBeenCalledWith('vault.primary', 'device.primary');
   });
 
+  it('remembers a device through a generated device-key slot without touching session credentials', async () => {
+    const result = cliKeySlotResultSchema.parse({
+      action: 'created',
+      slot: {
+        id: 'slot.device.remembered',
+        type: 'device-key',
+        state: 'active',
+        keyVersion: 1,
+        createdAt: '2026-08-10T00:00:00.000Z',
+        deviceId: 'device.primary',
+      },
+    });
+    const createKeySlot = vi.fn((operation: unknown) => {
+      expect(operation).toMatchObject({
+        kind: 'create',
+        slotType: 'device-key',
+        reauthentication: { kind: 'portable-key', formattedKey: PORTABLE_KEY },
+      });
+      return Promise.resolve(result);
+    });
+    const read = vi.fn(() => Promise.resolve(ACQUIRED_PORTABLE_KEY));
+    const remembered = await execute(
+      ['device', 'remember', '--reauth', 'portable-key'],
+      { createKeySlot },
+      { read, readBatch: () => Promise.reject(new Error('Unexpected secret batch')) },
+    );
+    expect(remembered.exitCode).toBe(CLI_EXIT_CODES.success);
+    expect(remembered.stdout).toContain('Device remembered in the native keychain');
+    expect(remembered.stdout).toContain('API session credentials unchanged');
+    expect(remembered.stdout).not.toContain(PORTABLE_KEY);
+    expect(read).toHaveBeenCalledWith({ kind: 'portable-key', fromStdin: false });
+  });
+
+  it('forgets only the explicitly addressed device-key slot and keeps the remote/session records unchanged', async () => {
+    const result = cliKeySlotResultSchema.parse({
+      action: 'disabled',
+      slot: {
+        id: 'slot.device.forgotten',
+        type: 'device-key',
+        state: 'active',
+        keyVersion: 1,
+        createdAt: '2026-08-10T00:00:00.000Z',
+        deviceId: 'device.primary',
+      },
+    });
+    const disableKeySlot = vi.fn((slotId: string) => {
+      expect(slotId).toBe('slot.device.forgotten');
+      return Promise.resolve(result);
+    });
+    const forgotten = await execute(
+      [
+        'device',
+        'forget',
+        'slot.device.forgotten',
+        '--reauth',
+        'portable-key',
+        '--json',
+      ],
+      { disableKeySlot },
+      {
+        read: () => Promise.resolve(ACQUIRED_PORTABLE_KEY),
+        readBatch: () => Promise.reject(new Error('Unexpected secret batch')),
+      },
+    );
+    expect(forgotten.exitCode).toBe(CLI_EXIT_CODES.success);
+    expect(JSON.parse(forgotten.stdout)).toEqual({
+      action: 'forgotten',
+      slot: result.slot,
+    });
+    expect(forgotten.stdout).not.toContain(PORTABLE_KEY);
+    expect(disableKeySlot).toHaveBeenCalledWith('slot.device.forgotten');
+  });
+
+  it('rejects device forget without an exact slot ID before reading reauthentication', async () => {
+    const disableKeySlot = vi.fn(() => Promise.resolve({} as never));
+    const read = vi.fn(() => Promise.resolve(ACQUIRED_PORTABLE_KEY));
+    const result = await execute(
+      ['device', 'forget', '--reauth', 'portable-key'],
+      { disableKeySlot },
+      { read, readBatch: () => Promise.reject(new Error('Unexpected secret batch')) },
+    );
+    expect(result.exitCode).toBe(CLI_EXIT_CODES.usage);
+    expect(disableKeySlot).not.toHaveBeenCalled();
+    expect(read).not.toHaveBeenCalled();
+  });
+
   it('shapes join input from a masked prompt or explicit stdin and never prints secrets', async () => {
     const reads: boolean[] = [];
     const secrets: SecretInputPort = {
@@ -847,6 +934,10 @@ describe('CLI command shell', () => {
     });
     const deviceListHelp = await execute(['device', 'list', '--help'], { show });
     const deviceRevokeHelp = await execute(['device', 'revoke', '--help'], { show });
+    const deviceRememberHelp = await execute(['device', 'remember', '--help'], {
+      show,
+    });
+    const deviceForgetHelp = await execute(['device', 'forget', '--help'], { show });
     const deviceJoinHelp = await execute(['device', 'join', '--help'], { show });
     const joinHelp = await execute(['device', 'invite', 'join', '--help'], { show });
     const keyHelp = await execute(['key', '--help'], { show });
@@ -864,6 +955,10 @@ describe('CLI command shell', () => {
     expect(inviteCreateHelp.stdout).toContain('--stdout');
     expect(deviceListHelp.stdout).toContain('--cursor <opaque>');
     expect(deviceRevokeHelp.stdout).toContain('--confirm');
+    expect(deviceRememberHelp.stdout).toContain(
+      '--reauth <device-key|portable-key|passphrase|recovery-key>',
+    );
+    expect(deviceForgetHelp.stdout).toContain('<slot-id>');
     expect(deviceJoinHelp.stdout).toContain('--invite-stdin');
     expect(deviceJoinHelp.stdout).toContain('resume');
     expect(help.stdout).not.toContain(runtimeCanary);

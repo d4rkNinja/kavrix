@@ -3012,6 +3012,71 @@ export const CLI_COMMAND_CATALOG: readonly CliCommandDescriptor[] = Object.freez
           context.stdout.write('Device revoked.\n');
         },
       },
+      {
+        name: 'remember',
+        description: 'Create a device unlock slot in the native keychain.',
+        options: slotLifecycleOptions(false),
+        execute: async (context, _arguments, options) => {
+          const operation = await acquireCreateSlotOperation(
+            context,
+            options,
+            'device-key',
+          );
+          const raw =
+            context.ports?.createKeySlot === undefined
+              ? await executeProductionKeySlotOperation(
+                  context,
+                  options,
+                  operation,
+                  'device remember',
+                )
+              : await context.ports.createKeySlot(operation);
+          const { renderDeviceKeyAction } = await import('./render.js');
+          context.stdout.write(
+            renderDeviceKeyAction(
+              cliKeySlotResultSchema.parse(raw),
+              'remembered',
+              optionBoolean(options, 'json'),
+            ),
+          );
+        },
+      },
+      {
+        name: 'forget',
+        description: 'Remove one exact local device unlock entry.',
+        arguments: [
+          { syntax: '<slot-id>', description: 'Opaque device-key slot identifier.' },
+        ],
+        options: slotLifecycleOptions(false),
+        execute: async (context, arguments_, options) => {
+          const slotId = parseInputValue(
+            requiredArgument(arguments_[0], 'slot ID'),
+            'slot ID',
+            (value) => keySlotIdSchema.parse(value),
+          );
+          const operation = await acquireLifecycleSlotOperation(context, options, {
+            kind: 'disable',
+            slotId,
+          });
+          const raw =
+            context.ports?.disableKeySlot === undefined
+              ? await executeProductionKeySlotOperation(
+                  context,
+                  options,
+                  operation,
+                  'device forget',
+                )
+              : await context.ports.disableKeySlot(slotId);
+          const { renderDeviceKeyAction } = await import('./render.js');
+          context.stdout.write(
+            renderDeviceKeyAction(
+              cliKeySlotResultSchema.parse(raw),
+              'forgotten',
+              optionBoolean(options, 'json'),
+            ),
+          );
+        },
+      },
       deviceJoinCommand,
     ],
   },
@@ -3053,12 +3118,18 @@ function publicDeviceCommand(): CliCommandDescriptor {
   const invite = device?.children?.find((descriptor) => descriptor.name === 'invite');
   const list = device?.children?.find((descriptor) => descriptor.name === 'list');
   const revoke = device?.children?.find((descriptor) => descriptor.name === 'revoke');
+  const remember = device?.children?.find(
+    (descriptor) => descriptor.name === 'remember',
+  );
+  const forget = device?.children?.find((descriptor) => descriptor.name === 'forget');
   const join = device?.children?.find((descriptor) => descriptor.name === 'join');
   if (
     device === undefined ||
     invite === undefined ||
     list === undefined ||
     revoke === undefined ||
+    remember === undefined ||
+    forget === undefined ||
     join === undefined
   ) {
     throw new Error('The device catalog is incomplete');
@@ -3075,7 +3146,7 @@ function publicDeviceCommand(): CliCommandDescriptor {
   return Object.freeze({
     name: device.name,
     description: device.description,
-    children: [publicInvite, list, revoke, join],
+    children: [publicInvite, list, revoke, remember, forget, join],
   });
 }
 
@@ -4001,15 +4072,16 @@ async function executeProductionKeySlotOperation(
   context: CliCommandContext,
   options: Readonly<Record<string, unknown>>,
   operation: KeySlotOperation,
+  feature: CliFeature = `key slot ${operation.kind}` as CliFeature,
 ): Promise<unknown> {
   if (context.environment === undefined) {
-    throw new CliUnavailableError(`key slot ${operation.kind}` as CliFeature);
+    throw new CliUnavailableError(feature);
   }
   const { executeProductionKeySlotLifecycle } =
     await import('./production/slot-lifecycle.js');
   return executeProductionKeySlotLifecycle({
     environment: context.environment,
-    secrets: secretInput(context, `key slot ${operation.kind}` as CliFeature),
+    secrets: secretInput(context, feature),
     backendPolicy: parseStatusBackendPolicy(options),
     operation,
   });

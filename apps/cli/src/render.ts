@@ -166,6 +166,33 @@ export function renderKeySlotResult(result: CliKeySlotResult, json: boolean): st
   return `Unlock slot ${safe.slot.id} ${safe.action}.\n`;
 }
 
+export function renderDeviceKeyAction(
+  result: CliKeySlotResult,
+  action: 'remembered' | 'forgotten',
+  json: boolean,
+): string {
+  const safe = {
+    action,
+    slot: {
+      id: sanitizeTerminalText(result.slot.id),
+      type: result.slot.type,
+      state: result.slot.state,
+      keyVersion: result.slot.keyVersion,
+      createdAt: result.slot.createdAt,
+      ...(result.slot.revokedAt === undefined
+        ? {}
+        : { revokedAt: result.slot.revokedAt }),
+      ...(result.slot.deviceId === undefined
+        ? {}
+        : { deviceId: sanitizeTerminalText(result.slot.deviceId) }),
+    },
+  };
+  if (json) return safeJson(safe);
+  return action === 'remembered'
+    ? `Device remembered in the native keychain (unlock slot ${safe.slot.id}); API session credentials unchanged.\n`
+    : `Device unlock slot ${safe.slot.id} forgotten locally; remote slot and API session credentials unchanged.\n`;
+}
+
 export function renderPortableKeyRotation(
   result: CliPortableKeyRotationResult,
   json: boolean,
