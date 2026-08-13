@@ -60,6 +60,7 @@ encrypted mutation against the unlocked local store. Its current surface is:
 | `creds note archive <group> [cred] <note>`                 | Available in the built package | Sets archivedAt timestamp on a group or credential note.                                           |
 | `creds note restore <group> [cred] <note>`                 | Available in the built package | Restores an archived note back to active notes.                                                    |
 | `creds note remove <group> [cred] <note> --force`          | Available in the built package | Permanently removes a note with an explicit `--force` authorization.                               |
+| `creds show <group> <credential> [--json]`                 | Available in the built package | Inspects a credential with secret fields and sensitive note content redacted.                      |
 
 The generated completion is derived from the static public catalog. It never
 loads runtime vault names, aliases, fields, IDs, or secrets. Inspect output
@@ -173,7 +174,7 @@ The following surfaces are not available from the packed executable and must not
 be treated as released behavior, even where a tested injected descriptor or
 lower-level use case exists:
 
-- direct `show`, `copy`, and `reveal`;
+- direct `copy` and `reveal`;
 - portable-key import, rotation, recovery, and device lifecycle beyond the
   catalog contracts above;
 - backup, verify, restore, history, and attachment commands;

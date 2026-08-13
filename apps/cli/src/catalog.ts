@@ -1848,6 +1848,53 @@ const noteCommand: CliCommandDescriptor = Object.freeze({
   ],
 });
 
+const showCommand: CliCommandDescriptor = Object.freeze({
+  name: 'show',
+  description: 'Show a schema-driven item with secret fields redacted.',
+  arguments: [
+    { syntax: '<group>', description: 'Group ID, unique name, or alias.' },
+    {
+      syntax: '<credential>',
+      description: 'Credential ID, unique name, or alias within the group.',
+    },
+  ],
+  options: [jsonOption, secretBackendOption, backendPassphraseStdinOption],
+  execute: async (context, arguments_, options) => {
+    const [{ parseShowResult }, { renderShow }] = await Promise.all([
+      import('./contracts.js'),
+      import('./render.js'),
+    ]);
+    const groupQuery = parseInput(querySchema, arguments_[0], 'group query');
+    const credentialQuery = parseInput(querySchema, arguments_[1], 'credential query');
+
+    let rawResult: unknown;
+    if (context.ports?.show !== undefined) {
+      rawResult = await context.ports.show(groupQuery, credentialQuery);
+    } else {
+      const { executeProductionShow } = await import('./production/show.js');
+      await withUnlockedVault(
+        context,
+        'show',
+        options,
+        async (unlocked, store, rootKey) => {
+          rawResult = await executeProductionShow(
+            {
+              source: store,
+              vaultId: unlocked.profile.vaultId,
+              rootKey,
+            },
+            groupQuery,
+            credentialQuery,
+          );
+        },
+      );
+    }
+
+    const result = parseShowResult(rawResult);
+    context.stdout.write(renderShow(result, optionBoolean(options, 'json')));
+  },
+});
+
 export const CLI_COMMAND_CATALOG: readonly CliCommandDescriptor[] = Object.freeze([
   versionCommand,
   generationCommand,
@@ -1861,34 +1908,7 @@ export const CLI_COMMAND_CATALOG: readonly CliCommandDescriptor[] = Object.freez
   credentialCommand,
   fieldCommand,
   noteCommand,
-  {
-    name: 'show',
-    description: 'Show a schema-driven item with secret fields redacted.',
-    arguments: [
-      { syntax: '<group>', description: 'Group ID, unique name, or alias.' },
-      {
-        syntax: '<credential>',
-        description: 'Credential ID, unique name, or alias within the group.',
-      },
-    ],
-    options: [jsonOption],
-    execute: async (context, arguments_, options) => {
-      const [{ parseShowResult }, { renderShow }] = await Promise.all([
-        import('./contracts.js'),
-        import('./render.js'),
-      ]);
-      const groupQuery = parseInput(querySchema, arguments_[0], 'group query');
-      const credentialQuery = parseInput(
-        querySchema,
-        arguments_[1],
-        'credential query',
-      );
-      const result = parseShowResult(
-        await useCases(context, 'show').show(groupQuery, credentialQuery),
-      );
-      context.stdout.write(renderShow(result, optionBoolean(options, 'json')));
-    },
-  },
+  showCommand,
   {
     name: 'copy',
     description: 'Copy one authorized credential field to the guarded clipboard.',
@@ -2096,6 +2116,7 @@ export const PUBLIC_CLI_COMMAND_CATALOG: readonly CliCommandDescriptor[] =
     credentialCommand,
     fieldCommand,
     noteCommand,
+    showCommand,
     completionCommand(() => PUBLIC_CLI_COMMAND_CATALOG),
   ]);
 
