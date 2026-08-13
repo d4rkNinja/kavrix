@@ -51,13 +51,13 @@ version`, static Bash/Zsh/Fish/PowerShell completion, password and passphrase
 generation, TOTP generation, create-only portable key-file creation, crash-safe
 local initialization with resume/cancel, guarded unlock/lock, a locked local
 `creds status` diagnostic for one already-enrolled data home, encrypted
-local group and credential CRUD, dynamic field operations, encrypted note CRUD, redacted credential inspection (`creds show`), guarded clipboard copy (`creds copy`), guarded credential reveal (`creds reveal`), and scriptable field retrieval (`creds get`).
+local group and credential CRUD, dynamic field operations, encrypted note CRUD, redacted credential inspection (`creds show`), guarded clipboard copy (`creds copy`), guarded credential reveal (`creds reveal`), scriptable field retrieval (`creds get`), and vault synchronization (`creds sync`).
 Status reads only the canonical profile, opaque pending-mutation count, and
 protected rollback timestamp. With `sealed-file`, it authenticates and unseals
 only that local protected rollback metadata; it never obtains vault
 root/group/item keys or decrypts credential records. It does not contact
 the stored server or open clipboard/lifecycle-journal resources. Public
-online sync and device workflows remain
+device workflows remain
 unavailable. See the [CLI Reference](./docs/cli-reference.md) and
 [Public Release Process](./docs/release.md).
 
@@ -76,6 +76,7 @@ creds key create --file portable-key.cvk
 creds init
 creds unlock --check
 creds status
+creds sync
 creds group create "Engineering"
 creds credential create "Engineering" "Database Admin"
 creds credential list "Engineering"

@@ -64,6 +64,7 @@ encrypted mutation against the unlocked local store. Its current surface is:
 | `creds copy <group> <credential> <field> [--index <n>]`    | Available in the built package | Copies an authorized field value to the guarded clipboard with auto-clear.                          |
 | `creds reveal <group> <credential> <field> [--stdout]`     | Available in the built package | Reveals an authorized field value, denying non-interactive redirection unless `--stdout` is passed. |
 | `creds get <group> <credential> <field> [--reveal]`        | Available in the built package | Gets one field value with redacted default, optional `--reveal` and structured `--json` mode.       |
+| `creds sync [--json]`                                      | Available in the built package | Synchronizes vault data with server and prints updated status.                                      |
 
 The generated completion is derived from the static public catalog. It never
 loads runtime vault names, aliases, fields, IDs, or secrets. Inspect output

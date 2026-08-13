@@ -2166,6 +2166,33 @@ const getCommand: CliCommandDescriptor = Object.freeze({
   },
 });
 
+const syncCommand: CliCommandDescriptor = Object.freeze({
+  name: 'sync',
+  description: 'Synchronize vault data with server and print updated status.',
+  options: [jsonOption, secretBackendOption, backendPassphraseStdinOption],
+  execute: async (context, _arguments, options) => {
+    let rawStatus: unknown;
+    if (context.ports?.sync !== undefined) {
+      rawStatus = await context.ports.sync();
+    } else {
+      const { executeProductionSync } = await import('./production/sync.js');
+      const backendPolicy = parseStatusBackendPolicy(options);
+      rawStatus = await executeProductionSync({
+        environment: context.environment ?? process.env,
+        secrets: secretInput(context, 'sync'),
+        backendPolicy,
+      });
+    }
+
+    const [{ parseStatus }, { renderStatus }] = await Promise.all([
+      import('./contracts.js'),
+      import('./render.js'),
+    ]);
+    const status = parseStatus(rawStatus);
+    context.stdout.write(renderStatus(status, optionBoolean(options, 'json')));
+  },
+});
+
 export const CLI_COMMAND_CATALOG: readonly CliCommandDescriptor[] = Object.freeze([
   versionCommand,
   generationCommand,
@@ -2183,6 +2210,7 @@ export const CLI_COMMAND_CATALOG: readonly CliCommandDescriptor[] = Object.freez
   copyCommand,
   revealCommand,
   getCommand,
+  syncCommand,
   {
     name: 'device',
     description: 'Manage this device and zero-knowledge enrollment.',
@@ -2346,6 +2374,7 @@ export const PUBLIC_CLI_COMMAND_CATALOG: readonly CliCommandDescriptor[] =
     copyCommand,
     revealCommand,
     getCommand,
+    syncCommand,
     completionCommand(() => PUBLIC_CLI_COMMAND_CATALOG),
   ]);
 

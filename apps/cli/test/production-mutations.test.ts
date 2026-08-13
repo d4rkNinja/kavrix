@@ -44,6 +44,7 @@ import { executeProductionShow } from '../src/production/show.js';
 import { executeProductionCopy } from '../src/production/copy.js';
 import { executeProductionReveal } from '../src/production/reveal.js';
 import { executeProductionGet } from '../src/production/get.js';
+import { executeProductionSync } from '../src/production/sync.js';
 import { resolveCliDataPaths } from '../src/production/paths.js';
 import { ensureDataDirectory } from '../src/production/runtime-adapters.js';
 import { createSecretBackend } from '../src/production/secret-backend.js';
@@ -354,6 +355,14 @@ describe('production CLI mutation adapters', () => {
         { reveal: true },
       );
       expect(getRevealed.value).toBe('MyInitialSecret123!');
+
+      // 8.9. Execute Production Sync
+      const syncStatus = await executeProductionSync({
+        environment: paths.env,
+        secrets: secretBackend.secrets,
+        backendPolicy: secretBackend.backendPolicy,
+      });
+      expect(syncStatus.state).toBe('unlocked');
 
       // 9. Add Note
       const noteAddResult = await executeProductionAddNote(mutationOptions, {

@@ -159,6 +159,7 @@ export interface CliUseCasePorts {
     sensitive: boolean;
     value: string;
   }>;
+  sync?(): Promise<CliStatus>;
 }
 
 export function parseStatus(value: unknown): CliStatus {
