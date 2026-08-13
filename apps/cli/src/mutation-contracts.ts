@@ -1,4 +1,9 @@
-import { groupIdSchema, itemIdSchema, vaultIdSchema } from '@kavrix/schemas';
+import {
+  fieldTypeSchema,
+  groupIdSchema,
+  itemIdSchema,
+  vaultIdSchema,
+} from '@kavrix/schemas';
 import { z } from 'zod';
 
 const NAME_BOUNDS = { min: 1, max: 256 };
@@ -47,12 +52,59 @@ export const cliCreateCredentialRequestSchema = z
   })
   .strict();
 
+export const cliAddFieldRequestSchema = z
+  .object({
+    groupQuery: cleanNameSchema,
+    credentialQuery: cleanNameSchema,
+    fieldKey: cleanNameSchema,
+    fieldType: fieldTypeSchema.optional(),
+    label: cleanNameSchema.optional(),
+    sensitive: z.boolean().optional(),
+    value: ownedUint8ArraySchema.optional(),
+  })
+  .strict();
+
 export const cliSetFieldRequestSchema = z
   .object({
     groupQuery: cleanNameSchema,
     credentialQuery: cleanNameSchema,
     fieldKey: cleanNameSchema,
     value: ownedUint8ArraySchema,
+  })
+  .strict();
+
+export const cliUpdateFieldRequestSchema = z
+  .object({
+    groupQuery: cleanNameSchema,
+    credentialQuery: cleanNameSchema,
+    fieldKey: cleanNameSchema,
+    label: cleanNameSchema.optional(),
+    fieldType: fieldTypeSchema.optional(),
+    sensitive: z.boolean().optional(),
+  })
+  .strict();
+
+export const cliArchiveFieldRequestSchema = z
+  .object({
+    groupQuery: cleanNameSchema,
+    credentialQuery: cleanNameSchema,
+    fieldKey: cleanNameSchema,
+  })
+  .strict();
+
+export const cliRestoreFieldRequestSchema = z
+  .object({
+    groupQuery: cleanNameSchema,
+    credentialQuery: cleanNameSchema,
+    fieldKey: cleanNameSchema,
+  })
+  .strict();
+
+export const cliRemoveFieldRequestSchema = z
+  .object({
+    groupQuery: cleanNameSchema,
+    credentialQuery: cleanNameSchema,
+    fieldKey: cleanNameSchema,
   })
   .strict();
 
@@ -91,7 +143,12 @@ export type CliCreateGroupRequest = z.infer<typeof cliCreateGroupRequestSchema>;
 export type CliCreateCredentialRequest = z.infer<
   typeof cliCreateCredentialRequestSchema
 >;
+export type CliAddFieldRequest = z.infer<typeof cliAddFieldRequestSchema>;
 export type CliSetFieldRequest = z.infer<typeof cliSetFieldRequestSchema>;
+export type CliUpdateFieldRequest = z.infer<typeof cliUpdateFieldRequestSchema>;
+export type CliArchiveFieldRequest = z.infer<typeof cliArchiveFieldRequestSchema>;
+export type CliRestoreFieldRequest = z.infer<typeof cliRestoreFieldRequestSchema>;
+export type CliRemoveFieldRequest = z.infer<typeof cliRemoveFieldRequestSchema>;
 export type CliArchiveEntityRequest = z.infer<typeof cliArchiveEntityRequestSchema>;
 export type CliRestoreEntityRequest = z.infer<typeof cliRestoreEntityRequestSchema>;
 export type CliGroupMutationResult = z.infer<typeof cliGroupMutationResultSchema>;

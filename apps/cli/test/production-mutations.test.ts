@@ -23,11 +23,16 @@ import { describe, expect, it, beforeEach, afterEach } from 'vitest';
 
 import { openProductionEnvironment } from '../src/production/environment.js';
 import {
+  executeProductionAddField,
   executeProductionArchiveEntity,
+  executeProductionArchiveField,
   executeProductionCreateCredential,
   executeProductionCreateGroup,
+  executeProductionRemoveField,
   executeProductionRestoreEntity,
+  executeProductionRestoreField,
   executeProductionSetField,
+  executeProductionUpdateField,
 } from '../src/production/mutations.js';
 import { resolveCliDataPaths } from '../src/production/paths.js';
 import { ensureDataDirectory } from '../src/production/runtime-adapters.js';
@@ -234,7 +239,46 @@ describe('production CLI mutation adapters', () => {
       expect(setFieldResult.credentialId).toBe(credResult.credentialId);
       expect(secretBytes.every((b) => b === 0)).toBe(true);
 
-      // 4. Archive Credential
+      // 4. Add Field
+      await executeProductionAddField(mutationOptions, {
+        groupQuery: 'Infrastructure',
+        credentialQuery: 'AWS Production Root',
+        fieldKey: 'api_token',
+        fieldType: 'api-key',
+        label: 'API Token',
+        sensitive: true,
+      });
+
+      // 5. Update Field
+      await executeProductionUpdateField(mutationOptions, {
+        groupQuery: 'Infrastructure',
+        credentialQuery: 'AWS Production Root',
+        fieldKey: 'api_token',
+        label: 'Production API Token',
+      });
+
+      // 6. Archive Field
+      await executeProductionArchiveField(mutationOptions, {
+        groupQuery: 'Infrastructure',
+        credentialQuery: 'AWS Production Root',
+        fieldKey: 'password',
+      });
+
+      // 7. Restore Field
+      await executeProductionRestoreField(mutationOptions, {
+        groupQuery: 'Infrastructure',
+        credentialQuery: 'AWS Production Root',
+        fieldKey: 'password',
+      });
+
+      // 8. Remove Field
+      await executeProductionRemoveField(mutationOptions, {
+        groupQuery: 'Infrastructure',
+        credentialQuery: 'AWS Production Root',
+        fieldKey: 'api_token',
+      });
+
+      // 9. Archive Credential
       await expect(
         executeProductionArchiveEntity(mutationOptions, {
           groupQuery: 'Infrastructure',
@@ -242,7 +286,7 @@ describe('production CLI mutation adapters', () => {
         }),
       ).resolves.toBeUndefined();
 
-      // 5. Restore Credential
+      // 10. Restore Credential
       await expect(
         executeProductionRestoreEntity(mutationOptions, {
           groupQuery: 'Infrastructure',

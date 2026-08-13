@@ -1076,6 +1076,407 @@ const credentialCommand: CliCommandDescriptor = Object.freeze({
   ],
 });
 
+function zeroizeBytes(buffer: Uint8Array): void {
+  buffer.fill(0);
+}
+
+const fieldCommand: CliCommandDescriptor = Object.freeze({
+  name: 'field',
+  description: 'Manage dynamic credential fields.',
+  options: [secretBackendOption, backendPassphraseStdinOption],
+  children: [
+    {
+      name: 'add',
+      description: 'Add a new dynamic field to a credential.',
+      arguments: [
+        { syntax: '<group>', description: 'Group ID, unique name, or alias.' },
+        {
+          syntax: '<credential>',
+          description: 'Credential ID, unique name, or alias.',
+        },
+        { syntax: '<field-key>', description: 'Stable field key.' },
+      ],
+      options: [
+        { flags: '--type <type>', description: 'Canonical field type.' },
+        { flags: '--label <text>', description: 'Field display label.' },
+        { flags: '--sensitive', description: 'Mark field as sensitive.' },
+        { flags: '--value <text>', description: 'Initial text field value.' },
+        {
+          flags: SECRET_INPUT_OPTIONS.fieldValue.flag,
+          description: SECRET_INPUT_OPTIONS.fieldValue.description,
+        },
+        secretBackendOption,
+        backendPassphraseStdinOption,
+      ],
+      execute: async (context, arguments_, options) => {
+        const groupQuery = requiredArgument(arguments_[0], 'group query');
+        const credentialQuery = requiredArgument(arguments_[1], 'credential query');
+        const fieldKey = requiredArgument(arguments_[2], 'field key');
+        const typeStr = optionString(options, 'type');
+        const label = optionString(options, 'label');
+        const sensitive = optionBoolean(options, 'sensitive');
+        const textValue = optionString(options, 'value');
+        const fromStdin = optionBoolean(options, 'valueStdin');
+
+        let secretBytes: Uint8Array | undefined;
+        if (fromStdin) {
+          const acquired = await secretInput(context, 'field add').read({
+            kind: 'field-value',
+            fromStdin: true,
+          });
+          secretBytes = Buffer.from(acquired, 'utf8');
+        } else if (textValue !== undefined) {
+          secretBytes = Buffer.from(textValue, 'utf8');
+        }
+
+        const { cliAddFieldRequestSchema } = await import('./mutation-contracts.js');
+        const request = cliAddFieldRequestSchema.parse({
+          groupQuery,
+          credentialQuery,
+          fieldKey,
+          ...(typeStr ? { fieldType: typeStr } : {}),
+          ...(label ? { label } : {}),
+          ...(sensitive ? { sensitive: true } : {}),
+          ...(secretBytes ? { value: secretBytes } : {}),
+        });
+
+        try {
+          if (context.ports?.addField !== undefined) {
+            await context.ports.addField(request);
+          } else {
+            const { executeProductionAddField } =
+              await import('./production/mutations.js');
+            await withUnlockedVault(
+              context,
+              'field add',
+              options,
+              async (unlocked, store, rootKey) =>
+                executeProductionAddField(
+                  {
+                    source: store,
+                    queue: store,
+                    vaultId: unlocked.profile.vaultId,
+                    rootKey,
+                  },
+                  request,
+                ),
+            );
+          }
+          context.stdout.write(
+            `Field "${request.fieldKey}" added to credential "${credentialQuery}".\n`,
+          );
+        } finally {
+          if (secretBytes !== undefined) zeroizeBytes(secretBytes);
+        }
+      },
+    },
+    {
+      name: 'set',
+      description: 'Set or update the value of a credential field.',
+      arguments: [
+        { syntax: '<group>', description: 'Group ID, unique name, or alias.' },
+        {
+          syntax: '<credential>',
+          description: 'Credential ID, unique name, or alias.',
+        },
+        { syntax: '<field-key>', description: 'Stable field key.' },
+        { syntax: '[value]', description: 'Text value for non-sensitive fields.' },
+      ],
+      options: [
+        {
+          flags: SECRET_INPUT_OPTIONS.fieldValue.flag,
+          description: SECRET_INPUT_OPTIONS.fieldValue.description,
+        },
+        secretBackendOption,
+        backendPassphraseStdinOption,
+      ],
+      execute: async (context, arguments_, options) => {
+        const groupQuery = requiredArgument(arguments_[0], 'group query');
+        const credentialQuery = requiredArgument(arguments_[1], 'credential query');
+        const fieldKey = requiredArgument(arguments_[2], 'field key');
+        const positionalValue = arguments_[3];
+        const fromStdin = optionBoolean(options, 'valueStdin');
+
+        let secretBytes: Uint8Array;
+        if (fromStdin) {
+          const acquired = await secretInput(context, 'field set').read({
+            kind: 'field-value',
+            fromStdin: true,
+          });
+          secretBytes = Buffer.from(acquired, 'utf8');
+        } else if (positionalValue !== undefined && positionalValue.length > 0) {
+          secretBytes = Buffer.from(positionalValue, 'utf8');
+        } else {
+          throw new CliUsageError(
+            'Provide a value argument or use --value-stdin to supply secret input.',
+          );
+        }
+
+        const { cliSetFieldRequestSchema } = await import('./mutation-contracts.js');
+        const request = cliSetFieldRequestSchema.parse({
+          groupQuery,
+          credentialQuery,
+          fieldKey,
+          value: secretBytes,
+        });
+
+        try {
+          if (context.ports?.setField !== undefined) {
+            await context.ports.setField(request);
+          } else {
+            const { executeProductionSetField } =
+              await import('./production/mutations.js');
+            await withUnlockedVault(
+              context,
+              'field set',
+              options,
+              async (unlocked, store, rootKey) =>
+                executeProductionSetField(
+                  {
+                    source: store,
+                    queue: store,
+                    vaultId: unlocked.profile.vaultId,
+                    rootKey,
+                  },
+                  request,
+                ),
+            );
+          }
+          context.stdout.write(
+            `Field "${request.fieldKey}" set for credential "${credentialQuery}".\n`,
+          );
+        } finally {
+          zeroizeBytes(secretBytes);
+        }
+      },
+    },
+    {
+      name: 'update',
+      description: 'Update the definition of a dynamic field.',
+      arguments: [
+        { syntax: '<group>', description: 'Group ID, unique name, or alias.' },
+        {
+          syntax: '<credential>',
+          description: 'Credential ID, unique name, or alias.',
+        },
+        { syntax: '<field-key>', description: 'Stable field key.' },
+      ],
+      options: [
+        { flags: '--label <text>', description: 'Updated field display label.' },
+        { flags: '--type <type>', description: 'Updated canonical field type.' },
+        { flags: '--sensitive', description: 'Mark field as sensitive.' },
+        { flags: '--no-sensitive', description: 'Mark field as non-sensitive.' },
+        secretBackendOption,
+        backendPassphraseStdinOption,
+      ],
+      execute: async (context, arguments_, options) => {
+        const groupQuery = requiredArgument(arguments_[0], 'group query');
+        const credentialQuery = requiredArgument(arguments_[1], 'credential query');
+        const fieldKey = requiredArgument(arguments_[2], 'field key');
+        const label = optionString(options, 'label');
+        const typeStr = optionString(options, 'type');
+        const sensitiveFlag = options['sensitive'];
+        const sensitive =
+          typeof sensitiveFlag === 'boolean' ? sensitiveFlag : undefined;
+
+        const { cliUpdateFieldRequestSchema } = await import('./mutation-contracts.js');
+        const request = cliUpdateFieldRequestSchema.parse({
+          groupQuery,
+          credentialQuery,
+          fieldKey,
+          ...(label ? { label } : {}),
+          ...(typeStr ? { fieldType: typeStr } : {}),
+          ...(sensitive !== undefined ? { sensitive } : {}),
+        });
+
+        if (context.ports?.updateField !== undefined) {
+          await context.ports.updateField(request);
+        } else {
+          const { executeProductionUpdateField } =
+            await import('./production/mutations.js');
+          await withUnlockedVault(
+            context,
+            'field update',
+            options,
+            async (unlocked, store, rootKey) =>
+              executeProductionUpdateField(
+                {
+                  source: store,
+                  queue: store,
+                  vaultId: unlocked.profile.vaultId,
+                  rootKey,
+                },
+                request,
+              ),
+          );
+        }
+        context.stdout.write(
+          `Field "${request.fieldKey}" updated for credential "${credentialQuery}".\n`,
+        );
+      },
+    },
+    {
+      name: 'archive',
+      description: 'Archive a field value.',
+      arguments: [
+        { syntax: '<group>', description: 'Group ID, unique name, or alias.' },
+        {
+          syntax: '<credential>',
+          description: 'Credential ID, unique name, or alias.',
+        },
+        { syntax: '<field-key>', description: 'Stable field key.' },
+      ],
+      options: [secretBackendOption, backendPassphraseStdinOption],
+      execute: async (context, arguments_, options) => {
+        const groupQuery = requiredArgument(arguments_[0], 'group query');
+        const credentialQuery = requiredArgument(arguments_[1], 'credential query');
+        const fieldKey = requiredArgument(arguments_[2], 'field key');
+        const { cliArchiveFieldRequestSchema } =
+          await import('./mutation-contracts.js');
+        const request = cliArchiveFieldRequestSchema.parse({
+          groupQuery,
+          credentialQuery,
+          fieldKey,
+        });
+
+        if (context.ports?.archiveField !== undefined) {
+          await context.ports.archiveField(request);
+        } else {
+          const { executeProductionArchiveField } =
+            await import('./production/mutations.js');
+          await withUnlockedVault(
+            context,
+            'field archive',
+            options,
+            async (unlocked, store, rootKey) =>
+              executeProductionArchiveField(
+                {
+                  source: store,
+                  queue: store,
+                  vaultId: unlocked.profile.vaultId,
+                  rootKey,
+                },
+                request,
+              ),
+          );
+        }
+        context.stdout.write(
+          `Field "${request.fieldKey}" archived for credential "${credentialQuery}".\n`,
+        );
+      },
+    },
+    {
+      name: 'restore',
+      description: 'Restore an archived field value.',
+      arguments: [
+        { syntax: '<group>', description: 'Group ID, unique name, or alias.' },
+        {
+          syntax: '<credential>',
+          description: 'Credential ID, unique name, or alias.',
+        },
+        { syntax: '<field-key>', description: 'Stable field key.' },
+      ],
+      options: [secretBackendOption, backendPassphraseStdinOption],
+      execute: async (context, arguments_, options) => {
+        const groupQuery = requiredArgument(arguments_[0], 'group query');
+        const credentialQuery = requiredArgument(arguments_[1], 'credential query');
+        const fieldKey = requiredArgument(arguments_[2], 'field key');
+        const { cliRestoreFieldRequestSchema } =
+          await import('./mutation-contracts.js');
+        const request = cliRestoreFieldRequestSchema.parse({
+          groupQuery,
+          credentialQuery,
+          fieldKey,
+        });
+
+        if (context.ports?.restoreField !== undefined) {
+          await context.ports.restoreField(request);
+        } else {
+          const { executeProductionRestoreField } =
+            await import('./production/mutations.js');
+          await withUnlockedVault(
+            context,
+            'field restore',
+            options,
+            async (unlocked, store, rootKey) =>
+              executeProductionRestoreField(
+                {
+                  source: store,
+                  queue: store,
+                  vaultId: unlocked.profile.vaultId,
+                  rootKey,
+                },
+                request,
+              ),
+          );
+        }
+        context.stdout.write(
+          `Field "${request.fieldKey}" restored for credential "${credentialQuery}".\n`,
+        );
+      },
+    },
+    {
+      name: 'remove',
+      description: 'Permanently remove a dynamic item field.',
+      arguments: [
+        { syntax: '<group>', description: 'Group ID, unique name, or alias.' },
+        {
+          syntax: '<credential>',
+          description: 'Credential ID, unique name, or alias.',
+        },
+        { syntax: '<field-key>', description: 'Stable field key.' },
+      ],
+      options: [
+        { flags: '--force', description: 'Confirm permanent field removal.' },
+        secretBackendOption,
+        backendPassphraseStdinOption,
+      ],
+      execute: async (context, arguments_, options) => {
+        const groupQuery = requiredArgument(arguments_[0], 'group query');
+        const credentialQuery = requiredArgument(arguments_[1], 'credential query');
+        const fieldKey = requiredArgument(arguments_[2], 'field key');
+        const force = optionBoolean(options, 'force');
+        if (!force) {
+          throw new CliUsageError(
+            'The --force flag is required for permanent field removal.',
+          );
+        }
+        const { cliRemoveFieldRequestSchema } = await import('./mutation-contracts.js');
+        const request = cliRemoveFieldRequestSchema.parse({
+          groupQuery,
+          credentialQuery,
+          fieldKey,
+        });
+
+        if (context.ports?.removeField !== undefined) {
+          await context.ports.removeField(request);
+        } else {
+          const { executeProductionRemoveField } =
+            await import('./production/mutations.js');
+          await withUnlockedVault(
+            context,
+            'field remove',
+            options,
+            async (unlocked, store, rootKey) =>
+              executeProductionRemoveField(
+                {
+                  source: store,
+                  queue: store,
+                  vaultId: unlocked.profile.vaultId,
+                  rootKey,
+                },
+                request,
+              ),
+          );
+        }
+        context.stdout.write(
+          `Field "${request.fieldKey}" removed from credential "${credentialQuery}".\n`,
+        );
+      },
+    },
+  ],
+});
+
 export const CLI_COMMAND_CATALOG: readonly CliCommandDescriptor[] = Object.freeze([
   versionCommand,
   generationCommand,
@@ -1087,6 +1488,7 @@ export const CLI_COMMAND_CATALOG: readonly CliCommandDescriptor[] = Object.freez
   statusCommand,
   groupCommand,
   credentialCommand,
+  fieldCommand,
   {
     name: 'show',
     description: 'Show a schema-driven item with secret fields redacted.',
@@ -1320,6 +1722,7 @@ export const PUBLIC_CLI_COMMAND_CATALOG: readonly CliCommandDescriptor[] =
     statusCommand,
     groupCommand,
     credentialCommand,
+    fieldCommand,
     completionCommand(() => PUBLIC_CLI_COMMAND_CATALOG),
   ]);
 

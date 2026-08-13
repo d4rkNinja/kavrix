@@ -22,12 +22,18 @@ import {
 import { z } from 'zod';
 
 import type {
+  CliAddFieldRequest,
   CliArchiveEntityRequest,
+  CliArchiveFieldRequest,
   CliCreateCredentialRequest,
   CliCreateGroupRequest,
   CliCredentialMutationResult,
   CliGroupMutationResult,
+  CliRemoveFieldRequest,
   CliRestoreEntityRequest,
+  CliRestoreFieldRequest,
+  CliSetFieldRequest,
+  CliUpdateFieldRequest,
 } from './mutation-contracts.js';
 
 export const cliStatusSchema = z
@@ -116,6 +122,12 @@ export interface CliUseCasePorts {
   listCredentials?(groupQuery: string): Promise<readonly ItemPayload[]>;
   renameCredential?(groupQuery: string, query: string, newTitle: string): Promise<void>;
   deleteCredential?(groupQuery: string, query: string): Promise<void>;
+  addField?(request: CliAddFieldRequest): Promise<CliCredentialMutationResult>;
+  setField?(request: CliSetFieldRequest): Promise<CliCredentialMutationResult>;
+  updateField?(request: CliUpdateFieldRequest): Promise<CliCredentialMutationResult>;
+  archiveField?(request: CliArchiveFieldRequest): Promise<void>;
+  restoreField?(request: CliRestoreFieldRequest): Promise<void>;
+  removeField?(request: CliRemoveFieldRequest): Promise<void>;
 }
 
 export function parseStatus(value: unknown): CliStatus {

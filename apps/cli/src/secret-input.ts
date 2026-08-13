@@ -15,6 +15,7 @@ export const secretKindSchema = z.enum([
   'recovery-key',
   'totp-seed',
   'invite',
+  'field-value',
 ]);
 export const acquiredSecretSchema = z
   .string()
@@ -63,6 +64,12 @@ export const SECRET_INPUT_OPTIONS = Object.freeze({
     kind: 'totp-seed' as const,
     flag: '--secret-stdin',
     description: 'Read the TOTP seed from standard input (never from an argument).',
+  }),
+  fieldValue: Object.freeze({
+    kind: 'field-value' as const,
+    flag: '--value-stdin',
+    description:
+      'Read a credential field value from standard input (never from an argument).',
   }),
 });
 
@@ -432,11 +439,20 @@ function readMasked(
 }
 
 function secretKindLabel(kind: SecretKind): string {
-  return kind === 'totp-seed' ? 'TOTP seed' : kind;
+  switch (kind) {
+    case 'totp-seed':
+      return 'TOTP seed';
+    case 'field-value':
+      return 'field value';
+    default:
+      return kind;
+  }
 }
 
 function secretKindStdinFlag(kind: SecretKind): string {
-  return kind === 'totp-seed' ? '--secret-stdin' : `--${kind}-stdin`;
+  if (kind === 'totp-seed') return '--secret-stdin';
+  if (kind === 'field-value') return '--value-stdin';
+  return `--${kind}-stdin`;
 }
 
 function removeLastUtf8CodePoint(bytes: number[]): void {
