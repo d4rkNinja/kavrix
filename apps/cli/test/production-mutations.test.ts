@@ -22,6 +22,7 @@ import {
 } from '@kavrix/schemas';
 import { describe, expect, it, beforeEach, afterEach } from 'vitest';
 
+import { cliStatusSchema } from '../src/contracts.js';
 import { openProductionEnvironment } from '../src/production/environment.js';
 import {
   executeProductionAddField,
@@ -357,13 +358,14 @@ describe('production CLI mutation adapters', () => {
       expect(getRevealed.value).toBe('MyInitialSecret123!');
 
       // 8.9. Execute Production Sync
-      const syncStatus: CliStatus = await executeProductionSync({
+      const rawSyncStatus = await executeProductionSync({
         environment: paths.env,
         secrets: {
           read: () => Promise.reject(new Error('unexpected secrets read')),
         },
         backendPolicy: { kind: 'unprotected' },
       });
+      const syncStatus = cliStatusSchema.parse(rawSyncStatus);
       expect(syncStatus.state).toBe('unlocked');
 
       // 9. Add Note
