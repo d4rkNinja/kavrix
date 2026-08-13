@@ -12,7 +12,10 @@ import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 
 import { DEFAULT_VAULT_INITIALIZATION_INPUT } from '../src/initialization.js';
 import type { CliVaultInitializationPort } from '../src/initialization.js';
-import { createProductionInitializationPort } from '../src/production/initialize.js';
+import {
+  createProductionInitializationPort,
+  runProductionInitialization,
+} from '../src/production/initialize.js';
 import { CliUsageError } from '../src/errors.js';
 
 describe('production initialization adapter factory', () => {
@@ -139,5 +142,28 @@ describe('production initialization adapter factory', () => {
         'KAVRIX-PORTABLE-KEY',
       ),
     ).rejects.toThrow(CliUsageError);
+  });
+
+  it('runs production initialization lifecycle slice and closes environment on exit', async () => {
+    const mockSecretsInput = {
+      read: vi.fn(),
+      readBatch: vi.fn(),
+      clear: vi.fn(),
+    };
+    const opId = lifecycleOperationIdSchema.parse('operation.cli.init.0002');
+
+    await expect(
+      runProductionInitialization(
+        {
+          environment: { CREDS_HOME: tempHome },
+          secrets: mockSecretsInput,
+          backendPolicy: { kind: 'native' },
+        },
+        async (deps) => {
+          await expect(deps.coordinator.cancel(opId)).resolves.toBeUndefined();
+          return 'cancelled-ok';
+        },
+      ),
+    ).resolves.toBe('cancelled-ok');
   });
 });
