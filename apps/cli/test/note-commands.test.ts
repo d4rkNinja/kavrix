@@ -65,7 +65,9 @@ async function execute(
         if (val === undefined) {
           return Promise.reject(new Error('secrets unneeded'));
         }
-        return Promise.resolve(val as unknown as Uint8Array);
+        return Promise.resolve(
+          val as unknown as Awaited<ReturnType<CliDependencies['secrets']['read']>>,
+        );
       },
       readBatch: () => Promise.reject(new Error('secrets unneeded')),
     },

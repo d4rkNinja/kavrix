@@ -39,6 +39,7 @@ import {
   executeProductionUpdateField,
   executeProductionUpdateNote,
 } from '../src/production/mutations.js';
+import { executeProductionShow } from '../src/production/show.js';
 import { resolveCliDataPaths } from '../src/production/paths.js';
 import { ensureDataDirectory } from '../src/production/runtime-adapters.js';
 import { createSecretBackend } from '../src/production/secret-backend.js';
@@ -283,12 +284,25 @@ describe('production CLI mutation adapters', () => {
         fieldKey: 'api_token',
       });
 
+      // 8.5. Execute Production Show
+      const showResult = await executeProductionShow(
+        {
+          source: store,
+          vaultId: unlocked.profile.vaultId,
+          rootKey,
+        },
+        'Infrastructure',
+        'AWS Production Root',
+      );
+      expect(showResult.item.title).toBe('AWS Production Root');
+      expect(showResult.group.name).toBe('Infrastructure');
+
       // 9. Add Note
       const noteAddResult = await executeProductionAddNote(mutationOptions, {
         groupQuery: 'Infrastructure',
         credentialQuery: 'AWS Production Root',
         title: 'Emergency Rotation Procedure',
-        content: 'Steps to rotate root credentials',
+        content: secretValueSchema.parse('Steps to rotate root credentials'),
         isSensitive: true,
       });
       expect(noteAddResult.title).toBe('Emergency Rotation Procedure');
