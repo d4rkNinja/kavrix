@@ -15,6 +15,7 @@ import {
 } from '@kavrix/local-store';
 import {
   deviceIdSchema,
+  secretValueSchema,
   syncCursorSchema,
   vaultIdSchema,
   type VaultId,
@@ -288,7 +289,7 @@ describe('production CLI mutation adapters', () => {
       const showResult = await executeProductionShow(
         {
           source: store,
-          vaultId: unlocked.profile.vaultId,
+          vaultId: mutationOptions.vaultId,
           rootKey,
         },
         'Infrastructure',

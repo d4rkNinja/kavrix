@@ -1,4 +1,8 @@
-import { VaultReadSession, type VaultReadSourcePort } from '@kavrix/client';
+import {
+  VaultReadSession,
+  type CredentialShowResult,
+  type VaultReadSourcePort,
+} from '@kavrix/client';
 import type { VaultRootKey } from '@kavrix/crypto';
 import type { VaultId } from '@kavrix/schemas';
 
@@ -12,7 +16,7 @@ export async function executeProductionShow(
   options: ProductionQueryOptions,
   groupQuery: string,
   credentialQuery: string,
-) {
+): Promise<CredentialShowResult> {
   const readSession = new VaultReadSession(options.source, options.vaultId);
   await readSession.unlock(options.rootKey);
   try {
