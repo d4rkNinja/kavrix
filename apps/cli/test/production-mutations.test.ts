@@ -357,7 +357,7 @@ describe('production CLI mutation adapters', () => {
       expect(getRevealed.value).toBe('MyInitialSecret123!');
 
       // 8.9. Execute Production Sync
-      const syncStatus = await executeProductionSync({
+      const syncStatus: CliStatus = await executeProductionSync({
         environment: paths.env,
         secrets: {
           read: () => Promise.reject(new Error('unexpected secrets read')),
