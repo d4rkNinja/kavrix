@@ -1895,6 +1895,80 @@ const showCommand: CliCommandDescriptor = Object.freeze({
   },
 });
 
+const copyCommand: CliCommandDescriptor = Object.freeze({
+  name: 'copy',
+  description: 'Copy one authorized credential field to the guarded clipboard.',
+  arguments: [
+    { syntax: '<group>', description: 'Group ID, unique name, or alias.' },
+    {
+      syntax: '<credential>',
+      description: 'Credential ID, unique name, or alias within the group.',
+    },
+    {
+      syntax: '<field>',
+      description: 'Field ID, stable key, exact label, or unique prefix.',
+    },
+  ],
+  options: [
+    {
+      flags: '--index <number>',
+      description: 'Select a one-based element from a repeatable field.',
+    },
+    secretBackendOption,
+    backendPassphraseStdinOption,
+  ],
+  execute: async (context, arguments_, options) => {
+    const [{ parseCopyReceipt }, { renderCopyReceipt }] = await Promise.all([
+      import('./contracts.js'),
+      import('./render.js'),
+    ]);
+    const groupQuery = parseInput(querySchema, arguments_[0], 'group query');
+    const credentialQuery = parseInput(querySchema, arguments_[1], 'credential query');
+    const fieldQuery = parseInput(querySchema, arguments_[2], 'field query');
+    const rawIndex = options['index'];
+    const index =
+      rawIndex === undefined
+        ? undefined
+        : parseInput(fieldIndexOptionSchema, rawIndex, 'field index');
+
+    const copyOpts = index === undefined ? {} : { index };
+    let rawReceipt: unknown;
+
+    if (context.ports?.copy !== undefined) {
+      rawReceipt = await context.ports.copy(
+        groupQuery,
+        credentialQuery,
+        fieldQuery,
+        copyOpts,
+      );
+    } else {
+      const { executeProductionCopy } = await import('./production/copy.js');
+      await withUnlockedVault(
+        context,
+        'copy',
+        options,
+        async (unlocked, store, rootKey) => {
+          rawReceipt = await executeProductionCopy(
+            {
+              source: store,
+              vaultId: unlocked.profile.vaultId,
+              rootKey,
+              clipboard: unlocked.environment.clipboard,
+            },
+            groupQuery,
+            credentialQuery,
+            fieldQuery,
+            copyOpts,
+          );
+        },
+      );
+    }
+
+    const receipt = parseCopyReceipt(rawReceipt);
+    context.stdout.write(renderCopyReceipt(receipt));
+  },
+});
+
 export const CLI_COMMAND_CATALOG: readonly CliCommandDescriptor[] = Object.freeze([
   versionCommand,
   generationCommand,
@@ -1909,54 +1983,7 @@ export const CLI_COMMAND_CATALOG: readonly CliCommandDescriptor[] = Object.freez
   fieldCommand,
   noteCommand,
   showCommand,
-  {
-    name: 'copy',
-    description: 'Copy one authorized credential field to the guarded clipboard.',
-    arguments: [
-      { syntax: '<group>', description: 'Group ID, unique name, or alias.' },
-      {
-        syntax: '<credential>',
-        description: 'Credential ID, unique name, or alias within the group.',
-      },
-      {
-        syntax: '<field>',
-        description: 'Field ID, stable key, exact label, or unique prefix.',
-      },
-    ],
-    options: [
-      {
-        flags: '--index <number>',
-        description: 'Select a one-based element from a repeatable field.',
-      },
-    ],
-    execute: async (context, arguments_, options) => {
-      const [{ parseCopyReceipt }, { renderCopyReceipt }] = await Promise.all([
-        import('./contracts.js'),
-        import('./render.js'),
-      ]);
-      const groupQuery = parseInput(querySchema, arguments_[0], 'group query');
-      const credentialQuery = parseInput(
-        querySchema,
-        arguments_[1],
-        'credential query',
-      );
-      const fieldQuery = parseInput(querySchema, arguments_[2], 'field query');
-      const rawIndex = options['index'];
-      const index =
-        rawIndex === undefined
-          ? undefined
-          : parseInput(fieldIndexOptionSchema, rawIndex, 'field index');
-      const receipt = parseCopyReceipt(
-        await useCases(context, 'copy').copy(
-          groupQuery,
-          credentialQuery,
-          fieldQuery,
-          index === undefined ? {} : { index },
-        ),
-      );
-      context.stdout.write(renderCopyReceipt(receipt));
-    },
-  },
+  copyCommand,
   {
     name: 'device',
     description: 'Manage this device and zero-knowledge enrollment.',
@@ -2117,6 +2144,7 @@ export const PUBLIC_CLI_COMMAND_CATALOG: readonly CliCommandDescriptor[] =
     fieldCommand,
     noteCommand,
     showCommand,
+    copyCommand,
     completionCommand(() => PUBLIC_CLI_COMMAND_CATALOG),
   ]);
 
