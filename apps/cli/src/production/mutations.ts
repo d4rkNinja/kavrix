@@ -55,28 +55,17 @@ export function createDefaultMutationDependencies(): VaultMutationServiceDepende
   return {
     clock: productionClock(),
     groupIds: {
-      next: () =>
-        groupIdSchema.parse(
-          `group.${randomBytes(12).toString('hex')}`,
-        ),
+      next: () => groupIdSchema.parse(`group.${randomBytes(12).toString('hex')}`),
     },
     itemIds: {
-      next: () =>
-        itemIdSchema.parse(
-          `item.${randomBytes(12).toString('hex')}`,
-        ),
+      next: () => itemIdSchema.parse(`item.${randomBytes(12).toString('hex')}`),
     },
     migrationIds: {
       next: () =>
-        templateMigrationIdSchema.parse(
-          `migration.${randomBytes(12).toString('hex')}`,
-        ),
+        templateMigrationIdSchema.parse(`migration.${randomBytes(12).toString('hex')}`),
     },
     auditEventIds: {
-      next: () =>
-        auditEventIdSchema.parse(
-          `audit.${randomBytes(12).toString('hex')}`,
-        ),
+      next: () => auditEventIdSchema.parse(`audit.${randomBytes(12).toString('hex')}`),
     },
     idempotency: randomIdempotencyKeys(),
   };
@@ -180,9 +169,8 @@ export async function executeProductionSetField(
       throw new Error('Credential item is not active or found');
     }
 
-    const { fieldDefinitionSchema, fieldIdSchema, secretValueSchema } = await import(
-      '@kavrix/schemas'
-    );
+    const { fieldDefinitionSchema, fieldIdSchema, secretValueSchema } =
+      await import('@kavrix/schemas');
     const fieldId = fieldIdSchema.parse(`field.${randomBytes(12).toString('hex')}`);
     const stringValue = new TextDecoder().decode(ownedValue);
 

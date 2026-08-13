@@ -3,7 +3,12 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 import { vaultProfileSchema } from '@kavrix/client';
-import { encryptPayload, generateVaultRootKey, zeroize, type VaultRootKey } from '@kavrix/crypto';
+import {
+  encryptPayload,
+  generateVaultRootKey,
+  zeroize,
+  type VaultRootKey,
+} from '@kavrix/crypto';
 import { openSqliteVaultProfileStore } from '@kavrix/local-store';
 import {
   associatedDataSchema,
@@ -34,9 +39,7 @@ async function seedVaultRecordInStore(
   vaultId: VaultId,
   rootKey: VaultRootKey,
 ) {
-  const { createPortableKeySlot, generatePortableKey } = await import(
-    '@kavrix/crypto'
-  );
+  const { createPortableKeySlot, generatePortableKey } = await import('@kavrix/crypto');
   const {
     associatedDataSchema,
     changeRecordSchema,
