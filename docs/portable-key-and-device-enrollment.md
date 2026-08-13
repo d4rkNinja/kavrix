@@ -169,7 +169,7 @@ ID, not the secret value. `creds device invite list` returns public metadata onl
 
 ## Join on Device B
 
-Canonical interactive flow:
+Canonical interactive flow (available in the packed executable):
 
 ```text
 creds device join --server <url> --vault <vault-id>
@@ -249,11 +249,12 @@ protected keychain, publish the opaque slot revision, and verify the protected
 readback. It stores the canonical profile, initializes protected sync state via
 the first opaque sync, and clears session/device/root buffers best effort.
 
-`creds recover resume <operation-id>` replays the durable join operation and
-finishes an interrupted slot/profile/sync phase. `creds recover cancel
-<operation-id>` removes only a prepared local journal and performs no network
-request. Both commands still require the canonical server/vault identity so a
-local operation cannot be applied to an ambiguous target. Recovery output is
+`creds device join resume <operation-id>` (or the equivalent `recover resume`)
+replays the durable join operation and finishes an interrupted slot/profile/sync
+phase. `creds device join cancel <operation-id>` (or `recover cancel`) removes
+only a prepared local journal and performs no network request. Both commands
+still require the canonical server/vault identity so a local operation cannot be
+applied to an ambiguous target. Device-join/recovery output is
 limited to the opaque operation, vault, and device IDs; invite, portable key,
 session successor, device secret, VRK, and decrypted records are not placed in
 argv, API payloads, logs, or renderer input.

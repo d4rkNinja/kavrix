@@ -112,6 +112,16 @@ export function renderRecover(result: CliRecoverResult, json: boolean): string {
   return `Vault recovered ${safe.vaultId} on device ${safe.deviceId}.\n`;
 }
 
+export function renderDeviceJoin(result: CliRecoverResult, json: boolean): string {
+  const safe = {
+    operationId: sanitizeTerminalText(result.operationId),
+    vaultId: sanitizeTerminalText(result.vaultId),
+    deviceId: sanitizeTerminalText(result.deviceId),
+  };
+  if (json) return safeJson(safe);
+  return `Device joined vault ${safe.vaultId} on device ${safe.deviceId}.\n`;
+}
+
 export function renderKeySlots(slots: readonly CliKeySlot[], json: boolean): string {
   const safe = slots.map((slot) => ({
     id: sanitizeTerminalText(slot.id),

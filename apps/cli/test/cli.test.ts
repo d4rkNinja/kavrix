@@ -694,6 +694,49 @@ describe('CLI command shell', () => {
     expect(result.stdout).not.toContain(PORTABLE_KEY);
   });
 
+  it('composes device join through the crash-resumable recovery port', async () => {
+    const recover = vi.fn(() =>
+      Promise.resolve({
+        operationId: lifecycleOperationIdSchema.parse('operation.join.cli.0001'),
+        vaultId: vaultIdSchema.parse('vault.join'),
+        deviceId: deviceIdSchema.parse('device.join'),
+      }),
+    );
+    const secrets: SecretInputPort = {
+      read: () => Promise.reject(new Error('Unexpected single secret read')),
+      readBatch: vi.fn().mockResolvedValue([ACQUIRED_TOKEN, ACQUIRED_PORTABLE_KEY]),
+    };
+    const result = await execute(
+      [
+        'device',
+        'join',
+        '--server',
+        'https://sync.example/',
+        '--vault',
+        'vault.join',
+        '--invite-stdin',
+        '--portable-key-stdin',
+        '--json',
+      ],
+      { recover },
+      secrets,
+    );
+
+    expect(result.exitCode).toBe(CLI_EXIT_CODES.success);
+    expect(recover).toHaveBeenCalledWith(
+      { serverUrl: 'https://sync.example/', vaultId: 'vault.join' },
+      TOKEN,
+      PORTABLE_KEY,
+    );
+    expect(JSON.parse(result.stdout)).toEqual({
+      operationId: 'operation.join.cli.0001',
+      vaultId: 'vault.join',
+      deviceId: 'device.join',
+    });
+    expect(result.stdout).not.toContain(TOKEN);
+    expect(result.stdout).not.toContain(PORTABLE_KEY);
+  });
+
   it('keeps help and completions static and free of runtime values', async () => {
     const runtimeCanary = 'runtime-vault-secret-canary';
     const show = vi.fn(() => Promise.reject(new Error(runtimeCanary)));
@@ -704,6 +747,7 @@ describe('CLI command shell', () => {
     const inviteCreateHelp = await execute(['device', 'invite', 'create', '--help'], {
       show,
     });
+    const deviceJoinHelp = await execute(['device', 'join', '--help'], { show });
     const joinHelp = await execute(['device', 'invite', 'join', '--help'], { show });
     const keyHelp = await execute(['key', '--help'], { show });
     expect(help.exitCode).toBe(CLI_EXIT_CODES.success);
@@ -718,6 +762,8 @@ describe('CLI command shell', () => {
     expect(inviteListHelp.stdout).toContain('--cursor <opaque>');
     expect(inviteCreateHelp.stdout).toContain('--scope <scope...>');
     expect(inviteCreateHelp.stdout).toContain('--stdout');
+    expect(deviceJoinHelp.stdout).toContain('--invite-stdin');
+    expect(deviceJoinHelp.stdout).toContain('resume');
     expect(help.stdout).not.toContain(runtimeCanary);
 
     for (const shell of ['bash', 'zsh', 'fish', 'powershell']) {

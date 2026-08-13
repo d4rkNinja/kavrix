@@ -22,6 +22,7 @@ import {
   cliKeySlotResultSchema,
   cliPortableKeyRotationResultSchema,
   parseRecoverRequest,
+  type CliRecoverResult,
   type CliStatus,
   type CliUseCasePorts,
 } from './contracts.js';
@@ -764,52 +765,30 @@ const recoverCommand: CliCommandDescriptor = Object.freeze({
     },
   ],
   execute: async (context, _arguments, options) => {
-    const request = parseRecoverRequestFromOptions(
-      options,
-      context.environment ?? process.env,
-    );
-    const source = parseRecoverySourceOptions(options, false);
-    let raw: unknown;
-    if (context.ports?.recover !== undefined) {
-      if (source.keyFilePath !== undefined) {
-        throw new CliUsageError('Injected recovery does not support key files.');
-      }
-      const frames = await secretInput(context, 'recover').readBatch({
-        kinds: ['invite', 'portable-key'],
-        fromStdin: source.inviteFromStdin || source.portableKeyFromStdin,
-        requireEnd: source.inviteFromStdin || source.portableKeyFromStdin,
-      });
-      raw = await context.ports.recover(
-        request,
-        requiredSecretFrame(frames, 0),
-        requiredSecretFrame(frames, 1),
-      );
-    } else {
-      const { executeProductionRecovery } = await import('./production/recovery.js');
-      raw = await executeProductionRecovery({
-        environment: context.environment ?? process.env,
-        secrets: secretInput(context, 'recover'),
-        backendPolicy: parseStatusBackendPolicy(options),
-        request,
-        ...(source.inviteFromStdin ? { inviteFromStdin: true } : {}),
-        ...(source.portableKeyFromStdin ? { portableKeyFromStdin: true } : {}),
-        ...(source.keyFilePath === undefined
-          ? {}
-          : { keyFilePath: source.keyFilePath }),
-        ...(source.keyFilePassphraseFromStdin
-          ? { keyFilePassphraseFromStdin: true }
-          : {}),
-      });
-    }
-    const [{ parseRecoverResult }, { renderRecover }] = await Promise.all([
-      import('./contracts.js'),
-      import('./render.js'),
-    ]);
-    context.stdout.write(
-      renderRecover(parseRecoverResult(raw), optionBoolean(options, 'json')),
-    );
+    const result = await executeRecoveryStart(context, options, 'recover');
+    const { renderRecover } = await import('./render.js');
+    context.stdout.write(renderRecover(result, optionBoolean(options, 'json')));
   },
 });
+
+const deviceJoinCommand: CliCommandDescriptor = Object.freeze({
+  name: 'join',
+  description: 'Join an existing vault with an invite and portable key.',
+  options: recoverCommand.options ?? [],
+  children: (recoverCommand.children ?? []).map((child) => ({
+    ...child,
+    description:
+      child.name === 'resume'
+        ? 'Resume a durable device-join operation.'
+        : 'Cancel a prepared device-join operation before network use.',
+  })),
+  execute: async (context, _arguments, options) => {
+    const result = await executeRecoveryStart(context, options, 'device join');
+    const { renderDeviceJoin } = await import('./render.js');
+    context.stdout.write(renderDeviceJoin(result, optionBoolean(options, 'json')));
+  },
+});
+
 const statusCommand: CliCommandDescriptor = Object.freeze({
   name: 'status',
   description: 'Show local vault and sync status without secret data.',
@@ -2872,11 +2851,7 @@ export const CLI_COMMAND_CATALOG: readonly CliCommandDescriptor[] = Object.freez
             arguments: [
               { syntax: '<invite-id>', description: 'Opaque invite identifier.' },
             ],
-            options: [
-              vaultOption,
-              secretBackendOption,
-              backendPassphraseStdinOption,
-            ],
+            options: [vaultOption, secretBackendOption, backendPassphraseStdinOption],
             execute: async (context, arguments_, options) => {
               const { parseInviteId, parseVaultId } = await import('./contracts.js');
               const vaultId = parseInputString(options, 'vault', parseVaultId);
@@ -2959,6 +2934,7 @@ export const CLI_COMMAND_CATALOG: readonly CliCommandDescriptor[] = Object.freez
           },
         ],
       },
+      deviceJoinCommand,
     ],
   },
   completionCommand(() => CLI_COMMAND_CATALOG),
@@ -2997,12 +2973,13 @@ export const PUBLIC_CLI_COMMAND_CATALOG: readonly CliCommandDescriptor[] =
 function publicDeviceCommand(): CliCommandDescriptor {
   const device = CLI_COMMAND_CATALOG.find((descriptor) => descriptor.name === 'device');
   const invite = device?.children?.find((descriptor) => descriptor.name === 'invite');
-  if (device === undefined || invite === undefined) {
-    throw new Error('The device invite catalog is incomplete');
+  const join = device?.children?.find((descriptor) => descriptor.name === 'join');
+  if (device === undefined || invite === undefined || join === undefined) {
+    throw new Error('The device catalog is incomplete');
   }
   const publicInvite = Object.freeze({
     name: invite.name,
-    description: invite.description,
+    description: 'Create, list, or revoke device invites.',
     ...(invite.arguments === undefined ? {} : { arguments: invite.arguments }),
     ...(invite.options === undefined ? {} : { options: invite.options }),
     children: (invite.children ?? []).filter(
@@ -3012,7 +2989,7 @@ function publicDeviceCommand(): CliCommandDescriptor {
   return Object.freeze({
     name: device.name,
     description: device.description,
-    children: [publicInvite],
+    children: [publicInvite, join],
   });
 }
 
@@ -3171,6 +3148,50 @@ function parseRecoveryOperationId(value: string | undefined): LifecycleOperation
   );
   if (!parsed.success) throw new CliUsageError('The operation ID is invalid.');
   return parsed.data;
+}
+
+async function executeRecoveryStart(
+  context: CliCommandContext,
+  options: Readonly<Record<string, unknown>>,
+  feature: 'recover' | 'device join',
+): Promise<CliRecoverResult> {
+  const request = parseRecoverRequestFromOptions(
+    options,
+    context.environment ?? process.env,
+  );
+  const source = parseRecoverySourceOptions(options, false);
+  let raw: unknown;
+  if (context.ports?.recover !== undefined) {
+    if (source.keyFilePath !== undefined) {
+      throw new CliUsageError('Injected recovery does not support key files.');
+    }
+    const frames = await secretInput(context, feature).readBatch({
+      kinds: ['invite', 'portable-key'],
+      fromStdin: source.inviteFromStdin || source.portableKeyFromStdin,
+      requireEnd: source.inviteFromStdin || source.portableKeyFromStdin,
+    });
+    raw = await context.ports.recover(
+      request,
+      requiredSecretFrame(frames, 0),
+      requiredSecretFrame(frames, 1),
+    );
+  } else {
+    const { executeProductionRecovery } = await import('./production/recovery.js');
+    raw = await executeProductionRecovery({
+      environment: context.environment ?? process.env,
+      secrets: secretInput(context, feature),
+      backendPolicy: parseStatusBackendPolicy(options),
+      request,
+      ...(source.inviteFromStdin ? { inviteFromStdin: true } : {}),
+      ...(source.portableKeyFromStdin ? { portableKeyFromStdin: true } : {}),
+      ...(source.keyFilePath === undefined ? {} : { keyFilePath: source.keyFilePath }),
+      ...(source.keyFilePassphraseFromStdin
+        ? { keyFilePassphraseFromStdin: true }
+        : {}),
+    });
+  }
+  const { parseRecoverResult } = await import('./contracts.js');
+  return parseRecoverResult(raw);
 }
 
 function parseRotationOperationId(value: string | undefined): LifecycleOperationId {

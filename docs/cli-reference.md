@@ -47,6 +47,9 @@ encrypted mutation against the unlocked local store. Its current surface is:
 | `creds recover --server <url> --vault <vault-id> [options]`                       | Available in the built package | Recovers an empty data home with an invite and local portable key, creates a fresh device slot only after local authentication, persists the profile, and performs the first opaque sync.   |
 | `creds recover resume <operation-id> --server <url> --vault <vault-id> [options]` | Available in the built package | Resumes a durable recovery journal and completes only the missing local slot/profile/sync work.                                                                                             |
 | `creds recover cancel <operation-id> --server <url> --vault <vault-id>`           | Available in the built package | Cancels a prepared recovery journal locally before network use.                                                                                                                             |
+| `creds device join --server <url> --vault <vault-id> [options]`                   | Available in the built package | Joins a vault with an invite and portable key through the durable successor-token, device-slot, profile, and first-sync coordinator.                                                        |
+| `creds device join resume <operation-id> [options]`                               | Available in the built package | Resumes the exact pending device-join operation without generating replacement identities.                                                                                                  |
+| `creds device join cancel <operation-id> [options]`                               | Available in the built package | Cancels only a prepared local device-join journal before network use.                                                                                                                       |
 | `creds device invite create --vault <vault-id> [options]`                         | Available in the built package | Issues one bounded, short-lived invite; the token is displayed once only on an interactive or explicitly acknowledged stdout.                                                               |
 | `creds device invite list --vault <vault-id> [options]`                           | Available in the built package | Lists only canonical public invite metadata and never returns invite tokens or hashes.                                                                                                      |
 | `creds device invite revoke <invite-id> --vault <vault-id>`                       | Available in the built package | Revokes one unused invite by opaque ID through the authenticated control plane.                                                                                                             |
@@ -200,14 +203,14 @@ ports and never reach the packed executable.
 | `creds device invite list --vault <vault-id> [--json]`                                                      | Available in the built package | Lists canonical public invite metadata, never invite tokens or hashes.                                                                                                                                  |
 | `creds device invite revoke <invite-id> --vault <vault-id>`                                                 | Available in the built package | Revokes one opaque invite ID through the authenticated production port.                                                                                                                                 |
 | `creds recover --server <url> --vault <vault-id> [--key-file <path>] [--invite-stdin --portable-key-stdin]` | Available in the built package | Uses the durable join coordinator, locally authenticates the portable slot, persists independent session/device successors through protected adapters, stores the profile, and initializes opaque sync. |
-| `creds device invite join --device <device-id> [--schema-version <version>] [--invite-stdin] [--json]`      | Catalog only                   | Acquires the invite through a masked prompt or explicit stdin and calls an injected enrollment use case. The default schema version is `1`.                                                             |
+| `creds device join --server <url> --vault <vault-id> [options]`                                             | Available in the built package | Uses the durable join coordinator, protected portable-key authentication, device/session persistence, and first opaque sync; output contains only opaque operation/vault/device IDs.                    |
 
-The invite-join catalog entry is a low-level tested composition contract. The
-public `recover` command now supplies the fresh-home production composition with
-server selection, portable-key/key-file input, durable enrollment replay state,
-profile/device-slot persistence, and first sync. It is intentionally distinct
-from the later device-management workflow that will list, revoke, and manage
-already-enrolled devices. Read
+The lower-level `device invite join` catalog entry remains a protocol-test
+contract. The public `device join` and `recover` commands supply the fresh-home
+production composition with server selection, portable-key/key-file input,
+durable enrollment replay state, profile/device-slot persistence, and first
+sync. They are intentionally distinct from the later device-management
+workflow that will list, revoke, and manage already-enrolled devices. Read
 [Portable Key and Device Enrollment](./portable-key-and-device-enrollment.md)
 for the protocol status.
 
@@ -231,8 +234,8 @@ The following surfaces are not available from the packed executable and must not
 be treated as released behavior, even where a tested injected descriptor or
 lower-level use case exists:
 
-- device join, device-token lifecycle, and remember/forget beyond the composed
-  invite management, `key slot`, and `key rotate` commands;
+- device-token lifecycle and remember/forget beyond the composed invite, join,
+  `key slot`, and `key rotate` commands;
 - backup, verify, restore, history, and attachment commands;
 - `set`, `update`, `run`, and the TUI entrypoint.
 
