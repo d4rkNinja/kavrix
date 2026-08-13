@@ -1705,7 +1705,7 @@ const noteCommand: CliCommandDescriptor = Object.freeze({
         const thirdArg = arguments_[2];
 
         const credentialQuery = thirdArg !== undefined ? secondArg : undefined;
-        const noteQuery = thirdArg !== undefined ? thirdArg : secondArg;
+        const noteQuery = thirdArg ?? secondArg;
 
         const { cliArchiveNoteRequestSchema } = await import('./mutation-contracts.js');
         const request = cliArchiveNoteRequestSchema.parse({
@@ -1753,7 +1753,7 @@ const noteCommand: CliCommandDescriptor = Object.freeze({
         const thirdArg = arguments_[2];
 
         const credentialQuery = thirdArg !== undefined ? secondArg : undefined;
-        const noteQuery = thirdArg !== undefined ? thirdArg : secondArg;
+        const noteQuery = thirdArg ?? secondArg;
 
         const { cliRestoreNoteRequestSchema } = await import('./mutation-contracts.js');
         const request = cliRestoreNoteRequestSchema.parse({
@@ -1805,7 +1805,7 @@ const noteCommand: CliCommandDescriptor = Object.freeze({
         const thirdArg = arguments_[2];
 
         const credentialQuery = thirdArg !== undefined ? secondArg : undefined;
-        const noteQuery = thirdArg !== undefined ? thirdArg : secondArg;
+        const noteQuery = thirdArg ?? secondArg;
 
         const force = optionBoolean(options, 'force');
         if (!force) {
