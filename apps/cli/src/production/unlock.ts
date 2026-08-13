@@ -1,4 +1,6 @@
 import type { VaultProfile } from '@kavrix/client';
+import { keySlotIdSchema } from '@kavrix/schemas';
+import { z } from 'zod';
 
 import type { CliUseCasePorts } from '../contracts.js';
 import type { SecretInputPort } from '../secret-input.js';
@@ -11,10 +13,37 @@ import { resolveCliDataPaths } from './paths.js';
 import { createProductionPorts } from './ports.js';
 import { createSecretBackend, type SecretBackendPolicy } from './secret-backend.js';
 
+export const unlockMethodSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('remembered-device') }).strict(),
+  z
+    .object({
+      kind: z.literal('passphrase'),
+      passphraseSlotId: keySlotIdSchema.optional(),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('key-file'),
+      path: z.string().min(1),
+      slotId: keySlotIdSchema.optional(),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('portable'),
+      formattedKey: z.string().min(1),
+      slotId: keySlotIdSchema.optional(),
+    })
+    .strict(),
+]);
+
+export type UnlockMethod = z.infer<typeof unlockMethodSchema>;
+
 export interface ProductionUnlockedRequest {
   readonly environment: Readonly<Record<string, string | undefined>>;
   readonly secrets: SecretInputPort;
   readonly backendPolicy: SecretBackendPolicy;
+  readonly unlockMethod?: UnlockMethod;
   readonly allowInsecureLoopbackDevelopment?: boolean;
 }
 
@@ -33,6 +62,11 @@ export async function runProductionUnlocked<Output>(
   request: ProductionUnlockedRequest,
   operation: (context: ProductionUnlockedContext) => Promise<Output>,
 ): Promise<Output> {
+  const unlockMethod =
+    request.unlockMethod === undefined
+      ? { kind: 'remembered-device' as const }
+      : unlockMethodSchema.parse(request.unlockMethod);
+
   const paths = resolveCliDataPaths(request.environment);
   const backend = await createSecretBackend(
     paths,
@@ -57,6 +91,7 @@ export async function runProductionUnlocked<Output>(
       profile,
       environment,
       secrets: backend,
+      unlockMethod,
       join: () => Promise.reject(new Error('Join unavailable during unlocked runner')),
       ...(request.allowInsecureLoopbackDevelopment !== undefined
         ? { allowInsecureLoopbackDevelopment: request.allowInsecureLoopbackDevelopment }

@@ -13,6 +13,8 @@ import type {
   VaultId,
 } from '@kavrix/schemas';
 
+import type { KeySlotId } from '@kavrix/schemas';
+
 import type {
   CliInviteJoinRequest,
   CliInviteJoinResult,
@@ -21,9 +23,11 @@ import type {
   CliUseCasePorts,
 } from '../contracts.js';
 import { CliUnavailableError, CliUsageError } from '../errors.js';
+import type { SecretInputPort } from '../secret-input.js';
 import type { ProductionEnvironment } from './environment.js';
 import type { SecretBackend } from './secret-backend.js';
 import { productionClock, randomIdempotencyKeys } from './runtime-adapters.js';
+import type { UnlockMethod } from './unlock.js';
 
 /** Seconds a copied secret stays on the clipboard before it is cleared. */
 const CLIPBOARD_CLEAR_MS = 30_000;
@@ -32,6 +36,8 @@ export interface ProductionPortsOptions {
   readonly profile: VaultProfile;
   readonly environment: ProductionEnvironment;
   readonly secrets: SecretBackend;
+  readonly secretsInput?: SecretInputPort;
+  readonly unlockMethod?: UnlockMethod;
   /** Completes an invite redemption; see `join.ts`. */
   readonly join: (
     request: CliInviteJoinRequest,
@@ -46,6 +52,9 @@ export interface ProductionPortsOptions {
 
 export interface ProductionVaultSession {
   unlockRememberedDevice(): Promise<void>;
+  unlockPassphrase?(passphrase: Uint8Array, slotId: KeySlotId): Promise<void>;
+  unlockPortable?(formattedPortableKey: string, slotId?: KeySlotId): Promise<void>;
+  unlockRecovery?(formattedRecoveryKey: string, slotId?: KeySlotId): Promise<void>;
   synchronize(): Promise<unknown>;
   show(groupQuery: string, credentialQuery: string): Promise<CliShowResult>;
   lock(): Promise<void>;
@@ -119,7 +128,61 @@ export function createProductionPorts(
       : options.sessionFactory(configuration);
   };
 
-  /** Unlocks with the remembered device key, runs, then always relocks. */
+  const unlockSession = async (
+    session: ProductionVaultSession,
+    method: UnlockMethod,
+  ): Promise<void> => {
+    switch (method.kind) {
+      case 'remembered-device':
+        await session.unlockRememberedDevice();
+        break;
+      case 'portable':
+        if (session.unlockPortable === undefined) {
+          throw new CliUsageError('Portable unlock is unsupported by this session.');
+        }
+        await session.unlockPortable(method.formattedKey, method.slotId);
+        break;
+      case 'passphrase': {
+        if (options.secretsInput === undefined) {
+          throw new CliUsageError(
+            'Secret input port is required for passphrase unlock.',
+          );
+        }
+        const acquired = await options.secretsInput.read({
+          kind: 'passphrase',
+          fromStdin: false,
+        });
+        if (method.passphraseSlotId === undefined) {
+          throw new CliUsageError(
+            'A passphrase slot ID is required for passphrase unlock.',
+          );
+        }
+        if (session.unlockPassphrase === undefined) {
+          throw new CliUsageError('Passphrase unlock is unsupported by this session.');
+        }
+        const encoded = new TextEncoder().encode(acquired);
+        try {
+          await session.unlockPassphrase(encoded, method.passphraseSlotId);
+        } finally {
+          encoded.fill(0);
+        }
+        break;
+      }
+      case 'key-file': {
+        const { readPortableKeyFile } = await import('@kavrix/key-files');
+        const { formatPortableKey } = await import('@kavrix/crypto');
+        const file = await readPortableKeyFile(method.path, { kind: 'unprotected' });
+        const formattedKey = formatPortableKey(file.key);
+        if (session.unlockPortable === undefined) {
+          throw new CliUsageError('Portable unlock is unsupported by this session.');
+        }
+        await session.unlockPortable(formattedKey, method.slotId);
+        break;
+      }
+    }
+  };
+
+  /** Unlocks with the specified unlock method, runs, then always relocks. */
   const withUnlocked = async <Output>(
     operation: (session: ProductionVaultSession) => Promise<Output>,
     synchronize = false,
@@ -129,7 +192,10 @@ export function createProductionPorts(
       | Readonly<{ succeeded: true; value: Output }>
       | Readonly<{ succeeded: false; error: unknown }>;
     try {
-      await session.unlockRememberedDevice();
+      await unlockSession(
+        session,
+        options.unlockMethod ?? { kind: 'remembered-device' },
+      );
       if (synchronize) await session.synchronize();
       outcome = { succeeded: true, value: await operation(session) };
     } catch (error) {

@@ -4,12 +4,12 @@ import { tmpdir } from 'node:os';
 
 import { vaultProfileSchema } from '@kavrix/client';
 import { openSqliteVaultProfileStore } from '@kavrix/local-store';
-import { deviceIdSchema, vaultIdSchema } from '@kavrix/schemas';
+import { deviceIdSchema, keySlotIdSchema, vaultIdSchema } from '@kavrix/schemas';
 import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
 
 import { resolveCliDataPaths } from '../src/production/paths.js';
 import { ensureDataDirectory } from '../src/production/runtime-adapters.js';
-import { runProductionUnlocked } from '../src/production/unlock.js';
+import { runProductionUnlocked, unlockMethodSchema } from '../src/production/unlock.js';
 
 describe('production unlocked command runner', () => {
   let tempHome: string;
@@ -54,6 +54,35 @@ describe('production unlocked command runner', () => {
     }
   });
 
+  it('validates unlockMethod runtime contracts strictly', () => {
+    expect(unlockMethodSchema.parse({ kind: 'remembered-device' })).toEqual({
+      kind: 'remembered-device',
+    });
+
+    expect(
+      unlockMethodSchema.parse({
+        kind: 'portable',
+        formattedKey: 'KAVRIX-PORTABLE-KEY-001',
+      }),
+    ).toEqual({
+      kind: 'portable',
+      formattedKey: 'KAVRIX-PORTABLE-KEY-001',
+    });
+
+    const slotId = keySlotIdSchema.parse('slot.passphrase.001');
+    expect(
+      unlockMethodSchema.parse({
+        kind: 'passphrase',
+        passphraseSlotId: slotId,
+      }),
+    ).toEqual({
+      kind: 'passphrase',
+      passphraseSlotId: slotId,
+    });
+
+    expect(() => unlockMethodSchema.parse({ kind: 'unknown' })).toThrow();
+  });
+
   it('runs an operation within an unlocked environment lifecycle and closes resources', async () => {
     const mockSecretsInput = {
       read: vi.fn(),
@@ -66,6 +95,7 @@ describe('production unlocked command runner', () => {
         environment: { CREDS_HOME: tempHome },
         secrets: mockSecretsInput,
         backendPolicy: { kind: 'native' },
+        unlockMethod: { kind: 'remembered-device' },
       },
       (context) => {
         expect(context.profile).toBeDefined();
