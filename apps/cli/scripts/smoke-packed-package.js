@@ -261,7 +261,7 @@ try {
   ) {
     throw new Error('Packed CLI portable key-file creation failed.');
   }
-  for (const hidden of ['lock', 'show', 'copy', 'device']) {
+  for (const hidden of ['show', 'copy', 'device']) {
     const unsupported = run(process.execPath, [executable, hidden]);
     if (
       unsupported.status !== 2 ||
@@ -491,6 +491,8 @@ function assertInstalledPublicCommandCatalog(shim) {
     'totp',
     'key',
     'init',
+    'unlock',
+    'lock',
     'status',
     'completion',
   ];
@@ -535,7 +537,6 @@ async function assertInstalledInternalCommandsRemainUnavailable({
   productionChunkNames,
 }) {
   const invocations = [
-    ['lock'],
     ['show', 'group.canary', 'credential.canary'],
     ['copy', 'group.canary', 'credential.canary', 'field.canary'],
     ['device', 'invite', 'list', '--vault', 'vault.canary'],
