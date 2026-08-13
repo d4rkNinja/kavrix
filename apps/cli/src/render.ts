@@ -9,7 +9,12 @@ import {
   type PublicInviteRecord,
 } from '@kavrix/schemas';
 
-import type { CliShowResult, CliStatus } from './contracts.js';
+import type {
+  CliConflict,
+  CliConflictResolutionResult,
+  CliShowResult,
+  CliStatus,
+} from './contracts.js';
 import { safeJson, sanitizeTerminalText } from './terminal.js';
 
 type SafeInvite = Readonly<{
@@ -44,6 +49,42 @@ export function renderStatus(status: CliStatus, json: boolean): string {
   ]
     .join('\n')
     .concat('\n');
+}
+
+export function renderConflicts(
+  conflicts: readonly CliConflict[],
+  json: boolean,
+): string {
+  const safe = conflicts.map((conflict) => ({
+    vaultId: sanitizeTerminalText(conflict.vaultId),
+    entityType: conflict.entityType,
+    entityId: sanitizeTerminalText(conflict.entityId),
+    idempotencyKey: sanitizeTerminalText(conflict.idempotencyKey),
+    expectedRevision: conflict.expectedRevision,
+    currentRevision: conflict.currentRevision,
+    currentState: conflict.currentState,
+  }));
+  if (json) return safeJson(safe);
+  if (safe.length === 0) return 'No unresolved sync conflicts.\n';
+  return `${safe
+    .map(
+      (conflict) =>
+        `${conflict.idempotencyKey}\t${conflict.entityType}\t${conflict.entityId}\t${String(conflict.expectedRevision ?? 'none')}\t${String(conflict.currentRevision)}\t${conflict.currentState}`,
+    )
+    .join('\n')}\n`;
+}
+
+export function renderConflictResolution(
+  result: CliConflictResolutionResult,
+  json: boolean,
+): string {
+  const safe = {
+    status: result.status,
+    conflictId: sanitizeTerminalText(result.conflictId),
+    strategy: result.strategy,
+  };
+  if (json) return safeJson(safe);
+  return `Conflict ${safe.conflictId} resolved with ${safe.strategy}.\n`;
 }
 
 export function renderShow(result: CliShowResult, json: boolean): string {

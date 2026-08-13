@@ -44,6 +44,12 @@ const fieldIndexOptionSchema = z
   .regex(/^[1-9][0-9]*$/u)
   .transform(Number)
   .pipe(z.number().int().positive().max(10_000));
+const revisionOptionSchema = z
+  .string()
+  .regex(/^(?:0|[1-9][0-9]*)$/u)
+  .transform(Number)
+  .pipe(z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER));
+const conflictStrategySchema = z.enum(['keep-local', 'accept-remote']);
 const shellSchema = z.enum(['bash', 'zsh', 'fish', 'powershell']);
 
 export type CliCommandContext = Readonly<{
@@ -2166,10 +2172,102 @@ const getCommand: CliCommandDescriptor = Object.freeze({
   },
 });
 
+const syncConflictsCommand: CliCommandDescriptor = Object.freeze({
+  name: 'conflicts',
+  description: 'List and resolve explicit synchronization conflicts.',
+  children: [
+    {
+      name: 'list',
+      description: 'List redacted unresolved conflict metadata.',
+      options: [jsonOption],
+      execute: async (context, _arguments, options) => {
+        let raw: unknown;
+        if (context.ports?.listConflicts !== undefined) {
+          raw = await context.ports.listConflicts();
+        } else {
+          const { executeProductionConflictList } =
+            await import('./production/conflicts.js');
+          raw = await executeProductionConflictList({
+            environment: context.environment ?? process.env,
+            secrets: secretInput(context, 'sync conflicts list'),
+            backendPolicy: parseStatusBackendPolicy(options),
+          });
+        }
+        const { parseConflicts } = await import('./contracts.js');
+        const { renderConflicts } = await import('./render.js');
+        context.stdout.write(
+          renderConflicts(parseConflicts(raw), optionBoolean(options, 'json')),
+        );
+      },
+    },
+    {
+      name: 'resolve',
+      description: 'Resolve one conflict at an exact displayed revision.',
+      arguments: [
+        { syntax: '<conflict-id>', description: 'Opaque mutation conflict ID.' },
+      ],
+      options: [
+        {
+          flags: '--strategy <keep-local|accept-remote>',
+          description: 'Keep the encrypted local mutation or accept the remote record.',
+        },
+        {
+          flags: '--revision <number>',
+          description: 'Exact current revision shown by conflict list.',
+        },
+        jsonOption,
+      ],
+      execute: async (context, arguments_, options) => {
+        const conflictId = requiredArgument(arguments_[0], 'conflict ID');
+        const strategy = parseInput(
+          conflictStrategySchema,
+          requiredOption(options, 'strategy', 'resolution strategy'),
+          'resolution strategy',
+        );
+        const currentRevision = parseInput(
+          revisionOptionSchema,
+          requiredOption(options, 'revision', 'current revision'),
+          'current revision',
+        );
+        const { parseConflictResolutionRequest } = await import('./contracts.js');
+        const request = parseConflictResolutionRequest({
+          conflictId,
+          currentRevision,
+          strategy,
+        });
+        let raw: unknown;
+        if (context.ports?.resolveConflict !== undefined) {
+          raw = await context.ports.resolveConflict(request);
+        } else {
+          const { executeProductionConflictResolution } =
+            await import('./production/conflicts.js');
+          raw = await executeProductionConflictResolution(
+            {
+              environment: context.environment ?? process.env,
+              secrets: secretInput(context, 'sync conflicts resolve'),
+              backendPolicy: parseStatusBackendPolicy(options),
+            },
+            request,
+          );
+        }
+        const { parseConflictResolutionResult } = await import('./contracts.js');
+        const { renderConflictResolution } = await import('./render.js');
+        context.stdout.write(
+          renderConflictResolution(
+            parseConflictResolutionResult(raw),
+            optionBoolean(options, 'json'),
+          ),
+        );
+      },
+    },
+  ],
+});
+
 const syncCommand: CliCommandDescriptor = Object.freeze({
   name: 'sync',
   description: 'Synchronize vault data with server and print updated status.',
   options: [jsonOption, secretBackendOption, backendPassphraseStdinOption],
+  children: [syncConflictsCommand],
   execute: async (context, _arguments, options) => {
     let rawStatus: unknown;
     if (context.ports?.sync !== undefined) {

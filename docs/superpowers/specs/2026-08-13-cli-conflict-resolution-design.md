@@ -29,8 +29,8 @@ v3-to-v4 migration, and restart tests protect this ledger.
 
 The public commands are:
 
-* `creds sync conflicts list [--json]`
-* `creds sync conflicts resolve <conflict-id> --strategy <keep-local|accept-remote> --revision <current-revision> [--json]`
+- `creds sync conflicts list [--json]`
+- `creds sync conflicts resolve <conflict-id> --strategy <keep-local|accept-remote> --revision <current-revision> [--json]`
 
 The conflict ID is the existing mutation idempotency key. The required revision
 binds resolution to the exact current revision shown by `list`; if the local

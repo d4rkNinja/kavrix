@@ -4,7 +4,12 @@ import {
   type CredentialCopyReceipt,
   type VaultProfile,
 } from '@kavrix/client';
-import type { ProtectedSyncStatePort, SyncStatus } from '@kavrix/sync';
+import type {
+  ProtectedSyncStatePort,
+  ResolveSyncConflictResult,
+  SyncConflictMetadata,
+  SyncStatus,
+} from '@kavrix/sync';
 import type {
   ApiBearerToken,
   ControlListPageOptions,
@@ -56,6 +61,14 @@ export interface ProductionVaultSession {
   unlockPortable?(formattedPortableKey: string, slotId?: KeySlotId): Promise<void>;
   unlockRecovery?(formattedRecoveryKey: string, slotId?: KeySlotId): Promise<void>;
   synchronize(): Promise<unknown>;
+  listConflicts?(): Promise<readonly SyncConflictMetadata[]>;
+  resolveConflict?(
+    input: Readonly<{
+      conflictId: string;
+      currentRevision: number;
+      strategy: 'keep-local' | 'accept-remote';
+    }>,
+  ): Promise<ResolveSyncConflictResult>;
   show(groupQuery: string, credentialQuery: string): Promise<CliShowResult>;
   lock(): Promise<void>;
 }
@@ -74,13 +87,22 @@ export async function readProductionStatus(
   const { vaultId, deviceId } = options.profile;
   const store = await options.environment.openSyncStore(options.profile);
   const pending = await store.listPendingMutations(vaultId);
+  const conflictStore = store as unknown as {
+    listConflicts?: (vaultId: VaultId) => Promise<readonly SyncConflictMetadata[]>;
+  };
+  const conflicts =
+    conflictStore.listConflicts === undefined
+      ? []
+      : await conflictStore.listConflicts(vaultId);
   const protectedState = await options.protectedSyncState.load(vaultId, deviceId);
   return {
     // No daemon holds keys between invocations, so a fresh process is locked.
     vaultState: 'locked',
     vaultId,
     deviceId,
-    syncState: mapSyncState(options.syncState ?? 'offline'),
+    syncState: mapSyncState(
+      conflicts.length > 0 ? 'conflict' : (options.syncState ?? 'offline'),
+    ),
     pendingChanges: pending.length,
     ...(protectedState === null ? {} : { lastSyncAt: protectedState.updatedAt }),
   };
@@ -241,6 +263,22 @@ export function createProductionPorts(
         syncState: lastSyncStatus.value,
       });
     },
+
+    listConflicts: async () =>
+      withUnlocked((session) => {
+        if (session.listConflicts === undefined) {
+          throw new CliUnavailableError('sync conflicts list');
+        }
+        return session.listConflicts();
+      }),
+
+    resolveConflict: async (input) =>
+      withUnlocked((session) => {
+        if (session.resolveConflict === undefined) {
+          throw new CliUnavailableError('sync conflicts resolve');
+        }
+        return session.resolveConflict(input);
+      }),
 
     lock: async () => {
       // Keys never outlive the process; clearing the clipboard is the only

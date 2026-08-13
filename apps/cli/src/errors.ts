@@ -50,7 +50,9 @@ export type CliFeature =
   | 'note remove'
   | 'reveal'
   | 'get'
-  | 'sync';
+  | 'sync'
+  | 'sync conflicts list'
+  | 'sync conflicts resolve';
 
 export class CliUsageError extends Error {
   readonly code = 'CLI_USAGE' as const;

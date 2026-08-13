@@ -13,6 +13,7 @@ import type {
   GroupId,
   ItemId,
   OpaqueMutation,
+  OpaqueSyncRecord,
   SyncPulledChange,
   TemplateMigrationPublicationRequest,
   VaultId,
@@ -23,7 +24,11 @@ import type { CompleteTemplateMigrationPublicationInput } from '@kavrix/sync';
 import { SqliteMutationQueue } from './sqlite-mutation-queue.js';
 import { SqliteRecordState } from './sqlite-record-state.js';
 import { SqliteTemplatePublications } from './sqlite-template-publications.js';
-import type { VaultStateLimits } from './sqlite-vault-schema.js';
+import type {
+  CurrentState,
+  EntityType,
+  VaultStateLimits,
+} from './sqlite-vault-schema.js';
 
 export {
   LEGACY_V2_VAULT_STATE_SCHEMA_DEFINITIONS,
@@ -79,6 +84,14 @@ export class SqliteVaultState {
     return this.#records.getCurrentItem(vaultId, itemId);
   }
 
+  baseState(
+    vaultId: VaultId,
+    entityType: Extract<EntityType, 'vault' | 'group' | 'item'>,
+    entityId: string,
+  ): CurrentState | null {
+    return this.#records.base(vaultId, entityType, entityId);
+  }
+
   listCurrentItems(vaultId: VaultId, groupId: GroupId): readonly ItemMutationState[] {
     return this.#records.listCurrentItems(vaultId, groupId);
   }
@@ -87,8 +100,37 @@ export class SqliteVaultState {
     return this.#queue.enqueue(mutations);
   }
 
+  replacePendingMutation(
+    vaultId: VaultId,
+    previous: OpaqueMutation,
+    replacement: OpaqueMutation,
+    current: CurrentState | null,
+  ): void {
+    this.#queue.replacePendingMutation(vaultId, previous, replacement, current);
+  }
+
+  removePendingMutation(vaultId: VaultId, mutation: OpaqueMutation): void {
+    this.#queue.removePendingMutation(vaultId, mutation);
+  }
+
   applyPulledChange(pulled: SyncPulledChange, vaultId: VaultId): void {
     this.#records.applyPulledChange(pulled, vaultId);
+  }
+
+  applyConflictCurrent(
+    vaultId: VaultId,
+    entityType: Extract<EntityType, 'vault' | 'group' | 'item'>,
+    entityId: string,
+    currentRevision: number,
+    current: OpaqueSyncRecord | null,
+  ): void {
+    this.#records.applyConflictCurrent(
+      vaultId,
+      entityType,
+      entityId,
+      currentRevision,
+      current,
+    );
   }
 
   promoteMutation(mutation: OpaqueMutation): void {

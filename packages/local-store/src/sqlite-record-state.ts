@@ -189,6 +189,55 @@ export class SqliteRecordState {
     this.assertBounds();
   }
 
+  applyConflictCurrent(
+    vaultId: VaultId,
+    entityType: Extract<EntityType, 'vault' | 'group' | 'item'>,
+    entityId: string,
+    currentRevision: number,
+    current: OpaqueSyncRecord | null,
+  ): void {
+    const existing = this.base(vaultId, entityType, entityId);
+    if (current === null) {
+      if (currentRevision !== 0) throw invalidState();
+      if (existing !== null && stateRevision(existing) > 0) throw invalidState();
+      if (existing === null) return;
+      this.#deleteBase(vaultId, entityType, entityId);
+      this.#predecessors.delete(vaultId, entityType, entityId, '');
+      this.assertBounds();
+      return;
+    }
+
+    const canonical = parseOpaqueRecord(current);
+    if (
+      recordVaultId(canonical) !== vaultId ||
+      recordEntityType(canonical) !== entityType ||
+      recordIdentity(canonical) !== entityId ||
+      syncRecordRevision(canonical) !== currentRevision
+    ) {
+      throw invalidState();
+    }
+    if (existing !== null) {
+      const existingRevision = stateRevision(existing);
+      if (currentRevision < existingRevision) throw invalidState();
+      if (currentRevision === existingRevision) {
+        if (!samePulledState(existing, canonical)) throw invalidState();
+        return;
+      }
+    }
+
+    if (isTombstone(canonical)) {
+      if (canonical.state !== 'deleted' || existing?.state !== 'active') {
+        throw invalidState();
+      }
+      assertTombstonePredecessor(canonical, existing.record);
+      this.#predecessors.store(existing.record, '');
+    } else if (existing?.state === 'deleted') {
+      this.#predecessors.delete(vaultId, entityType, entityId, '');
+    }
+    this.#storeBase(canonical);
+    this.assertBounds();
+  }
+
   promote(mutationInput: OpaqueMutation): void {
     const mutation = parseMutationInput(mutationInput);
     const vaultId = mutationVaultId(mutation);
@@ -287,6 +336,34 @@ export class SqliteRecordState {
     if (predecessor === null) throw invalidState();
     assertTombstonePredecessor(record, predecessor);
     return { state: 'deleted', tombstone: record, predecessor };
+  }
+
+  rebasePendingDeletePredecessor(
+    mutation: Extract<OpaqueMutation, { entityType: 'group' | 'item' }>,
+    replacement: Extract<OpaqueMutation, { entityType: 'group' | 'item' }>,
+    current: CurrentState | null,
+  ): void {
+    if (!isDeleteMutation(mutation) || !isDeleteMutation(replacement)) {
+      throw invalidState();
+    }
+    if (current?.state !== 'active') throw invalidState();
+    this.#predecessors.delete(
+      mutationVaultId(mutation),
+      mutation.entityType,
+      mutation.record.id,
+      mutation.idempotencyKey,
+    );
+    this.#predecessors.store(current.record, replacement.idempotencyKey);
+  }
+
+  removePendingDeletePredecessor(mutation: OpaqueMutation): void {
+    if (!isDeleteMutation(mutation)) return;
+    this.#predecessors.delete(
+      mutationVaultId(mutation),
+      mutation.entityType,
+      mutation.record.id,
+      mutation.idempotencyKey,
+    );
   }
 
   assertMutationApplies(current: CurrentState | null, mutation: OpaqueMutation): void {

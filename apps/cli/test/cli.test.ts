@@ -78,6 +78,73 @@ describe('CLI command shell', () => {
     expect(json.stdout).not.toContain('\u001b');
   });
 
+  it('lists redacted conflicts and resolves one at the displayed revision', async () => {
+    const listConflicts = vi.fn(() =>
+      Promise.resolve([
+        {
+          vaultId: vaultIdSchema.parse('vault.primary'),
+          entityType: 'group' as const,
+          entityId: 'group.primary',
+          idempotencyKey: 'conflict-cli-0000001',
+          expectedRevision: 4,
+          currentRevision: 5,
+          currentState: 'present' as const,
+        },
+      ]),
+    );
+    const listed = await execute(['sync', 'conflicts', 'list', '--json'], {
+      listConflicts,
+    });
+    expect(listed.exitCode).toBe(CLI_EXIT_CODES.success);
+    expect(JSON.parse(listed.stdout)).toEqual([
+      {
+        vaultId: 'vault.primary',
+        entityType: 'group',
+        entityId: 'group.primary',
+        idempotencyKey: 'conflict-cli-0000001',
+        expectedRevision: 4,
+        currentRevision: 5,
+        currentState: 'present',
+      },
+    ]);
+
+    const resolveConflict = vi.fn(() =>
+      Promise.resolve({
+        status: 'queued-local' as const,
+        conflictId: 'conflict-cli-0000001',
+        strategy: 'keep-local' as const,
+        replacementIdempotencyKey: 'replacement-cli-000001',
+      }),
+    );
+    const resolved = await execute(
+      [
+        'sync',
+        'conflicts',
+        'resolve',
+        'conflict-cli-0000001',
+        '--strategy',
+        'keep-local',
+        '--revision',
+        '5',
+        '--json',
+      ],
+      { resolveConflict },
+    );
+    expect(resolved.exitCode).toBe(CLI_EXIT_CODES.success);
+    expect(resolveConflict).toHaveBeenCalledWith({
+      conflictId: 'conflict-cli-0000001',
+      currentRevision: 5,
+      strategy: 'keep-local',
+    });
+    expect(JSON.parse(resolved.stdout)).toEqual({
+      status: 'queued-local',
+      conflictId: 'conflict-cli-0000001',
+      strategy: 'keep-local',
+    });
+    expect(resolved.stdout).not.toContain('replacement-cli-000001');
+    expect(resolved.stdout).not.toContain('\u001b');
+  });
+
   it('locks through the injected use case without accepting secret input', async () => {
     const lock = vi.fn(() => Promise.resolve());
     const result = await execute(['lock'], { lock });

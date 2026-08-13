@@ -62,6 +62,35 @@ export const cliStatusSchema = z
     }
   });
 
+const cliConflictIdSchema = z.string().min(16).max(256);
+const cliConflictSchema = z
+  .object({
+    vaultId: vaultIdSchema,
+    entityType: z.enum(['vault', 'group', 'item']),
+    entityId: z.string().trim().min(1).max(512),
+    idempotencyKey: cliConflictIdSchema,
+    expectedRevision: z.number().int().nonnegative().nullable(),
+    currentRevision: z.number().int().nonnegative(),
+    currentState: z.enum(['present', 'deleted', 'missing']),
+  })
+  .strict();
+const cliConflictResolutionStrategySchema = z.enum(['keep-local', 'accept-remote']);
+const cliConflictResolutionRequestSchema = z
+  .object({
+    conflictId: cliConflictIdSchema,
+    currentRevision: z.number().int().nonnegative(),
+    strategy: cliConflictResolutionStrategySchema,
+  })
+  .strict();
+const cliConflictResolutionResultSchema = z
+  .object({
+    status: z.enum(['accepted-remote', 'queued-local']),
+    conflictId: cliConflictIdSchema,
+    strategy: cliConflictResolutionStrategySchema,
+    replacementIdempotencyKey: cliConflictIdSchema.nullable(),
+  })
+  .strict();
+
 /**
  * The invite redemption request.
  *
@@ -86,6 +115,13 @@ export const cliInviteJoinResultSchema = z
   .strict();
 
 export type CliStatus = z.infer<typeof cliStatusSchema>;
+export type CliConflict = z.infer<typeof cliConflictSchema>;
+export type CliConflictResolutionRequest = z.infer<
+  typeof cliConflictResolutionRequestSchema
+>;
+export type CliConflictResolutionResult = z.infer<
+  typeof cliConflictResolutionResultSchema
+>;
 export type CliShowResult = CredentialShowProjection;
 export type CliInviteJoinRequest = z.infer<typeof cliInviteJoinRequestSchema>;
 export type CliInviteJoinResult = z.infer<typeof cliInviteJoinResultSchema>;
@@ -160,10 +196,30 @@ export interface CliUseCasePorts {
     value: string;
   }>;
   sync?(): Promise<CliStatus>;
+  listConflicts?(): Promise<readonly CliConflict[]>;
+  resolveConflict?(
+    request: CliConflictResolutionRequest,
+  ): Promise<CliConflictResolutionResult>;
 }
 
 export function parseStatus(value: unknown): CliStatus {
   return cliStatusSchema.parse(value);
+}
+
+export function parseConflicts(value: unknown): readonly CliConflict[] {
+  return z.array(cliConflictSchema).max(100_000).parse(value);
+}
+
+export function parseConflictResolutionRequest(
+  value: unknown,
+): CliConflictResolutionRequest {
+  return cliConflictResolutionRequestSchema.parse(value);
+}
+
+export function parseConflictResolutionResult(
+  value: unknown,
+): CliConflictResolutionResult {
+  return cliConflictResolutionResultSchema.parse(value);
 }
 
 export function parseShowResult(value: unknown): CliShowResult {
