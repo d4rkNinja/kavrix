@@ -11,8 +11,13 @@ import {
 import { z } from 'zod';
 import type { VaultRootKey } from '@kavrix/crypto';
 import type { SqliteSyncLocalStore } from '@kavrix/local-store';
+import { lifecycleOperationIdSchema, type LifecycleOperationId } from '@kavrix/client';
 
-import type { CliStatus, CliUseCasePorts } from './contracts.js';
+import {
+  parseRecoverRequest,
+  type CliStatus,
+  type CliUseCasePorts,
+} from './contracts.js';
 import { CliUnavailableError, CliUsageError, type CliFeature } from './errors.js';
 import type {
   CliInitializationDependencies,
@@ -408,6 +413,176 @@ const connectCommand: CliCommandDescriptor = Object.freeze({
     const { renderConnect } = await import('./render.js');
     context.stdout.write(
       renderConnect(parseConnectResult(rawResult), optionBoolean(options, 'json')),
+    );
+  },
+});
+const recoverCommand: CliCommandDescriptor = Object.freeze({
+  name: 'recover',
+  description: 'Recover an empty local data home with an invite and portable key.',
+  options: [
+    serverOption,
+    vaultOption,
+    {
+      flags: '--key-file <path>',
+      description:
+        'Read a guarded unprotected or passphrase-protected portable key file.',
+    },
+    {
+      flags: '--portable-key-stdin',
+      description: 'Read the portable key from an explicit stdin frame.',
+    },
+    keyFilePassphraseStdinOption,
+    {
+      flags: '--invite-stdin',
+      description: 'Read the invite token from an explicit stdin frame.',
+    },
+    jsonOption,
+    secretBackendOption,
+    backendPassphraseStdinOption,
+  ],
+  children: [
+    {
+      name: 'resume',
+      description: 'Resume a durable recovery operation.',
+      arguments: [
+        {
+          syntax: '<operation-id>',
+          description: 'Opaque recovery operation identifier.',
+        },
+      ],
+      options: [
+        serverOption,
+        vaultOption,
+        {
+          flags: '--key-file <path>',
+          description:
+            'Read a guarded portable key file when slot setup is incomplete.',
+        },
+        {
+          flags: '--portable-key-stdin',
+          description: 'Read the portable key from an explicit stdin frame.',
+        },
+        keyFilePassphraseStdinOption,
+        jsonOption,
+        secretBackendOption,
+        backendPassphraseStdinOption,
+      ],
+      execute: async (context, arguments_, options) => {
+        const { parseRecoverResult } = await import('./contracts.js');
+        const request = parseRecoverRequestFromOptions(
+          options,
+          context.environment ?? process.env,
+        );
+        const operationId = parseRecoveryOperationId(arguments_[0]);
+        const source = parseRecoverySourceOptions(options, true);
+        if (source.inviteFromStdin) {
+          throw new CliUsageError(
+            '--invite-stdin is valid only when starting recovery.',
+          );
+        }
+        let raw: unknown;
+        if (context.environment === undefined) {
+          throw new CliUnavailableError('recover');
+        }
+        const { executeProductionRecovery } = await import('./production/recovery.js');
+        raw = await executeProductionRecovery({
+          environment: context.environment,
+          secrets: secretInput(context, 'recover'),
+          backendPolicy: parseStatusBackendPolicy(options),
+          request,
+          operationId,
+          ...(source.keyFilePath === undefined
+            ? {}
+            : { keyFilePath: source.keyFilePath }),
+          portableKeyFromStdin: source.portableKeyFromStdin,
+          keyFilePassphraseFromStdin: source.keyFilePassphraseFromStdin,
+        });
+        const { renderRecover } = await import('./render.js');
+        context.stdout.write(
+          renderRecover(parseRecoverResult(raw), optionBoolean(options, 'json')),
+        );
+      },
+    },
+    {
+      name: 'cancel',
+      description: 'Cancel a prepared recovery operation before network use.',
+      arguments: [
+        {
+          syntax: '<operation-id>',
+          description: 'Opaque recovery operation identifier.',
+        },
+      ],
+      options: [
+        serverOption,
+        vaultOption,
+        secretBackendOption,
+        backendPassphraseStdinOption,
+      ],
+      execute: async (context, arguments_, options) => {
+        if (context.environment === undefined) {
+          throw new CliUnavailableError('recover');
+        }
+        const { executeProductionRecoveryCancel } =
+          await import('./production/recovery.js');
+        const operationId = parseRecoveryOperationId(arguments_[0]);
+        await executeProductionRecoveryCancel({
+          environment: context.environment,
+          secrets: secretInput(context, 'recover'),
+          backendPolicy: parseStatusBackendPolicy(options),
+          request: parseRecoverRequestFromOptions(
+            options,
+            context.environment ?? process.env,
+          ),
+          operationId,
+        });
+        context.stdout.write('Recovery cancelled.\n');
+      },
+    },
+  ],
+  execute: async (context, _arguments, options) => {
+    const request = parseRecoverRequestFromOptions(
+      options,
+      context.environment ?? process.env,
+    );
+    const source = parseRecoverySourceOptions(options, false);
+    let raw: unknown;
+    if (context.ports?.recover !== undefined) {
+      if (source.keyFilePath !== undefined) {
+        throw new CliUsageError('Injected recovery does not support key files.');
+      }
+      const frames = await secretInput(context, 'recover').readBatch({
+        kinds: ['invite', 'portable-key'],
+        fromStdin: source.inviteFromStdin || source.portableKeyFromStdin,
+        requireEnd: source.inviteFromStdin || source.portableKeyFromStdin,
+      });
+      raw = await context.ports.recover(
+        request,
+        requiredSecretFrame(frames, 0),
+        requiredSecretFrame(frames, 1),
+      );
+    } else {
+      const { executeProductionRecovery } = await import('./production/recovery.js');
+      raw = await executeProductionRecovery({
+        environment: context.environment ?? process.env,
+        secrets: secretInput(context, 'recover'),
+        backendPolicy: parseStatusBackendPolicy(options),
+        request,
+        ...(source.inviteFromStdin ? { inviteFromStdin: true } : {}),
+        ...(source.portableKeyFromStdin ? { portableKeyFromStdin: true } : {}),
+        ...(source.keyFilePath === undefined
+          ? {}
+          : { keyFilePath: source.keyFilePath }),
+        ...(source.keyFilePassphraseFromStdin
+          ? { keyFilePassphraseFromStdin: true }
+          : {}),
+      });
+    }
+    const [{ parseRecoverResult }, { renderRecover }] = await Promise.all([
+      import('./contracts.js'),
+      import('./render.js'),
+    ]);
+    context.stdout.write(
+      renderRecover(parseRecoverResult(raw), optionBoolean(options, 'json')),
     );
   },
 });
@@ -2355,6 +2530,7 @@ export const CLI_COMMAND_CATALOG: readonly CliCommandDescriptor[] = Object.freez
   keyCommand,
   initializationCommand,
   connectCommand,
+  recoverCommand,
   unlockCommand,
   lockCommand,
   statusCommand,
@@ -2520,6 +2696,7 @@ export const PUBLIC_CLI_COMMAND_CATALOG: readonly CliCommandDescriptor[] =
     keyCommand,
     initializationCommand,
     connectCommand,
+    recoverCommand,
     unlockCommand,
     lockCommand,
     statusCommand,
@@ -2610,6 +2787,86 @@ function requiredOption(
     throw new CliUsageError(`A ${label} is required.`);
   }
   return value;
+}
+
+type RecoverySourceOptions = Readonly<{
+  inviteFromStdin: boolean;
+  portableKeyFromStdin: boolean;
+  keyFilePassphraseFromStdin: boolean;
+  keyFilePath?: string;
+}>;
+
+function parseRecoverRequestFromOptions(
+  options: Readonly<Record<string, unknown>>,
+  environment: Readonly<Record<string, string | undefined>>,
+): ReturnType<typeof parseRecoverRequest> {
+  const serverUrl = optionString(options, 'server') ?? environment['CREDS_SERVER_URL'];
+  if (serverUrl === undefined || serverUrl.length === 0) {
+    throw new CliUsageError('A server URL is required.');
+  }
+  return parseRecoverRequest({
+    serverUrl,
+    vaultId: parseInputString(options, 'vault', (value) => vaultIdSchema.parse(value)),
+  });
+}
+
+function parseRecoverySourceOptions(
+  options: Readonly<Record<string, unknown>>,
+  resume: boolean,
+): RecoverySourceOptions {
+  const inviteFromStdin = optionBoolean(options, 'inviteStdin');
+  const portableKeyFromStdin = optionBoolean(options, 'portableKeyStdin');
+  const keyFilePassphraseFromStdin = optionBoolean(options, 'keyFilePassphraseStdin');
+  const rawKeyFilePath = options['keyFile'];
+  if (rawKeyFilePath !== undefined && typeof rawKeyFilePath !== 'string') {
+    throw new CliUsageError('The portable key file path is invalid.');
+  }
+  const keyFilePath = rawKeyFilePath as string | undefined;
+  if (keyFilePath !== undefined && keyFilePath.length === 0) {
+    throw new CliUsageError('The portable key file path is invalid.');
+  }
+  if (resume && inviteFromStdin) {
+    throw new CliUsageError('--invite-stdin is valid only when starting recovery.');
+  }
+  if (keyFilePath !== undefined && portableKeyFromStdin) {
+    throw new CliUsageError('Choose exactly one portable-key source.');
+  }
+  if (keyFilePassphraseFromStdin && keyFilePath === undefined) {
+    throw new CliUsageError('--key-file-passphrase-stdin requires --key-file.');
+  }
+  if (
+    !resume &&
+    keyFilePath === undefined &&
+    inviteFromStdin !== portableKeyFromStdin
+  ) {
+    throw new CliUsageError(
+      'Invite and portable-key stdin sources must be supplied together.',
+    );
+  }
+  if (
+    !resume &&
+    keyFilePath !== undefined &&
+    keyFilePassphraseFromStdin &&
+    !inviteFromStdin
+  ) {
+    throw new CliUsageError(
+      'Use --invite-stdin with --key-file-passphrase-stdin for framed recovery input.',
+    );
+  }
+  return {
+    inviteFromStdin,
+    portableKeyFromStdin,
+    keyFilePassphraseFromStdin,
+    ...(keyFilePath === undefined ? {} : { keyFilePath }),
+  };
+}
+
+function parseRecoveryOperationId(value: string | undefined): LifecycleOperationId {
+  const parsed = lifecycleOperationIdSchema.safeParse(
+    requiredArgument(value, 'operation ID'),
+  );
+  if (!parsed.success) throw new CliUsageError('The operation ID is invalid.');
+  return parsed.data as LifecycleOperationId;
 }
 
 function useCases(context: CliCommandContext, feature: CliFeature): CliUseCasePorts {

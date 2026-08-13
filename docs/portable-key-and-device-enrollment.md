@@ -1,8 +1,9 @@
 # Portable Key and Device Enrollment
 
 > Design status: this document specifies required user and protocol behavior.
-> Commands and flows described here are planned until marked verified in
-> [implementation-status.md](./implementation-status.md).
+> The fresh-home `creds recover` composition is implemented and covered by
+> focused production tests; later device-management and rotation flows remain
+> planned until marked verified in [implementation-status.md](./implementation-status.md).
 
 ## The three credentials are different
 
@@ -225,6 +226,34 @@ within that expiry to recover from an ambiguous response; it must not generate a
 different successor for the consumed invite. Abandoning the flow or reaching
 expiry requires a newly issued invite. Possession of an expired or consumed
 parent alone cannot recover or derive an active successor.
+
+## Fresh-home recovery: `creds recover`
+
+Recovery is the production-composed path for a device with no local profile:
+
+```text
+creds recover --server <url> --vault <vault-id>
+creds recover --server <url> --vault <vault-id> --key-file <path>
+```
+
+The command rejects a non-empty local data home before loading protected
+credentials. It then uses the existing crash-safe join journal to persist the
+invite/enrollment/session successors, redeems the invite, authenticates an
+active current-version portable slot locally, and completes enrollment. Only
+after that local authentication succeeds does it generate a fresh device key,
+wrap the same VRK into a new device slot, persist the device secret in the
+protected keychain, publish the opaque slot revision, and verify the protected
+readback. It stores the canonical profile, initializes protected sync state via
+the first opaque sync, and clears session/device/root buffers best effort.
+
+`creds recover resume <operation-id>` replays the durable join operation and
+finishes an interrupted slot/profile/sync phase. `creds recover cancel
+<operation-id>` removes only a prepared local journal and performs no network
+request. Both commands still require the canonical server/vault identity so a
+local operation cannot be applied to an ambiguous target. Recovery output is
+limited to the opaque operation, vault, and device IDs; invite, portable key,
+session successor, device secret, VRK, and decrypted records are not placed in
+argv, API payloads, logs, or renderer input.
 
 ## Remember, forget, and revoke
 

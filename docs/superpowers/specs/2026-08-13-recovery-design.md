@@ -79,4 +79,3 @@ safety before acquiring secret input.
 Unlock-slot listing/disable/revoke and portable-key rotation remain in #35 and
 #36. The later device invite/list/revoke command family remains in #37/#38.
 This flow does not add backup/restore or plaintext key import.
-

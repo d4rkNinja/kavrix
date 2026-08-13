@@ -338,7 +338,7 @@ describe('public secret-output boundary', () => {
 
     const completion = await executePublic(['completion', 'bash']);
     expect(completion.stdout).toContain(
-      'version generate totp key init connect unlock lock status group credential field note show copy reveal get sync completion',
+      'version generate totp key init connect recover unlock lock status group credential field note show copy reveal get sync completion',
     );
     expect(completion.stdout).not.toContain('--secret');
     expect(completion.stdout).not.toContain(canary);

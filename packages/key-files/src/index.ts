@@ -7,6 +7,7 @@ export {
 export { setWindowsUserOnlyAcl } from './windows-acl.js';
 export {
   readPortableKeyFile,
+  validatePortableKeyFile,
   writePortableKeyFile,
   type ParsedPortableKeyFile,
   type PortableKey,

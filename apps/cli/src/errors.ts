@@ -53,7 +53,8 @@ export type CliFeature =
   | 'sync'
   | 'sync conflicts list'
   | 'sync conflicts resolve'
-  | 'connect';
+  | 'connect'
+  | 'recover';
 
 export class CliUsageError extends Error {
   readonly code = 'CLI_USAGE' as const;

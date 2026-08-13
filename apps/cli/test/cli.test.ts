@@ -1,4 +1,5 @@
 import { AmbiguousNameError, NotFoundError } from '@kavrix/core';
+import { lifecycleOperationIdSchema, type LifecycleOperationId } from '@kavrix/client';
 import {
   apiBearerTokenSchema,
   deviceIdSchema,
@@ -579,6 +580,48 @@ describe('CLI command shell', () => {
     expect(result.stderr).toBe('');
   });
 
+  it('recovers through the injected use case without placing secrets in output', async () => {
+    const recover = vi.fn(() =>
+      Promise.resolve({
+        operationId: lifecycleOperationIdSchema.parse(
+          'operation.recover.cli.0001',
+        ) as LifecycleOperationId,
+        vaultId: vaultIdSchema.parse('vault.recover'),
+        deviceId: deviceIdSchema.parse('device.recover'),
+      }),
+    );
+    const secrets: SecretInputPort = {
+      read: () => Promise.reject(new Error('Unexpected single secret read')),
+      readBatch: vi.fn().mockResolvedValue([ACQUIRED_TOKEN, ACQUIRED_PORTABLE_KEY]),
+    };
+    const result = await execute(
+      [
+        'recover',
+        '--server',
+        'https://sync.example/',
+        '--vault',
+        'vault.recover',
+        '--json',
+      ],
+      { recover },
+      secrets,
+    );
+
+    expect(result.exitCode).toBe(CLI_EXIT_CODES.success);
+    expect(recover).toHaveBeenCalledWith(
+      { serverUrl: 'https://sync.example/', vaultId: 'vault.recover' },
+      TOKEN,
+      PORTABLE_KEY,
+    );
+    expect(JSON.parse(result.stdout)).toEqual({
+      operationId: 'operation.recover.cli.0001',
+      vaultId: 'vault.recover',
+      deviceId: 'device.recover',
+    });
+    expect(result.stdout).not.toContain(TOKEN);
+    expect(result.stdout).not.toContain(PORTABLE_KEY);
+  });
+
   it('keeps help and completions static and free of runtime values', async () => {
     const runtimeCanary = 'runtime-vault-secret-canary';
     const show = vi.fn(() => Promise.reject(new Error(runtimeCanary)));
@@ -609,7 +652,7 @@ describe('CLI command shell', () => {
 
   it('limits the production bin catalog to commands with real static behavior', async () => {
     const publishedCommands =
-      'version generate totp key init connect unlock lock status group credential field note show copy reveal get sync completion';
+      'version generate totp key init connect recover unlock lock status group credential field note show copy reveal get sync completion';
     const unavailableCommands = /^\x20{2}device(?:\s|\[|$)/mu;
     expect(PUBLIC_CLI_COMMAND_CATALOG.map(({ name }) => name)).toEqual(
       publishedCommands.split(' '),

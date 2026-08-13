@@ -13,6 +13,7 @@ import type {
   CliConnectResult,
   CliConflict,
   CliConflictResolutionResult,
+  CliRecoverResult,
   CliShowResult,
   CliStatus,
 } from './contracts.js';
@@ -95,6 +96,16 @@ export function renderConnect(result: CliConnectResult, json: boolean): string {
   };
   if (json) return safeJson(safe);
   return `Connected vault ${safe.vaultId} on device ${safe.deviceId}.\n`;
+}
+
+export function renderRecover(result: CliRecoverResult, json: boolean): string {
+  const safe = {
+    operationId: sanitizeTerminalText(result.operationId),
+    vaultId: sanitizeTerminalText(result.vaultId),
+    deviceId: sanitizeTerminalText(result.deviceId),
+  };
+  if (json) return safeJson(safe);
+  return `Vault recovered ${safe.vaultId} on device ${safe.deviceId}.\n`;
 }
 
 export function renderShow(result: CliShowResult, json: boolean): string {

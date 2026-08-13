@@ -1,6 +1,7 @@
 import {
   credentialCopyReceiptSchema,
   credentialShowProjectionSchema,
+  lifecycleOperationIdSchema,
   type CredentialCopyOptions,
   type CredentialCopyReceipt,
   type CredentialShowProjection,
@@ -106,6 +107,21 @@ export const cliConnectResultSchema = z
   })
   .strict();
 
+export const cliRecoverRequestSchema = z
+  .object({
+    serverUrl: z.string().min(1).max(2_048),
+    vaultId: vaultIdSchema,
+  })
+  .strict();
+
+export const cliRecoverResultSchema = z
+  .object({
+    operationId: lifecycleOperationIdSchema,
+    vaultId: vaultIdSchema,
+    deviceId: deviceIdSchema,
+  })
+  .strict();
+
 /**
  * The invite redemption request.
  *
@@ -139,6 +155,8 @@ export type CliConflictResolutionResult = z.infer<
 >;
 export type CliConnectRequest = z.infer<typeof cliConnectRequestSchema>;
 export type CliConnectResult = z.infer<typeof cliConnectResultSchema>;
+export type CliRecoverRequest = z.infer<typeof cliRecoverRequestSchema>;
+export type CliRecoverResult = z.infer<typeof cliRecoverResultSchema>;
 export type CliShowResult = CredentialShowProjection;
 export type CliInviteJoinRequest = z.infer<typeof cliInviteJoinRequestSchema>;
 export type CliInviteJoinResult = z.infer<typeof cliInviteJoinResultSchema>;
@@ -218,6 +236,11 @@ export interface CliUseCasePorts {
     request: CliConflictResolutionRequest,
   ): Promise<CliConflictResolutionResult>;
   connect?(request: CliConnectRequest): Promise<CliConnectResult>;
+  recover?(
+    request: CliRecoverRequest,
+    inviteToken: string,
+    portableKey: string,
+  ): Promise<CliRecoverResult>;
 }
 
 export function parseStatus(value: unknown): CliStatus {
@@ -246,6 +269,14 @@ export function parseConnectRequest(value: unknown): CliConnectRequest {
 
 export function parseConnectResult(value: unknown): CliConnectResult {
   return cliConnectResultSchema.parse(value);
+}
+
+export function parseRecoverRequest(value: unknown): CliRecoverRequest {
+  return cliRecoverRequestSchema.parse(value);
+}
+
+export function parseRecoverResult(value: unknown): CliRecoverResult {
+  return cliRecoverResultSchema.parse(value);
 }
 
 export function parseShowResult(value: unknown): CliShowResult {
