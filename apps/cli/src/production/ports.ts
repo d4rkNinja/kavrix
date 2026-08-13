@@ -13,6 +13,8 @@ import type {
 import type {
   ApiBearerToken,
   ControlListPageOptions,
+  DeviceId,
+  DeviceListPageResponse,
   InviteId,
   InviteIssueRequest,
   InviteIssueResponse,
@@ -302,6 +304,14 @@ export function createProductionPorts(
         client.listInvitePage(bearer, vaultId, pageOptions),
       ),
 
+    listDevicePage: (
+      vaultId: VaultId,
+      pageOptions: ControlListPageOptions,
+    ): Promise<DeviceListPageResponse> =>
+      withRemoteVault(options, vaultId, (client, bearer) =>
+        client.listDevicePage(bearer, vaultId, pageOptions),
+      ),
+
     issueInvite: (
       vaultId: VaultId,
       request: InviteIssueRequest,
@@ -313,6 +323,11 @@ export function createProductionPorts(
     revokeInvite: (vaultId: VaultId, inviteId: InviteId): Promise<void> =>
       withRemoteVault(options, vaultId, (client, bearer) =>
         client.revokeInvite(bearer, vaultId, inviteId),
+      ),
+
+    revokeDevice: (vaultId: VaultId, deviceId: DeviceId): Promise<void> =>
+      withRemoteVault(options, vaultId, (client, bearer) =>
+        client.revokeDevice(bearer, vaultId, deviceId),
       ),
 
     // The catalog reads the invite token and the portable key as one masked

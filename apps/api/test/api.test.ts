@@ -782,6 +782,53 @@ describe('zero-knowledge Fastify API', () => {
     }
   });
 
+  it('allows self-revocation only while another device remains and denies last-device revocation', async () => {
+    const fixture = await createTestPorts();
+    const app = tracked(buildApi({ ports: fixture.ports, environment: 'test' }));
+    const otherDevice = deviceIdSchema.parse('device-2');
+    const otherIssued = await fixture.ports.tokens.issue();
+    fixture.authorization.seedSession(otherIssued.hash, {
+      vaultId,
+      deviceId: otherDevice,
+      scopes: ['sync:read', 'sync:write', 'device:manage'],
+    });
+
+    const selfRevoked = await app.inject({
+      method: 'DELETE',
+      url: `/v1/vaults/${vaultId}/devices/${deviceId}`,
+      headers: authHeader(fixture.token),
+    });
+    expect(selfRevoked.statusCode).toBe(204);
+    await expect(
+      app.inject({
+        method: 'GET',
+        url: '/v1/session',
+        headers: authHeader(fixture.token),
+      }),
+    ).resolves.toMatchObject({ statusCode: 401 });
+    await expect(
+      app.inject({
+        method: 'GET',
+        url: '/v1/session',
+        headers: authHeader(otherIssued.token),
+      }),
+    ).resolves.toMatchObject({ statusCode: 200 });
+
+    const lastDenied = await app.inject({
+      method: 'DELETE',
+      url: `/v1/vaults/${vaultId}/devices/${otherDevice}`,
+      headers: authHeader(otherIssued.token),
+    });
+    expect(lastDenied.statusCode).toBe(403);
+    await expect(
+      app.inject({
+        method: 'GET',
+        url: '/v1/session',
+        headers: authHeader(otherIssued.token),
+      }),
+    ).resolves.toMatchObject({ statusCode: 200 });
+  });
+
   it('rejects malformed or misbound request cursors and accepts an arbitrary same-vault position', async () => {
     const fixture = await createTestPorts();
     const app = tracked(buildApi({ ports: fixture.ports, environment: 'test' }));

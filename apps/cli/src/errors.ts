@@ -31,6 +31,8 @@ export type CliFeature =
   | 'device invite list'
   | 'device invite revoke'
   | 'device invite join'
+  | 'device list'
+  | 'device revoke'
   | 'device join'
   | 'group'
   | 'group create'

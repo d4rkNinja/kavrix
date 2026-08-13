@@ -8,6 +8,7 @@ import {
 } from '@kavrix/client';
 import {
   apiBearerTokenSchema,
+  deviceListPageResponseSchema,
   inviteListPageResponseSchema,
   deviceIdSchema,
   inviteIdSchema,
@@ -19,6 +20,8 @@ import {
   timestampSchema,
   vaultIdSchema,
   type ControlListPageOptions,
+  type DeviceId,
+  type DeviceListPageResponse,
   type GroupPayload,
   type InviteIssueRequest,
   type InviteIssueResponse,
@@ -253,6 +256,7 @@ export type CliInviteJoinRequest = z.infer<typeof cliInviteJoinRequestSchema>;
 export type CliInviteJoinResult = z.infer<typeof cliInviteJoinResultSchema>;
 export type CliInviteIssueRequest = InviteIssueRequest;
 export type CliInviteIssueResult = InviteIssueResponse;
+export type CliDeviceListPage = DeviceListPageResponse;
 
 export interface CliUseCasePorts {
   status(): Promise<CliStatus>;
@@ -268,11 +272,16 @@ export interface CliUseCasePorts {
     vaultId: VaultId,
     options: ControlListPageOptions,
   ): Promise<InviteListPageResponse>;
+  listDevicePage?(
+    vaultId: VaultId,
+    options: ControlListPageOptions,
+  ): Promise<CliDeviceListPage>;
   issueInvite?(
     vaultId: VaultId,
     request: CliInviteIssueRequest,
   ): Promise<CliInviteIssueResult>;
   revokeInvite(vaultId: VaultId, inviteId: InviteId): Promise<void>;
+  revokeDevice?(vaultId: VaultId, deviceId: DeviceId): Promise<void>;
   /**
    * Completes the two-step enrollment protocol. The adapter owns durable,
    * idempotent generation and reuse of independent enrollment/session successor
@@ -390,6 +399,10 @@ export function parseCopyReceipt(value: unknown): CredentialCopyReceipt {
 
 export function parseInvitePage(value: unknown): InviteListPageResponse {
   return inviteListPageResponseSchema.parse(value);
+}
+
+export function parseDevicePage(value: unknown): CliDeviceListPage {
+  return deviceListPageResponseSchema.parse(value);
 }
 
 export function parseJoinResult(value: unknown): CliInviteJoinResult {

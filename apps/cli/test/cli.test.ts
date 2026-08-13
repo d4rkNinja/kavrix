@@ -3,9 +3,11 @@ import { lifecycleOperationIdSchema, type LifecycleOperationId } from '@kavrix/c
 import {
   apiBearerTokenSchema,
   deviceIdSchema,
+  deviceListPageResponseSchema,
   encodeControlListCursor,
   inviteIssueResponseSchema,
   inviteIdSchema,
+  publicDeviceRecordSchema,
   publicInviteRecordSchema,
   vaultIdSchema,
 } from '@kavrix/schemas';
@@ -406,6 +408,82 @@ describe('CLI command shell', () => {
     expect(listInvitePage).toHaveBeenCalledTimes(4);
   });
 
+  it('lists canonical public device pages without bearer or hash material', async () => {
+    const device = publicDeviceRecordSchema.parse({
+      id: 'device.primary',
+      vaultId: 'vault.primary',
+      schemaVersion: 1,
+      tokenVersion: 1,
+      scopes: ['sync:read', 'device:manage'],
+      createdAt: '2026-08-10T00:00:00.000Z',
+      lastSeenAt: '2026-08-10T00:05:00.000Z',
+    });
+    const nextCursor = encodeControlListCursor({
+      version: 1,
+      resource: 'devices',
+      vaultId: device.vaultId,
+      createdAt: device.createdAt,
+      id: device.id,
+    });
+    const page = deviceListPageResponseSchema.parse({
+      devices: [device],
+      nextCursor,
+    });
+    const listDevicePage = vi.fn(() => Promise.resolve(page));
+    const listed = await execute(
+      [
+        'device',
+        'list',
+        '--vault',
+        device.vaultId,
+        '--limit',
+        '1',
+        '--cursor',
+        nextCursor,
+        '--json',
+      ],
+      { listDevicePage },
+    );
+    expect(listed.exitCode).toBe(CLI_EXIT_CODES.success);
+    expect(JSON.parse(listed.stdout)).toEqual(page);
+    expect(listed.stdout).not.toContain('tokenHash');
+    expect(listed.stdout).not.toContain('device-secret-token');
+    expect(listDevicePage).toHaveBeenCalledWith(device.vaultId, {
+      limit: 1,
+      cursor: nextCursor,
+    });
+  });
+
+  it('rejects malformed device pages and noncanonical pagination before the port', async () => {
+    const listDevicePage = vi.fn(() =>
+      Promise.resolve({ devices: [], nextCursor: null }),
+    );
+    for (const invalid of [
+      ['--limit', '0'],
+      ['--limit', '201'],
+      ['--limit', '01'],
+      ['--limit', '1.5'],
+      ['--cursor', 'AA'],
+      ['--unknown', 'value'],
+    ]) {
+      const result = await execute(
+        ['device', 'list', '--vault', 'vault.primary', ...invalid],
+        { listDevicePage },
+      );
+      expect(result.exitCode).toBe(CLI_EXIT_CODES.usage);
+    }
+    const malformed = await execute(['device', 'list', '--vault', 'vault.primary'], {
+      listDevicePage: () =>
+        Promise.resolve({
+          devices: [{ id: 'device.invalid', tokenHash: SECRET_CANARY }],
+          nextCursor: null,
+        } as never),
+    });
+    expect(malformed.exitCode).toBe(CLI_EXIT_CODES.failure);
+    expect(malformed.stderr).not.toContain(SECRET_CANARY);
+    expect(listDevicePage).not.toHaveBeenCalled();
+  });
+
   it('issues one-time invites with bounded defaults, explicit scopes, and guarded output', async () => {
     const issued = inviteIssueResponseSchema.parse({
       inviteId: 'invite.created',
@@ -554,6 +632,26 @@ describe('CLI command shell', () => {
     );
     expect(revoked.stdout).toBe('Invite revoked.\n');
     expect(revokeInvite).toHaveBeenCalledWith('vault.primary', 'invite.primary');
+  });
+
+  it('requires explicit confirmation before revoking the current or another device', async () => {
+    const revokeDevice = vi.fn(() => Promise.resolve());
+    const missingConfirmation = await execute(
+      ['device', 'revoke', 'device.primary', '--vault', 'vault.primary'],
+      { revokeDevice },
+    );
+    expect(missingConfirmation.exitCode).toBe(CLI_EXIT_CODES.usage);
+    expect(missingConfirmation.stderr).toContain('--confirm');
+    expect(revokeDevice).not.toHaveBeenCalled();
+
+    const confirmed = await execute(
+      ['device', 'revoke', 'device.primary', '--vault', 'vault.primary', '--confirm'],
+      { revokeDevice },
+    );
+    expect(confirmed.exitCode).toBe(CLI_EXIT_CODES.success);
+    expect(confirmed.stdout).toBe('Device revoked.\n');
+    expect(confirmed.stdout).not.toMatch(/token|hash/iu);
+    expect(revokeDevice).toHaveBeenCalledWith('vault.primary', 'device.primary');
   });
 
   it('shapes join input from a masked prompt or explicit stdin and never prints secrets', async () => {
@@ -747,6 +845,8 @@ describe('CLI command shell', () => {
     const inviteCreateHelp = await execute(['device', 'invite', 'create', '--help'], {
       show,
     });
+    const deviceListHelp = await execute(['device', 'list', '--help'], { show });
+    const deviceRevokeHelp = await execute(['device', 'revoke', '--help'], { show });
     const deviceJoinHelp = await execute(['device', 'join', '--help'], { show });
     const joinHelp = await execute(['device', 'invite', 'join', '--help'], { show });
     const keyHelp = await execute(['key', '--help'], { show });
@@ -762,6 +862,8 @@ describe('CLI command shell', () => {
     expect(inviteListHelp.stdout).toContain('--cursor <opaque>');
     expect(inviteCreateHelp.stdout).toContain('--scope <scope...>');
     expect(inviteCreateHelp.stdout).toContain('--stdout');
+    expect(deviceListHelp.stdout).toContain('--cursor <opaque>');
+    expect(deviceRevokeHelp.stdout).toContain('--confirm');
     expect(deviceJoinHelp.stdout).toContain('--invite-stdin');
     expect(deviceJoinHelp.stdout).toContain('resume');
     expect(help.stdout).not.toContain(runtimeCanary);
@@ -1049,7 +1151,9 @@ function useCases(overrides: Partial<CliUseCasePorts>): CliUseCasePorts {
     show: unexpected,
     copy: unexpected,
     listInvitePage: unexpected,
+    listDevicePage: unexpected,
     revokeInvite: unexpected,
+    revokeDevice: unexpected,
     joinInvite: unexpected,
     ...overrides,
   };

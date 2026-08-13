@@ -1,5 +1,6 @@
 import {
   apiBearerTokenSchema,
+  publicDeviceRecordSchema,
   deviceIdSchema,
   inviteIssueRequestSchema,
   inviteIssueResponseSchema,
@@ -23,11 +24,15 @@ import { CliUnavailableError } from '../src/errors.js';
 import { showFixture } from './fixtures.js';
 
 describe('production CLI ports', () => {
-  it('forwards one invite page request and exposes no device-list adapter', async () => {
+  it('forwards invite and device page requests through the authenticated client', async () => {
     const options = productionOptions();
-    const sessionSecret = new Uint8Array(32).fill(7);
+    const inviteSessionSecret = new Uint8Array(32).fill(7);
+    const deviceSessionSecret = new Uint8Array(32).fill(9);
     Object.assign(options.secrets.sessions, {
-      load: vi.fn(() => Promise.resolve(sessionSecret)),
+      load: vi
+        .fn()
+        .mockResolvedValueOnce(inviteSessionSecret)
+        .mockResolvedValueOnce(deviceSessionSecret),
     });
     const invite = publicInviteRecordSchema.parse({
       id: 'invite.primary',
@@ -39,9 +44,21 @@ describe('production CLI ports', () => {
       expiresAt: '2026-08-10T01:00:00.000Z',
     });
     const page = { invites: [invite], nextCursor: null };
+    const device = publicDeviceRecordSchema.parse({
+      id: options.profile.deviceId,
+      vaultId: options.profile.vaultId,
+      schemaVersion: 1,
+      tokenVersion: 1,
+      scopes: ['device:manage'],
+      createdAt: '2026-08-10T00:00:00.000Z',
+    });
+    const devicePage = { devices: [device], nextCursor: null };
     const listInvitePage = vi
       .spyOn(ControlPlaneClient.prototype, 'listInvitePage')
       .mockResolvedValue(page);
+    const listDevicePage = vi
+      .spyOn(ControlPlaneClient.prototype, 'listDevicePage')
+      .mockResolvedValue(devicePage);
     const ports = createProductionPorts(options);
 
     await expect(
@@ -53,7 +70,39 @@ describe('production CLI ports', () => {
       options.profile.vaultId,
       { limit: 1 },
     );
-    expect(ports).not.toHaveProperty('listDevicePage');
+    if (ports.listDevicePage === undefined) throw new Error('Missing device list port');
+    await expect(
+      ports.listDevicePage(options.profile.vaultId, { limit: 1 }),
+    ).resolves.toEqual(devicePage);
+    expect(listDevicePage).toHaveBeenCalledWith(
+      apiBearerTokenSchema.parse(Buffer.alloc(32, 9).toString('base64url')),
+      options.profile.vaultId,
+      { limit: 1 },
+    );
+    expect([...inviteSessionSecret]).toEqual(Array.from({ length: 32 }, () => 0));
+    expect([...deviceSessionSecret]).toEqual(Array.from({ length: 32 }, () => 0));
+  });
+
+  it('revokes a device through the authenticated control-plane port and clears session bytes', async () => {
+    const options = productionOptions();
+    const sessionSecret = new Uint8Array(32).fill(10);
+    Object.assign(options.secrets.sessions, {
+      load: vi.fn(() => Promise.resolve(sessionSecret)),
+    });
+    const revokeDevice = vi
+      .spyOn(ControlPlaneClient.prototype, 'revokeDevice')
+      .mockResolvedValue();
+    const ports = createProductionPorts(options);
+
+    if (ports.revokeDevice === undefined) throw new Error('Missing device revoke port');
+    await expect(
+      ports.revokeDevice(options.profile.vaultId, deviceIdSchema.parse('device.other')),
+    ).resolves.toBeUndefined();
+    expect(revokeDevice).toHaveBeenCalledWith(
+      apiBearerTokenSchema.parse(Buffer.alloc(32, 10).toString('base64url')),
+      options.profile.vaultId,
+      'device.other',
+    );
     expect([...sessionSecret]).toEqual(Array.from({ length: 32 }, () => 0));
   });
 

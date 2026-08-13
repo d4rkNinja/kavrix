@@ -29,8 +29,10 @@ allowed when another active device remains, so a device can be intentionally
 retired. An active target that is the last active device is denied with a
 generic authorization failure. Already-revoked targets remain idempotent;
 missing targets remain not-found. The active-device check and session
-invalidation occur in the authorization adapter's transaction, so concurrent
-requests cannot bypass the last-device rule between a list and a delete.
+invalidation occur in the authorization adapter's transaction. A non-secret
+vault-scoped Mongo fence is advanced inside that transaction before the count,
+so concurrent requests cannot bypass the last-device rule between a list and a
+delete.
 
 The CLI confirmation is deliberately local and explicit; the API remains the
 final authorization boundary. A successful revocation invalidates every

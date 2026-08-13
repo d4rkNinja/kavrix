@@ -30,6 +30,8 @@ export type AuthorizationDevicePage = Readonly<{
   nextCursor: ControlListCursor | null;
 }>;
 
+export type DeviceRevocationResult = 'revoked' | 'not-found' | 'last-active-device';
+
 export type SessionPrincipal = Omit<ApiSessionResponse, 'scopes'> & {
   readonly scopes: readonly ApiScope[];
 };
@@ -108,12 +110,17 @@ export interface AuthorizationPort {
     vaultId: VaultId,
     options: ControlListPageOptions,
   ): Promise<AuthorizationDevicePage>;
-  /** Atomically marks the device revoked and invalidates all of its sessions. */
+  /**
+   * Atomically marks the device revoked and invalidates all of its sessions.
+   * The last active device is denied so revocation cannot strand a vault
+   * without an authorized device. Repeating a successful revocation is
+   * idempotent.
+   */
   revokeDevice(
     vaultId: VaultId,
     deviceId: DeviceId,
     revokedAt: Timestamp,
-  ): Promise<boolean>;
+  ): Promise<DeviceRevocationResult>;
 }
 
 export interface IssuedToken {

@@ -2934,6 +2934,84 @@ export const CLI_COMMAND_CATALOG: readonly CliCommandDescriptor[] = Object.freez
           },
         ],
       },
+      {
+        name: 'list',
+        description: 'List canonical public device metadata.',
+        options: [
+          vaultOption,
+          {
+            flags: '--limit <1..200>',
+            description: 'Maximum number of devices to return.',
+          },
+          {
+            flags: '--cursor <opaque>',
+            description: 'Continue from an opaque device page cursor.',
+          },
+          jsonOption,
+          secretBackendOption,
+          backendPassphraseStdinOption,
+        ],
+        execute: async (context, _arguments, options) => {
+          const [{ parseDevicePage, parseVaultId }, { renderDevices }] =
+            await Promise.all([import('./contracts.js'), import('./render.js')]);
+          const vaultId = parseInputString(options, 'vault', parseVaultId);
+          const pageOptions = parseInput(
+            controlListPageQuerySchema,
+            {
+              ...(options['limit'] === undefined ? {} : { limit: options['limit'] }),
+              ...(options['cursor'] === undefined ? {} : { cursor: options['cursor'] }),
+            },
+            'device list options',
+          );
+          const page = parseDevicePage(
+            await withAuthorizedPorts(context, 'device list', options, (ports) => {
+              if (ports.listDevicePage === undefined) {
+                throw new CliUnavailableError('device list');
+              }
+              return ports.listDevicePage(vaultId, pageOptions);
+            }),
+          );
+          context.stdout.write(renderDevices(page, optionBoolean(options, 'json')));
+        },
+      },
+      {
+        name: 'revoke',
+        description: 'Revoke the current or another device by opaque ID.',
+        arguments: [
+          { syntax: '<device-id>', description: 'Opaque device identifier.' },
+        ],
+        options: [
+          vaultOption,
+          {
+            flags: '--confirm',
+            description:
+              'Confirm revocation, including current-device revocation when another active device remains.',
+          },
+          secretBackendOption,
+          backendPassphraseStdinOption,
+        ],
+        execute: async (context, arguments_, options) => {
+          const { parseVaultId } = await import('./contracts.js');
+          const vaultId = parseInputString(options, 'vault', parseVaultId);
+          const deviceId = parseInputValue(
+            requiredArgument(arguments_[0], 'device ID'),
+            'device ID',
+            (value) => deviceIdSchema.parse(value),
+          );
+          if (!optionBoolean(options, 'confirm')) {
+            throw new CliUsageError(
+              'Device revocation requires explicit --confirm acknowledgement.',
+            );
+          }
+          await withAuthorizedPorts(context, 'device revoke', options, (ports) => {
+            if (ports.revokeDevice === undefined) {
+              throw new CliUnavailableError('device revoke');
+            }
+            return ports.revokeDevice(vaultId, deviceId);
+          });
+          context.stdout.write('Device revoked.\n');
+        },
+      },
       deviceJoinCommand,
     ],
   },
@@ -2973,8 +3051,16 @@ export const PUBLIC_CLI_COMMAND_CATALOG: readonly CliCommandDescriptor[] =
 function publicDeviceCommand(): CliCommandDescriptor {
   const device = CLI_COMMAND_CATALOG.find((descriptor) => descriptor.name === 'device');
   const invite = device?.children?.find((descriptor) => descriptor.name === 'invite');
+  const list = device?.children?.find((descriptor) => descriptor.name === 'list');
+  const revoke = device?.children?.find((descriptor) => descriptor.name === 'revoke');
   const join = device?.children?.find((descriptor) => descriptor.name === 'join');
-  if (device === undefined || invite === undefined || join === undefined) {
+  if (
+    device === undefined ||
+    invite === undefined ||
+    list === undefined ||
+    revoke === undefined ||
+    join === undefined
+  ) {
     throw new Error('The device catalog is incomplete');
   }
   const publicInvite = Object.freeze({
@@ -2989,7 +3075,7 @@ function publicDeviceCommand(): CliCommandDescriptor {
   return Object.freeze({
     name: device.name,
     description: device.description,
-    children: [publicInvite, join],
+    children: [publicInvite, list, revoke, join],
   });
 }
 

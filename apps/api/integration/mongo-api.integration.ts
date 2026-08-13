@@ -132,7 +132,7 @@ describeMongo('Mongo API adapters against a transaction-capable replica set', ()
     );
     await expect(
       authorization.revokeDevice(vaultId, completion.deviceId, revokedAt),
-    ).resolves.toBe(true);
+    ).resolves.toBe('revoked');
     await expect(
       authorization.completeEnrollment(
         enrollment.hash,
@@ -375,7 +375,7 @@ describeMongo('Mongo API adapters against a transaction-capable replica set', ()
       ),
       authorization.revokeDevice(vaultId, completion.deviceId, revokedAt),
     ]);
-    expect(revoked).toBe(true);
+    expect(revoked).toBe('revoked');
     expect(racedReplay === null || racedReplay.id === completion.deviceId).toBe(true);
 
     await expect(

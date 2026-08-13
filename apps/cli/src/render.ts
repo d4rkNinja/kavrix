@@ -5,6 +5,7 @@ import type {
 } from '@kavrix/client';
 import {
   isSensitiveFieldType,
+  type DeviceListPageResponse,
   type InviteIssueResponse,
   type InviteListPageResponse,
   type PublicInviteRecord,
@@ -285,6 +286,39 @@ export function renderInvites(page: InviteListPageResponse, json: boolean): stri
     .map(
       (invite) =>
         `${invite.id}\t${invite.state}\t${invite.scopes.join(',')}\t${invite.expiresAt}`,
+    )
+    .join('\n');
+  const continuation = nextCursor === null ? '' : `Next cursor: ${nextCursor}\n`;
+  return `${rows}\n${continuation}`;
+}
+
+export function renderDevices(page: DeviceListPageResponse, json: boolean): string {
+  const safe = page.devices.map((device) => ({
+    id: sanitizeTerminalText(device.id),
+    vaultId: sanitizeTerminalText(device.vaultId),
+    schemaVersion: device.schemaVersion,
+    tokenVersion: device.tokenVersion,
+    ...(device.encryptedLabel === undefined
+      ? {}
+      : { encryptedLabel: device.encryptedLabel }),
+    scopes: device.scopes.map(sanitizeTerminalText),
+    createdAt: device.createdAt,
+    ...(device.lastSeenAt === undefined ? {} : { lastSeenAt: device.lastSeenAt }),
+    ...(device.revokedAt === undefined ? {} : { revokedAt: device.revokedAt }),
+  }));
+  const nextCursor =
+    page.nextCursor === null ? null : sanitizeTerminalText(page.nextCursor);
+  if (json) return safeJson({ devices: safe, nextCursor });
+  if (safe.length === 0) return 'No devices.\n';
+  const rows = safe
+    .map((device) =>
+      [
+        device.id,
+        device.revokedAt === undefined ? 'active' : 'revoked',
+        device.scopes.join(','),
+        device.createdAt,
+        device.lastSeenAt ?? 'never',
+      ].join('\t'),
     )
     .join('\n');
   const continuation = nextCursor === null ? '' : `Next cursor: ${nextCursor}\n`;
