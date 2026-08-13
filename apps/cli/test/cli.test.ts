@@ -535,12 +535,7 @@ describe('CLI command shell', () => {
       expect(completion.stdout).toBe(expected);
     }
 
-    for (const unavailableOperation of [
-      ['lock'],
-      ['show'],
-      ['copy'],
-      ['device'],
-    ]) {
+    for (const unavailableOperation of [['lock'], ['show'], ['copy'], ['device']]) {
       const result = await executePublic(unavailableOperation);
       expect(result.exitCode).toBe(CLI_EXIT_CODES.usage);
       expect(result.stderr).toBe(
