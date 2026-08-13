@@ -76,7 +76,7 @@ async function execute(
 
 describe('CLI field commands', () => {
   it('executes field add using ports and outputs formatted text', async () => {
-    const addField = vi.fn((_request: unknown) =>
+    const addField = vi.fn(() =>
       Promise.resolve({
         vaultId: vaultIdSchema.parse('vault.1'),
         groupId: groupIdSchema.parse('group.1'),
@@ -117,7 +117,7 @@ describe('CLI field commands', () => {
   });
 
   it('executes field set with positional value or stdin', async () => {
-    const setField = vi.fn((_request: unknown) =>
+    const setField = vi.fn(() =>
       Promise.resolve({
         vaultId: vaultIdSchema.parse('vault.1'),
         groupId: groupIdSchema.parse('group.1'),
