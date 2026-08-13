@@ -16,6 +16,8 @@ import { PortableKeyFileError } from './errors.js';
 import { setWindowsUserOnlyAcl, verifyWindowsUserOnlyAcl } from './windows-acl.js';
 
 export const MAX_PORTABLE_KEY_FILE_BYTES = 16_384;
+export const MAX_SECURE_STREAM_FILE_BYTES = 128 * 1024 * 1024;
+export const MAX_SECURE_STREAM_CHUNK_BYTES = 32 * 1024 * 1024;
 const TEMP_FILE_BYTES = 12;
 const WINDOWS_RESERVED_BASENAME = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/iu;
 
@@ -27,6 +29,10 @@ type FileIdentity = Readonly<{
 type ResolvedTarget = Readonly<{
   directoryPath: string;
   targetPath: string;
+}>;
+
+export type SecureFileStreamWriteResult = Readonly<{
+  bytes: number;
 }>;
 
 function fileErrorCode(error: unknown): string | undefined {
@@ -314,6 +320,26 @@ async function removeIfPresent(targetPath: string): Promise<void> {
   }
 }
 
+/**
+ * Checks a create-only destination without creating a file or touching any
+ * secret-bearing resource. Callers use this before unlocking so a known bad
+ * target cannot prompt for protected input.
+ */
+export async function validateSecureFileDestination(inputPath: string): Promise<void> {
+  const { directoryPath, targetPath } = await resolveTarget(inputPath);
+  await validateWriteDirectory(directoryPath);
+  try {
+    const metadata = await lstat(targetPath, { bigint: true });
+    if (metadata.isSymbolicLink()) {
+      throw new PortableKeyFileError('KEY_FILE_UNSAFE');
+    }
+    throw new PortableKeyFileError('KEY_FILE_ALREADY_EXISTS');
+  } catch (error) {
+    if (fileErrorCode(error) === 'ENOENT') return;
+    throw mappedFileError(error, 'KEY_FILE_UNSAFE');
+  }
+}
+
 async function syncDirectory(directoryPath: string): Promise<void> {
   let handle: FileHandle | undefined;
   try {
@@ -383,21 +409,91 @@ async function writeTemporaryFile(
   return path;
 }
 
+async function writeTemporaryStreamFile(
+  directoryPath: string,
+  source: AsyncIterable<Uint8Array>,
+  maximumBytes: number,
+): Promise<Readonly<{ path: string; bytes: number }>> {
+  const path = temporaryPath(directoryPath);
+  const handle = await createSecureEmptyFile(path);
+  let bytes = 0;
+  try {
+    for await (const chunk of source) {
+      if (
+        !(chunk instanceof Uint8Array) ||
+        chunk.byteLength === 0 ||
+        chunk.byteLength > MAX_SECURE_STREAM_CHUNK_BYTES
+      ) {
+        throw new PortableKeyFileError('KEY_FILE_OPERATION_FAILED');
+      }
+      const next = bytes + chunk.byteLength;
+      if (!Number.isSafeInteger(next) || next > maximumBytes) {
+        chunk.fill(0);
+        throw new PortableKeyFileError('KEY_FILE_OPERATION_FAILED');
+      }
+      try {
+        let offset = 0;
+        while (offset < chunk.byteLength) {
+          const result = await handle.write(chunk, offset, chunk.byteLength - offset);
+          if (result.bytesWritten <= 0) {
+            throw new PortableKeyFileError('KEY_FILE_OPERATION_FAILED');
+          }
+          offset += result.bytesWritten;
+        }
+      } finally {
+        chunk.fill(0);
+      }
+      bytes = next;
+    }
+    if (bytes === 0) {
+      throw new PortableKeyFileError('KEY_FILE_OPERATION_FAILED');
+    }
+    await handle.sync();
+    const metadata = await handle.stat({ bigint: true });
+    if (metadata.size !== BigInt(bytes)) {
+      throw new PortableKeyFileError('KEY_FILE_OPERATION_FAILED');
+    }
+  } catch (error) {
+    let cleanupFailed = false;
+    try {
+      await handle.close();
+    } catch {
+      cleanupFailed = true;
+    }
+    try {
+      await removeIfPresent(path);
+    } catch {
+      cleanupFailed = true;
+    }
+    if (cleanupFailed) {
+      throw new PortableKeyFileError('KEY_FILE_OPERATION_FAILED');
+    }
+    throw mappedFileError(error, 'KEY_FILE_OPERATION_FAILED');
+  }
+  try {
+    await handle.close();
+  } catch {
+    await removeIfPresent(path);
+    throw new PortableKeyFileError('KEY_FILE_OPERATION_FAILED');
+  }
+  return { path, bytes };
+}
+
 async function publishCreateNew(
   directoryPath: string,
   targetPath: string,
   temporaryFile: string,
 ): Promise<void> {
-  let linked = false;
   try {
     await link(temporaryFile, targetPath);
-    linked = true;
     await removeIfPresent(temporaryFile);
     const published = await lstat(targetPath, { bigint: true });
     await validateRegularFile(targetPath, published);
     await syncDirectory(directoryPath);
   } catch (error) {
-    if (linked) await removeIfPresent(targetPath);
+    // Once the create-only link exists, publication may have reached durable
+    // storage even when verification or directory sync reports failure. Never
+    // remove that public path on an uncertain outcome.
     throw mappedFileError(error, 'KEY_FILE_OPERATION_FAILED');
   }
 }
@@ -497,6 +593,36 @@ export async function writeSecureFile(
       await publishReplacement(directoryPath, targetPath, temporaryFile);
     }
     temporaryFile = undefined;
+  } finally {
+    if (temporaryFile !== undefined) await removeIfPresent(temporaryFile);
+  }
+}
+
+/**
+ * Streams bounded contents to a hidden, restrictive sibling and publishes it
+ * with create-only semantics. The destination is never replaced.
+ */
+export async function writeSecureStreamFile(
+  inputPath: string,
+  source: AsyncIterable<Uint8Array>,
+  maximumBytes = MAX_SECURE_STREAM_FILE_BYTES,
+): Promise<SecureFileStreamWriteResult> {
+  if (
+    !Number.isSafeInteger(maximumBytes) ||
+    maximumBytes < 1 ||
+    maximumBytes > MAX_SECURE_STREAM_FILE_BYTES
+  ) {
+    throw new PortableKeyFileError('KEY_FILE_OPERATION_FAILED');
+  }
+  const { directoryPath, targetPath } = await resolveTarget(inputPath);
+  await validateWriteDirectory(directoryPath);
+  let temporaryFile: string | undefined;
+  try {
+    const written = await writeTemporaryStreamFile(directoryPath, source, maximumBytes);
+    temporaryFile = written.path;
+    await publishCreateNew(directoryPath, targetPath, temporaryFile);
+    temporaryFile = undefined;
+    return { bytes: written.bytes };
   } finally {
     if (temporaryFile !== undefined) await removeIfPresent(temporaryFile);
   }

@@ -881,37 +881,8 @@ const lockCommand: CliCommandDescriptor = Object.freeze({
 async function unwrapVaultRootKeyFromContext(
   unlocked: ProductionUnlockedContext,
 ): Promise<VaultRootKey> {
-  const { unlockDeviceKeySlot } = await import('@kavrix/crypto');
-  const { slotBinding } = await import('@kavrix/client');
-  const store = await unlocked.environment.openSyncStore(unlocked.profile);
-  const vaultRecord = await store.getVault(unlocked.profile.vaultId);
-  if (vaultRecord === null) {
-    throw new Error('Vault record not found');
-  }
-  const deviceSecret = await unlocked.backend.keychain.load(
-    unlocked.profile.deviceLocator,
-  );
-  if (deviceSecret === null) {
-    throw new Error('Device secret not found');
-  }
-  const slot = vaultRecord.keySlots.find(
-    (candidate) => candidate.id === unlocked.profile.deviceLocator.keySlotId,
-  );
-  if (slot?.type !== 'device-key') {
-    throw new Error('Device key slot not found');
-  }
-  if (slot.deviceId !== unlocked.profile.deviceId) {
-    throw new Error('Device key slot not found');
-  }
-  try {
-    return await unlockDeviceKeySlot(
-      slot,
-      deviceSecret,
-      slotBinding(vaultRecord, slot),
-    );
-  } finally {
-    deviceSecret.fill(0);
-  }
+  const { unwrapRememberedDeviceRootKey } = await import('./production/unlock.js');
+  return unwrapRememberedDeviceRootKey(unlocked);
 }
 
 /**
@@ -2726,6 +2697,65 @@ const syncCommand: CliCommandDescriptor = Object.freeze({
   },
 });
 
+const backupCommand: CliCommandDescriptor = Object.freeze({
+  name: 'backup',
+  description: 'Create authenticated encrypted vault archives.',
+  children: [
+    {
+      name: 'create',
+      description: 'Create one bounded encrypted archive without replacing a file.',
+      options: [
+        {
+          flags: '--file <path>',
+          description: 'New archive path; existing files and links are refused.',
+        },
+        vaultOption,
+        jsonOption,
+        secretBackendOption,
+        backendPassphraseStdinOption,
+      ],
+      execute: async (context, _arguments, options) => {
+        const { parseBackupCreateRequest, parseBackupCreateResult } =
+          await import('./contracts.js');
+        const request = parseBackupCreateRequest({
+          destination: requiredOption(options, 'file', 'backup destination'),
+          ...(options['vault'] === undefined
+            ? {}
+            : {
+                vaultId: parseInputString(options, 'vault', (value) =>
+                  vaultIdSchema.parse(value),
+                ),
+              }),
+        });
+        let raw: unknown;
+        if (context.ports?.createBackup !== undefined) {
+          raw = await context.ports.createBackup(request);
+        } else {
+          if (context.environment === undefined) {
+            throw new CliUnavailableError('backup create');
+          }
+          const { executeProductionBackupCreate } =
+            await import('./production/backups.js');
+          raw = await executeProductionBackupCreate({
+            environment: context.environment,
+            secrets: secretInput(context, 'backup create'),
+            backendPolicy: parseStatusBackendPolicy(options),
+            destination: request.destination,
+            ...(request.vaultId === undefined ? {} : { vaultId: request.vaultId }),
+          });
+        }
+        const { renderBackupCreate } = await import('./render.js');
+        context.stdout.write(
+          renderBackupCreate(
+            parseBackupCreateResult(raw),
+            optionBoolean(options, 'json'),
+          ),
+        );
+      },
+    },
+  ],
+});
+
 export const CLI_COMMAND_CATALOG: readonly CliCommandDescriptor[] = Object.freeze([
   versionCommand,
   generationCommand,
@@ -2746,6 +2776,7 @@ export const CLI_COMMAND_CATALOG: readonly CliCommandDescriptor[] = Object.freez
   revealCommand,
   getCommand,
   syncCommand,
+  backupCommand,
   {
     name: 'device',
     description: 'Manage this device and zero-knowledge enrollment.',
@@ -3109,6 +3140,7 @@ export const PUBLIC_CLI_COMMAND_CATALOG: readonly CliCommandDescriptor[] =
     revealCommand,
     getCommand,
     syncCommand,
+    backupCommand,
     publicDeviceCommand(),
     completionCommand(() => PUBLIC_CLI_COMMAND_CATALOG),
   ]);

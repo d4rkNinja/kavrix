@@ -13,6 +13,7 @@ import {
 
 import type {
   CliConnectResult,
+  CliBackupCreateResult,
   CliConflict,
   CliConflictResolutionResult,
   CliKeySlot,
@@ -111,6 +112,20 @@ export function renderRecover(result: CliRecoverResult, json: boolean): string {
   };
   if (json) return safeJson(safe);
   return `Vault recovered ${safe.vaultId} on device ${safe.deviceId}.\n`;
+}
+
+export function renderBackupCreate(
+  result: CliBackupCreateResult,
+  json: boolean,
+): string {
+  const safe = {
+    action: result.action,
+    vaultId: sanitizeTerminalText(result.vaultId),
+    recordCount: result.recordCount,
+    bytes: result.bytes,
+  };
+  if (json) return safeJson(safe);
+  return `Encrypted backup created for vault ${safe.vaultId} (${String(safe.recordCount)} records, ${String(safe.bytes)} bytes).\n`;
 }
 
 export function renderDeviceJoin(result: CliRecoverResult, json: boolean): string {

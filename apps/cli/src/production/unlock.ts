@@ -1,4 +1,6 @@
-import type { VaultProfile } from '@kavrix/client';
+import { slotBinding, type VaultProfile } from '@kavrix/client';
+import { unlockDeviceKeySlot, zeroize, type VaultRootKey } from '@kavrix/crypto';
+import { deviceUnlockSecretSchema } from '@kavrix/schemas';
 import { keySlotIdSchema } from '@kavrix/schemas';
 import { z } from 'zod';
 
@@ -60,6 +62,36 @@ export interface ProductionUnlockedContext {
    * environment and closed with it; callers must never close it themselves.
    */
   readonly backend: SecretBackend;
+}
+
+/**
+ * Reopens the remembered device slot inside an already unlocked invocation.
+ * The returned root key is caller-owned and must be zeroized immediately after
+ * the bounded operation that needs it completes.
+ */
+export async function unwrapRememberedDeviceRootKey(
+  unlocked: ProductionUnlockedContext,
+): Promise<VaultRootKey> {
+  const store = await unlocked.environment.openSyncStore(unlocked.profile);
+  const vault = await store.getVault(unlocked.profile.vaultId);
+  if (vault === null) throw new Error('Vault record not found');
+  const slot = vault.keySlots.find(
+    (candidate) => candidate.id === unlocked.profile.deviceLocator.keySlotId,
+  );
+  if (slot?.type !== 'device-key' || slot.deviceId !== unlocked.profile.deviceId) {
+    throw new Error('Device key slot not found');
+  }
+  const secret = await unlocked.backend.keychain.load(unlocked.profile.deviceLocator);
+  if (secret === null) throw new Error('Device secret not found');
+  try {
+    return await unlockDeviceKeySlot(
+      slot,
+      deviceUnlockSecretSchema.parse(secret),
+      slotBinding(vault, slot),
+    );
+  } finally {
+    zeroize(secret);
+  }
 }
 
 /**

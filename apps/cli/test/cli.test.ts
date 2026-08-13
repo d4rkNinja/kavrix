@@ -974,7 +974,7 @@ describe('CLI command shell', () => {
 
   it('limits the production bin catalog to commands with real static behavior', async () => {
     const publishedCommands =
-      'version generate totp key init connect recover unlock lock status group credential field note show copy reveal get sync device completion';
+      'version generate totp key init connect recover unlock lock status group credential field note show copy reveal get sync backup device completion';
     expect(PUBLIC_CLI_COMMAND_CATALOG.map(({ name }) => name)).toEqual(
       publishedCommands.split(' '),
     );
@@ -1195,6 +1195,47 @@ describe('CLI command shell', () => {
     });
     expect(readBatch).not.toHaveBeenCalled();
     expect(joinInvite).not.toHaveBeenCalled();
+  });
+
+  it('creates a backup through the injected port with a bounded redacted receipt', async () => {
+    const createBackup = vi.fn(() =>
+      Promise.resolve({
+        action: 'created' as const,
+        vaultId: vaultIdSchema.parse('vault.primary'),
+        recordCount: 2,
+        bytes: 512,
+      }),
+    );
+
+    const text = await execute(
+      ['backup', 'create', '--file', 'D:\\backups\\vault.cvkx'],
+      { createBackup },
+    );
+    expect(text).toEqual({
+      exitCode: CLI_EXIT_CODES.success,
+      stdout:
+        'Encrypted backup created for vault vault.primary (2 records, 512 bytes).\n',
+      stderr: '',
+    });
+    expect(createBackup).toHaveBeenCalledWith({
+      destination: 'D:\\backups\\vault.cvkx',
+    });
+
+    const json = await execute(
+      ['backup', 'create', '--file', 'D:\\backups\\vault.cvkx', '--json'],
+      { createBackup },
+    );
+    expect(JSON.parse(json.stdout)).toEqual({
+      action: 'created',
+      vaultId: 'vault.primary',
+      recordCount: 2,
+      bytes: 512,
+    });
+    expect(json.stdout).not.toContain('D:\\backups');
+
+    const missing = await execute(['backup', 'create'], { createBackup });
+    expect(missing.exitCode).toBe(CLI_EXIT_CODES.usage);
+    expect(createBackup).toHaveBeenCalledTimes(2);
   });
 });
 

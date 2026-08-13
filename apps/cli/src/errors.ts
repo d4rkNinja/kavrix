@@ -67,7 +67,8 @@ export type CliFeature =
   | 'sync conflicts list'
   | 'sync conflicts resolve'
   | 'connect'
-  | 'recover';
+  | 'recover'
+  | 'backup create';
 
 export class CliUsageError extends Error {
   readonly code = 'CLI_USAGE' as const;
@@ -102,6 +103,15 @@ export class CliKeyFileCreationError extends Error {
   }
 }
 
+export class CliBackupCreationError extends Error {
+  readonly code = 'BACKUP_CREATE_FAILED' as const;
+
+  constructor() {
+    super('The encrypted backup could not be created.');
+    this.name = 'CliBackupCreationError';
+  }
+}
+
 export type CliErrorPresentation = Readonly<{
   exitCode: number;
   code: string;
@@ -127,6 +137,13 @@ export function presentCliError(error: unknown): CliErrorPresentation {
     };
   }
   if (error instanceof CliKeyFileCreationError) {
+    return {
+      exitCode: CLI_EXIT_CODES.failure,
+      code: error.code,
+      message: error.message,
+    };
+  }
+  if (error instanceof CliBackupCreationError) {
     return {
       exitCode: CLI_EXIT_CODES.failure,
       code: error.code,
