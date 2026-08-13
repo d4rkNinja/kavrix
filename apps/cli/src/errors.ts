@@ -27,6 +27,7 @@ export type CliFeature =
   | 'key rotate'
   | 'key rotate resume'
   | 'key rotate list'
+  | 'device invite create'
   | 'device invite list'
   | 'device invite revoke'
   | 'device invite join'

@@ -836,6 +836,7 @@ export type ApiSessionResponse = z.infer<typeof apiSessionResponseSchema>;
 export type VaultBootstrapRequest = z.infer<typeof vaultBootstrapRequestSchema>;
 export type VaultBootstrapResponse = z.infer<typeof vaultBootstrapResponseSchema>;
 export type InviteIssueRequest = z.infer<typeof inviteIssueRequestSchema>;
+export type InviteIssueResponse = z.infer<typeof inviteIssueResponseSchema>;
 export type InviteRedeemResponse = z.infer<typeof inviteRedeemResponseSchema>;
 export type PublicInviteRecord = z.infer<typeof publicInviteRecordSchema>;
 export type EnrollmentCompleteRequest = z.infer<typeof enrollmentCompleteRequestSchema>;

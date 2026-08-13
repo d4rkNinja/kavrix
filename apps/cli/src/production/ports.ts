@@ -14,6 +14,8 @@ import type {
   ApiBearerToken,
   ControlListPageOptions,
   InviteId,
+  InviteIssueRequest,
+  InviteIssueResponse,
   InviteListPageResponse,
   VaultId,
 } from '@kavrix/schemas';
@@ -298,6 +300,14 @@ export function createProductionPorts(
     ): Promise<InviteListPageResponse> =>
       withRemoteVault(options, vaultId, (client, bearer) =>
         client.listInvitePage(bearer, vaultId, pageOptions),
+      ),
+
+    issueInvite: (
+      vaultId: VaultId,
+      request: InviteIssueRequest,
+    ): Promise<InviteIssueResponse> =>
+      withRemoteVault(options, vaultId, (client, bearer) =>
+        client.issueInvite(bearer, vaultId, request),
       ),
 
     revokeInvite: (vaultId: VaultId, inviteId: InviteId): Promise<void> =>

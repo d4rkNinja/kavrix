@@ -4,6 +4,7 @@ import {
   apiBearerTokenSchema,
   deviceIdSchema,
   encodeControlListCursor,
+  inviteIssueResponseSchema,
   inviteIdSchema,
   publicInviteRecordSchema,
   vaultIdSchema,
@@ -405,6 +406,77 @@ describe('CLI command shell', () => {
     expect(listInvitePage).toHaveBeenCalledTimes(4);
   });
 
+  it('issues one-time invites with bounded defaults, explicit scopes, and guarded output', async () => {
+    const issued = inviteIssueResponseSchema.parse({
+      inviteId: 'invite.created',
+      inviteToken: TOKEN,
+      expiresAt: '2026-08-10T01:00:00.000Z',
+    });
+    const issueInvite = vi.fn(() => Promise.resolve(issued));
+    const explicit = await execute(
+      [
+        'device',
+        'invite',
+        'create',
+        '--vault',
+        'vault.primary',
+        '--scope',
+        'sync:read',
+        'sync:write',
+        '--expires-in-seconds',
+        '900',
+        '--json',
+        '--stdout',
+      ],
+      { issueInvite },
+    );
+    expect(explicit.exitCode).toBe(CLI_EXIT_CODES.success);
+    expect(JSON.parse(explicit.stdout)).toEqual(issued);
+    expect(issueInvite).toHaveBeenCalledWith('vault.primary', {
+      scopes: ['sync:read', 'sync:write'],
+      expiresInSeconds: 900,
+    });
+
+    const defaults = await execute(
+      ['device', 'invite', 'create', '--vault', 'vault.primary', '--stdout'],
+      { issueInvite },
+    );
+    expect(defaults.exitCode).toBe(CLI_EXIT_CODES.success);
+    expect(defaults.stdout).toContain(`Invite token (display once): ${TOKEN}`);
+    expect(issueInvite).toHaveBeenLastCalledWith('vault.primary', {
+      scopes: ['sync:read', 'sync:write'],
+      expiresInSeconds: 600,
+    });
+    expect(defaults.stderr).toBe('');
+  });
+
+  it('rejects invite creation before the port or secret output on invalid or redirected input', async () => {
+    const issueInvite = vi.fn(() => Promise.resolve({} as never));
+    const invalid = [
+      ['--expires-in-seconds', '59'],
+      ['--expires-in-seconds', '86401'],
+      ['--scope', 'sync:read', 'sync:read'],
+      ['--scope', 'unknown'],
+    ];
+    for (const suffix of invalid) {
+      const result = await execute(
+        ['device', 'invite', 'create', '--vault', 'vault.primary', ...suffix],
+        { issueInvite },
+      );
+      expect(result.exitCode).toBe(CLI_EXIT_CODES.usage);
+      expect(result.stdout).toBe('');
+    }
+    const redirected = await execute(
+      ['device', 'invite', 'create', '--vault', 'vault.primary'],
+      { issueInvite },
+    );
+    expect(redirected.exitCode).toBe(CLI_EXIT_CODES.usage);
+    expect(redirected.stderr).toBe(
+      'Error [CLI_USAGE]: Secret output requires an interactive terminal or explicit --stdout acknowledgement.\n',
+    );
+    expect(issueInvite).not.toHaveBeenCalled();
+  });
+
   it('rejects noncanonical invite page options before invoking the use case', async () => {
     const listInvitePage = vi.fn(() =>
       Promise.resolve({ invites: [], nextCursor: null }),
@@ -629,6 +701,9 @@ describe('CLI command shell', () => {
     const inviteListHelp = await execute(['device', 'invite', 'list', '--help'], {
       show,
     });
+    const inviteCreateHelp = await execute(['device', 'invite', 'create', '--help'], {
+      show,
+    });
     const joinHelp = await execute(['device', 'invite', 'join', '--help'], { show });
     const keyHelp = await execute(['key', '--help'], { show });
     expect(help.exitCode).toBe(CLI_EXIT_CODES.success);
@@ -641,6 +716,8 @@ describe('CLI command shell', () => {
     expect(joinHelp.stdout).not.toContain('--portable-key <');
     expect(inviteListHelp.stdout).toContain('--limit <1..200>');
     expect(inviteListHelp.stdout).toContain('--cursor <opaque>');
+    expect(inviteCreateHelp.stdout).toContain('--scope <scope...>');
+    expect(inviteCreateHelp.stdout).toContain('--stdout');
     expect(help.stdout).not.toContain(runtimeCanary);
 
     for (const shell of ['bash', 'zsh', 'fish', 'powershell']) {
@@ -654,8 +731,7 @@ describe('CLI command shell', () => {
 
   it('limits the production bin catalog to commands with real static behavior', async () => {
     const publishedCommands =
-      'version generate totp key init connect recover unlock lock status group credential field note show copy reveal get sync completion';
-    const unavailableCommands = /^\x20{2}device(?:\s|\[|$)/mu;
+      'version generate totp key init connect recover unlock lock status group credential field note show copy reveal get sync device completion';
     expect(PUBLIC_CLI_COMMAND_CATALOG.map(({ name }) => name)).toEqual(
       publishedCommands.split(' '),
     );
@@ -669,7 +745,7 @@ describe('CLI command shell', () => {
     for (const command of publishedCommands.split(' ')) {
       expect(help.stdout).toContain(command);
     }
-    expect(help.stdout).not.toMatch(unavailableCommands);
+    expect(help.stdout).toContain('device');
 
     const expectedCompletions = {
       bash: `_creds_complete() { COMPREPLY=( $(compgen -W '${publishedCommands}' -- "\${COMP_WORDS[COMP_CWORD]}") ); }\ncomplete -F _creds_complete creds\n`,
@@ -683,7 +759,7 @@ describe('CLI command shell', () => {
       expect(completion.stdout).toBe(expected);
     }
 
-    for (const unavailableOperation of [['show'], ['copy'], ['device']]) {
+    for (const unavailableOperation of [['show'], ['copy']]) {
       const result = await executePublic(unavailableOperation);
       expect(result.exitCode).toBe(CLI_EXIT_CODES.usage);
       expect(result.stderr).toBe(

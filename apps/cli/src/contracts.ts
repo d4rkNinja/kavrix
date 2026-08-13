@@ -20,6 +20,8 @@ import {
   vaultIdSchema,
   type ControlListPageOptions,
   type GroupPayload,
+  type InviteIssueRequest,
+  type InviteIssueResponse,
   type InviteId,
   type InviteListPageResponse,
   type ItemPayload,
@@ -249,6 +251,8 @@ export type CliPortableKeyRotationResult = z.infer<
 export type CliShowResult = CredentialShowProjection;
 export type CliInviteJoinRequest = z.infer<typeof cliInviteJoinRequestSchema>;
 export type CliInviteJoinResult = z.infer<typeof cliInviteJoinResultSchema>;
+export type CliInviteIssueRequest = InviteIssueRequest;
+export type CliInviteIssueResult = InviteIssueResponse;
 
 export interface CliUseCasePorts {
   status(): Promise<CliStatus>;
@@ -264,6 +268,10 @@ export interface CliUseCasePorts {
     vaultId: VaultId,
     options: ControlListPageOptions,
   ): Promise<InviteListPageResponse>;
+  issueInvite?(
+    vaultId: VaultId,
+    request: CliInviteIssueRequest,
+  ): Promise<CliInviteIssueResult>;
   revokeInvite(vaultId: VaultId, inviteId: InviteId): Promise<void>;
   /**
    * Completes the two-step enrollment protocol. The adapter owns durable,

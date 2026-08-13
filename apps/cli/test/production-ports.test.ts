@@ -1,6 +1,8 @@
 import {
   apiBearerTokenSchema,
   deviceIdSchema,
+  inviteIssueRequestSchema,
+  inviteIssueResponseSchema,
   keychainLocatorSchema,
   protectedLocalDeviceStateSchema,
   publicInviteRecordSchema,
@@ -52,6 +54,38 @@ describe('production CLI ports', () => {
       { limit: 1 },
     );
     expect(ports).not.toHaveProperty('listDevicePage');
+    expect([...sessionSecret]).toEqual(Array.from({ length: 32 }, () => 0));
+  });
+
+  it('issues an invite through the authenticated control-plane port and clears the session bytes', async () => {
+    const options = productionOptions();
+    const sessionSecret = new Uint8Array(32).fill(8);
+    Object.assign(options.secrets.sessions, {
+      load: vi.fn(() => Promise.resolve(sessionSecret)),
+    });
+    const request = inviteIssueRequestSchema.parse({
+      scopes: ['sync:read', 'sync:write'],
+      expiresInSeconds: 600,
+    });
+    const response = inviteIssueResponseSchema.parse({
+      inviteId: 'invite.created',
+      inviteToken: 'A'.repeat(43),
+      expiresAt: '2026-08-10T01:00:00.000Z',
+    });
+    const issueInvite = vi
+      .spyOn(ControlPlaneClient.prototype, 'issueInvite')
+      .mockResolvedValue(response);
+    const ports = createProductionPorts(options);
+    if (ports.issueInvite === undefined) throw new Error('Missing invite issue port');
+
+    await expect(ports.issueInvite(options.profile.vaultId, request)).resolves.toEqual(
+      response,
+    );
+    expect(issueInvite).toHaveBeenCalledWith(
+      apiBearerTokenSchema.parse(Buffer.alloc(32, 8).toString('base64url')),
+      options.profile.vaultId,
+      request,
+    );
     expect([...sessionSecret]).toEqual(Array.from({ length: 32 }, () => 0));
   });
 

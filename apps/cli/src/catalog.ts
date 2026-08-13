@@ -4,8 +4,10 @@ import { Command } from 'commander';
 import {
   controlListPageQuerySchema,
   deviceIdSchema,
+  inviteIssueRequestSchema,
   keySlotIdSchema,
   type GroupPayload,
+  type InviteIssueRequest,
   type ItemPayload,
   type KeySlotId,
   vaultIdSchema,
@@ -70,6 +72,12 @@ const revisionOptionSchema = z
   .pipe(z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER));
 const conflictStrategySchema = z.enum(['keep-local', 'accept-remote']);
 const shellSchema = z.enum(['bash', 'zsh', 'fish', 'powershell']);
+const inviteExpiryOptionSchema = z
+  .string()
+  .regex(/^(?:[6-9][0-9]|[1-9][0-9]{2,4}|[1-7][0-9]{4}|8[0-5][0-9]{3}|86400)$/u)
+  .transform(Number)
+  .pipe(z.number().int().min(60).max(86_400));
+const DEFAULT_INVITE_SCOPES = ['sync:read', 'sync:write'] as const;
 
 export type CliCommandContext = Readonly<{
   ports?: CliUseCasePorts;
@@ -2765,8 +2773,55 @@ export const CLI_COMMAND_CATALOG: readonly CliCommandDescriptor[] = Object.freez
     children: [
       {
         name: 'invite',
-        description: 'List, revoke, or redeem device invites.',
+        description: 'Create, list, revoke, or redeem device invites.',
         children: [
+          {
+            name: 'create',
+            description: 'Issue one short-lived device enrollment invite.',
+            options: [
+              vaultOption,
+              {
+                flags: '--scope <scope...>',
+                description:
+                  'Granted API scope(s): sync:read, sync:write, or device:manage.',
+              },
+              {
+                flags: '--expires-in-seconds <60..86400>',
+                description: 'Invite lifetime in seconds.',
+                defaultValue: '600',
+              },
+              secretStdoutOption,
+              jsonOption,
+              secretBackendOption,
+              backendPassphraseStdinOption,
+            ],
+            execute: async (context, _arguments, options) => {
+              const vaultId = parseInputString(options, 'vault', (value) =>
+                vaultIdSchema.parse(value),
+              );
+              const request = parseInviteIssueRequest(options);
+              requireSecretOutputAuthorization(context, options);
+              const raw = await withAuthorizedPorts(
+                context,
+                'device invite create',
+                options,
+                (ports) => {
+                  if (ports.issueInvite === undefined) {
+                    throw new CliUnavailableError('device invite create');
+                  }
+                  return ports.issueInvite(vaultId, request);
+                },
+              );
+              const { inviteIssueResponseSchema } = await import('@kavrix/schemas');
+              const { renderInviteIssue } = await import('./render.js');
+              context.stdout.write(
+                renderInviteIssue(
+                  inviteIssueResponseSchema.parse(raw),
+                  optionBoolean(options, 'json'),
+                ),
+              );
+            },
+          },
           {
             name: 'list',
             description: 'List public invite metadata.',
@@ -2781,6 +2836,8 @@ export const CLI_COMMAND_CATALOG: readonly CliCommandDescriptor[] = Object.freez
                 description: 'Continue from an opaque invite page cursor.',
               },
               jsonOption,
+              secretBackendOption,
+              backendPassphraseStdinOption,
             ],
             execute: async (context, _arguments, options) => {
               const [{ parseInvitePage, parseVaultId }, { renderInvites }] =
@@ -2799,9 +2856,11 @@ export const CLI_COMMAND_CATALOG: readonly CliCommandDescriptor[] = Object.freez
                 'invite list options',
               );
               const page = parseInvitePage(
-                await useCases(context, 'device invite list').listInvitePage(
-                  vaultId,
-                  pageOptions,
+                await withAuthorizedPorts(
+                  context,
+                  'device invite list',
+                  options,
+                  (ports) => ports.listInvitePage(vaultId, pageOptions),
                 ),
               );
               context.stdout.write(renderInvites(page, optionBoolean(options, 'json')));
@@ -2813,7 +2872,11 @@ export const CLI_COMMAND_CATALOG: readonly CliCommandDescriptor[] = Object.freez
             arguments: [
               { syntax: '<invite-id>', description: 'Opaque invite identifier.' },
             ],
-            options: [vaultOption],
+            options: [
+              vaultOption,
+              secretBackendOption,
+              backendPassphraseStdinOption,
+            ],
             execute: async (context, arguments_, options) => {
               const { parseInviteId, parseVaultId } = await import('./contracts.js');
               const vaultId = parseInputString(options, 'vault', parseVaultId);
@@ -2822,9 +2885,11 @@ export const CLI_COMMAND_CATALOG: readonly CliCommandDescriptor[] = Object.freez
                 'invite ID',
                 parseInviteId,
               );
-              await useCases(context, 'device invite revoke').revokeInvite(
-                vaultId,
-                inviteId,
+              await withAuthorizedPorts(
+                context,
+                'device invite revoke',
+                options,
+                (ports) => ports.revokeInvite(vaultId, inviteId),
               );
               context.stdout.write('Invite revoked.\n');
             },
@@ -2925,8 +2990,31 @@ export const PUBLIC_CLI_COMMAND_CATALOG: readonly CliCommandDescriptor[] =
     revealCommand,
     getCommand,
     syncCommand,
+    publicDeviceCommand(),
     completionCommand(() => PUBLIC_CLI_COMMAND_CATALOG),
   ]);
+
+function publicDeviceCommand(): CliCommandDescriptor {
+  const device = CLI_COMMAND_CATALOG.find((descriptor) => descriptor.name === 'device');
+  const invite = device?.children?.find((descriptor) => descriptor.name === 'invite');
+  if (device === undefined || invite === undefined) {
+    throw new Error('The device invite catalog is incomplete');
+  }
+  const publicInvite = Object.freeze({
+    name: invite.name,
+    description: invite.description,
+    ...(invite.arguments === undefined ? {} : { arguments: invite.arguments }),
+    ...(invite.options === undefined ? {} : { options: invite.options }),
+    children: (invite.children ?? []).filter(
+      (descriptor) => descriptor.name !== 'join',
+    ),
+  });
+  return Object.freeze({
+    name: device.name,
+    description: device.description,
+    children: [publicInvite],
+  });
+}
 
 function completionCommand(
   catalog: () => readonly CliCommandDescriptor[],
@@ -3091,6 +3179,74 @@ function parseRotationOperationId(value: string | undefined): LifecycleOperation
   );
   if (!parsed.success) throw new CliUsageError('The rotation operation ID is invalid.');
   return parsed.data;
+}
+
+function parseInviteIssueRequest(
+  options: Readonly<Record<string, unknown>>,
+): InviteIssueRequest {
+  const rawExpiry = options['expiresInSeconds'];
+  const expiresInSeconds = parseInput(
+    inviteExpiryOptionSchema,
+    rawExpiry === undefined ? '600' : rawExpiry,
+    'invite expiry',
+  );
+  const scopes = optionStrings(options, 'scope', 'invite scopes') ?? [
+    ...DEFAULT_INVITE_SCOPES,
+  ];
+  return parseInput(
+    inviteIssueRequestSchema,
+    { scopes, expiresInSeconds },
+    'invite options',
+  );
+}
+
+function optionStrings(
+  options: Readonly<Record<string, unknown>>,
+  key: string,
+  label: string,
+): readonly string[] | undefined {
+  const value = options[key];
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new CliUsageError(`The ${label} are invalid.`);
+  }
+  const strings: string[] = [];
+  for (const entry of value) {
+    if (typeof entry !== 'string' || entry.length === 0) {
+      throw new CliUsageError(`The ${label} are invalid.`);
+    }
+    strings.push(entry);
+  }
+  return strings;
+}
+
+function requireSecretOutputAuthorization(
+  context: CliCommandContext,
+  options: Readonly<Record<string, unknown>>,
+): void {
+  if (context.stdoutIsTty || optionBoolean(options, 'stdout')) return;
+  throw new CliUsageError(
+    'Secret output requires an interactive terminal or explicit --stdout acknowledgement.',
+  );
+}
+
+async function withAuthorizedPorts<Output>(
+  context: CliCommandContext,
+  feature: CliFeature,
+  options: Readonly<Record<string, unknown>>,
+  operation: (ports: CliUseCasePorts) => Promise<Output>,
+): Promise<Output> {
+  if (context.ports !== undefined) return operation(context.ports);
+  if (context.environment === undefined) throw new CliUnavailableError(feature);
+  const { runProductionUnlocked } = await import('./production/unlock.js');
+  return runProductionUnlocked(
+    {
+      environment: context.environment,
+      secrets: secretInput(context, feature),
+      backendPolicy: parseStatusBackendPolicy(options),
+    },
+    async ({ ports }) => operation(ports),
+  );
 }
 
 function useCases(context: CliCommandContext, feature: CliFeature): CliUseCasePorts {

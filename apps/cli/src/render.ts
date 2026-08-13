@@ -5,6 +5,7 @@ import type {
 } from '@kavrix/client';
 import {
   isSensitiveFieldType,
+  type InviteIssueResponse,
   type InviteListPageResponse,
   type PublicInviteRecord,
 } from '@kavrix/schemas';
@@ -278,6 +279,23 @@ export function renderInvites(page: InviteListPageResponse, json: boolean): stri
     .join('\n');
   const continuation = nextCursor === null ? '' : `Next cursor: ${nextCursor}\n`;
   return `${rows}\n${continuation}`;
+}
+
+/** Renders the returned bearer exactly once after the command authorizes it. */
+export function renderInviteIssue(result: InviteIssueResponse, json: boolean): string {
+  const safe = {
+    inviteId: sanitizeTerminalText(result.inviteId),
+    inviteToken: sanitizeTerminalText(result.inviteToken),
+    expiresAt: sanitizeTerminalText(result.expiresAt),
+  };
+  if (json) return safeJson(safe);
+  return [
+    `Invite token (display once): ${safe.inviteToken}`,
+    `Invite ID: ${safe.inviteId}`,
+    `Expires: ${safe.expiresAt}`,
+  ]
+    .join('\n')
+    .concat('\n');
 }
 
 function safeShow(result: CliShowResult): CliShowResult {
