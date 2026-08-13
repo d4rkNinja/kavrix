@@ -118,7 +118,13 @@ function scalarText(value: FieldScalarValue): string {
       return value.itemId;
     case 'attachment-reference':
       return value.attachmentId;
-    default:
-      return String((value as { value?: unknown }).value ?? '');
+    default: {
+      const raw = (value as { value?: unknown }).value;
+      return typeof raw === 'string' ||
+        typeof raw === 'number' ||
+        typeof raw === 'boolean'
+        ? String(raw)
+        : '';
+    }
   }
 }
