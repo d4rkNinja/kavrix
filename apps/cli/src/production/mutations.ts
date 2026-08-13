@@ -17,9 +17,7 @@ import {
   templateIdSchema,
   templateMigrationIdSchema,
   templateVersionSchema,
-  type GroupId,
   type GroupTemplate,
-  type ItemId,
   type VaultId,
 } from '@kavrix/schemas';
 
@@ -165,7 +163,7 @@ export async function executeProductionSetField(
     }
 
     const state = await options.source.getCurrentItem(options.vaultId, found.item.id);
-    if (state === null || state.state !== 'active') {
+    if (state?.state !== 'active') {
       throw new Error('Credential item is not active or found');
     }
 
@@ -268,7 +266,7 @@ export async function executeProductionArchiveEntity(
       readSession.lock();
     }
     const state = await options.source.getCurrentItem(options.vaultId, found.item.id);
-    if (state === null || state.state !== 'active') {
+    if (state?.state !== 'active') {
       throw new Error('Credential item is not active or found');
     }
     await service.deleteItem(
@@ -284,7 +282,7 @@ export async function executeProductionArchiveEntity(
       readSession.lock();
     }
     const state = await options.source.getCurrentGroup(options.vaultId, group.id);
-    if (state === null || state.state !== 'active') {
+    if (state?.state !== 'active') {
       throw new Error('Group is not active or found');
     }
     await service.deleteGroup(group.id, state.record.recordRevision);
@@ -306,7 +304,7 @@ export async function executeProductionRestoreEntity(
   if (request.credentialQuery !== undefined) {
     const itemId = itemIdSchema.parse(request.credentialQuery);
     const state = await options.source.getCurrentItem(options.vaultId, itemId);
-    if (state === null || state.state !== 'deleted') {
+    if (state?.state !== 'deleted') {
       throw new Error('Tombstoned item record not found for restore');
     }
     const groupId = state.predecessor.groupId;
@@ -315,7 +313,7 @@ export async function executeProductionRestoreEntity(
   } else {
     const groupId = groupIdSchema.parse(request.groupQuery);
     const state = await options.source.getCurrentGroup(options.vaultId, groupId);
-    if (state === null || state.state !== 'deleted') {
+    if (state?.state !== 'deleted') {
       throw new Error('Tombstoned group record not found for restore');
     }
     const revision = recordRevisionSchema.parse(state.tombstone.tombstoneRevision);

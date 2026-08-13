@@ -9,15 +9,14 @@ import {
   zeroize,
   type VaultRootKey,
 } from '@kavrix/crypto';
-import { openSqliteVaultProfileStore } from '@kavrix/local-store';
 import {
-  associatedDataSchema,
-  changeRecordSchema,
-  contentHashForRecord,
+  openSqliteVaultProfileStore,
+  type SqliteSyncLocalStore,
+} from '@kavrix/local-store';
+import {
   deviceIdSchema,
+  syncCursorSchema,
   vaultIdSchema,
-  vaultPreferencesSchema,
-  vaultRecordSchema,
   type VaultId,
 } from '@kavrix/schemas';
 import { describe, expect, it, beforeEach, afterEach } from 'vitest';
@@ -35,10 +34,10 @@ import { ensureDataDirectory } from '../src/production/runtime-adapters.js';
 import { createSecretBackend } from '../src/production/secret-backend.js';
 
 async function seedVaultRecordInStore(
-  store: any,
+  store: SqliteSyncLocalStore,
   vaultId: VaultId,
   rootKey: VaultRootKey,
-) {
+): Promise<void> {
   const { createPortableKeySlot, generatePortableKey } = await import('@kavrix/crypto');
   const {
     associatedDataSchema,
@@ -114,11 +113,11 @@ async function seedVaultRecordInStore(
   await store.applyPullPage({
     vaultId,
     changes: [{ change, record: vaultRecord }],
-    cursor: {
+    cursor: syncCursorSchema.parse({
       vaultId,
       serverSequence: 1,
       highestSeenVaultRevision: 1,
-    },
+    }),
   });
 }
 
