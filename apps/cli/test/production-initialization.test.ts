@@ -62,7 +62,7 @@ describe('production initialization adapter factory', () => {
     };
 
     const port = createProductionInitializationPort({
-      environment: mockEnvironment,
+      environment: mockEnvironment as never,
       secrets: mockSecrets,
       defaultServerUrl: 'https://vault.example/',
       coordinatorFactory: () => mockCoordinator,
@@ -125,7 +125,7 @@ describe('production initialization adapter factory', () => {
     };
 
     const port = createProductionInitializationPort({
-      environment: mockEnvironment,
+      environment: mockEnvironment as never,
       secrets: mockSecrets,
       defaultServerUrl: 'https://vault.example/',
     });
