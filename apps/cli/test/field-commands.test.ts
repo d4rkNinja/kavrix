@@ -56,8 +56,11 @@ async function execute(
         if (!fromStdin || stdinInput.length === 0) {
           return Promise.reject(new Error('secrets unneeded'));
         }
-        const val = stdinInput.shift()!;
-        return Promise.resolve(val as any);
+        const val = stdinInput.shift();
+        if (val === undefined) {
+          return Promise.reject(new Error('secrets unneeded'));
+        }
+        return Promise.resolve(val as unknown as Uint8Array);
       },
       readBatch: () => Promise.reject(new Error('secrets unneeded')),
     },
@@ -73,7 +76,7 @@ async function execute(
 
 describe('CLI field commands', () => {
   it('executes field add using ports and outputs formatted text', async () => {
-    const addField = vi.fn((request: any) =>
+    const addField = vi.fn((_request: unknown) =>
       Promise.resolve({
         vaultId: vaultIdSchema.parse('vault.1'),
         groupId: groupIdSchema.parse('group.1'),
@@ -108,13 +111,13 @@ describe('CLI field commands', () => {
       fieldType: 'api-key',
       label: 'API Key',
       sensitive: true,
-      value: expect.any(Uint8Array),
+      value: expect.any(Uint8Array) as unknown,
     });
     expect(result.stdout).toBe('Field "api_key" added to credential "Primary DB".\n');
   });
 
   it('executes field set with positional value or stdin', async () => {
-    const setField = vi.fn((request: any) =>
+    const setField = vi.fn((_request: unknown) =>
       Promise.resolve({
         vaultId: vaultIdSchema.parse('vault.1'),
         groupId: groupIdSchema.parse('group.1'),
@@ -132,7 +135,7 @@ describe('CLI field commands', () => {
       groupQuery: 'Engineering',
       credentialQuery: 'Primary DB',
       fieldKey: 'hostname',
-      value: expect.any(Uint8Array),
+      value: expect.any(Uint8Array) as unknown,
     });
     expect(resultPositional.stdout).toBe(
       'Field "hostname" set for credential "Primary DB".\n',

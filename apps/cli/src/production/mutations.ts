@@ -390,7 +390,11 @@ export async function executeProductionUpdateField(
     throw new Error(`Item-specific field "${request.fieldKey}" not found`);
   }
 
-  const existingField = found.item.itemFields[existingFieldIndex]!;
+  const existingField = found.item.itemFields[existingFieldIndex];
+  if (existingField === undefined) {
+    throw new Error(`Item-specific field "${request.fieldKey}" not found`);
+  }
+
   const sensitive =
     request.sensitive ??
     (request.fieldType !== undefined
@@ -411,6 +415,42 @@ export async function executeProductionUpdateField(
   const updatedFields = [...found.item.itemFields];
   updatedFields[existingFieldIndex] = updatedFieldDef;
 
+  const updatedValues = found.item.itemValues.map((v) => {
+    if (v.stableKey !== request.fieldKey) return v;
+    if (v.value.state !== 'present' || v.value.content.cardinality !== 'single') {
+      return v;
+    }
+    const currentVal = v.value.content.value;
+    if (sensitive && currentVal.kind === 'text') {
+      return {
+        ...v,
+        value: {
+          ...v.value,
+          content: {
+            ...v.value.content,
+            value: {
+              kind: 'secret' as const,
+              value: secretValueSchema.parse(currentVal.value),
+            },
+          },
+        },
+      };
+    }
+    if (!sensitive && currentVal.kind === 'secret') {
+      return {
+        ...v,
+        value: {
+          ...v.value,
+          content: {
+            ...v.value.content,
+            value: { kind: 'text' as const, value: currentVal.value },
+          },
+        },
+      };
+    }
+    return v;
+  });
+
   const service = new VaultMutationService(
     options.source,
     options.queue,
@@ -422,6 +462,7 @@ export async function executeProductionUpdateField(
   await service.updateItem(found.group.id, {
     ...found.item,
     itemFields: updatedFields,
+    itemValues: updatedValues,
   });
 
   return {
@@ -465,7 +506,10 @@ export async function executeProductionArchiveField(
     throw new Error(`Active value for field "${request.fieldKey}" not found`);
   }
 
-  const activeValue = found.item.itemValues[activeValueIndex]!;
+  const activeValue = found.item.itemValues[activeValueIndex];
+  if (activeValue === undefined) {
+    throw new Error(`Active value for field "${request.fieldKey}" not found`);
+  }
   const archivedEntry = {
     definition: fieldDef,
     value: {
@@ -525,7 +569,10 @@ export async function executeProductionRestoreField(
     throw new Error(`Archived field value "${request.fieldKey}" not found`);
   }
 
-  const archivedEntry = found.item.archivedFieldValues[archivedIndex]!;
+  const archivedEntry = found.item.archivedFieldValues[archivedIndex];
+  if (archivedEntry === undefined) {
+    throw new Error(`Archived field value "${request.fieldKey}" not found`);
+  }
   const restoredValue = {
     fieldId: archivedEntry.definition.id,
     stableKey: archivedEntry.definition.stableKey,
