@@ -96,15 +96,15 @@ A restore session ID is a domain-separated SHA-256 digest of the exact
 authenticated header line. Replaying the same archive therefore reopens the
 same durable session; creating another archive normally creates another session.
 
-| Code                                | Meaning                                                                                                                  |
-| ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| `BACKUP_INVALID`                    | Framing, schema, transcript, ordering, identity, or graph is inconsistent.                                               |
-| `BACKUP_TOO_LARGE`                  | Aggregate bytes, line size, or record count exceeds the active bound.                                                    |
-| `BACKUP_WRONG_VAULT`                | Header or entry does not match the expected vault.                                                                       |
-| `BACKUP_AUTHENTICATION_FAILED`      | Generic authentication/semantic failure, including invalid slot input, inner known-v1 validation, or rollback rejection. |
-| `BACKUP_DECRYPTABILITY_UNSUPPORTED` | The authenticated archive contains a record family whose inner known-v1 semantic contract is not implemented.            |
-| `BACKUP_INCOMPLETE`                 | Required header/footer, parent, predecessor, vault, or attachment data is absent.                                        |
-| `BACKUP_COMMIT_UNCERTAIN`           | Durable status is unreadable, divergent, or may conceal an unconfirmed publication.                                      |
+| Code                                | Meaning                                                                                                                     |
+| ----------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `BACKUP_INVALID`                    | Framing, schema, transcript, ordering, identity, or graph is inconsistent.                                                  |
+| `BACKUP_TOO_LARGE`                  | Aggregate bytes, line size, or record count exceeds the active bound.                                                       |
+| `BACKUP_WRONG_VAULT`                | Header or entry does not match the expected vault.                                                                          |
+| `BACKUP_AUTHENTICATION_FAILED`      | Generic authentication/semantic failure, including invalid slot input, inner known-v1 validation, or rollback rejection.    |
+| `BACKUP_DECRYPTABILITY_UNSUPPORTED` | The authenticated archive contains an inner semantic payload version or family that this restore verifier does not support. |
+| `BACKUP_INCOMPLETE`                 | Required header/footer, parent, predecessor, vault, or attachment data is absent.                                           |
+| `BACKUP_COMMIT_UNCERTAIN`           | Durable status is unreadable, divergent, or may conceal an unconfirmed publication.                                         |
 
 Callers must not print nested parser, cryptographic, record, URI, or storage
 causes to an operator-facing log.
@@ -122,6 +122,17 @@ causes to an operator-facing log.
 | `creds backup create --file <path> [--vault <vault-id>] [--json]`                     | Validates a new protected destination before unlock, streams the bounded authenticated local opaque snapshot, and emits only a redacted count/byte receipt. Existing files and links are refused.                                                                                                     |
 | `creds backup verify --file <path> [--vault <vault-id>] [--json]`                     | Validates an existing protected source before unlock, authenticates its complete bounded archive with the active remembered device slot, rejects unsupported history/audit semantics with a documented code, and emits only a redacted summary. It never stages or publishes.                         |
 | `creds backup restore --file <path> [--vault <vault-id>] [--slot <slot-id>] [--json]` | Available only through an explicitly configured injected restore port. The protected composition delegates to hidden isolated staging and exact receipt-bound publication; the packed executable omits this descriptor until a target adapter is configured without unsafe database-credential input. |
+
+Known-v1 semantic restore opens documented history and audit payloads before
+publication. A history entry is decrypted with its referenced item key and must
+be a canonical v1 item snapshot whose identity, item revision, parent, and
+ciphertext hash agree with the outer record. A documented v1 audit entry is
+opened with the vault root key as canonical JSON and must be a key-slot audit
+whose slot identity, type, key version, and action state agree with the archived
+vault. Authenticated payloads with a future semantic version remain explicit
+unsupported failures; malformed or tampered payloads are generic authentication
+failures. No decrypted payload is included in a receipt, log, sync record, or
+MongoDB document.
 
 The verification factory owns protected credential input and selects one exact
 current portable-key, passphrase, or recovery-key slot from the archived vault.
@@ -181,8 +192,8 @@ Publication transactionally:
 - verifies the exact transcript/session/count and canonical record graph;
 - verifies that the target database has no normal records and no other restore
   session state;
-- inserts the vault, groups, items, attachments, attachment streams, and
-  tombstones without upsert or overwrite;
+- inserts the vault, groups, items, attachments, history, audit, attachment
+  streams, and tombstones without upsert or overwrite;
 - creates a current-state sync feed, using exact predecessor upsert followed by
   tombstone for deleted records;
 - stores the backup vault's exact revision as the counter rollback anchor;
@@ -220,12 +231,12 @@ perform the following library-level sequence:
    or a log. Construct a one-shot known-v1 verification factory; supply a
    protected highest-seen vault revision when available.
 4. `verifyEncryptedBackup` may be used for authentication-only inspection. It
-   accepts outer-valid opaque history/audit entries but proves no inner
-   decryptability. The public `creds backup verify` command performs this same
-   non-publishing check after protected source preflight and remembered-device
-   unlock; unsupported history/audit semantics fail with
-   `BACKUP_DECRYPTABILITY_UNSUPPORTED`. Reopen the archive for semantic
-   restore.
+   accepts outer-valid history/audit entries but proves no inner
+   decryptability. The public `creds backup verify` command performs its
+   non-publishing protected-source check; reopen the archive for known-v1
+   semantic restore. The restore verifier accepts documented v1 history/audit
+   payloads, rejects semantic corruption before publication, and reports
+   future payload versions as `BACKUP_DECRYPTABILITY_UNSUPPORTED`.
 5. Create and initialize `MongoBackupRestoreStore`, then call
    `restoreEncryptedBackup` with explicit Mongo-compatible limits.
 6. On `BACKUP_COMMIT_UNCERTAIN`, preserve the isolated target and exact archive;
@@ -272,20 +283,20 @@ supported by this atomic implementation.
 ## Known-v1 acceptance scope and pending live evidence
 
 The repository contains a production-crypto acceptance fixture and real-Mongo
-cases for an authenticated 12-entry archive containing:
+cases for an authenticated 14-entry archive containing:
 
 - the exact vault and revision;
 - a group, active item, deleted item, exact deletion predecessor, and tombstone;
 - one restored current item and its restored tombstone;
 - one attachment with its authenticated stream header and two contiguous chunks;
-- literal zero history and zero audit entries.
+- one canonical v1 item-history snapshot and one canonical v1 key-slot audit.
 
 The acceptance source covers all three archived slot types, committed and
 published replay, publish/finalize response loss, equal/lower/absent rollback
 anchors, eight HMAC-valid inner corruptions, both staged-substitution windows,
-and raw BSON/archive/error/log canary scanning. History and audit are separately
-authenticated as opaque outer records, then must fail semantic restore before
-publication with `BACKUP_DECRYPTABILITY_UNSUPPORTED`.
+and raw BSON/archive/error/log canary scanning. Authenticated history/audit
+semantic corruption and authenticated future payload versions are tested before
+publication; the latter fail with `BACKUP_DECRYPTABILITY_UNSUPPORTED`.
 
 This source has not yet produced live evidence in the current workspace:
 `KAVRIX_MONGODB_URI` and the generic exact-discovery/zero-skip gate are absent.
@@ -299,8 +310,8 @@ The current format and adapter do not recover:
 - original server change-sequence history, idempotency commits, sync push
   checkpoints, attachment upload sessions, device sessions/tokens, API
   bootstrap state, or protected local rollback anchors;
-- semantic restore of history/audit payloads; authentication-only backup parsing
-  preserves their opaque outer records, but known-v1 publication rejects them;
+- undocumented or future history/audit payload versions; the known-v1 verifier
+  preserves confidentiality and rejects them before publication;
 - a vault tombstone (restore rejects it);
 - original attachment upload-session timestamps or idempotency keys (the exact
   encrypted attachment records/header/chunks are preserved under a deterministic

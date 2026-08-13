@@ -118,8 +118,9 @@ created.` Existing targets are never replaced.
 `backup create` requires `--file` and creates a new archive in a protected
 user-only directory. It does not accept a key or passphrase in argv, and it
 does not print archive contents or unlock material. The command currently
-backs up the enrolled local opaque vault/group/item state; attachments,
-history, and audit semantics remain gated by the later backup issues.
+backs up the enrolled local opaque vault/group/item state; the Mongo snapshot
+and protected restore composition own attachment/history/audit records, and
+known-v1 restore semantically opens the documented history and audit payloads.
 
 `backup verify` also requires `--file`, but the path must already name one
 protected regular archive. It validates the source before unlock, then uses the

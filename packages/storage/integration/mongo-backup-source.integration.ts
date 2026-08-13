@@ -636,7 +636,7 @@ describe('canonical known-v1 restore coordinator against a replica-set target', 
           restoreSessionId: canonical.summary.restoreSessionId,
           transcriptSha256: canonical.summary.transcriptSha256,
           canonicalEntriesSha256: canonical.summary.canonicalEntriesSha256,
-          recordCount: 12,
+          recordCount: 14,
           selectedSlot: {
             id: canonical.slotIds[slotType],
             type: slotType,
@@ -682,7 +682,7 @@ describe('canonical known-v1 restore coordinator against a replica-set target', 
               freshSummary,
             ),
           ).resolves.toMatchObject({
-            recordCount: 12,
+            recordCount: 14,
             verified: CANONICAL_RESTORE_EXPECTED_COUNTS,
           });
         } finally {
@@ -773,7 +773,7 @@ describe('canonical known-v1 restore coordinator against a replica-set target', 
           restoreSessionId: canonical.summary.restoreSessionId,
           transcriptSha256: canonical.summary.transcriptSha256,
           canonicalEntriesSha256: canonical.summary.canonicalEntriesSha256,
-          recordCount: 12,
+          recordCount: 14,
           selectedSlot: {
             id: canonical.slotIds['portable-key'],
             type: 'portable-key',
@@ -866,11 +866,11 @@ describe('canonical known-v1 restore coordinator against a replica-set target', 
   });
 
   it.each(['history', 'audit'] as const)(
-    'authenticates opaque history and audit but rejects either from semantic publication: %s',
+    'keeps authenticated future history and audit versions explicit: %s',
     async (family) => {
       const archive = await canonical.unsupportedArchive(family);
       const summary = await canonical.authenticate(archive);
-      expect(summary.recordCount).toBe(13);
+      expect(summary.recordCount).toBe(14);
       await withEmptyDatabase(client, async (database) => {
         const store = new MongoBackupRestoreStore(client, database);
         await store.initialize();
@@ -904,7 +904,7 @@ describe('canonical known-v1 restore coordinator against a replica-set target', 
     async (kind: CanonicalInnerCorruption) => {
       const archive = await canonical.innerCorruptionArchive(kind);
       const summary = await canonical.authenticate(archive);
-      expect(summary.recordCount).toBe(12);
+      expect(summary.recordCount).toBe(14);
       await withEmptyDatabase(client, async (database) => {
         const store = new MongoBackupRestoreStore(client, database);
         await store.initialize();
@@ -1787,8 +1787,8 @@ async function expectCanonicalVisibleCounts(database: Db): Promise<void> {
     [mongoStorageCollectionNames.tombstones, 2],
     [mongoStorageCollectionNames.changes, 7],
     [mongoStorageCollectionNames.counters, 1],
-    [mongoStorageCollectionNames.histories, 0],
-    [mongoStorageCollectionNames.audits, 0],
+    [mongoStorageCollectionNames.histories, 1],
+    [mongoStorageCollectionNames.audits, 1],
     [mongoStorageCollectionNames.attachmentStaging, 1],
     [mongoStorageCollectionNames.attachmentStagingChunks, 2],
     [mongoStorageCollectionNames.backupRestoreSessions, 1],
