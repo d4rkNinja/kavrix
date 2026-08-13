@@ -29,7 +29,13 @@ export type CliFeature =
   | 'group rename'
   | 'group archive'
   | 'group restore'
-  | 'group delete';
+  | 'group delete'
+  | 'credential create'
+  | 'credential list'
+  | 'credential rename'
+  | 'credential archive'
+  | 'credential restore'
+  | 'credential delete';
 
 export class CliUsageError extends Error {
   readonly code = 'CLI_USAGE' as const;

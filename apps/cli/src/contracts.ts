@@ -16,13 +16,16 @@ import {
   type GroupPayload,
   type InviteId,
   type InviteListPageResponse,
+  type ItemPayload,
   type VaultId,
 } from '@kavrix/schemas';
 import { z } from 'zod';
 
 import type {
   CliArchiveEntityRequest,
+  CliCreateCredentialRequest,
   CliCreateGroupRequest,
+  CliCredentialMutationResult,
   CliGroupMutationResult,
   CliRestoreEntityRequest,
 } from './mutation-contracts.js';
@@ -107,6 +110,12 @@ export interface CliUseCasePorts {
   archiveEntity?(request: CliArchiveEntityRequest): Promise<void>;
   restoreEntity?(request: CliRestoreEntityRequest): Promise<void>;
   deleteGroup?(query: string): Promise<void>;
+  createCredential?(
+    request: CliCreateCredentialRequest,
+  ): Promise<CliCredentialMutationResult>;
+  listCredentials?(groupQuery: string): Promise<readonly ItemPayload[]>;
+  renameCredential?(groupQuery: string, query: string, newTitle: string): Promise<void>;
+  deleteCredential?(groupQuery: string, query: string): Promise<void>;
 }
 
 export function parseStatus(value: unknown): CliStatus {

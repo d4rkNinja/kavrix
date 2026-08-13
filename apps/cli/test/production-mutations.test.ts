@@ -255,4 +255,127 @@ describe('production CLI mutation adapters', () => {
       await backend.close();
     }
   });
+
+  it('lists, renames, and deletes credentials through catalog read/mutation paths', async () => {
+    const rootKey = generateVaultRootKey();
+    const vaultId = vaultIdSchema.parse('vault.test000000000000000001');
+
+    const mockSecretsInput = {
+      read: () => Promise.reject(new Error('secrets unneeded')),
+      readBatch: () => Promise.reject(new Error('secrets unneeded')),
+      clear: () => Promise.resolve(),
+    };
+
+    const paths = resolveCliDataPaths({ CREDS_HOME: tempHome });
+    const backend = await createSecretBackend(paths, mockSecretsInput, {
+      kind: 'native',
+    });
+    const environment = await openProductionEnvironment(paths, backend);
+    const profile = vaultProfileSchema.parse({
+      version: 1,
+      serverUrl: 'https://vault.example/',
+      vaultId,
+      deviceId: deviceIdSchema.parse('device.test00000000000000001'),
+      deviceLocator: {
+        version: 1,
+        vaultId,
+        deviceId: deviceIdSchema.parse('device.test00000000000000001'),
+        keySlotId: 'slot.device.001',
+      },
+      sessionLocator: {
+        version: 1,
+        vaultId,
+        deviceId: deviceIdSchema.parse('device.test00000000000000001'),
+        purpose: 'api-session',
+      },
+    });
+    const store = await environment.openSyncStore(profile);
+
+    await seedVaultRecordInStore(store, vaultId, rootKey);
+
+    const mutationOptions = {
+      source: store,
+      queue: store,
+      vaultId,
+      rootKey,
+    };
+
+    const { VaultMutationService, VaultReadSession } = await import('@kavrix/client');
+    const { createDefaultMutationDependencies } =
+      await import('../src/production/mutations.js');
+    const { recordRevisionSchema } = await import('@kavrix/schemas');
+
+    try {
+      await executeProductionCreateGroup(mutationOptions, {
+        name: 'Infrastructure',
+      });
+      const credResult = await executeProductionCreateCredential(mutationOptions, {
+        groupQuery: 'Infrastructure',
+        title: 'AWS Production Root',
+      });
+
+      const readSession = new VaultReadSession(store, vaultId);
+      await readSession.unlock(rootKey);
+      let listed: Awaited<ReturnType<typeof readSession.listItems>>;
+      let found: Awaited<ReturnType<typeof readSession.show>>;
+      try {
+        listed = await readSession.listItems('Infrastructure');
+        expect(listed.map((item) => item.id)).toEqual([credResult.credentialId]);
+        expect(listed.map((item) => item.title)).toEqual(['AWS Production Root']);
+        found = await readSession.show('Infrastructure', 'AWS Production Root');
+      } finally {
+        readSession.lock();
+      }
+
+      const service = new VaultMutationService(
+        store,
+        store,
+        vaultId,
+        rootKey,
+        createDefaultMutationDependencies(),
+      );
+      await service.updateItem(found.group.id, {
+        ...found.item,
+        title: 'AWS Production Root (Primary)',
+      });
+
+      const renamedSession = new VaultReadSession(store, vaultId);
+      await renamedSession.unlock(rootKey);
+      let renamedFound: Awaited<ReturnType<typeof renamedSession.show>>;
+      try {
+        renamedFound = await renamedSession.show(
+          'Infrastructure',
+          'AWS Production Root (Primary)',
+        );
+      } finally {
+        renamedSession.lock();
+      }
+      expect(renamedFound.item.title).toBe('AWS Production Root (Primary)');
+
+      const state = await store.getCurrentItem(vaultId, credResult.credentialId);
+      expect(state?.state).toBe('active');
+      if (state?.state !== 'active') {
+        throw new Error('Credential item is not active or found');
+      }
+      const deleteService = new VaultMutationService(
+        store,
+        store,
+        vaultId,
+        rootKey,
+        createDefaultMutationDependencies(),
+      );
+      await deleteService.deleteItem(
+        found.group.id,
+        credResult.credentialId,
+        recordRevisionSchema.parse(state.record.recordRevision),
+      );
+
+      const afterDelete = await store.getCurrentItem(vaultId, credResult.credentialId);
+      expect(afterDelete?.state).toBe('deleted');
+    } finally {
+      zeroize(rootKey);
+      await environment.close();
+      await backend.close();
+    }
+  });
 });

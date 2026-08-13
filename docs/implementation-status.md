@@ -9,7 +9,7 @@ but the public `creds` executable does not yet compose a complete
 show/copy/device/online-sync lifecycle. First-release ownership, reporting,
 authorization, and operational acceptance gates also remain. Its public vault
 surface is locked: local, redacted `status`, crash-safe `init`, masked
-`unlock`/`lock`, and local `group` mutation. None of these are a
+`unlock`/`lock`, and local `group`/`credential` mutation. None of these are a
 show/copy/read or online-sync workflow.
 
 ## Status definitions
@@ -56,10 +56,10 @@ show/copy/read or online-sync workflow.
 | Scope                                                                                                                          | Status      | Evidence                                                                                                                                                                                                                                                                                                        | Remaining limitation                                                                                                 |
 | ------------------------------------------------------------------------------------------------------------------------------ | ----------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
 | Dynamic Ink TUI                                                                                                                | In progress | `packages/tui`; real Ink/React package, wide three-pane and narrow models, dynamic field editor, multiple notes, search/help/palette/conflicts, sanitized ASCII/control handling, safe reveal/copy intents; 21 tests and >90% statement coverage                                                                | The public executable does not yet supply real unlocked-vault, save, clipboard, reauthentication, and lock use cases |
-| CLI parser, redacted show/copy renderer, init/device contracts, masked/framed stdin, completion, and public security utilities | In progress | `apps/cli`; 217 tests pass; the public package exposes password/passphrase generation, TOTP, protected portable-key creation, crash-safe init, masked unlock/lock, local group CRUD, and locked local status; owned inputs are wiped best effort                                                                | Enrollment, online sync, show/copy, and other vault commands remain unpublished                                      |
+| CLI parser, redacted show/copy renderer, init/device contracts, masked/framed stdin, completion, and public security utilities | In progress | `apps/cli`; 225 tests pass; the public package exposes password/passphrase generation, TOTP, protected portable-key creation, crash-safe init, masked unlock/lock, local group and credential CRUD, and locked local status; owned inputs are wiped best effort                                                 | Enrollment, online sync, show/copy, and other vault commands remain unpublished                                      |
 | Public `creds show`, `copy`, `reveal`, `get`, `set`, CRUD, notes, backup, run, device, and TUI workflows                       | Planned     | Canonical lower-level ports and adapters exist; show/copy/init/device workflows are exercised through the injectable catalog only                                                                                                                                                                               | The commands must be composed end to end; no production mock or unavailable fallback may be advertised               |
 | Vault init/connect/unlock/lock/status lifecycle                                                                                | In progress | `apps/cli/src/production/*` and the packed smoke compose and test crash-safe public `init`, masked `unlock` (remembered device, protected key file, passphrase) plus `unlock --check`, `lock`, and one locked/offline `status`; production unlock/lock tests cover leases, cleanup, and managed clipboard clear | Public online sync, show/copy, and device enrollment remain absent                                                   |
-| Encrypted durable local cache/offline queue                                                                                    | In progress | The restrictive SQLite adapter persists only canonical opaque records, cursors, pending mutations, active batches, and replay receipts; public status, init, unlock/lock, and local group mutation use the global writer lease and profile/sync stores                                                          | Public CLI online-sync and show/copy composition remain                                                              |
+| Encrypted durable local cache/offline queue                                                                                    | In progress | The restrictive SQLite adapter persists only canonical opaque records, cursors, pending mutations, active batches, and replay receipts; public status, init, unlock/lock, and local group/credential mutation use the global writer lease and profile/sync stores                                               | Public CLI online-sync and show/copy composition remain                                                              |
 
 ## Verification and release readiness
 
@@ -84,11 +84,11 @@ show/copy/read or online-sync workflow.
   mutable owned buffers are wiped best effort.
 - A malicious server can delete or withhold records. Retained-device rollback
   anchors detect only the documented monotonic-revision cases.
-- The current public executable deliberately omits enrollment, unlock, online
-  sync, credential reads/mutations, copy, and device workflows. Its locked local
-  status, standalone generators, TOTP, completion, version, and protected
-  portable-key creation are operational, but this narrow evidence must not be
-  interpreted as a supported vault release.
+- The current public executable deliberately omits enrollment, online sync,
+  credential reads, copy, and device workflows. Its locked local status,
+  standalone generators, TOTP, completion, version, protected portable-key
+  creation, and local group/credential mutation are operational, but this narrow
+  evidence must not be interpreted as a supported vault release.
 - Native opt-in evidence in this session is Windows x64 plus a local Mongo replica
   set. The GitHub OS matrix passes portability and packed-install gates, but it
   does not prove macOS/Linux native keychain or clipboard integrations and does
