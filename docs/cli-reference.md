@@ -63,6 +63,7 @@ encrypted mutation against the unlocked local store. Its current surface is:
 | `creds show <group> <credential> [--json]`                 | Available in the built package | Inspects a credential with secret fields and sensitive note content redacted.                       |
 | `creds copy <group> <credential> <field> [--index <n>]`    | Available in the built package | Copies an authorized field value to the guarded clipboard with auto-clear.                          |
 | `creds reveal <group> <credential> <field> [--stdout]`     | Available in the built package | Reveals an authorized field value, denying non-interactive redirection unless `--stdout` is passed. |
+| `creds get <group> <credential> <field> [--reveal]`        | Available in the built package | Gets one field value with redacted default, optional `--reveal` and structured `--json` mode.       |
 
 The generated completion is derived from the static public catalog. It never
 loads runtime vault names, aliases, fields, IDs, or secrets. Inspect output
@@ -176,11 +177,10 @@ The following surfaces are not available from the packed executable and must not
 be treated as released behavior, even where a tested injected descriptor or
 lower-level use case exists:
 
-- direct `reveal`;
 - portable-key import, rotation, recovery, and device lifecycle beyond the
   catalog contracts above;
 - backup, verify, restore, history, and attachment commands;
-- `get`, `set`, `update`, `run`, and the TUI entrypoint.
+- `set`, `update`, `run`, and the TUI entrypoint.
 
 Lower-level implementations exist for several of these concerns, but no
 uncomposed operation is advertised as a working command. The factual feature

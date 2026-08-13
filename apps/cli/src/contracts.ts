@@ -145,6 +145,20 @@ export interface CliUseCasePorts {
     fieldQuery: string,
     options?: { index?: number },
   ): Promise<{ value: string }>;
+  get?(
+    groupQuery: string,
+    credentialQuery: string,
+    fieldQuery: string,
+    options?: { index?: number; reveal?: boolean },
+  ): Promise<{
+    groupName: string;
+    credentialTitle: string;
+    fieldLabel: string;
+    fieldKey: string;
+    fieldType: string;
+    sensitive: boolean;
+    value: string;
+  }>;
 }
 
 export function parseStatus(value: unknown): CliStatus {

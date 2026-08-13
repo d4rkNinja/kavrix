@@ -2056,6 +2056,116 @@ const revealCommand: CliCommandDescriptor = Object.freeze({
   },
 });
 
+const getCommand: CliCommandDescriptor = Object.freeze({
+  name: 'get',
+  description: 'Get one credential field value.',
+  arguments: [
+    { syntax: '<group>', description: 'Group ID, unique name, or alias.' },
+    {
+      syntax: '<credential>',
+      description: 'Credential ID, unique name, or alias within the group.',
+    },
+    {
+      syntax: '<field>',
+      description: 'Field ID, stable key, exact label, or unique prefix.',
+    },
+  ],
+  options: [
+    {
+      flags: '--index <number>',
+      description: 'Select a one-based element from a repeatable field.',
+    },
+    {
+      flags: '--reveal',
+      description: 'Explicitly allow outputting sensitive/secret field value.',
+    },
+    {
+      flags: '--json',
+      description: 'Format response as structured JSON.',
+    },
+    secretBackendOption,
+    backendPassphraseStdinOption,
+  ],
+  execute: async (context, arguments_, options) => {
+    const groupQuery = parseInput(querySchema, arguments_[0], 'group query');
+    const credentialQuery = parseInput(querySchema, arguments_[1], 'credential query');
+    const fieldQuery = parseInput(querySchema, arguments_[2], 'field query');
+    const rawIndex = options['index'];
+    const index =
+      rawIndex === undefined
+        ? undefined
+        : parseInput(fieldIndexOptionSchema, rawIndex, 'field index');
+
+    const reveal = optionBoolean(options, 'reveal');
+    const asJson = optionBoolean(options, 'json');
+
+    const getOpts = {
+      ...(index === undefined ? {} : { index }),
+      ...(reveal ? { reveal: true } : {}),
+    };
+
+    let result: {
+      groupName: string;
+      credentialTitle: string;
+      fieldLabel: string;
+      fieldKey: string;
+      fieldType: string;
+      sensitive: boolean;
+      value: string;
+    };
+
+    if (context.ports?.get !== undefined) {
+      result = await context.ports.get(
+        groupQuery,
+        credentialQuery,
+        fieldQuery,
+        getOpts,
+      );
+    } else {
+      const { executeProductionGet } = await import('./production/get.js');
+      let resultVal: typeof result | undefined;
+      await withUnlockedVault(
+        context,
+        'get',
+        options,
+        async (unlocked, store, rootKey) => {
+          resultVal = await executeProductionGet(
+            {
+              source: store,
+              vaultId: unlocked.profile.vaultId,
+              rootKey,
+            },
+            groupQuery,
+            credentialQuery,
+            fieldQuery,
+            getOpts,
+          );
+        },
+      );
+      if (resultVal === undefined) {
+        throw new Error('Failed to get field value');
+      }
+      result = resultVal;
+    }
+
+    if (asJson) {
+      context.stdout.write(
+        safeJson({
+          group: result.groupName,
+          credential: result.credentialTitle,
+          field: result.fieldLabel,
+          key: result.fieldKey,
+          type: result.fieldType,
+          sensitive: result.sensitive,
+          value: result.value,
+        }) + '\n',
+      );
+    } else {
+      context.stdout.write(`${sanitizeTerminalText(result.value)}\n`);
+    }
+  },
+});
+
 export const CLI_COMMAND_CATALOG: readonly CliCommandDescriptor[] = Object.freeze([
   versionCommand,
   generationCommand,
@@ -2072,6 +2182,7 @@ export const CLI_COMMAND_CATALOG: readonly CliCommandDescriptor[] = Object.freez
   showCommand,
   copyCommand,
   revealCommand,
+  getCommand,
   {
     name: 'device',
     description: 'Manage this device and zero-knowledge enrollment.',
@@ -2234,6 +2345,7 @@ export const PUBLIC_CLI_COMMAND_CATALOG: readonly CliCommandDescriptor[] =
     showCommand,
     copyCommand,
     revealCommand,
+    getCommand,
     completionCommand(() => PUBLIC_CLI_COMMAND_CATALOG),
   ]);
 
