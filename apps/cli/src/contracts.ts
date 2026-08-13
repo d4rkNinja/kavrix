@@ -91,6 +91,21 @@ const cliConflictResolutionResultSchema = z
   })
   .strict();
 
+export const cliConnectRequestSchema = z
+  .object({
+    serverUrl: z.string().min(1).max(2_048),
+    vaultId: vaultIdSchema,
+    deviceId: deviceIdSchema,
+  })
+  .strict();
+
+export const cliConnectResultSchema = z
+  .object({
+    vaultId: vaultIdSchema,
+    deviceId: deviceIdSchema,
+  })
+  .strict();
+
 /**
  * The invite redemption request.
  *
@@ -122,6 +137,8 @@ export type CliConflictResolutionRequest = z.infer<
 export type CliConflictResolutionResult = z.infer<
   typeof cliConflictResolutionResultSchema
 >;
+export type CliConnectRequest = z.infer<typeof cliConnectRequestSchema>;
+export type CliConnectResult = z.infer<typeof cliConnectResultSchema>;
 export type CliShowResult = CredentialShowProjection;
 export type CliInviteJoinRequest = z.infer<typeof cliInviteJoinRequestSchema>;
 export type CliInviteJoinResult = z.infer<typeof cliInviteJoinResultSchema>;
@@ -200,6 +217,7 @@ export interface CliUseCasePorts {
   resolveConflict?(
     request: CliConflictResolutionRequest,
   ): Promise<CliConflictResolutionResult>;
+  connect?(request: CliConnectRequest): Promise<CliConnectResult>;
 }
 
 export function parseStatus(value: unknown): CliStatus {
@@ -220,6 +238,14 @@ export function parseConflictResolutionResult(
   value: unknown,
 ): CliConflictResolutionResult {
   return cliConflictResolutionResultSchema.parse(value);
+}
+
+export function parseConnectRequest(value: unknown): CliConnectRequest {
+  return cliConnectRequestSchema.parse(value);
+}
+
+export function parseConnectResult(value: unknown): CliConnectResult {
+  return cliConnectResultSchema.parse(value);
 }
 
 export function parseShowResult(value: unknown): CliShowResult {

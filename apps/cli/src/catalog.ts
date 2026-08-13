@@ -3,8 +3,10 @@ import type { Writable } from 'node:stream';
 import { Command } from 'commander';
 import {
   controlListPageQuerySchema,
+  deviceIdSchema,
   type GroupPayload,
   type ItemPayload,
+  vaultIdSchema,
 } from '@kavrix/schemas';
 import { z } from 'zod';
 import type { VaultRootKey } from '@kavrix/crypto';
@@ -352,6 +354,55 @@ const initializationCommand: CliCommandDescriptor = Object.freeze({
         : startVaultInitialization(deps, secrets, startOptions, serverUrl),
     );
     context.stdout.write(renderInitializationReceipt(receipt));
+  },
+});
+const connectCommand: CliCommandDescriptor = Object.freeze({
+  name: 'connect',
+  description: 'Connect an empty local data home to an existing enrolled vault.',
+  options: [
+    serverOption,
+    vaultOption,
+    {
+      flags: '--device <device-id>',
+      description: 'Existing enrolled device ID for the opaque vault.',
+    },
+    jsonOption,
+    secretBackendOption,
+    backendPassphraseStdinOption,
+  ],
+  execute: async (context, _arguments, options) => {
+    const configuredServer =
+      optionString(options, 'server') ??
+      (context.environment ?? process.env)['CREDS_SERVER_URL'];
+    if (configuredServer === undefined || configuredServer.length === 0) {
+      throw new CliUsageError('A server URL is required.');
+    }
+    const { parseConnectRequest, parseConnectResult } = await import('./contracts.js');
+    const request = parseConnectRequest({
+      serverUrl: configuredServer,
+      vaultId: parseInputString(options, 'vault', (value) =>
+        vaultIdSchema.parse(value),
+      ),
+      deviceId: parseInputString(options, 'device', (value) =>
+        deviceIdSchema.parse(value),
+      ),
+    });
+    let rawResult: unknown;
+    if (context.ports?.connect !== undefined) {
+      rawResult = await context.ports.connect(request);
+    } else {
+      const { executeProductionConnect } = await import('./production/connect.js');
+      rawResult = await executeProductionConnect({
+        environment: context.environment ?? process.env,
+        secrets: secretInput(context, 'connect'),
+        backendPolicy: parseStatusBackendPolicy(options),
+        request,
+      });
+    }
+    const { renderConnect } = await import('./render.js');
+    context.stdout.write(
+      renderConnect(parseConnectResult(rawResult), optionBoolean(options, 'json')),
+    );
   },
 });
 const statusCommand: CliCommandDescriptor = Object.freeze({
@@ -2297,6 +2348,7 @@ export const CLI_COMMAND_CATALOG: readonly CliCommandDescriptor[] = Object.freez
   totpCommand,
   keyCommand,
   initializationCommand,
+  connectCommand,
   unlockCommand,
   lockCommand,
   statusCommand,
@@ -2461,6 +2513,7 @@ export const PUBLIC_CLI_COMMAND_CATALOG: readonly CliCommandDescriptor[] =
     totpCommand,
     keyCommand,
     initializationCommand,
+    connectCommand,
     unlockCommand,
     lockCommand,
     statusCommand,

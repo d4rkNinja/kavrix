@@ -33,8 +33,8 @@ never command arguments, output, requests, or durable profile fields.
 
 Profile persistence precedes synchronization after credentials are locally and
 remotely validated. A transient sync failure therefore leaves a valid profile
-   and retryable opaque local state; it does not create a second remote vault or
-   mutate remote records.
+and retryable opaque local state; it does not create a second remote vault or
+mutate remote records.
 
 ## CLI contract
 

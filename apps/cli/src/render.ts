@@ -10,6 +10,7 @@ import {
 } from '@kavrix/schemas';
 
 import type {
+  CliConnectResult,
   CliConflict,
   CliConflictResolutionResult,
   CliShowResult,
@@ -85,6 +86,15 @@ export function renderConflictResolution(
   };
   if (json) return safeJson(safe);
   return `Conflict ${safe.conflictId} resolved with ${safe.strategy}.\n`;
+}
+
+export function renderConnect(result: CliConnectResult, json: boolean): string {
+  const safe = {
+    vaultId: sanitizeTerminalText(result.vaultId),
+    deviceId: sanitizeTerminalText(result.deviceId),
+  };
+  if (json) return safeJson(safe);
+  return `Connected vault ${safe.vaultId} on device ${safe.deviceId}.\n`;
 }
 
 export function renderShow(result: CliShowResult, json: boolean): string {

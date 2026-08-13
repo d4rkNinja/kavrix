@@ -544,6 +544,41 @@ describe('CLI command shell', () => {
     expect(emitted).not.toContain(PORTABLE_KEY);
   });
 
+  it('connects an existing vault through the injected use case and renders only identity', async () => {
+    const connect = vi.fn(() =>
+      Promise.resolve({
+        vaultId: vaultIdSchema.parse('vault.connect'),
+        deviceId: deviceIdSchema.parse('device.connect'),
+      }),
+    );
+    const result = await execute(
+      [
+        'connect',
+        '--server',
+        'https://sync.example/',
+        '--vault',
+        'vault.connect',
+        '--device',
+        'device.connect',
+        '--json',
+      ],
+      { connect },
+    );
+
+    expect(result.exitCode).toBe(CLI_EXIT_CODES.success);
+    expect(connect).toHaveBeenCalledWith({
+      serverUrl: 'https://sync.example/',
+      vaultId: 'vault.connect',
+      deviceId: 'device.connect',
+    });
+    expect(JSON.parse(result.stdout)).toEqual({
+      vaultId: 'vault.connect',
+      deviceId: 'device.connect',
+    });
+    expect(result.stdout).not.toContain(TOKEN);
+    expect(result.stderr).toBe('');
+  });
+
   it('keeps help and completions static and free of runtime values', async () => {
     const runtimeCanary = 'runtime-vault-secret-canary';
     const show = vi.fn(() => Promise.reject(new Error(runtimeCanary)));
@@ -574,8 +609,8 @@ describe('CLI command shell', () => {
 
   it('limits the production bin catalog to commands with real static behavior', async () => {
     const publishedCommands =
-      'version generate totp key init unlock lock status group credential field note show copy reveal get sync completion';
-    const unavailableCommands = /\b(?:device)\b/u;
+      'version generate totp key init connect unlock lock status group credential field note show copy reveal get sync completion';
+    const unavailableCommands = /^\x20{2}device(?:\s|\[|$)/mu;
     expect(PUBLIC_CLI_COMMAND_CATALOG.map(({ name }) => name)).toEqual(
       publishedCommands.split(' '),
     );
