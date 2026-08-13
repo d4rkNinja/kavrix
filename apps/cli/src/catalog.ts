@@ -2699,7 +2699,7 @@ const syncCommand: CliCommandDescriptor = Object.freeze({
 
 const backupCommand: CliCommandDescriptor = Object.freeze({
   name: 'backup',
-  description: 'Create authenticated encrypted vault archives.',
+  description: 'Create and verify authenticated encrypted vault archives.',
   children: [
     {
       name: 'create',
@@ -2748,6 +2748,58 @@ const backupCommand: CliCommandDescriptor = Object.freeze({
         context.stdout.write(
           renderBackupCreate(
             parseBackupCreateResult(raw),
+            optionBoolean(options, 'json'),
+          ),
+        );
+      },
+    },
+    {
+      name: 'verify',
+      description: 'Authenticate one complete archive without publishing it.',
+      options: [
+        {
+          flags: '--file <path>',
+          description: 'Existing archive path; it is opened read-only.',
+        },
+        vaultOption,
+        jsonOption,
+        secretBackendOption,
+        backendPassphraseStdinOption,
+      ],
+      execute: async (context, _arguments, options) => {
+        const { parseBackupVerifyRequest, parseBackupVerifyResult } =
+          await import('./contracts.js');
+        const request = parseBackupVerifyRequest({
+          source: requiredOption(options, 'file', 'backup archive'),
+          ...(options['vault'] === undefined
+            ? {}
+            : {
+                vaultId: parseInputString(options, 'vault', (value) =>
+                  vaultIdSchema.parse(value),
+                ),
+              }),
+        });
+        let raw: unknown;
+        if (context.ports?.verifyBackup !== undefined) {
+          raw = await context.ports.verifyBackup(request);
+        } else {
+          if (context.environment === undefined) {
+            throw new CliUnavailableError('backup verify');
+          }
+          const { executeProductionBackupVerify } =
+            await import('./production/backups.js');
+          raw = await executeProductionBackupVerify({
+            environment: context.environment,
+            secrets: secretInput(context, 'backup verify'),
+            backendPolicy: parseStatusBackendPolicy(options),
+            source: request.source,
+            ...(request.vaultId === undefined ? {} : { vaultId: request.vaultId }),
+          });
+        }
+        const { renderBackupVerify } = await import('./render.js');
+        context.stdout.write(
+          renderBackupVerify(
+            parseBackupVerifyResult(raw),
             optionBoolean(options, 'json'),
           ),
         );

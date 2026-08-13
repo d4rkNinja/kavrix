@@ -14,6 +14,7 @@ import {
 import type {
   CliConnectResult,
   CliBackupCreateResult,
+  CliBackupVerifyResult,
   CliConflict,
   CliConflictResolutionResult,
   CliKeySlot,
@@ -126,6 +127,23 @@ export function renderBackupCreate(
   };
   if (json) return safeJson(safe);
   return `Encrypted backup created for vault ${safe.vaultId} (${String(safe.recordCount)} records, ${String(safe.bytes)} bytes).\n`;
+}
+
+export function renderBackupVerify(
+  result: CliBackupVerifyResult,
+  json: boolean,
+): string {
+  const safe = {
+    action: result.action,
+    vaultId: sanitizeTerminalText(result.vaultId),
+    recordCount: result.recordCount,
+    bytes: result.bytes,
+    schemaVersion: result.schemaVersion,
+    createdAt: result.createdAt,
+    restoreSessionId: sanitizeTerminalText(result.restoreSessionId),
+  };
+  if (json) return safeJson(safe);
+  return `Encrypted backup verified for vault ${safe.vaultId} (${String(safe.recordCount)} records, ${String(safe.bytes)} bytes; created ${safe.createdAt}).\n`;
 }
 
 export function renderDeviceJoin(result: CliRecoverResult, json: boolean): string {

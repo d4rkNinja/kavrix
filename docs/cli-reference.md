@@ -89,6 +89,7 @@ encrypted mutation against the unlocked local store. Its current surface is:
 | `creds get <group> <credential> <field> [--reveal]`                               | Available in the built package | Gets one field value with redacted default, optional `--reveal` and structured `--json` mode.                                                                                                                                                                                       |
 | `creds sync [--json]`                                                             | Available in the built package | Synchronizes vault data with server and prints updated status.                                                                                                                                                                                                                      |
 | `creds backup create --file <path> [--vault <vault-id>] [--json]`                 | Available in the built package | Creates one bounded authenticated archive from the enrolled local opaque cache; destination validation occurs before unlock, existing files/links are refused, and the receipt contains only vault ID, record count, and byte count. Unsupported local record families fail closed. |
+| `creds backup verify --file <path> [--vault <vault-id>] [--json]`                 | Available in the built package | Opens an existing protected archive read-only, authenticates its complete bounded framing and graph with the active remembered device slot, and emits only a safe verification summary. It never stages or publishes.                                                               |
 
 The generated completion is derived from the static public catalog. It never
 loads runtime vault names, aliases, fields, IDs, or secrets. Inspect output
@@ -119,6 +120,14 @@ user-only directory. It does not accept a key or passphrase in argv, and it
 does not print archive contents or unlock material. The command currently
 backs up the enrolled local opaque vault/group/item state; attachments,
 history, and audit semantics remain gated by the later backup issues.
+
+`backup verify` also requires `--file`, but the path must already name one
+protected regular archive. It validates the source before unlock, then uses the
+active remembered device slot to authenticate the complete bounded archive. It
+does not create temporary staging, publish records, or print the archive path,
+contents, or unlock material. Outer authentication of history and audit records
+is supported, but the command fails with `BACKUP_DECRYPTABILITY_UNSUPPORTED`
+instead of claiming those families are semantically verified.
 
 `key slot` commands require an explicit `--reauth` method. Portable, recovery,
 and passphrase credentials are accepted through masked input, bounded stdin, or
@@ -251,7 +260,7 @@ lower-level use case exists:
 
 - device-token lifecycle and remember/forget beyond the composed invite, join,
   `key slot`, and `key rotate` commands;
-- backup, verify, restore, history, and attachment commands;
+- backup restore, history, and attachment commands;
 - `set`, `update`, `run`, and the TUI entrypoint.
 
 Lower-level implementations exist for several of these concerns, but no
@@ -383,6 +392,6 @@ chunk loading, and packed-bin behavior have automated tests. A Windows packed
 fixture installs the npm archive, invokes the generated shim, and reads real
 canonical SQLite/sealed status state; it does not prove native-keychain behavior
 or an unlocked vault operation. The public executable does not yet compose
-enrollment, unlock, online sync, credential reads, clipboard, TUI, or backup use
-cases. Cross-platform shell completion packaging is prepared, but a published
+enrollment, unlock, online sync, credential reads, clipboard, TUI, or semantic
+backup restore use cases. Cross-platform shell completion packaging is prepared, but a published
 package and final target-platform release evidence do not exist.

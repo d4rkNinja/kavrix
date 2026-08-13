@@ -16,6 +16,7 @@ import {
   keyVersionSchema,
   MAX_VAULT_KEY_SLOTS,
   portableKeyRotationStateSchema,
+  sha256DigestSchema,
   schemaVersionSchema,
   timestampSchema,
   vaultIdSchema,
@@ -74,6 +75,18 @@ export const cliStatusSchema = z
   });
 
 const cliConflictIdSchema = z.string().min(16).max(256);
+const cliBackupPathSchema = z
+  .string()
+  .min(1)
+  .max(32_768)
+  .refine(
+    (value) =>
+      !Array.from(value).some((character) => {
+        const codePoint = character.codePointAt(0);
+        return codePoint !== undefined && (codePoint <= 31 || codePoint === 127);
+      }),
+    { error: 'The backup path contains a control character.' },
+  );
 const cliConflictSchema = z
   .object({
     vaultId: vaultIdSchema,
@@ -134,18 +147,14 @@ export const cliRecoverResultSchema = z
 
 export const cliBackupCreateRequestSchema = z
   .object({
-    destination: z
-      .string()
-      .min(1)
-      .max(32_768)
-      .refine(
-        (value) =>
-          !Array.from(value).some((character) => {
-            const codePoint = character.codePointAt(0);
-            return codePoint !== undefined && (codePoint <= 31 || codePoint === 127);
-          }),
-        { error: 'The backup destination path contains a control character.' },
-      ),
+    destination: cliBackupPathSchema,
+    vaultId: vaultIdSchema.optional(),
+  })
+  .strict();
+
+export const cliBackupVerifyRequestSchema = z
+  .object({
+    source: cliBackupPathSchema,
     vaultId: vaultIdSchema.optional(),
   })
   .strict();
@@ -160,6 +169,22 @@ export const cliBackupCreateResultSchema = z
       .int()
       .positive()
       .max(128 * 1024 * 1024),
+  })
+  .strict();
+
+export const cliBackupVerifyResultSchema = z
+  .object({
+    action: z.literal('verified'),
+    vaultId: vaultIdSchema,
+    recordCount: z.number().int().positive().max(10_000),
+    bytes: z
+      .number()
+      .int()
+      .positive()
+      .max(128 * 1024 * 1024),
+    schemaVersion: schemaVersionSchema,
+    createdAt: timestampSchema,
+    restoreSessionId: sha256DigestSchema,
   })
   .strict();
 
@@ -276,6 +301,8 @@ export type CliRecoverRequest = z.infer<typeof cliRecoverRequestSchema>;
 export type CliRecoverResult = z.infer<typeof cliRecoverResultSchema>;
 export type CliBackupCreateRequest = z.infer<typeof cliBackupCreateRequestSchema>;
 export type CliBackupCreateResult = z.infer<typeof cliBackupCreateResultSchema>;
+export type CliBackupVerifyRequest = z.infer<typeof cliBackupVerifyRequestSchema>;
+export type CliBackupVerifyResult = z.infer<typeof cliBackupVerifyResultSchema>;
 export type CliKeySlot = z.infer<typeof cliKeySlotSchema>;
 export type CliKeySlotResult = z.infer<typeof cliKeySlotResultSchema>;
 export type CliPortableKeyRotationListing = z.infer<
@@ -381,6 +408,7 @@ export interface CliUseCasePorts {
     portableKey: string,
   ): Promise<CliRecoverResult>;
   createBackup?(request: CliBackupCreateRequest): Promise<CliBackupCreateResult>;
+  verifyBackup?(request: CliBackupVerifyRequest): Promise<CliBackupVerifyResult>;
   listKeySlots?(): Promise<readonly CliKeySlot[]>;
   createKeySlot?(request: unknown): Promise<CliKeySlotResult>;
   disableKeySlot?(slotId: string): Promise<CliKeySlotResult>;
@@ -429,6 +457,14 @@ export function parseBackupCreateRequest(value: unknown): CliBackupCreateRequest
 
 export function parseBackupCreateResult(value: unknown): CliBackupCreateResult {
   return cliBackupCreateResultSchema.parse(value);
+}
+
+export function parseBackupVerifyRequest(value: unknown): CliBackupVerifyRequest {
+  return cliBackupVerifyRequestSchema.parse(value);
+}
+
+export function parseBackupVerifyResult(value: unknown): CliBackupVerifyResult {
+  return cliBackupVerifyResultSchema.parse(value);
 }
 
 export function parseShowResult(value: unknown): CliShowResult {

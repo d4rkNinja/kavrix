@@ -2,11 +2,13 @@
 
 Kavrix now has an authenticated encrypted-backup format, a production
 whole-vault MongoDB snapshot source, a production MongoDB restore store, and
-`creds backup create`. The create command is bounded and create-only: it
-validates a restrictive destination before unlock, streams the authenticated
-archive through a hidden sibling, fsyncs it, and publishes it without
-overwriting an existing file. `creds backup verify` and `creds backup restore`
-remain reserved for the next child issues.
+the public `creds backup create` and `creds backup verify` commands. Create is
+bounded and create-only: it validates a restrictive destination before unlock,
+streams the authenticated archive through a hidden sibling, fsyncs it, and
+publishes it without overwriting an existing file. Verify reopens an existing
+protected archive read-only, authenticates its complete bounded framing and
+graph, and never stages or publishes records. `creds backup restore` remains
+reserved for the next child issue.
 
 The implemented library entry points are in the private workspace package
 [`@kavrix/import-export`](../packages/import-export/src/index.ts). The MongoDB
@@ -107,14 +109,15 @@ causes to an operator-facing log.
 
 ## Implemented library operations
 
-| API                                                                                 | Current behavior                                                                                                                                                                                  |
-| ----------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `createEncryptedBackup(input, vaultRootKey)`                                        | Streams the header, vault, ordered encrypted entries, and footer while enforcing bounds and the canonical graph.                                                                                  |
-| `verifyEncryptedBackup(source, vaultRootKey, expectedVaultId, limits?)`             | Authenticates and validates the complete stream without publishing records.                                                                                                                       |
-| `restoreEncryptedBackup(source, expectedVaultId, store, openVerification, limits?)` | Authenticates and stages the archive, freshly opens one explicit archived slot, verifies the exact sealed readback to EOF, publishes with the strict receipt, and finalizes.                      |
-| `MongoBackupSource.open(vaultId, limits)`                                           | Opens a one-shot, transactionally consistent vault snapshot with a parsed `vault` and ordered non-vault `records` stream.                                                                         |
-| `MongoBackupRestoreStore.open(sessionId, limits)`                                   | Opens or resumes hidden, bounded MongoDB staging for an authenticated restore.                                                                                                                    |
-| `creds backup create --file <path> [--vault <vault-id>] [--json]`                   | Validates a new protected destination before unlock, streams the bounded authenticated local opaque snapshot, and emits only a redacted count/byte receipt. Existing files and links are refused. |
+| API                                                                                 | Current behavior                                                                                                                                                                                                                                                              |
+| ----------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `createEncryptedBackup(input, vaultRootKey)`                                        | Streams the header, vault, ordered encrypted entries, and footer while enforcing bounds and the canonical graph.                                                                                                                                                              |
+| `verifyEncryptedBackup(source, vaultRootKey, expectedVaultId, limits?)`             | Authenticates and validates the complete stream without publishing records.                                                                                                                                                                                                   |
+| `restoreEncryptedBackup(source, expectedVaultId, store, openVerification, limits?)` | Authenticates and stages the archive, freshly opens one explicit archived slot, verifies the exact sealed readback to EOF, publishes with the strict receipt, and finalizes.                                                                                                  |
+| `MongoBackupSource.open(vaultId, limits)`                                           | Opens a one-shot, transactionally consistent vault snapshot with a parsed `vault` and ordered non-vault `records` stream.                                                                                                                                                     |
+| `MongoBackupRestoreStore.open(sessionId, limits)`                                   | Opens or resumes hidden, bounded MongoDB staging for an authenticated restore.                                                                                                                                                                                                |
+| `creds backup create --file <path> [--vault <vault-id>] [--json]`                   | Validates a new protected destination before unlock, streams the bounded authenticated local opaque snapshot, and emits only a redacted count/byte receipt. Existing files and links are refused.                                                                             |
+| `creds backup verify --file <path> [--vault <vault-id>] [--json]`                   | Validates an existing protected source before unlock, authenticates its complete bounded archive with the active remembered device slot, rejects unsupported history/audit semantics with a documented code, and emits only a redacted summary. It never stages or publishes. |
 
 The verification factory owns protected credential input and selects one exact
 current portable-key, passphrase, or recovery-key slot from the archived vault.
@@ -214,7 +217,11 @@ perform the following library-level sequence:
    protected highest-seen vault revision when available.
 4. `verifyEncryptedBackup` may be used for authentication-only inspection. It
    accepts outer-valid opaque history/audit entries but proves no inner
-   decryptability. Reopen the archive for semantic restore.
+   decryptability. The public `creds backup verify` command performs this same
+   non-publishing check after protected source preflight and remembered-device
+   unlock; unsupported history/audit semantics fail with
+   `BACKUP_DECRYPTABILITY_UNSUPPORTED`. Reopen the archive for semantic
+   restore.
 5. Create and initialize `MongoBackupRestoreStore`, then call
    `restoreEncryptedBackup` with explicit Mongo-compatible limits.
 6. On `BACKUP_COMMIT_UNCERTAIN`, preserve the isolated target and exact archive;
@@ -230,8 +237,11 @@ perform the following library-level sequence:
 9. Compare the restored revision with protected highest-seen local rollback
    anchors. The archive authentication proves integrity, not freshness.
 
-The source exists, but protected unlock/file handling and an operator command do
-not. Do not improvise those boundaries against production data.
+The source and authentication-only verification command exist, but protected
+semantic restore composition does not. The public create command currently
+uses the durable local opaque cache and refuses unsupported families; the
+complete Mongo snapshot remains in the storage/operator boundary. Do not
+improvise those boundaries against production data.
 
 ## Bounds
 

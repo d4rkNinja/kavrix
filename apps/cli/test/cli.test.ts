@@ -9,6 +9,8 @@ import {
   inviteIdSchema,
   publicDeviceRecordSchema,
   publicInviteRecordSchema,
+  schemaVersionSchema,
+  sha256DigestSchema,
   vaultIdSchema,
 } from '@kavrix/schemas';
 import { Readable, Writable } from 'node:stream';
@@ -1236,6 +1238,53 @@ describe('CLI command shell', () => {
     const missing = await execute(['backup', 'create'], { createBackup });
     expect(missing.exitCode).toBe(CLI_EXIT_CODES.usage);
     expect(createBackup).toHaveBeenCalledTimes(2);
+  });
+
+  it('verifies a backup through the injected port without printing its path', async () => {
+    const verifyBackup = vi.fn(() =>
+      Promise.resolve({
+        action: 'verified' as const,
+        vaultId: vaultIdSchema.parse('vault.primary'),
+        recordCount: 2,
+        bytes: 512,
+        schemaVersion: schemaVersionSchema.parse(1),
+        createdAt: '2026-08-14T00:00:00.000Z',
+        restoreSessionId: sha256DigestSchema.parse('A'.repeat(43)),
+      }),
+    );
+
+    const text = await execute(
+      ['backup', 'verify', '--file', 'D:\\backups\\vault.cvkx'],
+      { verifyBackup },
+    );
+    expect(text).toEqual({
+      exitCode: CLI_EXIT_CODES.success,
+      stdout:
+        'Encrypted backup verified for vault vault.primary (2 records, 512 bytes; created 2026-08-14T00:00:00.000Z).\n',
+      stderr: '',
+    });
+    expect(verifyBackup).toHaveBeenCalledWith({
+      source: 'D:\\backups\\vault.cvkx',
+    });
+
+    const json = await execute(
+      ['backup', 'verify', '--file', 'D:\\backups\\vault.cvkx', '--json'],
+      { verifyBackup },
+    );
+    expect(JSON.parse(json.stdout)).toEqual({
+      action: 'verified',
+      vaultId: 'vault.primary',
+      recordCount: 2,
+      bytes: 512,
+      schemaVersion: 1,
+      createdAt: '2026-08-14T00:00:00.000Z',
+      restoreSessionId: 'A'.repeat(43),
+    });
+    expect(json.stdout).not.toContain('D:\\backups');
+
+    const missing = await execute(['backup', 'verify'], { verifyBackup });
+    expect(missing.exitCode).toBe(CLI_EXIT_CODES.usage);
+    expect(verifyBackup).toHaveBeenCalledTimes(2);
   });
 });
 
