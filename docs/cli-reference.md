@@ -55,6 +55,11 @@ encrypted mutation against the unlocked local store. Its current surface is:
 | `creds field archive <group> <credential> <field-key>`     | Available in the built package | Archives a field value into archivedFieldValues.                                                   |
 | `creds field restore <group> <credential> <field-key>`     | Available in the built package | Restores an archived field value back to active field values.                                      |
 | `creds field remove <group> <credential> <key> --force`    | Available in the built package | Permanently removes an item-specific field definition and value.                                   |
+| `creds note add <group> [cred] [title] [opts]`             | Available in the built package | Adds an encrypted note to a group or credential using positional text or `--content-stdin`.        |
+| `creds note update <group> [cred] <note> [opts]`           | Available in the built package | Updates note title, content, sensitivity, or pin state.                                            |
+| `creds note archive <group> [cred] <note>`                 | Available in the built package | Sets archivedAt timestamp on a group or credential note.                                           |
+| `creds note restore <group> [cred] <note>`                 | Available in the built package | Restores an archived note back to active notes.                                                    |
+| `creds note remove <group> [cred] <note> --force`          | Available in the built package | Permanently removes a note with an explicit `--force` authorization.                               |
 
 The generated completion is derived from the static public catalog. It never
 loads runtime vault names, aliases, fields, IDs, or secrets. Inspect output
@@ -169,7 +174,6 @@ be treated as released behavior, even where a tested injected descriptor or
 lower-level use case exists:
 
 - direct `show`, `copy`, and `reveal`;
-- credential note CRUD;
 - portable-key import, rotation, recovery, and device lifecycle beyond the
   catalog contracts above;
 - backup, verify, restore, history, and attachment commands;

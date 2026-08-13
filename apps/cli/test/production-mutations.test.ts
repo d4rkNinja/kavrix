@@ -24,15 +24,20 @@ import { describe, expect, it, beforeEach, afterEach } from 'vitest';
 import { openProductionEnvironment } from '../src/production/environment.js';
 import {
   executeProductionAddField,
+  executeProductionAddNote,
   executeProductionArchiveEntity,
   executeProductionArchiveField,
+  executeProductionArchiveNote,
   executeProductionCreateCredential,
   executeProductionCreateGroup,
   executeProductionRemoveField,
+  executeProductionRemoveNote,
   executeProductionRestoreEntity,
   executeProductionRestoreField,
+  executeProductionRestoreNote,
   executeProductionSetField,
   executeProductionUpdateField,
+  executeProductionUpdateNote,
 } from '../src/production/mutations.js';
 import { resolveCliDataPaths } from '../src/production/paths.js';
 import { ensureDataDirectory } from '../src/production/runtime-adapters.js';
@@ -276,6 +281,45 @@ describe('production CLI mutation adapters', () => {
         groupQuery: 'Infrastructure',
         credentialQuery: 'AWS Production Root',
         fieldKey: 'api_token',
+      });
+
+      // 9. Add Note
+      const noteAddResult = await executeProductionAddNote(mutationOptions, {
+        groupQuery: 'Infrastructure',
+        credentialQuery: 'AWS Production Root',
+        title: 'Emergency Rotation Procedure',
+        content: 'Steps to rotate root credentials',
+        isSensitive: true,
+      });
+      expect(noteAddResult.title).toBe('Emergency Rotation Procedure');
+
+      // 10. Update Note
+      await executeProductionUpdateNote(mutationOptions, {
+        groupQuery: 'Infrastructure',
+        credentialQuery: 'AWS Production Root',
+        noteQuery: 'Emergency Rotation Procedure',
+        title: 'Updated Rotation SOP',
+      });
+
+      // 11. Archive Note
+      await executeProductionArchiveNote(mutationOptions, {
+        groupQuery: 'Infrastructure',
+        credentialQuery: 'AWS Production Root',
+        noteQuery: 'Updated Rotation SOP',
+      });
+
+      // 12. Restore Note
+      await executeProductionRestoreNote(mutationOptions, {
+        groupQuery: 'Infrastructure',
+        credentialQuery: 'AWS Production Root',
+        noteQuery: 'Updated Rotation SOP',
+      });
+
+      // 13. Remove Note
+      await executeProductionRemoveNote(mutationOptions, {
+        groupQuery: 'Infrastructure',
+        credentialQuery: 'AWS Production Root',
+        noteQuery: 'Updated Rotation SOP',
       });
 
       // 9. Archive Credential

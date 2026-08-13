@@ -23,17 +23,23 @@ import { z } from 'zod';
 
 import type {
   CliAddFieldRequest,
+  CliAddNoteRequest,
   CliArchiveEntityRequest,
   CliArchiveFieldRequest,
+  CliArchiveNoteRequest,
   CliCreateCredentialRequest,
   CliCreateGroupRequest,
   CliCredentialMutationResult,
   CliGroupMutationResult,
+  CliNoteMutationResult,
   CliRemoveFieldRequest,
+  CliRemoveNoteRequest,
   CliRestoreEntityRequest,
   CliRestoreFieldRequest,
+  CliRestoreNoteRequest,
   CliSetFieldRequest,
   CliUpdateFieldRequest,
+  CliUpdateNoteRequest,
 } from './mutation-contracts.js';
 
 export const cliStatusSchema = z
@@ -128,6 +134,11 @@ export interface CliUseCasePorts {
   archiveField?(request: CliArchiveFieldRequest): Promise<void>;
   restoreField?(request: CliRestoreFieldRequest): Promise<void>;
   removeField?(request: CliRemoveFieldRequest): Promise<void>;
+  addNote?(request: CliAddNoteRequest): Promise<CliNoteMutationResult>;
+  updateNote?(request: CliUpdateNoteRequest): Promise<CliNoteMutationResult>;
+  archiveNote?(request: CliArchiveNoteRequest): Promise<void>;
+  restoreNote?(request: CliRestoreNoteRequest): Promise<void>;
+  removeNote?(request: CliRemoveNoteRequest): Promise<void>;
 }
 
 export function parseStatus(value: unknown): CliStatus {

@@ -41,7 +41,13 @@ export type CliFeature =
   | 'field update'
   | 'field archive'
   | 'field restore'
-  | 'field remove';
+  | 'field remove'
+  | 'note add'
+  | 'note list'
+  | 'note update'
+  | 'note archive'
+  | 'note restore'
+  | 'note remove';
 
 export class CliUsageError extends Error {
   readonly code = 'CLI_USAGE' as const;

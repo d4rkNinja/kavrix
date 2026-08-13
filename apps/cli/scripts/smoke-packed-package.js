@@ -497,6 +497,7 @@ function assertInstalledPublicCommandCatalog(shim) {
     'group',
     'credential',
     'field',
+    'note',
     'completion',
   ];
   const help = runCommandShim(shim, ['--help']);

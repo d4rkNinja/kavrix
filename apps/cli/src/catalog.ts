@@ -1477,6 +1477,377 @@ const fieldCommand: CliCommandDescriptor = Object.freeze({
   ],
 });
 
+const noteCommand: CliCommandDescriptor = Object.freeze({
+  name: 'note',
+  description: 'Manage encrypted group and credential notes.',
+  options: [secretBackendOption, backendPassphraseStdinOption],
+  children: [
+    {
+      name: 'add',
+      description: 'Add an encrypted note to a group or credential.',
+      arguments: [
+        { syntax: '<group>', description: 'Group ID, unique name, or alias.' },
+        {
+          syntax: '[credential]',
+          description: 'Optional credential ID, unique name, or alias.',
+        },
+      ],
+      options: [
+        { flags: '--title <text>', description: 'Note title.' },
+        { flags: '--content <text>', description: 'Initial text content.' },
+        {
+          flags: SECRET_INPUT_OPTIONS.noteContent.flag,
+          description: SECRET_INPUT_OPTIONS.noteContent.description,
+        },
+        { flags: '--sensitive', description: 'Mark note as sensitive.' },
+        { flags: '--no-sensitive', description: 'Mark note as non-sensitive.' },
+        { flags: '--pinned', description: 'Pin note to top.' },
+        secretBackendOption,
+        backendPassphraseStdinOption,
+      ],
+      execute: async (context, arguments_, options) => {
+        const groupQuery = requiredArgument(arguments_[0], 'group query');
+        const secondArg = arguments_[1];
+        const titleOption = optionString(options, 'title');
+
+        let credentialQuery: string | undefined;
+        let title: string;
+
+        if (titleOption !== undefined) {
+          credentialQuery = secondArg;
+          title = titleOption;
+        } else if (secondArg !== undefined) {
+          title = secondArg;
+        } else {
+          throw new CliUsageError(
+            'Provide a note title via positional argument or --title.',
+          );
+        }
+
+        const textContent = optionString(options, 'content');
+        const fromStdin = optionBoolean(options, 'contentStdin');
+
+        let secretBytes: Uint8Array | undefined;
+        if (fromStdin) {
+          const acquired = await secretInput(context, 'note add').read({
+            kind: 'note-content',
+            fromStdin: true,
+          });
+          secretBytes = Buffer.from(acquired, 'utf8');
+        } else if (textContent !== undefined) {
+          secretBytes = Buffer.from(textContent, 'utf8');
+        }
+
+        const sensitiveFlag = options['sensitive'];
+        const sensitive =
+          typeof sensitiveFlag === 'boolean' ? sensitiveFlag : undefined;
+        const pinnedFlag = options['pinned'];
+        const pinned = typeof pinnedFlag === 'boolean' ? pinnedFlag : undefined;
+
+        const contentString = secretBytes
+          ? Buffer.from(secretBytes).toString('utf8')
+          : undefined;
+
+        const { cliAddNoteRequestSchema } = await import('./mutation-contracts.js');
+        const request = cliAddNoteRequestSchema.parse({
+          groupQuery,
+          ...(credentialQuery ? { credentialQuery } : {}),
+          title,
+          ...(contentString !== undefined ? { content: contentString } : {}),
+          ...(sensitive !== undefined ? { isSensitive: sensitive } : {}),
+          ...(pinned !== undefined ? { isPinned: pinned } : {}),
+        });
+
+        try {
+          if (context.ports?.addNote !== undefined) {
+            await context.ports.addNote(request);
+          } else {
+            const { executeProductionAddNote } =
+              await import('./production/mutations.js');
+            await withUnlockedVault(
+              context,
+              'note add',
+              options,
+              async (unlocked, store, rootKey) =>
+                executeProductionAddNote(
+                  {
+                    source: store,
+                    queue: store,
+                    vaultId: unlocked.profile.vaultId,
+                    rootKey,
+                  },
+                  request,
+                ),
+            );
+          }
+          const targetStr = credentialQuery
+            ? `credential "${credentialQuery}"`
+            : `group "${groupQuery}"`;
+          context.stdout.write(`Note "${title}" added to ${targetStr}.\n`);
+        } finally {
+          if (secretBytes !== undefined) zeroizeBytes(secretBytes);
+        }
+      },
+    },
+    {
+      name: 'update',
+      description: 'Update an encrypted note.',
+      arguments: [
+        { syntax: '<group>', description: 'Group ID, unique name, or alias.' },
+        { syntax: '<credential-or-note>', description: 'Credential ID or note query.' },
+        { syntax: '[note]', description: 'Note ID, title, or unique prefix.' },
+      ],
+      options: [
+        { flags: '--title <text>', description: 'Updated note title.' },
+        { flags: '--content <text>', description: 'Updated text content.' },
+        {
+          flags: SECRET_INPUT_OPTIONS.noteContent.flag,
+          description: SECRET_INPUT_OPTIONS.noteContent.description,
+        },
+        { flags: '--sensitive', description: 'Mark note as sensitive.' },
+        { flags: '--no-sensitive', description: 'Mark note as non-sensitive.' },
+        { flags: '--pinned', description: 'Pin note to top.' },
+        { flags: '--no-pinned', description: 'Unpin note.' },
+        secretBackendOption,
+        backendPassphraseStdinOption,
+      ],
+      execute: async (context, arguments_, options) => {
+        const groupQuery = requiredArgument(arguments_[0], 'group query');
+        const secondArg = requiredArgument(arguments_[1], 'credential or note query');
+        const thirdArg = arguments_[2];
+
+        let credentialQuery: string | undefined;
+        let noteQuery: string;
+
+        if (thirdArg !== undefined) {
+          credentialQuery = secondArg;
+          noteQuery = thirdArg;
+        } else {
+          noteQuery = secondArg;
+        }
+
+        const title = optionString(options, 'title');
+        const textContent = optionString(options, 'content');
+        const fromStdin = optionBoolean(options, 'contentStdin');
+
+        let secretBytes: Uint8Array | undefined;
+        if (fromStdin) {
+          const acquired = await secretInput(context, 'note update').read({
+            kind: 'note-content',
+            fromStdin: true,
+          });
+          secretBytes = Buffer.from(acquired, 'utf8');
+        } else if (textContent !== undefined) {
+          secretBytes = Buffer.from(textContent, 'utf8');
+        }
+
+        const sensitiveFlag = options['sensitive'];
+        const sensitive =
+          typeof sensitiveFlag === 'boolean' ? sensitiveFlag : undefined;
+        const pinnedFlag = options['pinned'];
+        const pinned = typeof pinnedFlag === 'boolean' ? pinnedFlag : undefined;
+
+        const contentString = secretBytes
+          ? Buffer.from(secretBytes).toString('utf8')
+          : undefined;
+
+        const { cliUpdateNoteRequestSchema } = await import('./mutation-contracts.js');
+        const request = cliUpdateNoteRequestSchema.parse({
+          groupQuery,
+          ...(credentialQuery ? { credentialQuery } : {}),
+          noteQuery,
+          ...(title ? { title } : {}),
+          ...(contentString !== undefined ? { content: contentString } : {}),
+          ...(sensitive !== undefined ? { isSensitive: sensitive } : {}),
+          ...(pinned !== undefined ? { isPinned: pinned } : {}),
+        });
+
+        try {
+          if (context.ports?.updateNote !== undefined) {
+            await context.ports.updateNote(request);
+          } else {
+            const { executeProductionUpdateNote } =
+              await import('./production/mutations.js');
+            await withUnlockedVault(
+              context,
+              'note update',
+              options,
+              async (unlocked, store, rootKey) =>
+                executeProductionUpdateNote(
+                  {
+                    source: store,
+                    queue: store,
+                    vaultId: unlocked.profile.vaultId,
+                    rootKey,
+                  },
+                  request,
+                ),
+            );
+          }
+          context.stdout.write(`Note "${noteQuery}" updated.\n`);
+        } finally {
+          if (secretBytes !== undefined) zeroizeBytes(secretBytes);
+        }
+      },
+    },
+    {
+      name: 'archive',
+      description: 'Archive a note.',
+      arguments: [
+        { syntax: '<group>', description: 'Group ID, unique name, or alias.' },
+        { syntax: '<credential-or-note>', description: 'Credential ID or note query.' },
+        { syntax: '[note]', description: 'Note ID, title, or unique prefix.' },
+      ],
+      options: [secretBackendOption, backendPassphraseStdinOption],
+      execute: async (context, arguments_, options) => {
+        const groupQuery = requiredArgument(arguments_[0], 'group query');
+        const secondArg = requiredArgument(arguments_[1], 'credential or note query');
+        const thirdArg = arguments_[2];
+
+        const credentialQuery = thirdArg !== undefined ? secondArg : undefined;
+        const noteQuery = thirdArg !== undefined ? thirdArg : secondArg;
+
+        const { cliArchiveNoteRequestSchema } = await import('./mutation-contracts.js');
+        const request = cliArchiveNoteRequestSchema.parse({
+          groupQuery,
+          ...(credentialQuery ? { credentialQuery } : {}),
+          noteQuery,
+        });
+
+        if (context.ports?.archiveNote !== undefined) {
+          await context.ports.archiveNote(request);
+        } else {
+          const { executeProductionArchiveNote } =
+            await import('./production/mutations.js');
+          await withUnlockedVault(
+            context,
+            'note archive',
+            options,
+            async (unlocked, store, rootKey) =>
+              executeProductionArchiveNote(
+                {
+                  source: store,
+                  queue: store,
+                  vaultId: unlocked.profile.vaultId,
+                  rootKey,
+                },
+                request,
+              ),
+          );
+        }
+        context.stdout.write(`Note "${noteQuery}" archived.\n`);
+      },
+    },
+    {
+      name: 'restore',
+      description: 'Restore an archived note.',
+      arguments: [
+        { syntax: '<group>', description: 'Group ID, unique name, or alias.' },
+        { syntax: '<credential-or-note>', description: 'Credential ID or note query.' },
+        { syntax: '[note]', description: 'Note ID, title, or unique prefix.' },
+      ],
+      options: [secretBackendOption, backendPassphraseStdinOption],
+      execute: async (context, arguments_, options) => {
+        const groupQuery = requiredArgument(arguments_[0], 'group query');
+        const secondArg = requiredArgument(arguments_[1], 'credential or note query');
+        const thirdArg = arguments_[2];
+
+        const credentialQuery = thirdArg !== undefined ? secondArg : undefined;
+        const noteQuery = thirdArg !== undefined ? thirdArg : secondArg;
+
+        const { cliRestoreNoteRequestSchema } = await import('./mutation-contracts.js');
+        const request = cliRestoreNoteRequestSchema.parse({
+          groupQuery,
+          ...(credentialQuery ? { credentialQuery } : {}),
+          noteQuery,
+        });
+
+        if (context.ports?.restoreNote !== undefined) {
+          await context.ports.restoreNote(request);
+        } else {
+          const { executeProductionRestoreNote } =
+            await import('./production/mutations.js');
+          await withUnlockedVault(
+            context,
+            'note restore',
+            options,
+            async (unlocked, store, rootKey) =>
+              executeProductionRestoreNote(
+                {
+                  source: store,
+                  queue: store,
+                  vaultId: unlocked.profile.vaultId,
+                  rootKey,
+                },
+                request,
+              ),
+          );
+        }
+        context.stdout.write(`Note "${noteQuery}" restored.\n`);
+      },
+    },
+    {
+      name: 'remove',
+      description: 'Permanently remove a note.',
+      arguments: [
+        { syntax: '<group>', description: 'Group ID, unique name, or alias.' },
+        { syntax: '<credential-or-note>', description: 'Credential ID or note query.' },
+        { syntax: '[note]', description: 'Note ID, title, or unique prefix.' },
+      ],
+      options: [
+        { flags: '--force', description: 'Confirm permanent note removal.' },
+        secretBackendOption,
+        backendPassphraseStdinOption,
+      ],
+      execute: async (context, arguments_, options) => {
+        const groupQuery = requiredArgument(arguments_[0], 'group query');
+        const secondArg = requiredArgument(arguments_[1], 'credential or note query');
+        const thirdArg = arguments_[2];
+
+        const credentialQuery = thirdArg !== undefined ? secondArg : undefined;
+        const noteQuery = thirdArg !== undefined ? thirdArg : secondArg;
+
+        const force = optionBoolean(options, 'force');
+        if (!force) {
+          throw new CliUsageError(
+            'The --force flag is required for permanent note removal.',
+          );
+        }
+
+        const { cliRemoveNoteRequestSchema } = await import('./mutation-contracts.js');
+        const request = cliRemoveNoteRequestSchema.parse({
+          groupQuery,
+          ...(credentialQuery ? { credentialQuery } : {}),
+          noteQuery,
+        });
+
+        if (context.ports?.removeNote !== undefined) {
+          await context.ports.removeNote(request);
+        } else {
+          const { executeProductionRemoveNote } =
+            await import('./production/mutations.js');
+          await withUnlockedVault(
+            context,
+            'note remove',
+            options,
+            async (unlocked, store, rootKey) =>
+              executeProductionRemoveNote(
+                {
+                  source: store,
+                  queue: store,
+                  vaultId: unlocked.profile.vaultId,
+                  rootKey,
+                },
+                request,
+              ),
+          );
+        }
+        context.stdout.write(`Note "${noteQuery}" removed.\n`);
+      },
+    },
+  ],
+});
+
 export const CLI_COMMAND_CATALOG: readonly CliCommandDescriptor[] = Object.freeze([
   versionCommand,
   generationCommand,
@@ -1489,6 +1860,7 @@ export const CLI_COMMAND_CATALOG: readonly CliCommandDescriptor[] = Object.freez
   groupCommand,
   credentialCommand,
   fieldCommand,
+  noteCommand,
   {
     name: 'show',
     description: 'Show a schema-driven item with secret fields redacted.',
@@ -1723,6 +2095,7 @@ export const PUBLIC_CLI_COMMAND_CATALOG: readonly CliCommandDescriptor[] =
     groupCommand,
     credentialCommand,
     fieldCommand,
+    noteCommand,
     completionCommand(() => PUBLIC_CLI_COMMAND_CATALOG),
   ]);
 

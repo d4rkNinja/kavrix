@@ -9,6 +9,7 @@ import {
   type VaultReadSourcePort,
 } from '@kavrix/client';
 import { type VaultRootKey, zeroize } from '@kavrix/crypto';
+import { AmbiguousNameError, NotFoundError } from '@kavrix/core';
 import {
   auditEventIdSchema,
   fieldDefinitionSchema,
@@ -16,28 +17,37 @@ import {
   groupIdSchema,
   isSensitiveFieldType,
   itemIdSchema,
+  noteIdSchema,
+  noteSchema,
   recordRevisionSchema,
   secretValueSchema,
   templateIdSchema,
   templateMigrationIdSchema,
   templateVersionSchema,
   type GroupTemplate,
+  type Note,
   type VaultId,
 } from '@kavrix/schemas';
 
 import type {
   CliAddFieldRequest,
+  CliAddNoteRequest,
   CliArchiveEntityRequest,
   CliArchiveFieldRequest,
+  CliArchiveNoteRequest,
   CliCreateCredentialRequest,
   CliCreateGroupRequest,
   CliCredentialMutationResult,
   CliGroupMutationResult,
+  CliNoteMutationResult,
   CliRemoveFieldRequest,
+  CliRemoveNoteRequest,
   CliRestoreEntityRequest,
   CliRestoreFieldRequest,
+  CliRestoreNoteRequest,
   CliSetFieldRequest,
   CliUpdateFieldRequest,
+  CliUpdateNoteRequest,
 } from '../mutation-contracts.js';
 import { productionClock, randomIdempotencyKeys } from './runtime-adapters.js';
 
@@ -733,4 +743,371 @@ export async function executeProductionRestoreEntity(
     const revision = recordRevisionSchema.parse(state.tombstone.tombstoneRevision);
     await service.restoreGroup(groupId, revision);
   }
+}
+
+function resolveNote(notes: readonly Note[], query: string): Note {
+  const trimmed = query.trim();
+  const byId = notes.find((n) => n.id === trimmed);
+  if (byId !== undefined) return byId;
+
+  const byExactTitle = notes.filter(
+    (n) => n.title.toLowerCase() === trimmed.toLowerCase(),
+  );
+  if (byExactTitle.length === 1 && byExactTitle[0] !== undefined) {
+    return byExactTitle[0];
+  }
+  if (byExactTitle.length > 1) {
+    throw new AmbiguousNameError(byExactTitle.map((n) => n.id));
+  }
+
+  const byPrefix = notes.filter(
+    (n) =>
+      n.id.startsWith(trimmed) ||
+      n.title.toLowerCase().startsWith(trimmed.toLowerCase()),
+  );
+  if (byPrefix.length === 1 && byPrefix[0] !== undefined) {
+    return byPrefix[0];
+  }
+  if (byPrefix.length > 1) {
+    throw new AmbiguousNameError(byPrefix.map((n) => n.id));
+  }
+
+  throw new NotFoundError();
+}
+
+export async function executeProductionAddNote(
+  options: ProductionMutationOptions,
+  request: CliAddNoteRequest,
+): Promise<CliNoteMutationResult> {
+  const timestamp = new Date().toISOString();
+  const rawContent = request.content ?? '';
+  const noteId = noteIdSchema.parse(`note.${randomBytes(8).toString('hex')}`);
+  const newNote = noteSchema.parse({
+    id: noteId,
+    title: request.title,
+    content: secretValueSchema.parse(rawContent),
+    isSensitive: request.isSensitive ?? true,
+    isPinned: request.isPinned ?? false,
+    tags: [],
+    sortOrder: 0,
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  });
+
+  const readSession = new VaultReadSession(options.source, options.vaultId);
+  await readSession.unlock(options.rootKey);
+
+  const service = new VaultMutationService(
+    options.source,
+    options.queue,
+    options.vaultId,
+    options.rootKey,
+    createDefaultMutationDependencies(),
+  );
+
+  if (request.credentialQuery !== undefined) {
+    let found: Awaited<ReturnType<typeof readSession.show>>;
+    try {
+      found = await readSession.show(request.groupQuery, request.credentialQuery);
+    } finally {
+      readSession.lock();
+    }
+    const state = await options.source.getCurrentItem(options.vaultId, found.item.id);
+    if (state?.state !== 'active') {
+      throw new Error('Credential item is not active or found');
+    }
+    const noteWithOrder = { ...newNote, sortOrder: found.item.notes.length };
+    await service.updateItem(found.group.id, {
+      ...found.item,
+      notes: [...found.item.notes, noteWithOrder],
+    });
+    return {
+      vaultId: options.vaultId,
+      groupId: found.group.id,
+      credentialId: found.item.id,
+      noteId,
+      title: request.title,
+    };
+  }
+
+  let group: Awaited<ReturnType<typeof readSession.showGroup>>;
+  try {
+    group = await readSession.showGroup(request.groupQuery);
+  } finally {
+    readSession.lock();
+  }
+  const state = await options.source.getCurrentGroup(options.vaultId, group.id);
+  if (state?.state !== 'active') {
+    throw new Error('Group is not active or found');
+  }
+  const noteWithOrder = { ...newNote, sortOrder: group.notes.length };
+  await service.updateGroup({
+    ...group,
+    notes: [...group.notes, noteWithOrder],
+  });
+  return {
+    vaultId: options.vaultId,
+    groupId: group.id,
+    noteId,
+    title: request.title,
+  };
+}
+
+export async function executeProductionUpdateNote(
+  options: ProductionMutationOptions,
+  request: CliUpdateNoteRequest,
+): Promise<CliNoteMutationResult> {
+  const timestamp = new Date().toISOString();
+  const readSession = new VaultReadSession(options.source, options.vaultId);
+  await readSession.unlock(options.rootKey);
+
+  const service = new VaultMutationService(
+    options.source,
+    options.queue,
+    options.vaultId,
+    options.rootKey,
+    createDefaultMutationDependencies(),
+  );
+
+  if (request.credentialQuery !== undefined) {
+    let found: Awaited<ReturnType<typeof readSession.show>>;
+    try {
+      found = await readSession.show(request.groupQuery, request.credentialQuery);
+    } finally {
+      readSession.lock();
+    }
+    const state = await options.source.getCurrentItem(options.vaultId, found.item.id);
+    if (state?.state !== 'active') {
+      throw new Error('Credential item is not active or found');
+    }
+    const targetNote = resolveNote(found.item.notes, request.noteQuery);
+    const updatedNotes = found.item.notes.map((n) => {
+      if (n.id !== targetNote.id) return n;
+      return noteSchema.parse({
+        ...n,
+        title: request.title ?? n.title,
+        content: request.content ? secretValueSchema.parse(request.content) : n.content,
+        isSensitive: request.isSensitive ?? n.isSensitive,
+        isPinned: request.isPinned ?? n.isPinned,
+        updatedAt: timestamp,
+      });
+    });
+    await service.updateItem(found.group.id, {
+      ...found.item,
+      notes: updatedNotes,
+    });
+    return {
+      vaultId: options.vaultId,
+      groupId: found.group.id,
+      credentialId: found.item.id,
+      noteId: targetNote.id,
+      title: request.title ?? targetNote.title,
+    };
+  }
+
+  let group: Awaited<ReturnType<typeof readSession.showGroup>>;
+  try {
+    group = await readSession.showGroup(request.groupQuery);
+  } finally {
+    readSession.lock();
+  }
+  const state = await options.source.getCurrentGroup(options.vaultId, group.id);
+  if (state?.state !== 'active') {
+    throw new Error('Group is not active or found');
+  }
+  const targetNote = resolveNote(group.notes, request.noteQuery);
+  const updatedNotes = group.notes.map((n) => {
+    if (n.id !== targetNote.id) return n;
+    return noteSchema.parse({
+      ...n,
+      title: request.title ?? n.title,
+      content: request.content ? secretValueSchema.parse(request.content) : n.content,
+      isSensitive: request.isSensitive ?? n.isSensitive,
+      isPinned: request.isPinned ?? n.isPinned,
+      updatedAt: timestamp,
+    });
+  });
+  await service.updateGroup({
+    ...group,
+    notes: updatedNotes,
+  });
+  return {
+    vaultId: options.vaultId,
+    groupId: group.id,
+    noteId: targetNote.id,
+    title: request.title ?? targetNote.title,
+  };
+}
+
+export async function executeProductionArchiveNote(
+  options: ProductionMutationOptions,
+  request: CliArchiveNoteRequest,
+): Promise<void> {
+  const timestamp = new Date().toISOString();
+  const readSession = new VaultReadSession(options.source, options.vaultId);
+  await readSession.unlock(options.rootKey);
+
+  const service = new VaultMutationService(
+    options.source,
+    options.queue,
+    options.vaultId,
+    options.rootKey,
+    createDefaultMutationDependencies(),
+  );
+
+  if (request.credentialQuery !== undefined) {
+    let found: Awaited<ReturnType<typeof readSession.show>>;
+    try {
+      found = await readSession.show(request.groupQuery, request.credentialQuery);
+    } finally {
+      readSession.lock();
+    }
+    const state = await options.source.getCurrentItem(options.vaultId, found.item.id);
+    if (state?.state !== 'active') {
+      throw new Error('Credential item is not active or found');
+    }
+    const targetNote = resolveNote(found.item.notes, request.noteQuery);
+    const updatedNotes = found.item.notes.map((n) =>
+      n.id === targetNote.id
+        ? { ...n, archivedAt: timestamp, updatedAt: timestamp }
+        : n,
+    );
+    await service.updateItem(found.group.id, {
+      ...found.item,
+      notes: updatedNotes,
+    });
+    return;
+  }
+
+  let group: Awaited<ReturnType<typeof readSession.showGroup>>;
+  try {
+    group = await readSession.showGroup(request.groupQuery);
+  } finally {
+    readSession.lock();
+  }
+  const state = await options.source.getCurrentGroup(options.vaultId, group.id);
+  if (state?.state !== 'active') {
+    throw new Error('Group is not active or found');
+  }
+  const targetNote = resolveNote(group.notes, request.noteQuery);
+  const updatedNotes = group.notes.map((n) =>
+    n.id === targetNote.id ? { ...n, archivedAt: timestamp, updatedAt: timestamp } : n,
+  );
+  await service.updateGroup({
+    ...group,
+    notes: updatedNotes,
+  });
+}
+
+export async function executeProductionRestoreNote(
+  options: ProductionMutationOptions,
+  request: CliRestoreNoteRequest,
+): Promise<void> {
+  const timestamp = new Date().toISOString();
+  const readSession = new VaultReadSession(options.source, options.vaultId);
+  await readSession.unlock(options.rootKey);
+
+  const service = new VaultMutationService(
+    options.source,
+    options.queue,
+    options.vaultId,
+    options.rootKey,
+    createDefaultMutationDependencies(),
+  );
+
+  if (request.credentialQuery !== undefined) {
+    let found: Awaited<ReturnType<typeof readSession.show>>;
+    try {
+      found = await readSession.show(request.groupQuery, request.credentialQuery);
+    } finally {
+      readSession.lock();
+    }
+    const state = await options.source.getCurrentItem(options.vaultId, found.item.id);
+    if (state?.state !== 'active') {
+      throw new Error('Credential item is not active or found');
+    }
+    const targetNote = resolveNote(found.item.notes, request.noteQuery);
+    const updatedNotes = found.item.notes.map((n) =>
+      n.id === targetNote.id
+        ? { ...n, archivedAt: undefined, updatedAt: timestamp }
+        : n,
+    );
+    await service.updateItem(found.group.id, {
+      ...found.item,
+      notes: updatedNotes,
+    });
+    return;
+  }
+
+  let group: Awaited<ReturnType<typeof readSession.showGroup>>;
+  try {
+    group = await readSession.showGroup(request.groupQuery);
+  } finally {
+    readSession.lock();
+  }
+  const state = await options.source.getCurrentGroup(options.vaultId, group.id);
+  if (state?.state !== 'active') {
+    throw new Error('Group is not active or found');
+  }
+  const targetNote = resolveNote(group.notes, request.noteQuery);
+  const updatedNotes = group.notes.map((n) =>
+    n.id === targetNote.id ? { ...n, archivedAt: undefined, updatedAt: timestamp } : n,
+  );
+  await service.updateGroup({
+    ...group,
+    notes: updatedNotes,
+  });
+}
+
+export async function executeProductionRemoveNote(
+  options: ProductionMutationOptions,
+  request: CliRemoveNoteRequest,
+): Promise<void> {
+  const readSession = new VaultReadSession(options.source, options.vaultId);
+  await readSession.unlock(options.rootKey);
+
+  const service = new VaultMutationService(
+    options.source,
+    options.queue,
+    options.vaultId,
+    options.rootKey,
+    createDefaultMutationDependencies(),
+  );
+
+  if (request.credentialQuery !== undefined) {
+    let found: Awaited<ReturnType<typeof readSession.show>>;
+    try {
+      found = await readSession.show(request.groupQuery, request.credentialQuery);
+    } finally {
+      readSession.lock();
+    }
+    const state = await options.source.getCurrentItem(options.vaultId, found.item.id);
+    if (state?.state !== 'active') {
+      throw new Error('Credential item is not active or found');
+    }
+    const targetNote = resolveNote(found.item.notes, request.noteQuery);
+    const updatedNotes = found.item.notes.filter((n) => n.id !== targetNote.id);
+    await service.updateItem(found.group.id, {
+      ...found.item,
+      notes: updatedNotes,
+    });
+    return;
+  }
+
+  let group: Awaited<ReturnType<typeof readSession.showGroup>>;
+  try {
+    group = await readSession.showGroup(request.groupQuery);
+  } finally {
+    readSession.lock();
+  }
+  const state = await options.source.getCurrentGroup(options.vaultId, group.id);
+  if (state?.state !== 'active') {
+    throw new Error('Group is not active or found');
+  }
+  const targetNote = resolveNote(group.notes, request.noteQuery);
+  const updatedNotes = group.notes.filter((n) => n.id !== targetNote.id);
+  await service.updateGroup({
+    ...group,
+    notes: updatedNotes,
+  });
 }

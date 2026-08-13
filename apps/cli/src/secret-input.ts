@@ -16,6 +16,7 @@ export const secretKindSchema = z.enum([
   'totp-seed',
   'invite',
   'field-value',
+  'note-content',
 ]);
 export const acquiredSecretSchema = z
   .string()
@@ -70,6 +71,11 @@ export const SECRET_INPUT_OPTIONS = Object.freeze({
     flag: '--value-stdin',
     description:
       'Read a credential field value from standard input (never from an argument).',
+  }),
+  noteContent: Object.freeze({
+    kind: 'note-content' as const,
+    flag: '--content-stdin',
+    description: 'Read note content from standard input (never from an argument).',
   }),
 });
 
@@ -444,6 +450,8 @@ function secretKindLabel(kind: SecretKind): string {
       return 'TOTP seed';
     case 'field-value':
       return 'field value';
+    case 'note-content':
+      return 'note content';
     default:
       return kind;
   }
@@ -452,6 +460,7 @@ function secretKindLabel(kind: SecretKind): string {
 function secretKindStdinFlag(kind: SecretKind): string {
   if (kind === 'totp-seed') return '--secret-stdin';
   if (kind === 'field-value') return '--value-stdin';
+  if (kind === 'note-content') return '--content-stdin';
   return `--${kind}-stdin`;
 }
 
