@@ -139,6 +139,12 @@ export interface CliUseCasePorts {
   archiveNote?(request: CliArchiveNoteRequest): Promise<void>;
   restoreNote?(request: CliRestoreNoteRequest): Promise<void>;
   removeNote?(request: CliRemoveNoteRequest): Promise<void>;
+  reveal?(
+    groupQuery: string,
+    credentialQuery: string,
+    fieldQuery: string,
+    options?: { index?: number },
+  ): Promise<{ value: string }>;
 }
 
 export function parseStatus(value: unknown): CliStatus {

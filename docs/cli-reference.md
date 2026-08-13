@@ -20,48 +20,49 @@ canonical local profile, the opaque SQLite queue, and protected rollback state
 without unlocking or decrypting the vault; and `group`/`credential` compose local
 encrypted mutation against the unlocked local store. Its current surface is:
 
-| Command                                                    | Status                         | Behavior                                                                                           |
-| ---------------------------------------------------------- | ------------------------------ | -------------------------------------------------------------------------------------------------- |
-| `creds`                                                    | Available in the built package | Prints help.                                                                                       |
-| `creds --help`                                             | Available in the built package | Prints static help.                                                                                |
-| `creds --version`                                          | Available in the built package | Prints package version `0.1.0`.                                                                    |
-| `creds version`                                            | Available in the built package | Prints package version `0.1.0`.                                                                    |
-| `creds completion <shell>`                                 | Available in the built package | Prints static top-level completion for `bash`, `zsh`, `fish`, or `powershell`.                     |
-| `creds generate password [options]`                        | Available in the built package | Generates one policy-validated password with production randomness.                                |
-| `creds generate passphrase [options]`                      | Available in the built package | Generates one passphrase from the attributed EFF short word list.                                  |
-| `creds totp [options]`                                     | Available in the built package | Reads a masked or explicit-stdin Base32 seed and emits one canonical TOTP code.                    |
-| `creds key create --file <path> [options]`                 | Available in the built package | Creates one unbound v1 portable-key file, refuses overwrite, and never displays the portable key.  |
-| `creds init [options]`                                     | Available in the built package | Creates one vault/profile/device/session with durable recovery material and a global writer lease. |
-| `creds init resume <operation-id>`                         | Available in the built package | Resumes one durable initialization journal operation.                                              |
-| `creds init cancel <operation-id>`                         | Available in the built package | Cancels one safely cancellable prepared initialization operation.                                  |
-| `creds unlock --check [options]`                           | Available in the built package | Verifies unlock material and immediately relocks; no daemon persists.                              |
-| `creds lock [options]`                                     | Available in the built package | Locks the active vault and clears use-case-managed secret state.                                   |
-| `creds status [options]`                                   | Available in the built package | Reports redacted locked/offline state for exactly one enrolled local profile without networking.   |
-| `creds group create <name>`                                | Available in the built package | Creates an encrypted local group container.                                                        |
-| `creds group list [--json]`                                | Available in the built package | Lists active groups with redacted names.                                                           |
-| `creds group rename <query> <new-name>`                    | Available in the built package | Renames an active group by ID, name, or alias.                                                     |
-| `creds group archive <query>`                              | Available in the built package | Archives an active group as a tombstone.                                                           |
-| `creds group restore <group-id>`                           | Available in the built package | Restores an archived group by exact ID.                                                            |
-| `creds group delete <query> --force`                       | Available in the built package | Permanently deletes a group with an explicit `--force` authorization.                              |
-| `creds credential create <group> <title>`                  | Available in the built package | Creates an encrypted credential item inside a group.                                               |
-| `creds credential list <group> [--json]`                   | Available in the built package | Lists active credentials in a group with redacted titles.                                          |
-| `creds credential rename <group> <credential> <new-title>` | Available in the built package | Renames an active credential.                                                                      |
-| `creds credential archive <group> <credential>`            | Available in the built package | Archives an active credential as a tombstone.                                                      |
-| `creds credential restore <group> <credential-id>`         | Available in the built package | Restores an archived credential by exact ID.                                                       |
-| `creds credential delete <group> <credential> --force`     | Available in the built package | Permanently deletes a credential with an explicit `--force` authorization.                         |
-| `creds field add <group> <credential> <field-key> [opts]`  | Available in the built package | Adds a new dynamic field definition to a credential.                                               |
-| `creds field set <group> <credential> <field-key> [val]`   | Available in the built package | Sets or updates a field value using positional text or `--value-stdin`.                            |
-| `creds field update <group> <credential> <field-key>`      | Available in the built package | Updates dynamic field definition metadata (label, type, sensitive).                                |
-| `creds field archive <group> <credential> <field-key>`     | Available in the built package | Archives a field value into archivedFieldValues.                                                   |
-| `creds field restore <group> <credential> <field-key>`     | Available in the built package | Restores an archived field value back to active field values.                                      |
-| `creds field remove <group> <credential> <key> --force`    | Available in the built package | Permanently removes an item-specific field definition and value.                                   |
-| `creds note add <group> [cred] [title] [opts]`             | Available in the built package | Adds an encrypted note to a group or credential using positional text or `--content-stdin`.        |
-| `creds note update <group> [cred] <note> [opts]`           | Available in the built package | Updates note title, content, sensitivity, or pin state.                                            |
-| `creds note archive <group> [cred] <note>`                 | Available in the built package | Sets archivedAt timestamp on a group or credential note.                                           |
-| `creds note restore <group> [cred] <note>`                 | Available in the built package | Restores an archived note back to active notes.                                                    |
-| `creds note remove <group> [cred] <note> --force`          | Available in the built package | Permanently removes a note with an explicit `--force` authorization.                               |
-| `creds show <group> <credential> [--json]`                 | Available in the built package | Inspects a credential with secret fields and sensitive note content redacted.                      |
-| `creds copy <group> <credential> <field> [--index <n>]`    | Available in the built package | Copies an authorized field value to the guarded clipboard with auto-clear.                         |
+| Command                                                    | Status                         | Behavior                                                                                            |
+| ---------------------------------------------------------- | ------------------------------ | --------------------------------------------------------------------------------------------------- |
+| `creds`                                                    | Available in the built package | Prints help.                                                                                        |
+| `creds --help`                                             | Available in the built package | Prints static help.                                                                                 |
+| `creds --version`                                          | Available in the built package | Prints package version `0.1.0`.                                                                     |
+| `creds version`                                            | Available in the built package | Prints package version `0.1.0`.                                                                     |
+| `creds completion <shell>`                                 | Available in the built package | Prints static top-level completion for `bash`, `zsh`, `fish`, or `powershell`.                      |
+| `creds generate password [options]`                        | Available in the built package | Generates one policy-validated password with production randomness.                                 |
+| `creds generate passphrase [options]`                      | Available in the built package | Generates one passphrase from the attributed EFF short word list.                                   |
+| `creds totp [options]`                                     | Available in the built package | Reads a masked or explicit-stdin Base32 seed and emits one canonical TOTP code.                     |
+| `creds key create --file <path> [options]`                 | Available in the built package | Creates one unbound v1 portable-key file, refuses overwrite, and never displays the portable key.   |
+| `creds init [options]`                                     | Available in the built package | Creates one vault/profile/device/session with durable recovery material and a global writer lease.  |
+| `creds init resume <operation-id>`                         | Available in the built package | Resumes one durable initialization journal operation.                                               |
+| `creds init cancel <operation-id>`                         | Available in the built package | Cancels one safely cancellable prepared initialization operation.                                   |
+| `creds unlock --check [options]`                           | Available in the built package | Verifies unlock material and immediately relocks; no daemon persists.                               |
+| `creds lock [options]`                                     | Available in the built package | Locks the active vault and clears use-case-managed secret state.                                    |
+| `creds status [options]`                                   | Available in the built package | Reports redacted locked/offline state for exactly one enrolled local profile without networking.    |
+| `creds group create <name>`                                | Available in the built package | Creates an encrypted local group container.                                                         |
+| `creds group list [--json]`                                | Available in the built package | Lists active groups with redacted names.                                                            |
+| `creds group rename <query> <new-name>`                    | Available in the built package | Renames an active group by ID, name, or alias.                                                      |
+| `creds group archive <query>`                              | Available in the built package | Archives an active group as a tombstone.                                                            |
+| `creds group restore <group-id>`                           | Available in the built package | Restores an archived group by exact ID.                                                             |
+| `creds group delete <query> --force`                       | Available in the built package | Permanently deletes a group with an explicit `--force` authorization.                               |
+| `creds credential create <group> <title>`                  | Available in the built package | Creates an encrypted credential item inside a group.                                                |
+| `creds credential list <group> [--json]`                   | Available in the built package | Lists active credentials in a group with redacted titles.                                           |
+| `creds credential rename <group> <credential> <new-title>` | Available in the built package | Renames an active credential.                                                                       |
+| `creds credential archive <group> <credential>`            | Available in the built package | Archives an active credential as a tombstone.                                                       |
+| `creds credential restore <group> <credential-id>`         | Available in the built package | Restores an archived credential by exact ID.                                                        |
+| `creds credential delete <group> <credential> --force`     | Available in the built package | Permanently deletes a credential with an explicit `--force` authorization.                          |
+| `creds field add <group> <credential> <field-key> [opts]`  | Available in the built package | Adds a new dynamic field definition to a credential.                                                |
+| `creds field set <group> <credential> <field-key> [val]`   | Available in the built package | Sets or updates a field value using positional text or `--value-stdin`.                             |
+| `creds field update <group> <credential> <field-key>`      | Available in the built package | Updates dynamic field definition metadata (label, type, sensitive).                                 |
+| `creds field archive <group> <credential> <field-key>`     | Available in the built package | Archives a field value into archivedFieldValues.                                                    |
+| `creds field restore <group> <credential> <field-key>`     | Available in the built package | Restores an archived field value back to active field values.                                       |
+| `creds field remove <group> <credential> <key> --force`    | Available in the built package | Permanently removes an item-specific field definition and value.                                    |
+| `creds note add <group> [cred] [title] [opts]`             | Available in the built package | Adds an encrypted note to a group or credential using positional text or `--content-stdin`.         |
+| `creds note update <group> [cred] <note> [opts]`           | Available in the built package | Updates note title, content, sensitivity, or pin state.                                             |
+| `creds note archive <group> [cred] <note>`                 | Available in the built package | Sets archivedAt timestamp on a group or credential note.                                            |
+| `creds note restore <group> [cred] <note>`                 | Available in the built package | Restores an archived note back to active notes.                                                     |
+| `creds note remove <group> [cred] <note> --force`          | Available in the built package | Permanently removes a note with an explicit `--force` authorization.                                |
+| `creds show <group> <credential> [--json]`                 | Available in the built package | Inspects a credential with secret fields and sensitive note content redacted.                       |
+| `creds copy <group> <credential> <field> [--index <n>]`    | Available in the built package | Copies an authorized field value to the guarded clipboard with auto-clear.                          |
+| `creds reveal <group> <credential> <field> [--stdout]`     | Available in the built package | Reveals an authorized field value, denying non-interactive redirection unless `--stdout` is passed. |
 
 The generated completion is derived from the static public catalog. It never
 loads runtime vault names, aliases, fields, IDs, or secrets. Inspect output

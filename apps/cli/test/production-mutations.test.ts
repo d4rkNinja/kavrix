@@ -42,6 +42,7 @@ import {
 } from '../src/production/mutations.js';
 import { executeProductionShow } from '../src/production/show.js';
 import { executeProductionCopy } from '../src/production/copy.js';
+import { executeProductionReveal } from '../src/production/reveal.js';
 import { resolveCliDataPaths } from '../src/production/paths.js';
 import { ensureDataDirectory } from '../src/production/runtime-adapters.js';
 import { createSecretBackend } from '../src/production/secret-backend.js';
@@ -312,6 +313,20 @@ describe('production CLI mutation adapters', () => {
         'password',
       );
       expect(copyReceipt.label).toBe('Password');
+
+      // 8.7. Execute Production Reveal
+      const revealResult = await executeProductionReveal(
+        {
+          source: store,
+          vaultId: mutationOptions.vaultId,
+          rootKey,
+        },
+        'Infrastructure',
+        'AWS Production Root',
+        'password',
+      );
+      expect(revealResult.fieldLabel).toBe('Password');
+      expect(revealResult.value).toBe('MyInitialSecret123!');
 
       // 9. Add Note
       const noteAddResult = await executeProductionAddNote(mutationOptions, {
