@@ -559,9 +559,8 @@ describe('injectable initialization commands', () => {
 
     const publicCompletion = await executePublic(['completion', 'bash']);
     expect(publicCompletion.stdout).toContain(
-      "'version generate totp key status completion'",
+      "'version generate totp key init status completion'",
     );
-    expect(publicCompletion.stdout).not.toContain('init');
     expect(publicCompletion.stdout).not.toContain(PORTABLE);
 
     const hostileReceipt = await executeInit(

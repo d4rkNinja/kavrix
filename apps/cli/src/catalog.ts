@@ -256,6 +256,8 @@ const initializationCommand: CliCommandDescriptor = Object.freeze({
   description: 'Initialize a vault through injected protected lifecycle adapters.',
   options: [
     serverOption,
+    secretBackendOption,
+    backendPassphraseStdinOption,
     {
       flags: '--existing-portable',
       description: 'Import an existing portable key through a masked prompt.',
@@ -284,19 +286,19 @@ const initializationCommand: CliCommandDescriptor = Object.freeze({
           description: 'Opaque initialization operation identifier.',
         },
       ],
-      options: [serverOption],
+      options: [serverOption, secretBackendOption, backendPassphraseStdinOption],
       execute: async (context, arguments_, options) => {
         const { parseLifecycleOperationId, renderInitializationReceipt } =
           await import('./initialization.js');
         const operationId = parseLifecycleOperationId(
           requiredArgument(arguments_[0], 'operation ID'),
         );
-        const coordinator = initialization(context).coordinator;
         const serverUrl = optionString(options, 'server');
-        const receipt =
+        const receipt = await withInitialization(context, options, (deps) =>
           serverUrl === undefined
-            ? await coordinator.resume(operationId)
-            : await coordinator.resume(operationId, serverUrl);
+            ? deps.coordinator.resume(operationId)
+            : deps.coordinator.resume(operationId, serverUrl),
+        );
         context.stdout.write(renderInitializationReceipt(receipt));
       },
     },
@@ -309,19 +311,18 @@ const initializationCommand: CliCommandDescriptor = Object.freeze({
           description: 'Opaque initialization operation identifier.',
         },
       ],
-      options: [serverOption],
+      options: [serverOption, secretBackendOption, backendPassphraseStdinOption],
       execute: async (context, arguments_, options) => {
         const { parseLifecycleOperationId } = await import('./initialization.js');
         const operationId = parseLifecycleOperationId(
           requiredArgument(arguments_[0], 'operation ID'),
         );
-        const coordinator = initialization(context).coordinator;
         const serverUrl = optionString(options, 'server');
-        if (serverUrl === undefined) {
-          await coordinator.cancel(operationId);
-        } else {
-          await coordinator.cancel(operationId, serverUrl);
-        }
+        await withInitialization(context, options, (deps) =>
+          serverUrl === undefined
+            ? deps.coordinator.cancel(operationId)
+            : deps.coordinator.cancel(operationId, serverUrl),
+        );
         context.stdout.write('Initialization cancelled.\n');
       },
     },
@@ -330,18 +331,13 @@ const initializationCommand: CliCommandDescriptor = Object.freeze({
     const { renderInitializationReceipt, startVaultInitialization } =
       await import('./initialization.js');
     const serverUrl = optionString(options, 'server');
-    const dependencies = initialization(context);
     const secrets = secretInput(context, 'init');
     const startOptions = parseInitializationStartOptions(options);
-    const receipt =
+    const receipt = await withInitialization(context, options, (deps) =>
       serverUrl === undefined
-        ? await startVaultInitialization(dependencies, secrets, startOptions)
-        : await startVaultInitialization(
-            dependencies,
-            secrets,
-            startOptions,
-            serverUrl,
-          );
+        ? startVaultInitialization(deps, secrets, startOptions)
+        : startVaultInitialization(deps, secrets, startOptions, serverUrl),
+    );
     context.stdout.write(renderInitializationReceipt(receipt));
   },
 });
@@ -615,6 +611,7 @@ export const PUBLIC_CLI_COMMAND_CATALOG: readonly CliCommandDescriptor[] =
     generationCommand,
     totpCommand,
     keyCommand,
+    initializationCommand,
     statusCommand,
     completionCommand(() => PUBLIC_CLI_COMMAND_CATALOG),
   ]);
@@ -718,9 +715,29 @@ function secretInput(context: CliCommandContext, feature: CliFeature): SecretInp
   return context.secrets;
 }
 
-function initialization(context: CliCommandContext): CliInitializationDependencies {
-  if (context.initialization === undefined) throw new CliUnavailableError('init');
-  return context.initialization;
+async function withInitialization<Output>(
+  context: CliCommandContext,
+  options: Readonly<Record<string, unknown>>,
+  action: (dependencies: CliInitializationDependencies) => Promise<Output>,
+): Promise<Output> {
+  if (context.initialization !== undefined) {
+    return action(context.initialization);
+  }
+  if (context.environment === undefined) {
+    throw new CliUnavailableError('init');
+  }
+  const backendPolicy = parseStatusBackendPolicy(options);
+  const serverUrl = optionString(options, 'server');
+  const { runProductionInitialization } = await import('./production/initialize.js');
+  return runProductionInitialization(
+    {
+      environment: context.environment,
+      secrets: secretInput(context, 'init'),
+      backendPolicy,
+      ...(serverUrl !== undefined ? { serverUrl } : {}),
+    },
+    action,
+  );
 }
 
 function requiredArgument(value: string | undefined, label: string): string {

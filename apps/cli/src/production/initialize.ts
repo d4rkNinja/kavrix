@@ -5,10 +5,23 @@ import type {
 } from '@kavrix/client';
 
 import { CliUsageError } from '../errors.js';
-import type { CliVaultInitializationPort } from '../initialization.js';
-import type { ProductionEnvironment } from './environment.js';
+import type {
+  CliInitializationDependencies,
+  CliVaultInitializationPort,
+} from '../initialization.js';
+import type { SecretInputPort } from '../secret-input.js';
+import {
+  openProductionEnvironment,
+  type ProductionEnvironment,
+} from './environment.js';
+import { resolveCliDataPaths } from './paths.js';
 import { productionClock, randomIdGenerator } from './runtime-adapters.js';
-import type { SecretBackend } from './secret-backend.js';
+import {
+  createSecretBackend,
+  type SecretBackend,
+  type SecretBackendPolicy,
+} from './secret-backend.js';
+import { NodeSensitiveInitializationDisplay } from './sensitive-display.js';
 
 export interface ProductionInitializationPortOptions {
   readonly environment: ProductionEnvironment;
@@ -18,6 +31,14 @@ export interface ProductionInitializationPortOptions {
   readonly coordinatorFactory?: (
     options: ConstructorParameters<typeof VaultInitializationCoordinator>[0],
   ) => CliVaultInitializationPort;
+}
+
+export interface ProductionInitializationRequest {
+  readonly environment: Readonly<Record<string, string | undefined>>;
+  readonly secrets: SecretInputPort;
+  readonly backendPolicy: SecretBackendPolicy;
+  readonly serverUrl?: string;
+  readonly allowInsecureLoopbackDevelopment?: boolean;
 }
 
 /**
@@ -96,4 +117,75 @@ export function createProductionInitializationPort(
       return coordinator.cancel(operationId, serverUrl);
     },
   };
+}
+
+/** Runs the production initialization lifecycle slice and closes environment on exit. */
+export async function runProductionInitialization<Output>(
+  request: ProductionInitializationRequest,
+  operation: (dependencies: CliInitializationDependencies) => Promise<Output>,
+): Promise<Output> {
+  const paths = resolveCliDataPaths(request.environment);
+  const backend = await createSecretBackend(
+    paths,
+    request.secrets,
+    request.backendPolicy,
+  );
+
+  let environment: ProductionEnvironment | undefined;
+  try {
+    environment = await openProductionEnvironment(paths, backend);
+  } catch (openFailure) {
+    await backend.close();
+    throw openFailure;
+  }
+
+  const coordinatorPort = createProductionInitializationPort({
+    environment,
+    secrets: backend,
+    ...(request.serverUrl !== undefined ? { defaultServerUrl: request.serverUrl } : {}),
+    ...(request.allowInsecureLoopbackDevelopment !== undefined
+      ? { allowInsecureLoopbackDevelopment: request.allowInsecureLoopbackDevelopment }
+      : {}),
+  });
+
+  const sensitiveDisplay = new NodeSensitiveInitializationDisplay(
+    process.stdin,
+    process.stderr,
+  );
+
+  const dependencies: CliInitializationDependencies = {
+    coordinator: coordinatorPort,
+    sensitiveDisplay,
+  };
+
+  let outcome:
+    | Readonly<{ succeeded: true; value: Output }>
+    | Readonly<{ succeeded: false; error: unknown }>;
+  try {
+    outcome = { succeeded: true, value: await operation(dependencies) };
+  } catch (error) {
+    outcome = { succeeded: false, error };
+  }
+
+  let cleanup:
+    Readonly<{ succeeded: true }> | Readonly<{ succeeded: false; error: unknown }>;
+  try {
+    await environment.close();
+    cleanup = { succeeded: true };
+  } catch (error) {
+    cleanup = { succeeded: false, error };
+  }
+
+  if (!cleanup.succeeded) {
+    if (!outcome.succeeded) {
+      throw new AggregateError(
+        [outcome.error, cleanup.error],
+        'The initialization operation and cleanup both failed.',
+        { cause: outcome.error },
+      );
+    }
+    throw cleanup.error;
+  }
+  if (!outcome.succeeded) throw outcome.error;
+  return outcome.value;
 }

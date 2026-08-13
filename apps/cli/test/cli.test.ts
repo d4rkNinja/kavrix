@@ -506,8 +506,8 @@ describe('CLI command shell', () => {
   });
 
   it('limits the production bin catalog to commands with real static behavior', async () => {
-    const publishedCommands = 'version generate totp key status completion';
-    const unavailableCommands = /\b(?:init|lock|show|copy|device)\b/u;
+    const publishedCommands = 'version generate totp key init status completion';
+    const unavailableCommands = /\b(?:lock|show|copy|device)\b/u;
     expect(PUBLIC_CLI_COMMAND_CATALOG.map(({ name }) => name)).toEqual(
       publishedCommands.split(' '),
     );
@@ -536,7 +536,6 @@ describe('CLI command shell', () => {
     }
 
     for (const unavailableOperation of [
-      ['init'],
       ['lock'],
       ['show'],
       ['copy'],
