@@ -151,6 +151,14 @@ export const mongoApiRateLimitDocumentSchema = z
   })
   .strict();
 
+/** Non-secret per-vault fence used to serialize last-device revocations. */
+export const mongoApiDeviceRevocationLockDocumentSchema = z
+  .object({
+    _id: vaultIdSchema,
+    version: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+  })
+  .strict();
+
 export const mongoApiCredentialClaimDocumentSchema = z
   .object({
     _id: sha256DigestSchema,
@@ -182,6 +190,9 @@ export type MongoApiEnrollmentDocument = z.infer<
   typeof mongoApiEnrollmentDocumentSchema
 >;
 export type MongoApiRateLimitDocument = z.infer<typeof mongoApiRateLimitDocumentSchema>;
+export type MongoApiDeviceRevocationLockDocument = z.infer<
+  typeof mongoApiDeviceRevocationLockDocumentSchema
+>;
 export type MongoApiCredentialClaimDocument = z.infer<
   typeof mongoApiCredentialClaimDocumentSchema
 >;
@@ -192,6 +203,7 @@ export const mongoApiCollectionNames = {
   invites: 'api_invites',
   enrollments: 'api_enrollments',
   rateLimits: 'api_rate_limits',
+  deviceRevocationLocks: 'api_device_revocation_locks',
   credentialClaims: 'api_credential_claims',
 } as const;
 
@@ -204,6 +216,8 @@ export const mongoApiDocumentSchemas: MongoDocumentSchemaMap<MongoApiCollectionN
   [mongoApiCollectionNames.invites]: mongoApiInviteDocumentSchema,
   [mongoApiCollectionNames.enrollments]: mongoApiEnrollmentDocumentSchema,
   [mongoApiCollectionNames.rateLimits]: mongoApiRateLimitDocumentSchema,
+  [mongoApiCollectionNames.deviceRevocationLocks]:
+    mongoApiDeviceRevocationLockDocumentSchema,
   [mongoApiCollectionNames.credentialClaims]: mongoApiCredentialClaimDocumentSchema,
 };
 
@@ -352,6 +366,12 @@ export const mongoApiCollectionOptions: Readonly<
       expiresAt: { bsonType: 'date' },
     }),
   ),
+  api_device_revocation_locks: validator(
+    strictObject(['_id', 'version'], {
+      _id: opaqueIdentifierFragment,
+      version: safeInteger({ minimum: 0, maximum: Number.MAX_SAFE_INTEGER }),
+    }),
+  ),
   api_credential_claims: validator({
     oneOf: [
       strictObject(['_id', 'kind', 'createdAt'], {
@@ -405,6 +425,7 @@ export const mongoApiIndexes: Readonly<
   api_rate_limits: [
     { key: { expiresAt: 1 }, name: 'rate_limit_expiry', expireAfterSeconds: 0 },
   ],
+  api_device_revocation_locks: [],
   api_credential_claims: [],
 };
 

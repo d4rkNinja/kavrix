@@ -7,7 +7,11 @@ import {
 } from '@kavrix/schemas';
 
 import { parseRequest } from '../boundary.js';
-import { ApiNotFoundError, ApiValidationError } from '../errors.js';
+import {
+  ApiAuthorizationError,
+  ApiNotFoundError,
+  ApiValidationError,
+} from '../errors.js';
 import type { ApiRoutePlugin } from '../route-context.js';
 import { timestamp } from '../route-utils.js';
 
@@ -36,13 +40,16 @@ export const deviceRoutes: ApiRoutePlugin = (app, context) => {
   app.delete('/v1/vaults/:vaultId/devices/:deviceId', async (request, reply) => {
     const { vaultId, deviceId } = parseRequest(vaultDevicePathSchema, request.params);
     await context.security.authenticate(request, 'device:manage', vaultId);
-    const revoked = await context.ports.authorization.revokeDevice(
+    const result = await context.ports.authorization.revokeDevice(
       vaultId,
       deviceId,
       timestamp(context.ports.clock.now()),
     );
-    if (!revoked) {
+    if (result === 'not-found') {
       throw new ApiNotFoundError();
+    }
+    if (result === 'last-active-device') {
+      throw new ApiAuthorizationError();
     }
     return reply.status(204).send();
   });

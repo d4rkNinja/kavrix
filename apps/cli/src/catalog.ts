@@ -1,18 +1,31 @@
-import type { Writable } from 'node:stream';
+import type { Readable, Writable } from 'node:stream';
 
 import { Command } from 'commander';
 import {
   controlListPageQuerySchema,
   deviceIdSchema,
+  inviteIssueRequestSchema,
+  keySlotIdSchema,
   type GroupPayload,
+  type InviteIssueRequest,
   type ItemPayload,
+  type KeySlotId,
   vaultIdSchema,
 } from '@kavrix/schemas';
 import { z } from 'zod';
 import type { VaultRootKey } from '@kavrix/crypto';
 import type { SqliteSyncLocalStore } from '@kavrix/local-store';
+import type { LifecycleOperationId } from '@kavrix/client/cli-contracts';
 
-import type { CliStatus, CliUseCasePorts } from './contracts.js';
+import {
+  cliKeySlotListSchema,
+  cliKeySlotResultSchema,
+  cliPortableKeyRotationResultSchema,
+  parseRecoverRequest,
+  type CliRecoverResult,
+  type CliStatus,
+  type CliUseCasePorts,
+} from './contracts.js';
 import { CliUnavailableError, CliUsageError, type CliFeature } from './errors.js';
 import type {
   CliInitializationDependencies,
@@ -26,6 +39,7 @@ import {
 } from './public-security-tools.js';
 import {
   SECRET_INPUT_OPTIONS,
+  acquiredSecretSchema,
   type AcquiredSecret,
   type SecretInputPort,
 } from './secret-input.js';
@@ -34,6 +48,12 @@ import { CLI_VERSION } from './version.js';
 import type { SecretBackendPolicy } from './production/secret-backend.js';
 import type { ProductionStatusRequest } from './production/status.js';
 import type { ProductionUnlockedContext } from './production/unlock.js';
+import type {
+  KeySlotOperation,
+  NewSlotCredential,
+  SlotReauthentication,
+} from './production/slot-lifecycle.js';
+import type { PortableKeyRotationOperation } from './production/portable-key-rotation.js';
 
 const querySchema = z.string().trim().min(1).max(512);
 const schemaVersionOptionSchema = z
@@ -53,6 +73,12 @@ const revisionOptionSchema = z
   .pipe(z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER));
 const conflictStrategySchema = z.enum(['keep-local', 'accept-remote']);
 const shellSchema = z.enum(['bash', 'zsh', 'fish', 'powershell']);
+const inviteExpiryOptionSchema = z
+  .string()
+  .regex(/^(?:[6-9][0-9]|[1-9][0-9]{2,4}|[1-7][0-9]{4}|8[0-5][0-9]{3}|86400)$/u)
+  .transform(Number)
+  .pipe(z.number().int().min(60).max(86_400));
+const DEFAULT_INVITE_SCOPES = ['sync:read', 'sync:write'] as const;
 
 export type CliCommandContext = Readonly<{
   ports?: CliUseCasePorts;
@@ -60,6 +86,8 @@ export type CliCommandContext = Readonly<{
   initialization?: CliInitializationDependencies;
   productionStatus?: ProductionStatusCallback;
   environment?: Readonly<Record<string, string | undefined>>;
+  stdin: Readable;
+  stderr: Writable;
   stdout: Writable;
   stdoutIsTty: boolean;
 }>;
@@ -104,6 +132,11 @@ const secretBackendOption = Object.freeze({
 const backendPassphraseStdinOption = Object.freeze({
   flags: '--backend-passphrase-stdin',
   description: 'Read the sealed-file backend passphrase from standard input.',
+});
+const keyFilePassphraseStdinOption = Object.freeze({
+  flags: '--key-file-passphrase-stdin',
+  description:
+    'Read a protected portable-key file passphrase from the leading stdin frame.',
 });
 const vaultOption = Object.freeze({
   flags: '--vault <vault-id>',
@@ -264,6 +297,211 @@ const keyCommand: CliCommandDescriptor = Object.freeze({
         context.stdout.write('Portable key file created.\n');
       },
     },
+    {
+      name: 'slot',
+      description: 'List and manage authenticated vault unlock slots.',
+      children: [
+        {
+          name: 'list',
+          description: 'List redacted public unlock-slot metadata.',
+          options: [jsonOption, secretBackendOption, backendPassphraseStdinOption],
+          execute: async (context, _arguments, options) => {
+            const raw =
+              context.ports?.listKeySlots === undefined
+                ? await executeProductionKeySlotOperation(context, options, {
+                    kind: 'list',
+                  })
+                : await context.ports.listKeySlots();
+            const { renderKeySlots } = await import('./render.js');
+            context.stdout.write(
+              renderKeySlots(
+                cliKeySlotListSchema.parse(raw),
+                optionBoolean(options, 'json'),
+              ),
+            );
+          },
+        },
+        {
+          name: 'create',
+          description:
+            'Create a portable, passphrase, recovery, or device unlock slot.',
+          arguments: [
+            {
+              syntax: '<portable-key|passphrase|recovery-key|device-key>',
+              description: 'Credential type for the new slot.',
+            },
+          ],
+          options: slotLifecycleOptions(true),
+          execute: async (context, arguments_, options) => {
+            const slotType = parseInput(
+              z.enum(['portable-key', 'passphrase', 'recovery-key', 'device-key']),
+              requiredArgument(arguments_[0], 'slot type'),
+              'slot type',
+            );
+            const operation = await acquireCreateSlotOperation(
+              context,
+              options,
+              slotType,
+            );
+            const raw =
+              context.ports?.createKeySlot === undefined
+                ? await executeProductionKeySlotOperation(context, options, operation)
+                : await context.ports.createKeySlot(operation);
+            const { renderKeySlotResult } = await import('./render.js');
+            context.stdout.write(
+              renderKeySlotResult(
+                cliKeySlotResultSchema.parse(raw),
+                optionBoolean(options, 'json'),
+              ),
+            );
+          },
+        },
+        {
+          name: 'disable',
+          description:
+            'Remove a local device-slot secret without changing the server record.',
+          arguments: [
+            { syntax: '<slot-id>', description: 'Opaque unlock-slot identifier.' },
+          ],
+          options: slotLifecycleOptions(false),
+          execute: async (context, arguments_, options) => {
+            const slotId = parseInputValue(
+              requiredArgument(arguments_[0], 'slot ID'),
+              'slot ID',
+              (value) => keySlotIdSchema.parse(value),
+            );
+            const operation = await acquireLifecycleSlotOperation(context, options, {
+              kind: 'disable',
+              slotId,
+            });
+            const raw =
+              context.ports?.disableKeySlot === undefined
+                ? await executeProductionKeySlotOperation(context, options, operation)
+                : await context.ports.disableKeySlot(slotId);
+            const { renderKeySlotResult } = await import('./render.js');
+            context.stdout.write(
+              renderKeySlotResult(
+                cliKeySlotResultSchema.parse(raw),
+                optionBoolean(options, 'json'),
+              ),
+            );
+          },
+        },
+        {
+          name: 'revoke',
+          description: 'Revoke a server unlock slot after last-slot protection checks.',
+          arguments: [
+            { syntax: '<slot-id>', description: 'Opaque unlock-slot identifier.' },
+          ],
+          options: slotLifecycleOptions(false),
+          execute: async (context, arguments_, options) => {
+            const slotId = parseInputValue(
+              requiredArgument(arguments_[0], 'slot ID'),
+              'slot ID',
+              (value) => keySlotIdSchema.parse(value),
+            );
+            const operation = await acquireLifecycleSlotOperation(context, options, {
+              kind: 'revoke',
+              slotId,
+            });
+            const raw =
+              context.ports?.revokeKeySlot === undefined
+                ? await executeProductionKeySlotOperation(context, options, operation)
+                : await context.ports.revokeKeySlot(slotId, operation);
+            const { renderKeySlotResult } = await import('./render.js');
+            context.stdout.write(
+              renderKeySlotResult(
+                cliKeySlotResultSchema.parse(raw),
+                optionBoolean(options, 'json'),
+              ),
+            );
+          },
+        },
+      ],
+    },
+    {
+      name: 'rotate',
+      description: 'Rotate one portable-key wrapping credential with crash resume.',
+      options: portableKeyRotationOptions(),
+      execute: async (context, _arguments, options) => {
+        const operation = await acquirePortableKeyRotationStart(context, options);
+        const raw = await executeProductionPortableKeyRotationOperation(
+          context,
+          options,
+          operation,
+        );
+        const { renderPortableKeyRotation } = await import('./render.js');
+        context.stdout.write(
+          renderPortableKeyRotation(
+            cliPortableKeyRotationResultSchema.parse(raw),
+            optionBoolean(options, 'json'),
+          ),
+        );
+      },
+      children: [
+        {
+          name: 'resume',
+          description: 'Resume an interrupted portable-key rotation.',
+          arguments: [
+            {
+              syntax: '<operation-id>',
+              description: 'Opaque rotation operation identifier.',
+            },
+          ],
+          options: portableKeyRotationResumeOptions(),
+          execute: async (context, arguments_, options) => {
+            rejectRotationStdinCollision(options);
+            const operation: PortableKeyRotationOperation = {
+              kind: 'resume',
+              operationId: await parseRotationOperationId(arguments_[0]),
+              replacementFile: {
+                path: requiredOption(
+                  options,
+                  'replacementFile',
+                  'replacement key file',
+                ),
+                passphraseFromStdin: optionBoolean(
+                  options,
+                  'replacementFilePassphraseStdin',
+                ),
+              },
+              reauthentication: await acquireReauthentication(context, options),
+            };
+            const raw = await executeProductionPortableKeyRotationOperation(
+              context,
+              options,
+              operation,
+            );
+            const { renderPortableKeyRotation } = await import('./render.js');
+            context.stdout.write(
+              renderPortableKeyRotation(
+                cliPortableKeyRotationResultSchema.parse(raw),
+                optionBoolean(options, 'json'),
+              ),
+            );
+          },
+        },
+        {
+          name: 'list',
+          description: 'List redacted portable-key rotation journal entries.',
+          options: [jsonOption, secretBackendOption, backendPassphraseStdinOption],
+          execute: async (context, _arguments, options) => {
+            const raw = await executeProductionPortableKeyRotationOperation(
+              context,
+              options,
+              { kind: 'list' },
+            );
+            const { renderPortableKeyRotation } = await import('./render.js');
+            context.stdout.write(
+              renderPortableKeyRotation(
+                cliPortableKeyRotationResultSchema.parse(raw),
+                optionBoolean(options, 'json'),
+              ),
+            );
+          },
+        },
+      ],
+    },
   ],
 });
 const initializationCommand: CliCommandDescriptor = Object.freeze({
@@ -281,6 +519,7 @@ const initializationCommand: CliCommandDescriptor = Object.freeze({
       flags: '--key-file <path>',
       description: 'Import through the injected protected portable-key file reader.',
     },
+    keyFilePassphraseStdinOption,
     {
       flags: '--key-stdin',
       description:
@@ -353,6 +592,14 @@ const initializationCommand: CliCommandDescriptor = Object.freeze({
         ? startVaultInitialization(deps, secrets, startOptions)
         : startVaultInitialization(deps, secrets, startOptions, serverUrl),
     );
+    if (context.initialization === undefined && context.environment !== undefined) {
+      const { executeProductionSync } = await import('./production/sync.js');
+      await executeProductionSync({
+        environment: context.environment,
+        secrets,
+        backendPolicy: parseStatusBackendPolicy(options),
+      });
+    }
     context.stdout.write(renderInitializationReceipt(receipt));
   },
 });
@@ -405,6 +652,153 @@ const connectCommand: CliCommandDescriptor = Object.freeze({
     );
   },
 });
+const recoverCommand: CliCommandDescriptor = Object.freeze({
+  name: 'recover',
+  description: 'Recover an empty local data home with an invite and portable key.',
+  options: [
+    serverOption,
+    vaultOption,
+    {
+      flags: '--key-file <path>',
+      description:
+        'Read a guarded unprotected or passphrase-protected portable key file.',
+    },
+    {
+      flags: '--portable-key-stdin',
+      description: 'Read the portable key from an explicit stdin frame.',
+    },
+    keyFilePassphraseStdinOption,
+    {
+      flags: '--invite-stdin',
+      description: 'Read the invite token from an explicit stdin frame.',
+    },
+    jsonOption,
+    secretBackendOption,
+    backendPassphraseStdinOption,
+  ],
+  children: [
+    {
+      name: 'resume',
+      description: 'Resume a durable recovery operation.',
+      arguments: [
+        {
+          syntax: '<operation-id>',
+          description: 'Opaque recovery operation identifier.',
+        },
+      ],
+      options: [
+        serverOption,
+        vaultOption,
+        {
+          flags: '--key-file <path>',
+          description:
+            'Read a guarded portable key file when slot setup is incomplete.',
+        },
+        {
+          flags: '--portable-key-stdin',
+          description: 'Read the portable key from an explicit stdin frame.',
+        },
+        keyFilePassphraseStdinOption,
+        jsonOption,
+        secretBackendOption,
+        backendPassphraseStdinOption,
+      ],
+      execute: async (context, arguments_, options) => {
+        const { parseRecoverResult } = await import('./contracts.js');
+        const request = parseRecoverRequestFromOptions(
+          options,
+          context.environment ?? process.env,
+        );
+        const operationId = await parseRecoveryOperationId(arguments_[0]);
+        const source = parseRecoverySourceOptions(options, true);
+        if (source.inviteFromStdin) {
+          throw new CliUsageError(
+            '--invite-stdin is valid only when starting recovery.',
+          );
+        }
+        if (context.environment === undefined) {
+          throw new CliUnavailableError('recover');
+        }
+        const { executeProductionRecovery } = await import('./production/recovery.js');
+        const raw = await executeProductionRecovery({
+          environment: context.environment,
+          secrets: secretInput(context, 'recover'),
+          backendPolicy: parseStatusBackendPolicy(options),
+          request,
+          operationId,
+          ...(source.keyFilePath === undefined
+            ? {}
+            : { keyFilePath: source.keyFilePath }),
+          portableKeyFromStdin: source.portableKeyFromStdin,
+          keyFilePassphraseFromStdin: source.keyFilePassphraseFromStdin,
+        });
+        const { renderRecover } = await import('./render.js');
+        context.stdout.write(
+          renderRecover(parseRecoverResult(raw), optionBoolean(options, 'json')),
+        );
+      },
+    },
+    {
+      name: 'cancel',
+      description: 'Cancel a prepared recovery operation before network use.',
+      arguments: [
+        {
+          syntax: '<operation-id>',
+          description: 'Opaque recovery operation identifier.',
+        },
+      ],
+      options: [
+        serverOption,
+        vaultOption,
+        secretBackendOption,
+        backendPassphraseStdinOption,
+      ],
+      execute: async (context, arguments_, options) => {
+        if (context.environment === undefined) {
+          throw new CliUnavailableError('recover');
+        }
+        const { executeProductionRecoveryCancel } =
+          await import('./production/recovery.js');
+        const operationId = await parseRecoveryOperationId(arguments_[0]);
+        await executeProductionRecoveryCancel({
+          environment: context.environment,
+          secrets: secretInput(context, 'recover'),
+          backendPolicy: parseStatusBackendPolicy(options),
+          request: parseRecoverRequestFromOptions(
+            options,
+            context.environment ?? process.env,
+          ),
+          operationId,
+        });
+        context.stdout.write('Recovery cancelled.\n');
+      },
+    },
+  ],
+  execute: async (context, _arguments, options) => {
+    const result = await executeRecoveryStart(context, options, 'recover');
+    const { renderRecover } = await import('./render.js');
+    context.stdout.write(renderRecover(result, optionBoolean(options, 'json')));
+  },
+});
+
+const deviceJoinCommand: CliCommandDescriptor = Object.freeze({
+  name: 'join',
+  description: 'Join an existing vault with an invite and portable key.',
+  options: recoverCommand.options ?? [],
+  children: (recoverCommand.children ?? []).map((child) => ({
+    ...child,
+    description:
+      child.name === 'resume'
+        ? 'Resume a durable device-join operation.'
+        : 'Cancel a prepared device-join operation before network use.',
+  })),
+  execute: async (context, _arguments, options) => {
+    const result = await executeRecoveryStart(context, options, 'device join');
+    const { renderDeviceJoin } = await import('./render.js');
+    context.stdout.write(renderDeviceJoin(result, optionBoolean(options, 'json')));
+  },
+});
+
 const statusCommand: CliCommandDescriptor = Object.freeze({
   name: 'status',
   description: 'Show local vault and sync status without secret data.',
@@ -497,37 +891,8 @@ const lockCommand: CliCommandDescriptor = Object.freeze({
 async function unwrapVaultRootKeyFromContext(
   unlocked: ProductionUnlockedContext,
 ): Promise<VaultRootKey> {
-  const { unlockDeviceKeySlot } = await import('@kavrix/crypto');
-  const { slotBinding } = await import('@kavrix/client');
-  const store = await unlocked.environment.openSyncStore(unlocked.profile);
-  const vaultRecord = await store.getVault(unlocked.profile.vaultId);
-  if (vaultRecord === null) {
-    throw new Error('Vault record not found');
-  }
-  const deviceSecret = await unlocked.backend.keychain.load(
-    unlocked.profile.deviceLocator,
-  );
-  if (deviceSecret === null) {
-    throw new Error('Device secret not found');
-  }
-  const slot = vaultRecord.keySlots.find(
-    (candidate) => candidate.id === unlocked.profile.deviceLocator.keySlotId,
-  );
-  if (slot?.type !== 'device-key') {
-    throw new Error('Device key slot not found');
-  }
-  if (slot.deviceId !== unlocked.profile.deviceId) {
-    throw new Error('Device key slot not found');
-  }
-  try {
-    return await unlockDeviceKeySlot(
-      slot,
-      deviceSecret,
-      slotBinding(vaultRecord, slot),
-    );
-  } finally {
-    deviceSecret.fill(0);
-  }
+  const { unwrapRememberedDeviceRootKey } = await import('./production/unlock.js');
+  return unwrapRememberedDeviceRootKey(unlocked);
 }
 
 /**
@@ -1929,19 +2294,22 @@ const showCommand: CliCommandDescriptor = Object.freeze({
       rawResult = await context.ports.show(groupQuery, credentialQuery);
     } else {
       const { executeProductionShow } = await import('./production/show.js');
+      const { projectCredentialShow } = await import('@kavrix/client/cli-contracts');
       await withUnlockedVault(
         context,
         'show',
         options,
         async (unlocked, store, rootKey) => {
-          rawResult = await executeProductionShow(
-            {
-              source: store,
-              vaultId: unlocked.profile.vaultId,
-              rootKey,
-            },
-            groupQuery,
-            credentialQuery,
+          rawResult = projectCredentialShow(
+            await executeProductionShow(
+              {
+                source: store,
+                vaultId: unlocked.profile.vaultId,
+                rootKey,
+              },
+              groupQuery,
+              credentialQuery,
+            ),
           );
         },
       );
@@ -2342,6 +2710,167 @@ const syncCommand: CliCommandDescriptor = Object.freeze({
   },
 });
 
+const backupCommand: CliCommandDescriptor = Object.freeze({
+  name: 'backup',
+  description: 'Create and verify authenticated encrypted vault archives.',
+  children: [
+    {
+      name: 'create',
+      description: 'Create one bounded encrypted archive without replacing a file.',
+      options: [
+        {
+          flags: '--file <path>',
+          description: 'New archive path; existing files and links are refused.',
+        },
+        vaultOption,
+        jsonOption,
+        secretBackendOption,
+        backendPassphraseStdinOption,
+      ],
+      execute: async (context, _arguments, options) => {
+        const { parseBackupCreateRequest, parseBackupCreateResult } =
+          await import('./contracts.js');
+        const request = parseBackupCreateRequest({
+          destination: requiredOption(options, 'file', 'backup destination'),
+          ...(options['vault'] === undefined
+            ? {}
+            : {
+                vaultId: parseInputString(options, 'vault', (value) =>
+                  vaultIdSchema.parse(value),
+                ),
+              }),
+        });
+        let raw: unknown;
+        if (context.ports?.createBackup !== undefined) {
+          raw = await context.ports.createBackup(request);
+        } else {
+          if (context.environment === undefined) {
+            throw new CliUnavailableError('backup create');
+          }
+          const { executeProductionBackupCreate } =
+            await import('./production/backups.js');
+          raw = await executeProductionBackupCreate({
+            environment: context.environment,
+            secrets: secretInput(context, 'backup create'),
+            backendPolicy: parseStatusBackendPolicy(options),
+            destination: request.destination,
+            ...(request.vaultId === undefined ? {} : { vaultId: request.vaultId }),
+          });
+        }
+        const { renderBackupCreate } = await import('./render.js');
+        context.stdout.write(
+          renderBackupCreate(
+            parseBackupCreateResult(raw),
+            optionBoolean(options, 'json'),
+          ),
+        );
+      },
+    },
+    {
+      name: 'verify',
+      description: 'Authenticate one complete archive without publishing it.',
+      options: [
+        {
+          flags: '--file <path>',
+          description: 'Existing archive path; it is opened read-only.',
+        },
+        vaultOption,
+        jsonOption,
+        secretBackendOption,
+        backendPassphraseStdinOption,
+      ],
+      execute: async (context, _arguments, options) => {
+        const { parseBackupVerifyRequest, parseBackupVerifyResult } =
+          await import('./contracts.js');
+        const request = parseBackupVerifyRequest({
+          source: requiredOption(options, 'file', 'backup archive'),
+          ...(options['vault'] === undefined
+            ? {}
+            : {
+                vaultId: parseInputString(options, 'vault', (value) =>
+                  vaultIdSchema.parse(value),
+                ),
+              }),
+        });
+        let raw: unknown;
+        if (context.ports?.verifyBackup !== undefined) {
+          raw = await context.ports.verifyBackup(request);
+        } else {
+          if (context.environment === undefined) {
+            throw new CliUnavailableError('backup verify');
+          }
+          const { executeProductionBackupVerify } =
+            await import('./production/backups.js');
+          raw = await executeProductionBackupVerify({
+            environment: context.environment,
+            secrets: secretInput(context, 'backup verify'),
+            backendPolicy: parseStatusBackendPolicy(options),
+            source: request.source,
+            ...(request.vaultId === undefined ? {} : { vaultId: request.vaultId }),
+          });
+        }
+        const { renderBackupVerify } = await import('./render.js');
+        context.stdout.write(
+          renderBackupVerify(
+            parseBackupVerifyResult(raw),
+            optionBoolean(options, 'json'),
+          ),
+        );
+      },
+    },
+    {
+      name: 'restore',
+      description: 'Restore one authenticated archive into an isolated target.',
+      options: [
+        {
+          flags: '--file <path>',
+          description: 'Existing archive path; it is opened read-only.',
+        },
+        vaultOption,
+        {
+          flags: '--slot <slot-id>',
+          description: 'Exact archived portable, passphrase, or recovery slot to use.',
+        },
+        jsonOption,
+        secretBackendOption,
+        backendPassphraseStdinOption,
+      ],
+      execute: async (context, _arguments, options) => {
+        const { parseBackupRestoreRequest, parseBackupRestoreResult } =
+          await import('./contracts.js');
+        const request = parseBackupRestoreRequest({
+          source: requiredOption(options, 'file', 'backup archive'),
+          ...(options['vault'] === undefined
+            ? {}
+            : {
+                vaultId: parseInputString(options, 'vault', (value) =>
+                  vaultIdSchema.parse(value),
+                ),
+              }),
+          ...(options['slot'] === undefined
+            ? {}
+            : {
+                slotId: parseInputString(options, 'slot', (value) =>
+                  keySlotIdSchema.parse(value),
+                ),
+              }),
+        });
+        if (context.ports?.restoreBackup === undefined) {
+          throw new CliUnavailableError('backup restore');
+        }
+        const raw = await context.ports.restoreBackup(request);
+        const { renderBackupRestore } = await import('./render.js');
+        context.stdout.write(
+          renderBackupRestore(
+            parseBackupRestoreResult(raw),
+            optionBoolean(options, 'json'),
+          ),
+        );
+      },
+    },
+  ],
+});
+
 export const CLI_COMMAND_CATALOG: readonly CliCommandDescriptor[] = Object.freeze([
   versionCommand,
   generationCommand,
@@ -2349,6 +2878,7 @@ export const CLI_COMMAND_CATALOG: readonly CliCommandDescriptor[] = Object.freez
   keyCommand,
   initializationCommand,
   connectCommand,
+  recoverCommand,
   unlockCommand,
   lockCommand,
   statusCommand,
@@ -2361,14 +2891,62 @@ export const CLI_COMMAND_CATALOG: readonly CliCommandDescriptor[] = Object.freez
   revealCommand,
   getCommand,
   syncCommand,
+  backupCommand,
   {
     name: 'device',
     description: 'Manage this device and zero-knowledge enrollment.',
     children: [
       {
         name: 'invite',
-        description: 'List, revoke, or redeem device invites.',
+        description: 'Create, list, revoke, or redeem device invites.',
         children: [
+          {
+            name: 'create',
+            description: 'Issue one short-lived device enrollment invite.',
+            options: [
+              vaultOption,
+              {
+                flags: '--scope <scope...>',
+                description:
+                  'Granted API scope(s): sync:read, sync:write, or device:manage.',
+              },
+              {
+                flags: '--expires-in-seconds <60..86400>',
+                description: 'Invite lifetime in seconds.',
+                defaultValue: '600',
+              },
+              secretStdoutOption,
+              jsonOption,
+              secretBackendOption,
+              backendPassphraseStdinOption,
+            ],
+            execute: async (context, _arguments, options) => {
+              const vaultId = parseInputString(options, 'vault', (value) =>
+                vaultIdSchema.parse(value),
+              );
+              const request = parseInviteIssueRequest(options);
+              requireSecretOutputAuthorization(context, options);
+              const raw = await withAuthorizedPorts(
+                context,
+                'device invite create',
+                options,
+                (ports) => {
+                  if (ports.issueInvite === undefined) {
+                    throw new CliUnavailableError('device invite create');
+                  }
+                  return ports.issueInvite(vaultId, request);
+                },
+              );
+              const { inviteIssueResponseSchema } = await import('@kavrix/schemas');
+              const { renderInviteIssue } = await import('./render.js');
+              context.stdout.write(
+                renderInviteIssue(
+                  inviteIssueResponseSchema.parse(raw),
+                  optionBoolean(options, 'json'),
+                ),
+              );
+            },
+          },
           {
             name: 'list',
             description: 'List public invite metadata.',
@@ -2383,6 +2961,8 @@ export const CLI_COMMAND_CATALOG: readonly CliCommandDescriptor[] = Object.freez
                 description: 'Continue from an opaque invite page cursor.',
               },
               jsonOption,
+              secretBackendOption,
+              backendPassphraseStdinOption,
             ],
             execute: async (context, _arguments, options) => {
               const [{ parseInvitePage, parseVaultId }, { renderInvites }] =
@@ -2401,9 +2981,11 @@ export const CLI_COMMAND_CATALOG: readonly CliCommandDescriptor[] = Object.freez
                 'invite list options',
               );
               const page = parseInvitePage(
-                await useCases(context, 'device invite list').listInvitePage(
-                  vaultId,
-                  pageOptions,
+                await withAuthorizedPorts(
+                  context,
+                  'device invite list',
+                  options,
+                  (ports) => ports.listInvitePage(vaultId, pageOptions),
                 ),
               );
               context.stdout.write(renderInvites(page, optionBoolean(options, 'json')));
@@ -2415,7 +2997,7 @@ export const CLI_COMMAND_CATALOG: readonly CliCommandDescriptor[] = Object.freez
             arguments: [
               { syntax: '<invite-id>', description: 'Opaque invite identifier.' },
             ],
-            options: [vaultOption],
+            options: [vaultOption, secretBackendOption, backendPassphraseStdinOption],
             execute: async (context, arguments_, options) => {
               const { parseInviteId, parseVaultId } = await import('./contracts.js');
               const vaultId = parseInputString(options, 'vault', parseVaultId);
@@ -2424,9 +3006,11 @@ export const CLI_COMMAND_CATALOG: readonly CliCommandDescriptor[] = Object.freez
                 'invite ID',
                 parseInviteId,
               );
-              await useCases(context, 'device invite revoke').revokeInvite(
-                vaultId,
-                inviteId,
+              await withAuthorizedPorts(
+                context,
+                'device invite revoke',
+                options,
+                (ports) => ports.revokeInvite(vaultId, inviteId),
               );
               context.stdout.write('Invite revoked.\n');
             },
@@ -2496,6 +3080,150 @@ export const CLI_COMMAND_CATALOG: readonly CliCommandDescriptor[] = Object.freez
           },
         ],
       },
+      {
+        name: 'list',
+        description: 'List canonical public device metadata.',
+        options: [
+          vaultOption,
+          {
+            flags: '--limit <1..200>',
+            description: 'Maximum number of devices to return.',
+          },
+          {
+            flags: '--cursor <opaque>',
+            description: 'Continue from an opaque device page cursor.',
+          },
+          jsonOption,
+          secretBackendOption,
+          backendPassphraseStdinOption,
+        ],
+        execute: async (context, _arguments, options) => {
+          const [{ parseDevicePage, parseVaultId }, { renderDevices }] =
+            await Promise.all([import('./contracts.js'), import('./render.js')]);
+          const vaultId = parseInputString(options, 'vault', parseVaultId);
+          const pageOptions = parseInput(
+            controlListPageQuerySchema,
+            {
+              ...(options['limit'] === undefined ? {} : { limit: options['limit'] }),
+              ...(options['cursor'] === undefined ? {} : { cursor: options['cursor'] }),
+            },
+            'device list options',
+          );
+          const page = parseDevicePage(
+            await withAuthorizedPorts(context, 'device list', options, (ports) => {
+              if (ports.listDevicePage === undefined) {
+                throw new CliUnavailableError('device list');
+              }
+              return ports.listDevicePage(vaultId, pageOptions);
+            }),
+          );
+          context.stdout.write(renderDevices(page, optionBoolean(options, 'json')));
+        },
+      },
+      {
+        name: 'revoke',
+        description: 'Revoke the current or another device by opaque ID.',
+        arguments: [
+          { syntax: '<device-id>', description: 'Opaque device identifier.' },
+        ],
+        options: [
+          vaultOption,
+          {
+            flags: '--confirm',
+            description:
+              'Confirm revocation, including current-device revocation when another active device remains.',
+          },
+          secretBackendOption,
+          backendPassphraseStdinOption,
+        ],
+        execute: async (context, arguments_, options) => {
+          const { parseVaultId } = await import('./contracts.js');
+          const vaultId = parseInputString(options, 'vault', parseVaultId);
+          const deviceId = parseInputValue(
+            requiredArgument(arguments_[0], 'device ID'),
+            'device ID',
+            (value) => deviceIdSchema.parse(value),
+          );
+          if (!optionBoolean(options, 'confirm')) {
+            throw new CliUsageError(
+              'Device revocation requires explicit --confirm acknowledgement.',
+            );
+          }
+          await withAuthorizedPorts(context, 'device revoke', options, (ports) => {
+            if (ports.revokeDevice === undefined) {
+              throw new CliUnavailableError('device revoke');
+            }
+            return ports.revokeDevice(vaultId, deviceId);
+          });
+          context.stdout.write('Device revoked.\n');
+        },
+      },
+      {
+        name: 'remember',
+        description: 'Create a device unlock slot in the native keychain.',
+        options: slotLifecycleOptions(false),
+        execute: async (context, _arguments, options) => {
+          const operation = await acquireCreateSlotOperation(
+            context,
+            options,
+            'device-key',
+          );
+          const raw =
+            context.ports?.createKeySlot === undefined
+              ? await executeProductionKeySlotOperation(
+                  context,
+                  options,
+                  operation,
+                  'device remember',
+                )
+              : await context.ports.createKeySlot(operation);
+          const { renderDeviceKeyAction } = await import('./render.js');
+          context.stdout.write(
+            renderDeviceKeyAction(
+              cliKeySlotResultSchema.parse(raw),
+              'remembered',
+              optionBoolean(options, 'json'),
+            ),
+          );
+        },
+      },
+      {
+        name: 'forget',
+        description: 'Remove one exact local device unlock entry.',
+        arguments: [
+          { syntax: '<slot-id>', description: 'Opaque device-key slot identifier.' },
+        ],
+        options: slotLifecycleOptions(false),
+        execute: async (context, arguments_, options) => {
+          const slotId = parseInputValue(
+            requiredArgument(arguments_[0], 'slot ID'),
+            'slot ID',
+            (value) => keySlotIdSchema.parse(value),
+          );
+          const operation = await acquireLifecycleSlotOperation(context, options, {
+            kind: 'disable',
+            slotId,
+          });
+          const raw =
+            context.ports?.disableKeySlot === undefined
+              ? await executeProductionKeySlotOperation(
+                  context,
+                  options,
+                  operation,
+                  'device forget',
+                )
+              : await context.ports.disableKeySlot(slotId);
+          const { renderDeviceKeyAction } = await import('./render.js');
+          context.stdout.write(
+            renderDeviceKeyAction(
+              cliKeySlotResultSchema.parse(raw),
+              'forgotten',
+              optionBoolean(options, 'json'),
+            ),
+          );
+        },
+      },
+      deviceJoinCommand,
     ],
   },
   completionCommand(() => CLI_COMMAND_CATALOG),
@@ -2514,6 +3242,7 @@ export const PUBLIC_CLI_COMMAND_CATALOG: readonly CliCommandDescriptor[] =
     keyCommand,
     initializationCommand,
     connectCommand,
+    recoverCommand,
     unlockCommand,
     lockCommand,
     statusCommand,
@@ -2526,8 +3255,56 @@ export const PUBLIC_CLI_COMMAND_CATALOG: readonly CliCommandDescriptor[] =
     revealCommand,
     getCommand,
     syncCommand,
+    publicBackupCommand(),
+    publicDeviceCommand(),
     completionCommand(() => PUBLIC_CLI_COMMAND_CATALOG),
   ]);
+
+function publicBackupCommand(): CliCommandDescriptor {
+  const children = backupCommand.children;
+  if (children === undefined) throw new Error('The backup catalog is incomplete');
+  return Object.freeze({
+    ...backupCommand,
+    children: Object.freeze(children.filter(({ name }) => name !== 'restore')),
+  });
+}
+
+function publicDeviceCommand(): CliCommandDescriptor {
+  const device = CLI_COMMAND_CATALOG.find((descriptor) => descriptor.name === 'device');
+  const invite = device?.children?.find((descriptor) => descriptor.name === 'invite');
+  const list = device?.children?.find((descriptor) => descriptor.name === 'list');
+  const revoke = device?.children?.find((descriptor) => descriptor.name === 'revoke');
+  const remember = device?.children?.find(
+    (descriptor) => descriptor.name === 'remember',
+  );
+  const forget = device?.children?.find((descriptor) => descriptor.name === 'forget');
+  const join = device?.children?.find((descriptor) => descriptor.name === 'join');
+  if (
+    device === undefined ||
+    invite === undefined ||
+    list === undefined ||
+    revoke === undefined ||
+    remember === undefined ||
+    forget === undefined ||
+    join === undefined
+  ) {
+    throw new Error('The device catalog is incomplete');
+  }
+  const publicInvite = Object.freeze({
+    name: invite.name,
+    description: 'Create, list, or revoke device invites.',
+    ...(invite.arguments === undefined ? {} : { arguments: invite.arguments }),
+    ...(invite.options === undefined ? {} : { options: invite.options }),
+    children: (invite.children ?? []).filter(
+      (descriptor) => descriptor.name !== 'join',
+    ),
+  });
+  return Object.freeze({
+    name: device.name,
+    description: device.description,
+    children: [publicInvite, list, revoke, remember, forget, join],
+  });
+}
 
 function completionCommand(
   catalog: () => readonly CliCommandDescriptor[],
@@ -2606,6 +3383,212 @@ function requiredOption(
   return value;
 }
 
+type RecoverySourceOptions = Readonly<{
+  inviteFromStdin: boolean;
+  portableKeyFromStdin: boolean;
+  keyFilePassphraseFromStdin: boolean;
+  keyFilePath?: string;
+}>;
+
+function parseRecoverRequestFromOptions(
+  options: Readonly<Record<string, unknown>>,
+  environment: Readonly<Record<string, string | undefined>>,
+): ReturnType<typeof parseRecoverRequest> {
+  const serverUrl = optionString(options, 'server') ?? environment['CREDS_SERVER_URL'];
+  if (serverUrl === undefined || serverUrl.length === 0) {
+    throw new CliUsageError('A server URL is required.');
+  }
+  return parseRecoverRequest({
+    serverUrl,
+    vaultId: parseInputString(options, 'vault', (value) => vaultIdSchema.parse(value)),
+  });
+}
+
+function parseRecoverySourceOptions(
+  options: Readonly<Record<string, unknown>>,
+  resume: boolean,
+): RecoverySourceOptions {
+  const inviteFromStdin = optionBoolean(options, 'inviteStdin');
+  const portableKeyFromStdin = optionBoolean(options, 'portableKeyStdin');
+  const keyFilePassphraseFromStdin = optionBoolean(options, 'keyFilePassphraseStdin');
+  const rawKeyFilePath = options['keyFile'];
+  if (rawKeyFilePath !== undefined && typeof rawKeyFilePath !== 'string') {
+    throw new CliUsageError('The portable key file path is invalid.');
+  }
+  const keyFilePath = rawKeyFilePath;
+  if (keyFilePath?.length === 0) {
+    throw new CliUsageError('The portable key file path is invalid.');
+  }
+  if (resume && inviteFromStdin) {
+    throw new CliUsageError('--invite-stdin is valid only when starting recovery.');
+  }
+  if (keyFilePath !== undefined && portableKeyFromStdin) {
+    throw new CliUsageError('Choose exactly one portable-key source.');
+  }
+  if (keyFilePassphraseFromStdin && keyFilePath === undefined) {
+    throw new CliUsageError('--key-file-passphrase-stdin requires --key-file.');
+  }
+  if (
+    !resume &&
+    keyFilePath === undefined &&
+    inviteFromStdin !== portableKeyFromStdin
+  ) {
+    throw new CliUsageError(
+      'Invite and portable-key stdin sources must be supplied together.',
+    );
+  }
+  if (
+    !resume &&
+    keyFilePath !== undefined &&
+    keyFilePassphraseFromStdin &&
+    !inviteFromStdin
+  ) {
+    throw new CliUsageError(
+      'Use --invite-stdin with --key-file-passphrase-stdin for framed recovery input.',
+    );
+  }
+  return {
+    inviteFromStdin,
+    portableKeyFromStdin,
+    keyFilePassphraseFromStdin,
+    ...(keyFilePath === undefined ? {} : { keyFilePath }),
+  };
+}
+
+async function parseRecoveryOperationId(
+  value: string | undefined,
+): Promise<LifecycleOperationId> {
+  const { lifecycleOperationIdSchema } = await import('@kavrix/client/cli-contracts');
+  const parsed = lifecycleOperationIdSchema.safeParse(
+    requiredArgument(value, 'operation ID'),
+  );
+  if (!parsed.success) throw new CliUsageError('The operation ID is invalid.');
+  return parsed.data;
+}
+
+async function executeRecoveryStart(
+  context: CliCommandContext,
+  options: Readonly<Record<string, unknown>>,
+  feature: 'recover' | 'device join',
+): Promise<CliRecoverResult> {
+  const request = parseRecoverRequestFromOptions(
+    options,
+    context.environment ?? process.env,
+  );
+  const source = parseRecoverySourceOptions(options, false);
+  let raw: unknown;
+  if (context.ports?.recover !== undefined) {
+    if (source.keyFilePath !== undefined) {
+      throw new CliUsageError('Injected recovery does not support key files.');
+    }
+    const frames = await secretInput(context, feature).readBatch({
+      kinds: ['invite', 'portable-key'],
+      fromStdin: source.inviteFromStdin || source.portableKeyFromStdin,
+      requireEnd: source.inviteFromStdin || source.portableKeyFromStdin,
+    });
+    raw = await context.ports.recover(
+      request,
+      requiredSecretFrame(frames, 0),
+      requiredSecretFrame(frames, 1),
+    );
+  } else {
+    const { executeProductionRecovery } = await import('./production/recovery.js');
+    raw = await executeProductionRecovery({
+      environment: context.environment ?? process.env,
+      secrets: secretInput(context, feature),
+      backendPolicy: parseStatusBackendPolicy(options),
+      request,
+      ...(source.inviteFromStdin ? { inviteFromStdin: true } : {}),
+      ...(source.portableKeyFromStdin ? { portableKeyFromStdin: true } : {}),
+      ...(source.keyFilePath === undefined ? {} : { keyFilePath: source.keyFilePath }),
+      ...(source.keyFilePassphraseFromStdin
+        ? { keyFilePassphraseFromStdin: true }
+        : {}),
+    });
+  }
+  const { parseRecoverResult } = await import('./contracts.js');
+  return parseRecoverResult(raw);
+}
+
+async function parseRotationOperationId(
+  value: string | undefined,
+): Promise<LifecycleOperationId> {
+  const { lifecycleOperationIdSchema } = await import('@kavrix/client/cli-contracts');
+  const parsed = lifecycleOperationIdSchema.safeParse(
+    requiredArgument(value, 'operation ID'),
+  );
+  if (!parsed.success) throw new CliUsageError('The rotation operation ID is invalid.');
+  return parsed.data;
+}
+
+function parseInviteIssueRequest(
+  options: Readonly<Record<string, unknown>>,
+): InviteIssueRequest {
+  const rawExpiry = options['expiresInSeconds'];
+  const expiresInSeconds = parseInput(
+    inviteExpiryOptionSchema,
+    rawExpiry === undefined ? '600' : rawExpiry,
+    'invite expiry',
+  );
+  const scopes = optionStrings(options, 'scope', 'invite scopes') ?? [
+    ...DEFAULT_INVITE_SCOPES,
+  ];
+  return parseInput(
+    inviteIssueRequestSchema,
+    { scopes, expiresInSeconds },
+    'invite options',
+  );
+}
+
+function optionStrings(
+  options: Readonly<Record<string, unknown>>,
+  key: string,
+  label: string,
+): readonly string[] | undefined {
+  const value = options[key];
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new CliUsageError(`The ${label} are invalid.`);
+  }
+  const strings: string[] = [];
+  for (const entry of value) {
+    if (typeof entry !== 'string' || entry.length === 0) {
+      throw new CliUsageError(`The ${label} are invalid.`);
+    }
+    strings.push(entry);
+  }
+  return strings;
+}
+
+function requireSecretOutputAuthorization(
+  context: CliCommandContext,
+  options: Readonly<Record<string, unknown>>,
+): void {
+  if (context.stdoutIsTty || optionBoolean(options, 'stdout')) return;
+  throw new CliUsageError(
+    'Secret output requires an interactive terminal or explicit --stdout acknowledgement.',
+  );
+}
+
+async function withAuthorizedPorts<Output>(
+  context: CliCommandContext,
+  feature: CliFeature,
+  options: Readonly<Record<string, unknown>>,
+  operation: (ports: CliUseCasePorts) => Promise<Output>,
+): Promise<Output> {
+  if (context.ports !== undefined) return operation(context.ports);
+  if (context.environment === undefined) throw new CliUnavailableError(feature);
+  const { runProductionUnlocked } = await import('./production/unlock.js');
+  return runProductionUnlocked(
+    {
+      environment: context.environment,
+      secrets: secretInput(context, feature),
+      backendPolicy: parseStatusBackendPolicy(options),
+    },
+    async ({ ports }) => operation(ports),
+  );
+}
+
 function useCases(context: CliCommandContext, feature: CliFeature): CliUseCasePorts {
   if (context.ports === undefined) throw new CliUnavailableError(feature);
   return context.ports;
@@ -2628,6 +3611,644 @@ function secretInput(context: CliCommandContext, feature: CliFeature): SecretInp
   return context.secrets;
 }
 
+function slotLifecycleOptions(
+  includeCredential: boolean,
+): readonly CliOptionDescriptor[] {
+  return [
+    {
+      flags: '--reauth <device-key|portable-key|passphrase|recovery-key>',
+      description: 'Explicit local reauthentication method.',
+    },
+    {
+      flags: '--reauth-slot <slot-id>',
+      description: 'Existing slot used when reauthentication selection is ambiguous.',
+    },
+    {
+      flags: '--reauth-stdin',
+      description: 'Read the reauthentication credential from a bounded stdin frame.',
+    },
+    {
+      flags: '--auth-key-file <path>',
+      description: 'Guarded portable-key file used for portable reauthentication.',
+    },
+    keyFilePassphraseStdinOption,
+    ...(includeCredential
+      ? [
+          {
+            flags: '--credential-stdin',
+            description: 'Read the new credential from bounded stdin frames.',
+          },
+          {
+            flags: '--credential-file <path>',
+            description: 'Guarded portable-key file for a new portable slot.',
+          },
+          {
+            flags: '--credential-file-passphrase-stdin',
+            description:
+              'Read a credential-file passphrase from a bounded stdin frame.',
+          },
+          {
+            flags: '--device-provider <name>',
+            description: 'Public native provider label for a new device slot.',
+          },
+        ]
+      : []),
+    jsonOption,
+    secretBackendOption,
+    backendPassphraseStdinOption,
+  ];
+}
+
+function portableKeyRotationOptions(): readonly CliOptionDescriptor[] {
+  return [
+    ...slotLifecycleOptions(false),
+    {
+      flags: '--slot <slot-id>',
+      description: 'Existing active portable-key slot to replace.',
+    },
+    {
+      flags: '--generate-file <path>',
+      description: 'Generate a fresh bound replacement key file at this path.',
+    },
+    {
+      flags: '--replacement-file <path>',
+      description: 'Import an existing unbound portable-key file.',
+    },
+    {
+      flags: '--protect-with-passphrase',
+      description: 'Encrypt a generated replacement file with a confirmed passphrase.',
+    },
+    {
+      flags: '--replacement-passphrase-stdin',
+      description: 'Read generated-file passphrase and confirmation from stdin frames.',
+    },
+    {
+      flags: '--replacement-file-passphrase-stdin',
+      description: 'Read an imported replacement-file passphrase from stdin.',
+    },
+  ];
+}
+
+function portableKeyRotationResumeOptions(): readonly CliOptionDescriptor[] {
+  return [
+    ...slotLifecycleOptions(false),
+    {
+      flags: '--replacement-file <path>',
+      description: 'The original replacement portable-key file.',
+    },
+    {
+      flags: '--replacement-file-passphrase-stdin',
+      description: 'Read the replacement-file passphrase from stdin.',
+    },
+  ];
+}
+
+async function acquirePortableKeyRotationStart(
+  context: CliCommandContext,
+  options: Readonly<Record<string, unknown>>,
+): Promise<PortableKeyRotationOperation> {
+  const generateFile = optionString(options, 'generateFile');
+  const replacementFile = optionString(options, 'replacementFile');
+  if ((generateFile === undefined) === (replacementFile === undefined)) {
+    throw new CliUsageError(
+      'Choose exactly one of --generate-file or --replacement-file.',
+    );
+  }
+  const generatedPassphraseFromStdin = optionBoolean(
+    options,
+    'replacementPassphraseStdin',
+  );
+  const replacementFilePassphraseFromStdin = optionBoolean(
+    options,
+    'replacementFilePassphraseStdin',
+  );
+  if (generateFile !== undefined) {
+    if (replacementFilePassphraseFromStdin) {
+      throw new CliUsageError(
+        '--replacement-file-passphrase-stdin applies only to imported files.',
+      );
+    }
+    if (
+      generatedPassphraseFromStdin &&
+      !optionBoolean(options, 'protectWithPassphrase')
+    ) {
+      throw new CliUsageError(
+        '--replacement-passphrase-stdin requires --protect-with-passphrase.',
+      );
+    }
+  } else if (
+    optionBoolean(options, 'protectWithPassphrase') ||
+    generatedPassphraseFromStdin
+  ) {
+    throw new CliUsageError(
+      'Generated-file protection options require --generate-file.',
+    );
+  }
+  rejectRotationStdinCollision(options);
+  const reauthentication = await acquireReauthentication(context, options);
+  const sourceSlotId = optionalKeySlotId(options, 'slot');
+  return {
+    kind: 'start',
+    ...(sourceSlotId === undefined ? {} : { sourceSlotId }),
+    replacement:
+      generateFile === undefined
+        ? {
+            kind: 'import-file',
+            path: requiredValue(replacementFile, 'replacement key file'),
+            passphraseFromStdin: replacementFilePassphraseFromStdin,
+          }
+        : {
+            kind: 'generate-file',
+            path: generateFile,
+            protectWithPassphrase: optionBoolean(options, 'protectWithPassphrase'),
+            passphraseFromStdin: generatedPassphraseFromStdin,
+          },
+    reauthentication,
+  };
+}
+
+function rejectRotationStdinCollision(
+  options: Readonly<Record<string, unknown>>,
+): void {
+  const reauthenticationUsesStdin =
+    optionBoolean(options, 'reauthStdin') ||
+    (optionString(options, 'authKeyFile') !== undefined &&
+      optionBoolean(options, 'keyFilePassphraseStdin'));
+  const replacementUsesStdin =
+    optionBoolean(options, 'replacementPassphraseStdin') ||
+    optionBoolean(options, 'replacementFilePassphraseStdin');
+  if (reauthenticationUsesStdin && replacementUsesStdin) {
+    throw new CliUsageError(
+      'Reauthentication and replacement-file secrets cannot share stdin in one command.',
+    );
+  }
+}
+
+async function executeProductionPortableKeyRotationOperation(
+  context: CliCommandContext,
+  options: Readonly<Record<string, unknown>>,
+  operation: PortableKeyRotationOperation,
+): Promise<unknown> {
+  if (context.environment === undefined) {
+    throw new CliUnavailableError(
+      operation.kind === 'list' ? 'key rotate list' : 'key rotate',
+    );
+  }
+  const { executeProductionPortableKeyRotation } =
+    await import('./production/portable-key-rotation.js');
+  return executeProductionPortableKeyRotation({
+    environment: context.environment,
+    secrets: secretInput(
+      context,
+      `key rotate${operation.kind === 'resume' ? ' resume' : ''}` as CliFeature,
+    ),
+    backendPolicy: parseStatusBackendPolicy(options),
+    operation,
+  });
+}
+
+function requiredValue(value: string | undefined, label: string): string {
+  if (value === undefined || value.length === 0) {
+    throw new CliUsageError(`A ${label} is required.`);
+  }
+  return value;
+}
+
+type SlotCredentialType = 'portable-key' | 'passphrase' | 'recovery-key' | 'device-key';
+
+async function acquireCreateSlotOperation(
+  context: CliCommandContext,
+  options: Readonly<Record<string, unknown>>,
+  slotType: SlotCredentialType,
+): Promise<KeySlotOperation> {
+  const authKeyFile = optionString(options, 'authKeyFile');
+  const authFilePassphraseFromStdin = optionBoolean(options, 'keyFilePassphraseStdin');
+  const authFromStdin = optionBoolean(options, 'reauthStdin');
+  const credentialFile = optionString(options, 'credentialFile');
+  const credentialFromStdin = optionBoolean(options, 'credentialStdin');
+  const credentialFilePassphraseFromStdin = optionBoolean(
+    options,
+    'credentialFilePassphraseStdin',
+  );
+  const stdinConsumers =
+    Number(authFromStdin) +
+    Number(authKeyFile !== undefined && authFilePassphraseFromStdin) +
+    Number(credentialFromStdin) +
+    Number(credentialFile !== undefined && credentialFilePassphraseFromStdin);
+  if (stdinConsumers > 1) {
+    return acquireCreateSlotOperationFromFrames(context, options, slotType);
+  }
+  const reauthentication = await acquireReauthentication(context, options);
+  const deviceProvider = optionString(options, 'deviceProvider');
+  if (slotType === 'device-key') {
+    if (
+      optionBoolean(options, 'credentialStdin') ||
+      options['credentialFile'] !== undefined
+    ) {
+      throw new CliUsageError(
+        'Device slots generate their protected credential locally.',
+      );
+    }
+    return {
+      kind: 'create',
+      slotType,
+      reauthentication,
+      ...(deviceProvider === undefined ? {} : { deviceProvider }),
+    };
+  }
+
+  const credential = await acquireNewSlotCredential(context, options, slotType);
+  return {
+    kind: 'create',
+    slotType,
+    credential,
+    reauthentication,
+    ...(deviceProvider === undefined ? {} : { deviceProvider }),
+  };
+}
+
+async function acquireCreateSlotOperationFromFrames(
+  context: CliCommandContext,
+  options: Readonly<Record<string, unknown>>,
+  slotType: SlotCredentialType,
+): Promise<KeySlotOperation> {
+  if (slotType === 'device-key') {
+    throw new CliUsageError(
+      'Device slots generate their protected credential locally.',
+    );
+  }
+  const authType = parseInput(
+    z.enum(['device-key', 'portable-key', 'passphrase', 'recovery-key']),
+    requiredOption(options, 'reauth', 'reauthentication method'),
+    'reauthentication method',
+  );
+  const authSlot = optionalKeySlotId(options, 'reauthSlot');
+  const authKeyFile = optionString(options, 'authKeyFile');
+  const authFromStdin = optionBoolean(options, 'reauthStdin');
+  const authFilePassphraseFromStdin = optionBoolean(options, 'keyFilePassphraseStdin');
+  const credentialFile = optionString(options, 'credentialFile');
+  const credentialFromStdin = optionBoolean(options, 'credentialStdin');
+  const credentialFilePassphraseFromStdin = optionBoolean(
+    options,
+    'credentialFilePassphraseStdin',
+  );
+  if (authType === 'device-key' && (authFromStdin || authKeyFile !== undefined)) {
+    throw new CliUsageError('Device reauthentication does not consume secret input.');
+  }
+  if (authKeyFile !== undefined && authType !== 'portable-key') {
+    throw new CliUsageError('The selected reauthentication source is invalid.');
+  }
+  if (authKeyFile !== undefined && authFromStdin) {
+    throw new CliUsageError('Choose either --auth-key-file or --reauth-stdin.');
+  }
+  if (authType === 'passphrase' && authSlot === undefined) {
+    throw new CliUsageError('Passphrase reauthentication requires --reauth-slot.');
+  }
+  if (credentialFile !== undefined && slotType !== 'portable-key') {
+    throw new CliUsageError(
+      'A credential file can be used only for a portable-key slot.',
+    );
+  }
+  if (credentialFile !== undefined && credentialFromStdin) {
+    throw new CliUsageError('Choose either --credential-file or --credential-stdin.');
+  }
+  if (credentialFilePassphraseFromStdin && credentialFile === undefined) {
+    throw new CliUsageError(
+      '--credential-file-passphrase-stdin requires --credential-file.',
+    );
+  }
+  const frameKinds: ('passphrase' | 'portable-key' | 'recovery-key')[] = [];
+  if (authFromStdin) {
+    if (authType === 'device-key') {
+      throw new CliUsageError('Device reauthentication does not consume secret input.');
+    }
+    frameKinds.push(authType);
+  }
+  if (authKeyFile !== undefined && authFilePassphraseFromStdin) {
+    frameKinds.push('passphrase');
+  }
+  if (credentialFile !== undefined && credentialFilePassphraseFromStdin) {
+    frameKinds.push('passphrase');
+  } else if (credentialFromStdin) {
+    frameKinds.push(slotType);
+    if (slotType === 'passphrase') frameKinds.push('passphrase');
+  }
+  const frames = await secretInput(context, 'key slot create').readBatch({
+    kinds: frameKinds,
+    fromStdin: true,
+    requireEnd: true,
+  });
+  let frameIndex = 0;
+  const takeFrame = (): AcquiredSecret => {
+    const frame = frames[frameIndex];
+    frameIndex += 1;
+    if (frame === undefined)
+      throw new CliUsageError('Secret input used invalid framing.');
+    return frame;
+  };
+  const authFrame = authFromStdin ? takeFrame() : undefined;
+  const authFilePassphrase =
+    authKeyFile !== undefined && authFilePassphraseFromStdin ? takeFrame() : undefined;
+  let reauthentication: SlotReauthentication;
+  if (authType === 'device-key') {
+    reauthentication = {
+      kind: 'device-key',
+      ...(authSlot === undefined ? {} : { slotId: authSlot }),
+    };
+  } else if (authKeyFile !== undefined) {
+    reauthentication = {
+      kind: 'portable-key',
+      formattedKey: await readPortableKeyFileForSlot(
+        authKeyFile,
+        secretInput(context, 'key slot create'),
+        authFilePassphraseFromStdin,
+        authFilePassphrase,
+      ),
+      ...(authSlot === undefined ? {} : { slotId: authSlot }),
+    };
+  } else {
+    const value =
+      authFrame ??
+      (await secretInput(context, 'key slot create').read({
+        kind: authType,
+        fromStdin: false,
+      }));
+    reauthentication =
+      authType === 'passphrase'
+        ? (() => {
+            if (authSlot === undefined) {
+              throw new CliUsageError(
+                'Passphrase reauthentication requires --reauth-slot.',
+              );
+            }
+            return { kind: 'passphrase', passphrase: value, slotId: authSlot };
+          })()
+        : {
+            kind: authType,
+            formattedKey: value,
+            ...(authSlot === undefined ? {} : { slotId: authSlot }),
+          };
+  }
+
+  let credential: NewSlotCredential;
+  if (credentialFile !== undefined) {
+    const credentialFilePassphrase = credentialFilePassphraseFromStdin
+      ? takeFrame()
+      : undefined;
+    credential = {
+      kind: 'portable-key',
+      formattedKey: await readPortableKeyFileForSlot(
+        credentialFile,
+        secretInput(context, 'key slot create'),
+        credentialFilePassphraseFromStdin,
+        credentialFilePassphrase,
+      ),
+    };
+  } else {
+    const maskedPassphraseValues =
+      !credentialFromStdin && slotType === 'passphrase'
+        ? await secretInput(context, 'key slot create').readBatch({
+            kinds: ['passphrase', 'passphrase'],
+            fromStdin: false,
+            requireEnd: false,
+          })
+        : undefined;
+    const first = credentialFromStdin
+      ? takeFrame()
+      : (maskedPassphraseValues?.[0] ??
+        (await readCredential(context, slotType, false)));
+    if (slotType === 'passphrase') {
+      const confirmation = credentialFromStdin
+        ? takeFrame()
+        : maskedPassphraseValues?.[1];
+      if (confirmation === undefined) {
+        throw new CliUsageError('Passphrase confirmation is incomplete.');
+      }
+      await assertMatchingPassphrases(first, confirmation);
+      credential = { kind: 'passphrase', passphrase: first };
+    } else {
+      credential = { kind: slotType, formattedKey: first };
+    }
+  }
+  const deviceProvider = optionString(options, 'deviceProvider');
+  return {
+    kind: 'create',
+    slotType,
+    credential,
+    reauthentication,
+    ...(deviceProvider === undefined ? {} : { deviceProvider }),
+  };
+}
+
+async function acquireLifecycleSlotOperation(
+  context: CliCommandContext,
+  options: Readonly<Record<string, unknown>>,
+  operation: Readonly<{
+    kind: 'disable' | 'revoke';
+    slotId: KeySlotId;
+  }>,
+): Promise<KeySlotOperation> {
+  return {
+    ...operation,
+    reauthentication: await acquireReauthentication(context, options),
+  };
+}
+
+async function acquireReauthentication(
+  context: CliCommandContext,
+  options: Readonly<Record<string, unknown>>,
+): Promise<SlotReauthentication> {
+  const authType = parseInput(
+    z.enum(['device-key', 'portable-key', 'passphrase', 'recovery-key']),
+    requiredOption(options, 'reauth', 'reauthentication method'),
+    'reauthentication method',
+  );
+  const slotId = optionalKeySlotId(options, 'reauthSlot');
+  const keyFile = optionString(options, 'authKeyFile');
+  const fromStdin = optionBoolean(options, 'reauthStdin');
+  const passphraseFromStdin = optionBoolean(options, 'keyFilePassphraseStdin');
+  if (authType === 'device-key') {
+    if (fromStdin || keyFile !== undefined || passphraseFromStdin) {
+      throw new CliUsageError('Device reauthentication does not consume secret input.');
+    }
+    return { kind: 'device-key', ...(slotId === undefined ? {} : { slotId }) };
+  }
+  if (authType !== 'portable-key' && keyFile !== undefined) {
+    throw new CliUsageError('A key file can reauthenticate only a portable-key slot.');
+  }
+  if (keyFile !== undefined && fromStdin) {
+    throw new CliUsageError('Choose either --auth-key-file or --reauth-stdin.');
+  }
+  if (authType === 'passphrase' && slotId === undefined) {
+    throw new CliUsageError('Passphrase reauthentication requires --reauth-slot.');
+  }
+  const acquired =
+    keyFile === undefined
+      ? await secretInput(context, 'key slot create').read({
+          kind: authType,
+          fromStdin,
+        })
+      : await readPortableKeyFileForSlot(
+          keyFile,
+          secretInput(context, 'key slot create'),
+          passphraseFromStdin,
+        );
+  if (authType === 'passphrase') {
+    if (slotId === undefined) {
+      throw new CliUsageError('Passphrase reauthentication requires --reauth-slot.');
+    }
+    return {
+      kind: 'passphrase',
+      passphrase: acquired,
+      slotId,
+    };
+  }
+  return {
+    kind: authType,
+    formattedKey: acquired,
+    ...(slotId === undefined ? {} : { slotId }),
+  };
+}
+
+async function acquireNewSlotCredential(
+  context: CliCommandContext,
+  options: Readonly<Record<string, unknown>>,
+  slotType: Exclude<SlotCredentialType, 'device-key'>,
+): Promise<NewSlotCredential> {
+  const keyFile = optionString(options, 'credentialFile');
+  const fromStdin = optionBoolean(options, 'credentialStdin');
+  const passphraseFromStdin = optionBoolean(options, 'credentialFilePassphraseStdin');
+  if (keyFile !== undefined && slotType !== 'portable-key') {
+    throw new CliUsageError(
+      'A credential file can be used only for a portable-key slot.',
+    );
+  }
+  if (keyFile !== undefined && fromStdin) {
+    throw new CliUsageError('Choose either --credential-file or --credential-stdin.');
+  }
+  if (passphraseFromStdin && keyFile === undefined) {
+    throw new CliUsageError(
+      '--credential-file-passphrase-stdin requires --credential-file.',
+    );
+  }
+  const acquired =
+    keyFile === undefined
+      ? await readCredential(context, slotType, fromStdin)
+      : await readPortableKeyFileForSlot(
+          keyFile,
+          secretInput(context, 'key slot create'),
+          passphraseFromStdin,
+        );
+  return slotType === 'passphrase'
+    ? { kind: 'passphrase', passphrase: acquired }
+    : { kind: slotType, formattedKey: acquired };
+}
+
+async function readCredential(
+  context: CliCommandContext,
+  slotType: Exclude<SlotCredentialType, 'device-key'>,
+  fromStdin: boolean,
+): Promise<AcquiredSecret> {
+  const secrets = secretInput(context, 'key slot create');
+  if (slotType !== 'passphrase') {
+    return secrets.read({ kind: slotType, fromStdin });
+  }
+  const values = await secrets.readBatch({
+    kinds: ['passphrase', 'passphrase'],
+    fromStdin,
+    requireEnd: fromStdin,
+  });
+  const first = values[0];
+  const second = values[1];
+  if (first === undefined || second === undefined) {
+    throw new CliUsageError('Passphrase confirmation is incomplete.');
+  }
+  const crypto = await import('@kavrix/crypto');
+  const firstBytes = new TextEncoder().encode(first);
+  const secondBytes = new TextEncoder().encode(second);
+  try {
+    if (!crypto.constantTimeEqual(firstBytes, secondBytes)) {
+      throw new CliUsageError('Passphrase confirmation did not match.');
+    }
+  } finally {
+    crypto.zeroize(firstBytes);
+    crypto.zeroize(secondBytes);
+  }
+  return first;
+}
+
+async function readPortableKeyFileForSlot(
+  path: string,
+  secrets: SecretInputPort,
+  passphraseFromStdin: boolean,
+  stagedPassphrase?: AcquiredSecret,
+): Promise<AcquiredSecret> {
+  const { createProductionPortableKeyFileReader } =
+    await import('./production/portable-key-files.js');
+  const reader = createProductionPortableKeyFileReader({
+    secrets,
+    passphraseFromStdin,
+  });
+  return acquiredSecretSchema.parse(
+    String(
+      await reader.readFormattedPortableKey(
+        path,
+        { kind: 'unbound' },
+        stagedPassphrase === undefined
+          ? undefined
+          : () => Promise.resolve(stagedPassphrase),
+      ),
+    ),
+  );
+}
+
+async function assertMatchingPassphrases(
+  first: AcquiredSecret,
+  second: AcquiredSecret,
+): Promise<void> {
+  const crypto = await import('@kavrix/crypto');
+  const firstBytes = new TextEncoder().encode(first);
+  const secondBytes = new TextEncoder().encode(second);
+  try {
+    if (!crypto.constantTimeEqual(firstBytes, secondBytes)) {
+      throw new CliUsageError('Passphrase confirmation did not match.');
+    }
+  } finally {
+    crypto.zeroize(firstBytes);
+    crypto.zeroize(secondBytes);
+  }
+}
+
+function optionalKeySlotId(
+  options: Readonly<Record<string, unknown>>,
+  key: string,
+): KeySlotId | undefined {
+  const value = options[key];
+  if (value === undefined) return undefined;
+  return parseInputValue(value, 'slot ID', (candidate) =>
+    keySlotIdSchema.parse(candidate),
+  );
+}
+
+async function executeProductionKeySlotOperation(
+  context: CliCommandContext,
+  options: Readonly<Record<string, unknown>>,
+  operation: KeySlotOperation,
+  feature: CliFeature = `key slot ${operation.kind}` as CliFeature,
+): Promise<unknown> {
+  if (context.environment === undefined) {
+    throw new CliUnavailableError(feature);
+  }
+  const { executeProductionKeySlotLifecycle } =
+    await import('./production/slot-lifecycle.js');
+  return executeProductionKeySlotLifecycle({
+    environment: context.environment,
+    secrets: secretInput(context, feature),
+    backendPolicy: parseStatusBackendPolicy(options),
+    operation,
+  });
+}
+
 async function withInitialization<Output>(
   context: CliCommandContext,
   options: Readonly<Record<string, unknown>>,
@@ -2647,6 +4268,8 @@ async function withInitialization<Output>(
       environment: context.environment,
       secrets: secretInput(context, 'init'),
       backendPolicy,
+      terminal: { input: context.stdin, output: context.stderr },
+      keyFilePassphraseFromStdin: optionBoolean(options, 'keyFilePassphraseStdin'),
       ...(serverUrl !== undefined ? { serverUrl } : {}),
     },
     action,
@@ -2709,18 +4332,25 @@ function parseInitializationStartOptions(
   const masked = optionBoolean(options, 'existingPortable');
   const stdin = optionBoolean(options, 'keyStdin');
   const keyFile = options['keyFile'];
+  const keyFilePassphraseStdin = optionBoolean(options, 'keyFilePassphraseStdin');
   const confirmationFromStdin = optionBoolean(options, 'confirmationStdin');
   const sourceCount = Number(masked) + Number(stdin) + Number(keyFile !== undefined);
   if (sourceCount > 1) {
     throw new CliUsageError('Choose exactly one existing portable-key source.');
   }
   if (stdin) {
+    if (keyFilePassphraseStdin) {
+      throw new CliUsageError('--key-file-passphrase-stdin requires --key-file.');
+    }
     if (confirmationFromStdin) {
       throw new CliUsageError('--key-stdin already includes both confirmation frames.');
     }
     return { source: 'stdin-protocol', confirmationFromStdin: true };
   }
   if (masked) {
+    if (keyFilePassphraseStdin) {
+      throw new CliUsageError('--key-file-passphrase-stdin requires --key-file.');
+    }
     if (confirmationFromStdin) {
       throw new CliUsageError('Masked portable import requires masked confirmation.');
     }
@@ -2730,7 +4360,15 @@ function parseInitializationStartOptions(
     if (typeof keyFile !== 'string') {
       throw new CliUsageError('The portable key file path is invalid.');
     }
-    return { source: 'key-file', path: keyFile, confirmationFromStdin };
+    return {
+      source: 'key-file',
+      path: keyFile,
+      confirmationFromStdin,
+      passphraseFromStdin: keyFilePassphraseStdin,
+    };
+  }
+  if (keyFilePassphraseStdin) {
+    throw new CliUsageError('--key-file-passphrase-stdin requires --key-file.');
   }
   return { source: 'generated', confirmationFromStdin };
 }

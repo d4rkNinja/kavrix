@@ -15,10 +15,11 @@ export default defineConfig({
     include: mongoIntegrationEnabled
       ? [
           '{apps,packages}/**/*.test.ts',
+          'scripts/**/*.test.ts',
           'apps/api/integration/**/*.integration.ts',
           'packages/storage/integration/**/*.integration.ts',
         ]
-      : ['{apps,packages}/**/*.test.ts'],
+      : ['{apps,packages}/**/*.test.ts', 'scripts/**/*.test.ts'],
     passWithNoTests: false,
     restoreMocks: true,
     unstubEnvs: true,

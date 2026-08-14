@@ -11,6 +11,16 @@ import {
 
 import { readSecureFile, writeSecureFile } from './filesystem.js';
 
+/**
+ * Validates only the guarded filesystem target and bounded read. The contents
+ * are deliberately discarded so callers can reject unsafe paths before they
+ * acquire any secret needed to decrypt a protected key file.
+ */
+export async function validatePortableKeyFile(path: string): Promise<void> {
+  const file = await readSecureFile(path);
+  file.fill(0);
+}
+
 export type PortableKeyFileProtection =
   | { readonly kind: 'unprotected' }
   | { readonly kind: 'passphrase'; readonly passphrase: Uint8Array };

@@ -1,8 +1,10 @@
 # Portable Key and Device Enrollment
 
 > Design status: this document specifies required user and protocol behavior.
-> Commands and flows described here are planned until marked verified in
-> [implementation-status.md](./implementation-status.md).
+> The fresh-home `creds recover`, command-only unlock-slot lifecycle, and
+> command-only portable-key rotation compositions are implemented with focused
+> tests. SQLite/Windows ACL execution and release acceptance remain in progress;
+> see [implementation-status.md](./implementation-status.md).
 
 ## The three credentials are different
 
@@ -96,8 +98,10 @@ still apply while enabled.
 
 The server-side bootstrap/Mongo transaction and the distinct native session
 credential adapter are implemented and have real MongoDB replica-set and
-Windows Credential Manager tests. `creds init` composition is not yet wired,
-and real macOS Keychain/Linux Secret Service behavior remains unverified.
+Windows Credential Manager tests. Production `creds init --key-file` now
+composes the guarded unprotected/passphrase-protected reader and requires an
+unbound file for fresh initialization; real macOS Keychain/Linux Secret Service
+behavior remains unverified.
 
 ### Import an existing key
 
@@ -144,8 +148,11 @@ unprotected key beyond the local device.
 
 ## Create an enrollment invite on Device A
 
-`creds device invite` is available only to an unlocked, currently authorized
-device. The client requests a new invite over authenticated HTTPS. The service:
+`creds device invite create` is available only to an unlocked, currently
+authorized device. The client requests a new invite over authenticated HTTPS.
+The command defaults to a 600-second lifetime and `sync:read,sync:write`; the
+caller may pass bounded `--expires-in-seconds` and repeated `--scope` values.
+The service:
 
 1. generates or accepts only protocol-defined random invite material;
 2. stores a cryptographic hash, vault binding, creator device ID, expiry,
@@ -154,16 +161,15 @@ device. The client requests a new invite over authenticated HTTPS. The service:
 4. rate-limits creation and consumption;
 5. supports revocation before use.
 
-The default lifetime must be short and configured server-side within a bounded
-maximum. Exact duration and entropy are implementation parameters that require
-tests and documentation before release; no unsupported value is asserted here.
-Invite output is masked/one-time, absent from logs, and never placed in a command
+The server remains authoritative for the maximum lifetime, caller scope, and
+rate policy. Invite output is one-time and requires an interactive terminal or
+explicit `--stdout`; it is absent from logs and never placed in a command
 argument. `creds device invite revoke <invite-id>` uses the opaque invite record
-ID, not the secret value.
+ID, not the secret value. `creds device invite list` returns public metadata only.
 
 ## Join on Device B
 
-Canonical interactive flow:
+Canonical interactive flow (available in the packed executable):
 
 ```text
 creds device join --server <url> --vault <vault-id>
@@ -224,6 +230,35 @@ different successor for the consumed invite. Abandoning the flow or reaching
 expiry requires a newly issued invite. Possession of an expired or consumed
 parent alone cannot recover or derive an active successor.
 
+## Fresh-home recovery: `creds recover`
+
+Recovery is the production-composed path for a device with no local profile:
+
+```text
+creds recover --server <url> --vault <vault-id>
+creds recover --server <url> --vault <vault-id> --key-file <path>
+```
+
+The command rejects a non-empty local data home before loading protected
+credentials. It then uses the existing crash-safe join journal to persist the
+invite/enrollment/session successors, redeems the invite, authenticates an
+active current-version portable slot locally, and completes enrollment. Only
+after that local authentication succeeds does it generate a fresh device key,
+wrap the same VRK into a new device slot, persist the device secret in the
+protected keychain, publish the opaque slot revision, and verify the protected
+readback. It stores the canonical profile, initializes protected sync state via
+the first opaque sync, and clears session/device/root buffers best effort.
+
+`creds device join resume <operation-id>` (or the equivalent `recover resume`)
+replays the durable join operation and finishes an interrupted slot/profile/sync
+phase. `creds device join cancel <operation-id>` (or `recover cancel`) removes
+only a prepared local journal and performs no network request. Both commands
+still require the canonical server/vault identity so a local operation cannot be
+applied to an ambiguous target. Device-join/recovery output is
+limited to the opaque operation, vault, and device IDs; invite, portable key,
+session successor, device secret, VRK, and decrypted records are not placed in
+argv, API payloads, logs, or renderer input.
+
 ## Remember, forget, and revoke
 
 "Remember this device" is optional. It stores an independent device unlock
@@ -254,22 +289,52 @@ The lifecycle operations have intentionally different effects:
 
 The UI must explain these distinctions before destructive actions.
 
+## Command-only unlock-slot lifecycle
+
+The composed `creds key slot` commands expose the four documented slot types:
+
+- `creds key slot list` renders only opaque IDs, type/state, key version,
+  timestamps, and public device IDs.
+- `creds key slot create <portable-key|passphrase|recovery-key|device-key>`
+  requires explicit local reauthentication, creates the wrapped slot locally,
+  verifies protected device-secret readback where applicable, publishes a
+  revision-bound update, and verifies the remote slot.
+- `creds key slot disable <slot-id>` is local-only and removes a same-device
+  device-slot secret. It never changes the server vault record.
+- `creds key slot revoke <slot-id>` performs the canonical remote revoked-state
+  transition and refuses to remove the last active current-version slot.
+
+Create and revoke requests include an encrypted audit sidecar. Its authenticated
+plaintext contains only slot metadata, action/state, actor device ID, key
+version, and time. The API and Mongo adapter bind that sidecar to the exact
+vault revision and commit it with the opaque slot mutation. No derivation input,
+portable key, passphrase, recovery key, device secret, or wrapped-root envelope
+is included. Local disable has no remote mutation and therefore no remote audit
+sidecar.
+
 ## Portable-key rotation
 
 Portable-key rotation changes the wrapping credential, not the data-encryption
-keys:
+keys. The composed command-only path is:
 
 1. Authenticate with an active slot and unwrap the existing VRK locally.
-2. Generate or import a replacement portable key and require save/possession
-   confirmation.
-3. Derive a new portable KEK with a fresh salt and wrap the same VRK into a new
-   key version/slot.
-4. Fully unwrap and compare the replacement before activation.
-5. Publish the new wrapped slot and show per-device confirmation of the new key
-   version.
-6. Keep the old slot only during an explicitly chosen bounded grace period.
-7. Revoke the old slot only after the last-valid-slot check and a clear warning
-   for devices not yet updated.
+2. Generate a fresh bound file or import an existing unbound portable-key file;
+   read it back to confirm possession.
+3. Derive a fresh portable KEK and wrap the same VRK in a pending replacement
+   slot at the current key version.
+4. Persist a public journal record with an HMAC-authenticated checkpoint, then
+   publish and read back the pending slot.
+5. Promote the exact pending envelope to active, read it back, and unlock that
+   fetched active envelope locally with the replacement key.
+6. Revoke the old slot only after the replacement confirmation and the
+   last-valid-slot check. The old slot remains active if any earlier step fails.
+
+Use `creds key rotate resume <operation-id>` with the replacement file after an
+interruption. Resume rejects a changed source/replacement snapshot, revision,
+or checkpoint and never guesses across a concurrent vault mutation. `creds key
+rotate list` exposes only operation IDs, public states, slot IDs, and times.
+The operation journal never stores the portable key, passphrase, VRK, or
+decrypted payload data.
 
 Group/item payloads remain unchanged. If exposure is suspected, also revoke
 affected device tokens; rotating the portable slot alone does not revoke API

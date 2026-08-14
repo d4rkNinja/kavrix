@@ -25,9 +25,9 @@ package:
 ```sh
 pnpm install --frozen-lockfile
 pnpm --filter @kavrix/api build
-KAVRIX_MONGODB_URI='mongodb://kavrix-api:REDACTED@mongo.internal:27017/kavrix?replicaSet=rs0&tls=true' \
-  KAVRIX_API_TRUSTED_PROXIES='10.20.0.10/32' \
-  pnpm --filter @kavrix/api start
+# KAVRIX_MONGODB_URI and KAVRIX_API_TRUSTED_PROXIES are injected by the service manager.
+pnpm --filter @kavrix/api migrate
+pnpm --filter @kavrix/api start
 ```
 
 Do not put the MongoDB URI in command arguments, checked-in environment files,
@@ -71,11 +71,22 @@ not replace network isolation and a short operator-controlled window.
 same HTTPS enforcement and source rate limiting as other routes. It does not
 prove MongoDB writability, replica-set durability, backup freshness, or end-to-end
 client decryptability, so do not use it alone as a readiness or data-safety check.
+`GET /ready` is the dependency-aware check: it returns `{ "status": "ready" }`
+with HTTP 200 only while the MongoDB connection answers `ping`, and
+`{ "status": "not_ready" }` with HTTP 503 otherwise. Both endpoints still
+require the production HTTPS/proxy configuration.
 
 ## Operator requirements
 
 - Use MongoDB authentication, encrypted transport, least-privilege database
   roles, replica-set durability, tested backup/restore, retention, and monitoring.
+- Run `pnpm --filter @kavrix/api migrate` once per database release before
+  starting API processes. Migration owns validator/index DDL; API startup only
+  validates the recorded schema contract and does not mutate it.
+- In a disposable database, run `pnpm operational:acceptance` with the same
+  service environment before a rollout. It creates an isolated database,
+  starts two production API processes, exercises readiness/auth/sync/attachment
+  paths, and opens a transaction-consistent opaque backup snapshot.
 - Restrict ingress to the TLS edge and database egress to the intended replica
   set. Never expose the process's direct HTTP listener publicly.
 - Capture structured Fastify request logs only in access-controlled storage.
@@ -89,12 +100,14 @@ client decryptability, so do not use it alone as a readiness or data-safety chec
 
 ## Current deployment limitations
 
-No maintained image, image SBOM/provenance, migration CLI, compatibility window,
-automated rollback procedure, or supported backup runbook is published. The API
-package remains private to the workspace. MongoDB initialization is idempotent at
-startup, but schema compatibility across future releases is not yet guaranteed.
-The liveness route is not a dependency-aware readiness check. Validate an exact
-commit in a disposable environment before considering a deployment.
+No maintained image, image SBOM/provenance, compatibility window, or automatic
+rollback is published. The API package remains private to the workspace. The
+baseline migration is forward-only: a future schema version is rejected by the
+current binary, and an older binary must not be pointed at a database after a
+newer migration without a separately verified compatibility contract. Follow
+the [operational acceptance and rollback runbook](./operational-acceptance.md)
+and validate an exact commit in a disposable environment before considering a
+deployment.
 
 For local integration evidence, point the suites at an isolated replica set:
 
