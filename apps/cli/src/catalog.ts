@@ -480,12 +480,11 @@ const recoverCommand: CliCommandDescriptor = Object.freeze({
             '--invite-stdin is valid only when starting recovery.',
           );
         }
-        let raw: unknown;
         if (context.environment === undefined) {
           throw new CliUnavailableError('recover');
         }
         const { executeProductionRecovery } = await import('./production/recovery.js');
-        raw = await executeProductionRecovery({
+        const raw = await executeProductionRecovery({
           environment: context.environment,
           secrets: secretInput(context, 'recover'),
           backendPolicy: parseStatusBackendPolicy(options),
@@ -2821,8 +2820,8 @@ function parseRecoverySourceOptions(
   if (rawKeyFilePath !== undefined && typeof rawKeyFilePath !== 'string') {
     throw new CliUsageError('The portable key file path is invalid.');
   }
-  const keyFilePath = rawKeyFilePath as string | undefined;
-  if (keyFilePath !== undefined && keyFilePath.length === 0) {
+  const keyFilePath = rawKeyFilePath;
+  if (keyFilePath?.length === 0) {
     throw new CliUsageError('The portable key file path is invalid.');
   }
   if (resume && inviteFromStdin) {
@@ -2866,7 +2865,7 @@ function parseRecoveryOperationId(value: string | undefined): LifecycleOperation
     requiredArgument(value, 'operation ID'),
   );
   if (!parsed.success) throw new CliUsageError('The operation ID is invalid.');
-  return parsed.data as LifecycleOperationId;
+  return parsed.data;
 }
 
 function useCases(context: CliCommandContext, feature: CliFeature): CliUseCasePorts {

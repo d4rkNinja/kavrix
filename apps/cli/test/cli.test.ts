@@ -1,5 +1,5 @@
 import { AmbiguousNameError, NotFoundError } from '@kavrix/core';
-import { lifecycleOperationIdSchema, type LifecycleOperationId } from '@kavrix/client';
+import { lifecycleOperationIdSchema } from '@kavrix/client';
 import {
   apiBearerTokenSchema,
   deviceIdSchema,
@@ -583,9 +583,7 @@ describe('CLI command shell', () => {
   it('recovers through the injected use case without placing secrets in output', async () => {
     const recover = vi.fn(() =>
       Promise.resolve({
-        operationId: lifecycleOperationIdSchema.parse(
-          'operation.recover.cli.0001',
-        ) as LifecycleOperationId,
+        operationId: lifecycleOperationIdSchema.parse('operation.recover.cli.0001'),
         vaultId: vaultIdSchema.parse('vault.recover'),
         deviceId: deviceIdSchema.parse('device.recover'),
       }),
