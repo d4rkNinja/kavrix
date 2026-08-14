@@ -1,10 +1,9 @@
 # CLI reference
 
-Kavrix is not published. The public-package build produces a `creds` executable,
-but its installed command surface is intentionally limited to production-backed
-local operations. Vault operations exist in a separately tested,
-dependency-injected catalog in the repository; only the production-composed
-commands below are available in the packed executable.
+Kavrix is not published. The public-package build produces a `creds` executable
+with the production-backed command surface below. The repository also retains a
+larger dependency-injected catalog for protocol and adapter tests; commands marked
+"catalog only" are not available in the packed executable.
 
 This distinction is security-relevant: a command listed as "catalog only" below
 is not usable from the current public executable.
@@ -89,6 +88,7 @@ encrypted mutation against the unlocked local store. Its current surface is:
 | `creds get <group> <credential> <field> [--reveal]`                               | Available in the built package | Gets one field value with redacted default, optional `--reveal` and structured `--json` mode.                                                                                                                                                                                       |
 | `creds sync [--json]`                                                             | Available in the built package | Synchronizes vault data with server and prints updated status.                                                                                                                                                                                                                      |
 | `creds backup create --file <path> [--vault <vault-id>] [--json]`                 | Available in the built package | Creates one bounded authenticated archive from the enrolled local opaque cache; destination validation occurs before unlock, existing files/links are refused, and the receipt contains only vault ID, record count, and byte count. Unsupported local record families fail closed. |
+| `creds backup verify --file <path> [--vault <vault-id>] [--json]`                 | Available in the built package | Opens an existing protected archive read-only, authenticates its complete bounded framing and graph with the active remembered device slot, and emits only a safe verification summary. It never stages or publishes.                                                               |
 
 The generated completion is derived from the static public catalog. It never
 loads runtime vault names, aliases, fields, IDs, or secrets. Inspect output
@@ -117,8 +117,22 @@ created.` Existing targets are never replaced.
 `backup create` requires `--file` and creates a new archive in a protected
 user-only directory. It does not accept a key or passphrase in argv, and it
 does not print archive contents or unlock material. The command currently
-backs up the enrolled local opaque vault/group/item state; attachments,
-history, and audit semantics remain gated by the later backup issues.
+backs up the enrolled local opaque vault/group/item state; the Mongo snapshot
+and protected restore composition own attachment/history/audit records, and
+known-v1 restore semantically opens the documented history and audit payloads.
+
+`backup verify` also requires `--file`, but the path must already name one
+protected regular archive. It validates the source before unlock, then uses the
+active remembered device slot to authenticate the complete bounded archive. It
+does not create temporary staging, publish records, or print the archive path,
+contents, or unlock material. Outer authentication of history and audit records
+is supported, but the command fails with `BACKUP_DECRYPTABILITY_UNSUPPORTED`
+instead of claiming those families are semantically verified.
+
+The protected `backup restore` composition is available only to the
+dependency-injected catalog with an explicit isolated-target restore port. The
+packed executable omits that descriptor because no safe target/database adapter
+is configured there; it must not be treated as a released restore command.
 
 `key slot` commands require an explicit `--reauth` method. Portable, recovery,
 and passphrase credentials are accepted through masked input, bounded stdin, or
@@ -206,19 +220,20 @@ validation, rendering, and use-case boundaries. They require real
 here without production composition are exercised only through injected use-case
 ports and never reach the packed executable.
 
-| Syntax                                                                                                      | Status                         | Implemented boundary behavior                                                                                                                                                                           |
-| ----------------------------------------------------------------------------------------------------------- | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `creds show <group-query> <credential-query> [--json]`                                                      | Catalog only                   | Calls one redacted, schema-validated show use case. See [Direct access CLI](./direct-access-cli.md).                                                                                                    |
-| `creds copy <group-query> <credential-query> <field-query> [--index <number>]`                              | Catalog only                   | Delegates authorized clipboard copy and returns only a safe label/deadline receipt, never the copied value.                                                                                             |
-| `creds device invite create --vault <vault-id> [options]`                                                   | Available in the built package | Issues a bounded invite with explicit or least-privilege default scopes; one-time token output requires an interactive terminal or `--stdout`.                                                          |
-| `creds device invite list --vault <vault-id> [--json]`                                                      | Available in the built package | Lists canonical public invite metadata, never invite tokens or hashes.                                                                                                                                  |
-| `creds device invite revoke <invite-id> --vault <vault-id>`                                                 | Available in the built package | Revokes one opaque invite ID through the authenticated production port.                                                                                                                                 |
-| `creds device list --vault <vault-id> [--limit <1..200>] [--cursor <opaque>] [--json]`                      | Available in the built package | Renders only public device records and forwards canonical bounded pagination through the authenticated production port.                                                                                 |
-| `creds device revoke <device-id> --vault <vault-id> --confirm`                                              | Available in the built package | Requires explicit confirmation; current-device revocation is allowed only when another active device remains, and the API atomically invalidates target sessions.                                       |
-| `creds device remember [options]`                                                                           | Available in the built package | Composes the existing device-key slot creator and native keychain readback; no plaintext fallback or session-locator reuse is possible.                                                                 |
-| `creds device forget <slot-id> [options]`                                                                   | Available in the built package | Composes the local slot-disable path for one exact slot ID and retains the remote encrypted slot and API session entry.                                                                                 |
-| `creds recover --server <url> --vault <vault-id> [--key-file <path>] [--invite-stdin --portable-key-stdin]` | Available in the built package | Uses the durable join coordinator, locally authenticates the portable slot, persists independent session/device successors through protected adapters, stores the profile, and initializes opaque sync. |
-| `creds device join --server <url> --vault <vault-id> [options]`                                             | Available in the built package | Uses the durable join coordinator, protected portable-key authentication, device/session persistence, and first opaque sync; output contains only opaque operation/vault/device IDs.                    |
+| Syntax                                                                                                      | Status                         | Implemented boundary behavior                                                                                                                                                                                           |
+| ----------------------------------------------------------------------------------------------------------- | ------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `creds show <group-query> <credential-query> [--json]`                                                      | Catalog only                   | Calls one redacted, schema-validated show use case. See [Direct access CLI](./direct-access-cli.md).                                                                                                                    |
+| `creds copy <group-query> <credential-query> <field-query> [--index <number>]`                              | Catalog only                   | Delegates authorized clipboard copy and returns only a safe label/deadline receipt, never the copied value.                                                                                                             |
+| `creds device invite create --vault <vault-id> [options]`                                                   | Available in the built package | Issues a bounded invite with explicit or least-privilege default scopes; one-time token output requires an interactive terminal or `--stdout`.                                                                          |
+| `creds device invite list --vault <vault-id> [--json]`                                                      | Available in the built package | Lists canonical public invite metadata, never invite tokens or hashes.                                                                                                                                                  |
+| `creds device invite revoke <invite-id> --vault <vault-id>`                                                 | Available in the built package | Revokes one opaque invite ID through the authenticated production port.                                                                                                                                                 |
+| `creds device list --vault <vault-id> [--limit <1..200>] [--cursor <opaque>] [--json]`                      | Available in the built package | Renders only public device records and forwards canonical bounded pagination through the authenticated production port.                                                                                                 |
+| `creds device revoke <device-id> --vault <vault-id> --confirm`                                              | Available in the built package | Requires explicit confirmation; current-device revocation is allowed only when another active device remains, and the API atomically invalidates target sessions.                                                       |
+| `creds device remember [options]`                                                                           | Available in the built package | Composes the existing device-key slot creator and native keychain readback; no plaintext fallback or session-locator reuse is possible.                                                                                 |
+| `creds device forget <slot-id> [options]`                                                                   | Available in the built package | Composes the local slot-disable path for one exact slot ID and retains the remote encrypted slot and API session entry.                                                                                                 |
+| `creds recover --server <url> --vault <vault-id> [--key-file <path>] [--invite-stdin --portable-key-stdin]` | Available in the built package | Uses the durable join coordinator, locally authenticates the portable slot, persists independent session/device successors through protected adapters, stores the profile, and initializes opaque sync.                 |
+| `creds device join --server <url> --vault <vault-id> [options]`                                             | Available in the built package | Uses the durable join coordinator, protected portable-key authentication, device/session persistence, and first opaque sync; output contains only opaque operation/vault/device IDs.                                    |
+| `creds backup restore --file <path> [--vault <vault-id>] [--slot <slot-id>] [--json]`                       | Catalog only                   | Validates and bounded-reads a protected archive, then delegates hidden isolated staging, semantic readback, receipt-bound publication, replay, and uncertain-commit handling to explicit target and verification ports. |
 
 The lower-level `device invite join` catalog entry remains a protocol-test
 contract. The public `device join` and `recover` commands supply the fresh-home
@@ -251,7 +266,7 @@ lower-level use case exists:
 
 - device-token lifecycle and remember/forget beyond the composed invite, join,
   `key slot`, and `key rotate` commands;
-- backup, verify, restore, history, and attachment commands;
+- backup restore, history, and attachment commands;
 - `set`, `update`, `run`, and the TUI entrypoint.
 
 Lower-level implementations exist for several of these concerns, but no
@@ -379,10 +394,14 @@ case conversion, or unquoted command substitution for record selection.
 
 Parser, renderer, terminal sanitizer, masked/stdin input, local generators, RFC
 TOTP behavior, key-file creation/ACLs, static completion, package contents, lazy
-chunk loading, and packed-bin behavior have automated tests. A Windows packed
-fixture installs the npm archive, invokes the generated shim, and reads real
-canonical SQLite/sealed status state; it does not prove native-keychain behavior
-or an unlocked vault operation. The public executable does not yet compose
-enrollment, unlock, online sync, credential reads, clipboard, TUI, or backup use
-cases. Cross-platform shell completion packaging is prepared, but a published
-package and final target-platform release evidence do not exist.
+chunk loading, and packed-bin behavior have automated tests. The Scenario A
+acceptance test exercises initialization, unlock, encrypted mutations, sync,
+redacted reads, guarded copy, lock, and reopen through source-level production
+composition with real SQLite/client adapters and an opaque HTTPS fixture. A
+Windows packed fixture installs the npm archive, invokes the generated shim, and
+reads real canonical SQLite/sealed status state; it does not prove native-keychain
+behavior or the full online journey through the installed child. Interruption,
+fresh-home recovery/device-B, backup/restore, and whole-system canary coverage
+remain later acceptance gates. Cross-platform shell completion packaging is
+prepared, but a published package and final target-platform release evidence do
+not exist.

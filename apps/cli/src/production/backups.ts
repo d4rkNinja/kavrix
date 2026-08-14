@@ -2,8 +2,12 @@ import {
   BackupError,
   createEncryptedBackup,
   resolveBackupLimits,
+  restoreEncryptedBackup,
+  verifyEncryptedBackup,
   type BackupLimits,
+  type BackupRestoreStore,
   type EncryptedBackupEntry,
+  type RestoreVerificationSessionFactory,
 } from '@kavrix/import-export';
 import {
   encryptedGroupRecordSchema,
@@ -19,14 +23,25 @@ import {
 } from '@kavrix/schemas';
 import {
   MAX_SECURE_STREAM_FILE_BYTES,
+  readSecureFile,
   validateSecureFileDestination,
+  validateSecureFileSource,
   writeSecureStreamFile,
   PortableKeyFileError,
 } from '@kavrix/key-files';
 import { zeroize, type VaultRootKey } from '@kavrix/crypto';
 
-import { CliBackupCreationError, CliUsageError } from '../errors.js';
-import type { CliBackupCreateResult } from '../contracts.js';
+import {
+  CliBackupCreationError,
+  CliBackupRestoreError,
+  CliBackupVerificationError,
+  CliUsageError,
+} from '../errors.js';
+import type {
+  CliBackupCreateResult,
+  CliBackupRestoreResult,
+  CliBackupVerifyResult,
+} from '../contracts.js';
 import type { SecretInputPort } from '../secret-input.js';
 import type { SecretBackendPolicy } from './secret-backend.js';
 import { runProductionUnlocked, unwrapRememberedDeviceRootKey } from './unlock.js';
@@ -83,6 +98,24 @@ export interface ProductionBackupCreateRequest {
   readonly allowInsecureLoopbackDevelopment?: boolean;
 }
 
+export interface ProductionBackupVerifyRequest {
+  readonly environment: Readonly<Record<string, string | undefined>>;
+  readonly secrets: SecretInputPort;
+  readonly backendPolicy: SecretBackendPolicy;
+  readonly source: string;
+  readonly vaultId?: VaultId;
+  readonly limits?: BackupLimits;
+  readonly allowInsecureLoopbackDevelopment?: boolean;
+}
+
+export type ProtectedBackupRestoreInput = Readonly<{
+  source: string;
+  expectedVaultId: VaultId;
+  store: BackupRestoreStore;
+  openVerification: RestoreVerificationSessionFactory;
+  limits?: BackupLimits;
+}>;
+
 export interface ProductionBackupCreateDependencies {
   readonly validateDestination: typeof validateSecureFileDestination;
   readonly runUnlocked: typeof runProductionUnlocked;
@@ -93,11 +126,39 @@ export interface ProductionBackupCreateDependencies {
   readonly unwrapRootKey: typeof unwrapRememberedDeviceRootKey;
 }
 
+export interface ProductionBackupVerifyDependencies {
+  readonly validateSource: typeof validateSecureFileSource;
+  readonly readSource: typeof readSecureFile;
+  readonly verifyArchive: typeof verifyEncryptedBackup;
+  readonly runUnlocked: typeof runProductionUnlocked;
+  readonly unwrapRootKey: typeof unwrapRememberedDeviceRootKey;
+}
+
+export interface ProtectedBackupRestoreDependencies {
+  readonly validateSource: typeof validateSecureFileSource;
+  readonly readSource: typeof readSecureFile;
+  readonly restoreArchive: typeof restoreEncryptedBackup;
+}
+
 const DEFAULT_DEPENDENCIES: ProductionBackupCreateDependencies = {
   validateDestination: validateSecureFileDestination,
   runUnlocked: runProductionUnlocked,
   openSnapshot: openLocalBackupSnapshot,
   unwrapRootKey: unwrapRememberedDeviceRootKey,
+};
+
+const DEFAULT_VERIFY_DEPENDENCIES: ProductionBackupVerifyDependencies = {
+  validateSource: validateSecureFileSource,
+  readSource: readSecureFile,
+  verifyArchive: verifyEncryptedBackup,
+  runUnlocked: runProductionUnlocked,
+  unwrapRootKey: unwrapRememberedDeviceRootKey,
+};
+
+const DEFAULT_RESTORE_DEPENDENCIES: ProtectedBackupRestoreDependencies = {
+  validateSource: validateSecureFileSource,
+  readSource: readSecureFile,
+  restoreArchive: restoreEncryptedBackup,
 };
 
 /**
@@ -168,6 +229,156 @@ export async function executeProductionBackupCreate(
       throw new CliBackupCreationError();
     }
     throw error;
+  }
+}
+
+/** Authenticates one complete archive without staging or publishing anything. */
+export async function executeProductionBackupVerify(
+  request: ProductionBackupVerifyRequest,
+  overrides: Partial<ProductionBackupVerifyDependencies> = {},
+): Promise<CliBackupVerifyResult> {
+  const dependencies = { ...DEFAULT_VERIFY_DEPENDENCIES, ...overrides };
+  const source = validateDestinationPath(request.source);
+  const limits = resolveCliBackupLimits(request.limits);
+  try {
+    await dependencies.validateSource(source, limits.maximumBytes);
+  } catch (error) {
+    if (error instanceof PortableKeyFileError) {
+      throw new CliBackupVerificationError('BACKUP_INVALID');
+    }
+    throw error;
+  }
+
+  try {
+    return await dependencies.runUnlocked(
+      {
+        environment: request.environment,
+        secrets: request.secrets,
+        backendPolicy: request.backendPolicy,
+        ...(request.allowInsecureLoopbackDevelopment === undefined
+          ? {}
+          : {
+              allowInsecureLoopbackDevelopment:
+                request.allowInsecureLoopbackDevelopment,
+            }),
+      },
+      async (unlocked) => {
+        const requestedVault = request.vaultId;
+        if (
+          requestedVault !== undefined &&
+          requestedVault !== unlocked.profile.vaultId
+        ) {
+          throw new CliUsageError(
+            'The requested vault is not enrolled on this device.',
+          );
+        }
+        const rootKey = await dependencies.unwrapRootKey(unlocked);
+        let archive: Buffer | undefined;
+        try {
+          archive = await dependencies.readSource(source, limits.maximumBytes);
+          const verificationState = { unsupportedSemanticFamily: false };
+          const summary = await dependencies.verifyArchive(
+            oneChunk(archive),
+            rootKey,
+            unlocked.profile.vaultId,
+            limits,
+            {
+              onEntry(entry) {
+                if (entry.kind === 'history' || entry.kind === 'audit') {
+                  verificationState.unsupportedSemanticFamily = true;
+                }
+              },
+            },
+          );
+          if (verificationState.unsupportedSemanticFamily) {
+            throw new BackupError(
+              'BACKUP_DECRYPTABILITY_UNSUPPORTED',
+              'The archive contains a semantic record family unsupported by this command.',
+            );
+          }
+          return {
+            action: 'verified',
+            vaultId: summary.header.vaultId,
+            recordCount: summary.recordCount,
+            bytes: archive.byteLength,
+            schemaVersion: summary.header.schemaVersion,
+            createdAt: summary.header.createdAt,
+            restoreSessionId: summary.restoreSessionId,
+          };
+        } finally {
+          archive?.fill(0);
+          zeroizeRootKey(rootKey);
+        }
+      },
+    );
+  } catch (error) {
+    if (error instanceof CliUsageError) throw error;
+    if (error instanceof CliBackupVerificationError) throw error;
+    if (error instanceof BackupError) {
+      throw new CliBackupVerificationError(error.code);
+    }
+    if (error instanceof PortableKeyFileError) {
+      throw new CliBackupVerificationError('BACKUP_INVALID');
+    }
+    throw error;
+  }
+}
+
+/**
+ * Composes protected archive I/O with the canonical isolated restore
+ * coordinator. The target store and slot-verification factory are explicit
+ * ports so this CLI layer never imports MongoDB or receives plaintext keys.
+ */
+export async function executeProtectedEncryptedBackupRestore(
+  input: ProtectedBackupRestoreInput,
+  overrides: Partial<ProtectedBackupRestoreDependencies> = {},
+): Promise<CliBackupRestoreResult> {
+  const dependencies = { ...DEFAULT_RESTORE_DEPENDENCIES, ...overrides };
+  const source = validateDestinationPath(input.source);
+  const limits = resolveCliBackupLimits(input.limits);
+  try {
+    await dependencies.validateSource(source, limits.maximumBytes);
+  } catch (error) {
+    if (error instanceof PortableKeyFileError) {
+      throw new CliBackupRestoreError('BACKUP_INVALID');
+    }
+    throw error;
+  }
+
+  let archive: Buffer | undefined;
+  try {
+    archive = await dependencies.readSource(source, limits.maximumBytes);
+    const restored = await dependencies.restoreArchive(
+      oneChunk(archive),
+      input.expectedVaultId,
+      input.store,
+      input.openVerification,
+      limits,
+    );
+    return {
+      action:
+        restored.disposition === 'verified-and-committed'
+          ? 'restored'
+          : 'already-committed',
+      vaultId: restored.backup.header.vaultId,
+      recordCount: restored.backup.recordCount,
+      bytes: archive.byteLength,
+      restoreSessionId: restored.backup.restoreSessionId,
+      ...(restored.disposition === 'verified-and-committed'
+        ? { selectedSlotId: restored.verification.selectedSlot.id }
+        : {}),
+    };
+  } catch (error) {
+    if (error instanceof CliBackupRestoreError) throw error;
+    if (error instanceof BackupError) {
+      throw new CliBackupRestoreError(error.code);
+    }
+    if (error instanceof PortableKeyFileError) {
+      throw new CliBackupRestoreError('BACKUP_INVALID');
+    }
+    throw new CliBackupRestoreError();
+  } finally {
+    archive?.fill(0);
   }
 }
 
@@ -336,6 +547,15 @@ function countRecords(
         onRecord();
         yield entry;
       }
+    },
+  };
+}
+
+function oneChunk(chunk: Uint8Array): AsyncIterable<Uint8Array> {
+  return {
+    async *[Symbol.asyncIterator](): AsyncGenerator<Uint8Array> {
+      await Promise.resolve();
+      yield chunk;
     },
   };
 }

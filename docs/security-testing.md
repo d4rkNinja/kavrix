@@ -204,7 +204,8 @@ supported. Do not use an in-memory imitation as the only evidence.
 
 The known-v1 backup/recovery acceptance gate must execute every discovered
 storage integration file with zero skipped, pending, todo, or focused tests. It
-uses one canonical zero-history/zero-audit production-crypto graph and requires:
+uses one canonical production-crypto graph with v1 history and audit entries
+and requires:
 
 - independent fresh restore through archived portable-key, Argon2id passphrase,
   and recovery-key slots;
@@ -213,8 +214,8 @@ uses one canonical zero-history/zero-audit production-crypto graph and requires:
   reconciliation;
 - rollback anchors absent/equal (integrity/decryptability and freshness
   respectively) and a lower archive revision rejected before publication;
-- authentication-only success but semantic publication failure for each opaque
-  history/audit family;
+- authenticated v1 history/audit semantic reopen, identity/revision/slot
+  binding, semantic corruption rejection, and explicit future-version failure;
 - HMAC-valid inner corruption at preferences, wrapped group key, group payload,
   wrapped item key, item payload, wrapped attachment key, attachment manifest,
   and attachment stream;
@@ -225,9 +226,9 @@ uses one canonical zero-history/zero-audit production-crypto graph and requires:
 - raw archive, hidden staging BSON, committed BSON, source/change-feed output,
   errors, and captured logs free of plaintext and credential canaries.
 
-History/audit semantic restore remains unsupported; no test may describe opaque
-HMAC verification as payload decryptability. The acceptance source is present,
-but the current workspace has neither `KAVRIX_MONGODB_URI` nor the generic
+Outer HMAC verification is still not payload decryptability: the acceptance
+source separately proves v1 history/audit semantic reopening and future-version
+failure. The current workspace has neither `KAVRIX_MONGODB_URI` nor the generic
 exact-discovery/zero-skip evidence gate, so no live pass, topology, SHA, or test
 count is recorded here.
 
@@ -330,16 +331,16 @@ the error. Preserve a minimized non-secret reproducer for every defect.
 
 The product specification's acceptance scenarios are release gates:
 
-| Scenario                   | Essential proof                                                                                                           |
-| -------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
-| Email dynamic fields/notes | Lock/unlock, item-only promotion, note counts, copy/reveal/TOTP, safe rename/migration, canary-clean persistence          |
-| Database credentials       | Multiple engines, SSH reference, `creds run` argv/log safety, item rotation, passphrase change                            |
-| Template deletion safety   | Ten-item archive/restore exactness and separate explicit purge                                                            |
-| Corruption/tampering       | Nonce/ciphertext/ID/group/key swaps all fail closed with no output                                                        |
-| Backup/recovery            | Clean-database known-v1 restore, independent supported slots, attachment/tombstone semantics; history/audit unsupported   |
-| Cross-platform             | Installation and smoke tests on Windows x64, macOS x64/arm64, Linux x64/arm64                                             |
-| Direct show/copy/update    | Complete masked view, clipboard clear, piping, ambiguity, Unicode, narrow terminal, no argv/history leak                  |
-| Same key on two devices    | Invite hash/expiry/single use, independent token, local unwrap, rotation/confirmation, revocation, end-to-end canary scan |
+| Scenario                   | Essential proof                                                                                                                    |
+| -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| Email dynamic fields/notes | Lock/unlock, item-only promotion, note counts, copy/reveal/TOTP, safe rename/migration, canary-clean persistence                   |
+| Database credentials       | Multiple engines, SSH reference, `creds run` argv/log safety, item rotation, passphrase change                                     |
+| Template deletion safety   | Ten-item archive/restore exactness and separate explicit purge                                                                     |
+| Corruption/tampering       | Nonce/ciphertext/ID/group/key swaps all fail closed with no output                                                                 |
+| Backup/recovery            | Clean-database known-v1 restore, independent supported slots, attachment/tombstone semantics, v1 history/audit semantic validation |
+| Cross-platform             | Installation and smoke tests on Windows x64, macOS x64/arm64, Linux x64/arm64                                                      |
+| Direct show/copy/update    | Complete masked view, clipboard clear, piping, ambiguity, Unicode, narrow terminal, no argv/history leak                           |
+| Same key on two devices    | Invite hash/expiry/single use, independent token, local unwrap, rotation/confirmation, revocation, end-to-end canary scan          |
 
 Each scenario needs an automated test where practical and a recorded manual test
 for OS integrations that cannot be faithfully virtualized. A simulated platform

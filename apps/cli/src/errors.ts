@@ -1,5 +1,6 @@
 import { DomainError } from '@kavrix/core';
 
+import type { BackupErrorCode } from '@kavrix/import-export';
 import { CliUnsupportedRuntimeError } from './runtime-preflight.js';
 
 export const CLI_EXIT_CODES = Object.freeze({
@@ -68,7 +69,9 @@ export type CliFeature =
   | 'sync conflicts resolve'
   | 'connect'
   | 'recover'
-  | 'backup create';
+  | 'backup create'
+  | 'backup verify'
+  | 'backup restore';
 
 export class CliUsageError extends Error {
   readonly code = 'CLI_USAGE' as const;
@@ -112,6 +115,32 @@ export class CliBackupCreationError extends Error {
   }
 }
 
+export class CliBackupVerificationError extends Error {
+  readonly code: BackupErrorCode;
+  readonly safe = true;
+
+  constructor(code: BackupErrorCode = 'BACKUP_AUTHENTICATION_FAILED') {
+    super('The encrypted backup could not be verified.');
+    this.name = 'CliBackupVerificationError';
+    this.code = code;
+  }
+}
+
+export class CliBackupRestoreError extends Error {
+  readonly code: BackupErrorCode;
+  readonly safe = true;
+
+  constructor(code: BackupErrorCode = 'BACKUP_AUTHENTICATION_FAILED') {
+    super(
+      code === 'BACKUP_COMMIT_UNCERTAIN'
+        ? 'The backup restore outcome is uncertain. Preserve the archive and isolated target; retry the same archive only.'
+        : 'The encrypted backup could not be restored.',
+    );
+    this.name = 'CliBackupRestoreError';
+    this.code = code;
+  }
+}
+
 export type CliErrorPresentation = Readonly<{
   exitCode: number;
   code: string;
@@ -144,6 +173,20 @@ export function presentCliError(error: unknown): CliErrorPresentation {
     };
   }
   if (error instanceof CliBackupCreationError) {
+    return {
+      exitCode: CLI_EXIT_CODES.failure,
+      code: error.code,
+      message: error.message,
+    };
+  }
+  if (error instanceof CliBackupVerificationError) {
+    return {
+      exitCode: CLI_EXIT_CODES.failure,
+      code: error.code,
+      message: error.message,
+    };
+  }
+  if (error instanceof CliBackupRestoreError) {
     return {
       exitCode: CLI_EXIT_CODES.failure,
       code: error.code,

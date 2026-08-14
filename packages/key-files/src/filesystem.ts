@@ -59,6 +59,16 @@ function mappedFileError(
   return new PortableKeyFileError(fallback);
 }
 
+function assertSecureFileMaximum(maximumBytes: number): void {
+  if (
+    !Number.isSafeInteger(maximumBytes) ||
+    maximumBytes < 1 ||
+    maximumBytes > MAX_SECURE_STREAM_FILE_BYTES
+  ) {
+    throw new PortableKeyFileError('KEY_FILE_OPERATION_FAILED');
+  }
+}
+
 function validateBasename(value: string): void {
   if (
     value.length === 0 ||
@@ -142,11 +152,12 @@ function sameIdentity(
 async function validateRegularFile(
   targetPath: string,
   metadata: BigIntStats,
+  maximumBytes = MAX_PORTABLE_KEY_FILE_BYTES,
 ): Promise<void> {
   if (
     !metadata.isFile() ||
     metadata.size <= 0 ||
-    metadata.size > MAX_PORTABLE_KEY_FILE_BYTES ||
+    metadata.size > BigInt(maximumBytes) ||
     metadata.nlink !== 1n
   ) {
     throw new PortableKeyFileError('KEY_FILE_UNSAFE');
@@ -189,8 +200,8 @@ async function verifyPathStillNamesFile(
   }
 }
 
-async function readBounded(handle: FileHandle): Promise<Buffer> {
-  const output = Buffer.alloc(MAX_PORTABLE_KEY_FILE_BYTES + 1);
+async function readBounded(handle: FileHandle, maximumBytes: number): Promise<Buffer> {
+  const output = Buffer.alloc(maximumBytes + 1);
   let offset = 0;
   while (offset < output.byteLength) {
     const result = await handle.read(
@@ -202,7 +213,7 @@ async function readBounded(handle: FileHandle): Promise<Buffer> {
     if (result.bytesRead === 0) break;
     offset += result.bytesRead;
   }
-  if (offset === 0 || offset > MAX_PORTABLE_KEY_FILE_BYTES) {
+  if (offset === 0 || offset > maximumBytes) {
     output.fill(0);
     throw new PortableKeyFileError('KEY_FILE_UNSAFE');
   }
@@ -211,7 +222,11 @@ async function readBounded(handle: FileHandle): Promise<Buffer> {
   return result;
 }
 
-export async function readSecureFile(inputPath: string): Promise<Buffer> {
+export async function readSecureFile(
+  inputPath: string,
+  maximumBytes = MAX_PORTABLE_KEY_FILE_BYTES,
+): Promise<Buffer> {
+  assertSecureFileMaximum(maximumBytes);
   const { targetPath } = await resolveTarget(inputPath);
   let handle: FileHandle | undefined;
   let contents: Buffer | undefined;
@@ -222,9 +237,9 @@ export async function readSecureFile(inputPath: string): Promise<Buffer> {
     if (!sameIdentity(before, opened)) {
       throw new PortableKeyFileError('KEY_FILE_UNSAFE');
     }
-    await validateRegularFile(targetPath, opened);
+    await validateRegularFile(targetPath, opened, maximumBytes);
     await verifyPathStillNamesFile(targetPath, before);
-    contents = await readBounded(handle);
+    contents = await readBounded(handle, maximumBytes);
     const afterRead = await handle.stat({ bigint: true });
     if (
       !sameIdentity(opened, afterRead) ||
@@ -336,6 +351,41 @@ export async function validateSecureFileDestination(inputPath: string): Promise<
     throw new PortableKeyFileError('KEY_FILE_ALREADY_EXISTS');
   } catch (error) {
     if (fileErrorCode(error) === 'ENOENT') return;
+    throw mappedFileError(error, 'KEY_FILE_UNSAFE');
+  }
+}
+
+/**
+ * Checks an existing protected regular file before callers acquire unlock
+ * material. This does not read file contents or mutate the path.
+ */
+export async function validateSecureFileSource(
+  inputPath: string,
+  maximumBytes = MAX_SECURE_STREAM_FILE_BYTES,
+): Promise<void> {
+  assertSecureFileMaximum(maximumBytes);
+  const { directoryPath, targetPath } = await resolveTarget(inputPath);
+  await validateWriteDirectory(directoryPath);
+  let handle: FileHandle | undefined;
+  try {
+    const before = await lstatRegularIdentity(targetPath);
+    handle = await open(targetPath, noFollowReadFlags());
+    const opened = await handle.stat({ bigint: true });
+    if (!sameIdentity(before, opened)) {
+      throw new PortableKeyFileError('KEY_FILE_UNSAFE');
+    }
+    await validateRegularFile(targetPath, opened, maximumBytes);
+    await verifyPathStillNamesFile(targetPath, before);
+    await handle.close();
+    handle = undefined;
+  } catch (error) {
+    if (handle !== undefined) {
+      try {
+        await handle.close();
+      } catch {
+        throw new PortableKeyFileError('KEY_FILE_OPERATION_FAILED');
+      }
+    }
     throw mappedFileError(error, 'KEY_FILE_UNSAFE');
   }
 }
@@ -483,12 +533,13 @@ async function publishCreateNew(
   directoryPath: string,
   targetPath: string,
   temporaryFile: string,
+  maximumBytes = MAX_PORTABLE_KEY_FILE_BYTES,
 ): Promise<void> {
   try {
     await link(temporaryFile, targetPath);
     await removeIfPresent(temporaryFile);
     const published = await lstat(targetPath, { bigint: true });
-    await validateRegularFile(targetPath, published);
+    await validateRegularFile(targetPath, published, maximumBytes);
     await syncDirectory(directoryPath);
   } catch (error) {
     // Once the create-only link exists, publication may have reached durable
@@ -607,20 +658,14 @@ export async function writeSecureStreamFile(
   source: AsyncIterable<Uint8Array>,
   maximumBytes = MAX_SECURE_STREAM_FILE_BYTES,
 ): Promise<SecureFileStreamWriteResult> {
-  if (
-    !Number.isSafeInteger(maximumBytes) ||
-    maximumBytes < 1 ||
-    maximumBytes > MAX_SECURE_STREAM_FILE_BYTES
-  ) {
-    throw new PortableKeyFileError('KEY_FILE_OPERATION_FAILED');
-  }
+  assertSecureFileMaximum(maximumBytes);
   const { directoryPath, targetPath } = await resolveTarget(inputPath);
   await validateWriteDirectory(directoryPath);
   let temporaryFile: string | undefined;
   try {
     const written = await writeTemporaryStreamFile(directoryPath, source, maximumBytes);
     temporaryFile = written.path;
-    await publishCreateNew(directoryPath, targetPath, temporaryFile);
+    await publishCreateNew(directoryPath, targetPath, temporaryFile, maximumBytes);
     temporaryFile = undefined;
     return { bytes: written.bytes };
   } finally {

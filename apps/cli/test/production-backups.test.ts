@@ -3,12 +3,22 @@ import {
   encryptedGroupRecordSchema,
   groupIdSchema,
   keySlotIdSchema,
+  restoreKnownRecordsVerificationV1Schema,
   timestampSchema,
   vaultIdSchema,
   vaultRecordSchema,
+  type EncryptedBackupEntry,
   type EncryptedGroupRecord,
   type VaultRecord,
 } from '@kavrix/schemas';
+import {
+  BackupError,
+  createEncryptedBackup,
+  verifyEncryptedBackup,
+  type BackupRestoreStore,
+  type RestoreVerificationSessionFactory,
+} from '@kavrix/import-export';
+import type { restoreEncryptedBackup } from '@kavrix/import-export';
 import {
   createPortableKeySlot,
   encryptPayload,
@@ -23,6 +33,8 @@ import type * as KeyFiles from '@kavrix/key-files';
 
 const mockedKeyFiles = vi.hoisted(() => ({
   validateDestination: vi.fn(),
+  validateSource: vi.fn(),
+  readSource: vi.fn(),
   writeStream: vi.fn(),
 }));
 
@@ -31,19 +43,29 @@ vi.mock('@kavrix/key-files', async () => {
   return {
     ...actual,
     validateSecureFileDestination: mockedKeyFiles.validateDestination,
+    validateSecureFileSource: mockedKeyFiles.validateSource,
+    readSecureFile: mockedKeyFiles.readSource,
     writeSecureStreamFile: mockedKeyFiles.writeStream,
   };
 });
 
 import { PortableKeyFileError } from '@kavrix/key-files';
-import { CliBackupCreationError, CliUsageError } from '../src/errors.js';
+import {
+  CliBackupCreationError,
+  CliBackupRestoreError,
+  CliBackupVerificationError,
+  CliUsageError,
+} from '../src/errors.js';
 import {
   createProtectedEncryptedBackup,
+  executeProtectedEncryptedBackupRestore,
+  executeProductionBackupVerify,
   executeProductionBackupCreate,
   openLocalBackupSnapshot,
   type LocalBackupSnapshot,
   type LocalBackupStore,
   type ProductionBackupCreateDependencies,
+  type ProductionBackupVerifyDependencies,
 } from '../src/production/backups.js';
 import type {
   ProductionUnlockedContext,
@@ -59,6 +81,8 @@ const PLAINTEXT_CANARY = 'KAVRIX-BACKUP-PRODUCTION-PLAINTEXT-CANARY';
 
 beforeEach(() => {
   mockedKeyFiles.validateDestination.mockReset().mockResolvedValue(undefined);
+  mockedKeyFiles.validateSource.mockReset().mockResolvedValue(undefined);
+  mockedKeyFiles.readSource.mockReset();
   mockedKeyFiles.writeStream
     .mockReset()
     .mockImplementation(async (_path: string, source: AsyncIterable<Uint8Array>) => {
@@ -267,6 +291,400 @@ describe('production encrypted backup creation', () => {
   });
 });
 
+describe('production encrypted backup verification', () => {
+  it('preflights the source before unlock and does not read an unsafe path', async () => {
+    const validateSource = vi
+      .fn<typeof mockedKeyFiles.validateSource>()
+      .mockRejectedValue(new PortableKeyFileError('KEY_FILE_UNSAFE'));
+    const runUnlocked = vi.fn<ProductionBackupVerifyDependencies['runUnlocked']>();
+
+    await expect(
+      executeProductionBackupVerify(
+        {
+          environment: {},
+          secrets: {} as SecretInputPort,
+          backendPolicy: { kind: 'native' },
+          source: 'D:\\backups\\unsafe.cvkx',
+        },
+        {
+          validateSource,
+          runUnlocked:
+            runUnlocked as unknown as ProductionBackupVerifyDependencies['runUnlocked'],
+        },
+      ),
+    ).rejects.toMatchObject({ code: 'BACKUP_INVALID' });
+    expect(validateSource).toHaveBeenCalledWith(
+      'D:\\backups\\unsafe.cvkx',
+      128 * 1024 * 1024,
+    );
+    expect(runUnlocked).not.toHaveBeenCalled();
+  });
+
+  it('authenticates a complete archive, returns only bounded metadata, and wipes inputs', async () => {
+    const fixture = await createFixture();
+    const chunks: Buffer[] = [];
+    for await (const chunk of createEncryptedBackup(
+      {
+        vault: fixture.vault,
+        records: values([{ kind: 'group', record: fixture.group }]),
+        createdAt: CREATED_AT,
+        limits: { maximumBytes: 1024 * 1024, maximumRecords: 10 },
+      },
+      fixture.rootKey,
+    )) {
+      chunks.push(Buffer.from(chunk));
+    }
+    const archive = Buffer.concat(chunks);
+    const unlocked = {
+      profile: { vaultId: VAULT_ID },
+    } as unknown as ProductionUnlockedContext;
+    const runUnlockedMock = vi.fn(
+      (
+        _request: ProductionUnlockedRequest,
+        operation: (context: ProductionUnlockedContext) => Promise<unknown>,
+      ): Promise<unknown> => operation(unlocked),
+    );
+    const unwrapRootKey = vi.fn().mockResolvedValue(fixture.rootKey);
+    mockedKeyFiles.readSource.mockResolvedValue(archive);
+
+    try {
+      await expect(
+        executeProductionBackupVerify(
+          {
+            environment: {},
+            secrets: {} as SecretInputPort,
+            backendPolicy: { kind: 'native' },
+            source: 'D:\\backups\\verified.cvkx',
+            limits: { maximumBytes: 1024 * 1024, maximumRecords: 10 },
+          },
+          {
+            validateSource: mockedKeyFiles.validateSource,
+            readSource: mockedKeyFiles.readSource,
+            runUnlocked:
+              runUnlockedMock as unknown as ProductionBackupVerifyDependencies['runUnlocked'],
+            unwrapRootKey,
+          },
+        ),
+      ).resolves.toMatchObject({
+        action: 'verified',
+        vaultId: VAULT_ID,
+        recordCount: 2,
+        bytes: archive.byteLength,
+        schemaVersion: 1,
+        createdAt: CREATED_AT,
+      });
+      expect(mockedKeyFiles.readSource).toHaveBeenCalledWith(
+        'D:\\backups\\verified.cvkx',
+        1024 * 1024,
+      );
+      expect(unwrapRootKey).toHaveBeenCalledWith(unlocked);
+      expect([...fixture.rootKey]).toEqual(
+        Array.from({ length: fixture.rootKey.byteLength }, () => 0),
+      );
+      expect([...archive]).toEqual(Array.from({ length: archive.length }, () => 0));
+    } finally {
+      zeroize(fixture.rootKey);
+      archive.fill(0);
+    }
+  });
+
+  it('rejects authenticated semantic families that this command cannot verify', async () => {
+    const fixture = await createFixture();
+    const chunks: Buffer[] = [];
+    for await (const chunk of createEncryptedBackup(
+      {
+        vault: fixture.vault,
+        records: values([{ kind: 'group', record: fixture.group }]),
+        createdAt: CREATED_AT,
+        limits: { maximumBytes: 1024 * 1024, maximumRecords: 10 },
+      },
+      fixture.rootKey,
+    )) {
+      chunks.push(Buffer.from(chunk));
+    }
+    const archive = Buffer.concat(chunks);
+    const summary = await verifyEncryptedBackup(
+      values([archive]),
+      fixture.rootKey,
+      VAULT_ID,
+      { maximumBytes: 1024 * 1024, maximumRecords: 10 },
+    );
+    const unlocked = {
+      profile: { vaultId: VAULT_ID },
+    } as unknown as ProductionUnlockedContext;
+    const runUnlockedMock = vi.fn(
+      (
+        _request: ProductionUnlockedRequest,
+        operation: (context: ProductionUnlockedContext) => Promise<unknown>,
+      ): Promise<unknown> => operation(unlocked),
+    );
+    const verifyArchive = vi
+      .fn<typeof verifyEncryptedBackup>()
+      .mockImplementation(async (_source, _rootKey, _vaultId, _limits, options) => {
+        await options?.onEntry?.({ kind: 'history' } as EncryptedBackupEntry);
+        return summary;
+      });
+    mockedKeyFiles.readSource.mockResolvedValue(Buffer.from(archive));
+
+    try {
+      await expect(
+        executeProductionBackupVerify(
+          {
+            environment: {},
+            secrets: {} as SecretInputPort,
+            backendPolicy: { kind: 'native' },
+            source: 'D:\\backups\\history.cvkx',
+          },
+          {
+            validateSource: mockedKeyFiles.validateSource,
+            readSource: mockedKeyFiles.readSource,
+            verifyArchive,
+            runUnlocked:
+              runUnlockedMock as unknown as ProductionBackupVerifyDependencies['runUnlocked'],
+            unwrapRootKey: vi.fn().mockResolvedValue(fixture.rootKey),
+          },
+        ),
+      ).rejects.toMatchObject({ code: 'BACKUP_DECRYPTABILITY_UNSUPPORTED' });
+      expect(verifyArchive).toHaveBeenCalledOnce();
+    } finally {
+      zeroize(fixture.rootKey);
+      archive.fill(0);
+    }
+  });
+
+  it('maps authenticated tampering to the documented safe verification code', async () => {
+    const fixture = await createFixture();
+    const chunks: Buffer[] = [];
+    for await (const chunk of createEncryptedBackup(
+      {
+        vault: fixture.vault,
+        records: values([]),
+        createdAt: CREATED_AT,
+        limits: { maximumBytes: 1024 * 1024, maximumRecords: 10 },
+      },
+      fixture.rootKey,
+    )) {
+      chunks.push(Buffer.from(chunk));
+    }
+    const tampered = Buffer.concat(chunks);
+    const saltMarker = Buffer.from('"salt":"', 'utf8');
+    const saltStart = tampered.indexOf(saltMarker);
+    if (saltStart < 0) throw new Error('Backup fixture has no salt.');
+    const tamperedIndex = saltStart + saltMarker.byteLength;
+    const tamperedByte = tampered[tamperedIndex];
+    if (tamperedByte === undefined) throw new Error('Backup fixture is empty.');
+    tampered[tamperedIndex] = tamperedByte === 65 ? 66 : 65;
+    const unlocked = {
+      profile: { vaultId: VAULT_ID },
+    } as unknown as ProductionUnlockedContext;
+    const runUnlockedMock = vi.fn(
+      (
+        _request: ProductionUnlockedRequest,
+        operation: (context: ProductionUnlockedContext) => Promise<unknown>,
+      ): Promise<unknown> => operation(unlocked),
+    );
+    mockedKeyFiles.readSource.mockImplementation(() =>
+      Promise.resolve(Buffer.from(tampered)),
+    );
+
+    try {
+      const verification = executeProductionBackupVerify(
+        {
+          environment: {},
+          secrets: {} as SecretInputPort,
+          backendPolicy: { kind: 'native' },
+          source: 'D:\\backups\\tampered.cvkx',
+        },
+        {
+          validateSource: mockedKeyFiles.validateSource,
+          readSource: mockedKeyFiles.readSource,
+          runUnlocked:
+            runUnlockedMock as unknown as ProductionBackupVerifyDependencies['runUnlocked'],
+          unwrapRootKey: vi.fn().mockResolvedValue(fixture.rootKey),
+        },
+      );
+      await expect(verification).rejects.toBeInstanceOf(CliBackupVerificationError);
+      await expect(verification).rejects.toMatchObject({
+        code: 'BACKUP_AUTHENTICATION_FAILED',
+      });
+    } finally {
+      zeroize(fixture.rootKey);
+      tampered.fill(0);
+    }
+  });
+});
+
+describe('protected isolated encrypted backup restoration', () => {
+  it('preflights the source before opening a target or restore coordinator', async () => {
+    const validateSource = vi
+      .fn<typeof mockedKeyFiles.validateSource>()
+      .mockRejectedValue(new PortableKeyFileError('KEY_FILE_UNSAFE'));
+    const restoreArchive = vi.fn<typeof restoreEncryptedBackup>();
+    const store = {} as BackupRestoreStore;
+    const openVerification = vi.fn() as unknown as RestoreVerificationSessionFactory;
+
+    const operation = executeProtectedEncryptedBackupRestore(
+      {
+        source: 'D:\\backups\\unsafe-restore.cvkx',
+        expectedVaultId: VAULT_ID,
+        store,
+        openVerification,
+      },
+      { validateSource, restoreArchive },
+    );
+
+    await expect(operation).rejects.toMatchObject({ code: 'BACKUP_INVALID' });
+    expect(validateSource).toHaveBeenCalledWith(
+      'D:\\backups\\unsafe-restore.cvkx',
+      128 * 1024 * 1024,
+    );
+    expect(restoreArchive).not.toHaveBeenCalled();
+    expect(mockedKeyFiles.readSource).not.toHaveBeenCalled();
+  });
+
+  it('passes the protected archive to the isolated restore ports and wipes it after commit', async () => {
+    const fixture = await createFixture();
+    const authenticated = await createAuthenticatedArchive(fixture);
+    const store = {} as BackupRestoreStore;
+    const openVerification = vi.fn() as unknown as RestoreVerificationSessionFactory;
+    mockedKeyFiles.readSource.mockResolvedValue(authenticated.archive);
+    const restoreArchive = vi
+      .fn<typeof restoreEncryptedBackup>()
+      .mockImplementation(
+        async (source, expectedVaultId, receivedStore, receivedFactory, limits) => {
+          let bytes = 0;
+          for await (const chunk of source) bytes += chunk.byteLength;
+          expect(bytes).toBe(authenticated.archive.byteLength);
+          expect(expectedVaultId).toBe(VAULT_ID);
+          expect(receivedStore).toBe(store);
+          expect(receivedFactory).toBe(openVerification);
+          expect(limits).toMatchObject({
+            maximumBytes: 1024 * 1024,
+            maximumRecords: 10,
+          });
+          return {
+            disposition: 'verified-and-committed',
+            backup: authenticated.summary,
+            verification: authenticated.verification,
+          };
+        },
+      );
+
+    try {
+      await expect(
+        executeProtectedEncryptedBackupRestore(
+          {
+            source: 'D:\\backups\\restore.cvkx',
+            expectedVaultId: VAULT_ID,
+            store,
+            openVerification,
+            limits: { maximumBytes: 1024 * 1024, maximumRecords: 10 },
+          },
+          {
+            validateSource: mockedKeyFiles.validateSource,
+            readSource: mockedKeyFiles.readSource,
+            restoreArchive,
+          },
+        ),
+      ).resolves.toEqual({
+        action: 'restored',
+        vaultId: VAULT_ID,
+        recordCount: authenticated.summary.recordCount,
+        bytes: authenticated.archive.byteLength,
+        restoreSessionId: authenticated.summary.restoreSessionId,
+        selectedSlotId: SLOT_ID,
+      });
+      expect(mockedKeyFiles.validateSource).toHaveBeenCalledWith(
+        'D:\\backups\\restore.cvkx',
+        1024 * 1024,
+      );
+      expect(mockedKeyFiles.readSource).toHaveBeenCalledWith(
+        'D:\\backups\\restore.cvkx',
+        1024 * 1024,
+      );
+      expect([...authenticated.archive]).toEqual(
+        Array.from({ length: authenticated.archive.length }, () => 0),
+      );
+    } finally {
+      zeroize(fixture.rootKey);
+      authenticated.archive.fill(0);
+    }
+  });
+
+  it('reports an exact committed replay without fabricating a slot receipt', async () => {
+    const fixture = await createFixture();
+    const authenticated = await createAuthenticatedArchive(fixture);
+    const store = {} as BackupRestoreStore;
+    const openVerification = vi.fn() as unknown as RestoreVerificationSessionFactory;
+    mockedKeyFiles.readSource.mockResolvedValue(authenticated.archive);
+    const restoreArchive = vi.fn<typeof restoreEncryptedBackup>().mockResolvedValue({
+      disposition: 'previously-committed',
+      backup: authenticated.summary,
+    });
+
+    try {
+      await expect(
+        executeProtectedEncryptedBackupRestore(
+          {
+            source: 'D:\\backups\\replay.cvkx',
+            expectedVaultId: VAULT_ID,
+            store,
+            openVerification,
+          },
+          { restoreArchive },
+        ),
+      ).resolves.toEqual({
+        action: 'already-committed',
+        vaultId: VAULT_ID,
+        recordCount: authenticated.summary.recordCount,
+        bytes: authenticated.archive.byteLength,
+        restoreSessionId: authenticated.summary.restoreSessionId,
+      });
+    } finally {
+      zeroize(fixture.rootKey);
+      authenticated.archive.fill(0);
+    }
+  });
+
+  it('maps uncertain publication to preservation instructions without exposing the cause', async () => {
+    const archive = Buffer.from(PLAINTEXT_CANARY, 'utf8');
+    mockedKeyFiles.readSource.mockResolvedValue(archive);
+    const store = {} as BackupRestoreStore;
+    const openVerification = vi.fn() as unknown as RestoreVerificationSessionFactory;
+    const restoreArchive = vi
+      .fn<typeof restoreEncryptedBackup>()
+      .mockRejectedValue(
+        new BackupError(
+          'BACKUP_COMMIT_UNCERTAIN',
+          `target contains ${PLAINTEXT_CANARY}`,
+        ),
+      );
+
+    try {
+      const operation = executeProtectedEncryptedBackupRestore(
+        {
+          source: 'D:\\backups\\uncertain.cvkx',
+          expectedVaultId: VAULT_ID,
+          store,
+          openVerification,
+        },
+        { restoreArchive },
+      );
+      const caught = await operation.catch((error: unknown) => error);
+      expect(caught).toBeInstanceOf(CliBackupRestoreError);
+      if (!(caught instanceof CliBackupRestoreError)) {
+        throw new Error('Expected a safe backup restore error.');
+      }
+      expect(caught.code).toBe('BACKUP_COMMIT_UNCERTAIN');
+      expect(caught.message).toContain('Preserve the archive and isolated target');
+      expect(caught.message).not.toContain(PLAINTEXT_CANARY);
+      expect([...archive]).toEqual(Array.from({ length: archive.length }, () => 0));
+    } finally {
+      archive.fill(0);
+    }
+  });
+});
+
 function createSnapshot(
   vault: VaultRecord,
   records:
@@ -386,4 +804,56 @@ async function createFixture(): Promise<{
     updatedAt: CREATED_AT,
   });
   return { rootKey, vault, group };
+}
+
+async function createAuthenticatedArchive(
+  fixture: Awaited<ReturnType<typeof createFixture>>,
+): Promise<{
+  archive: Buffer;
+  summary: Awaited<ReturnType<typeof verifyEncryptedBackup>>;
+  verification: ReturnType<typeof restoreKnownRecordsVerificationV1Schema.parse>;
+}> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of createEncryptedBackup(
+    {
+      vault: fixture.vault,
+      records: values([{ kind: 'group', record: fixture.group }]),
+      createdAt: CREATED_AT,
+      limits: { maximumBytes: 1024 * 1024, maximumRecords: 10 },
+    },
+    fixture.rootKey,
+  )) {
+    chunks.push(Buffer.from(chunk));
+  }
+  const archive = Buffer.concat(chunks);
+  const summary = await verifyEncryptedBackup(
+    values([archive]),
+    fixture.rootKey,
+    VAULT_ID,
+    { maximumBytes: 1024 * 1024, maximumRecords: 10 },
+  );
+  const verification = restoreKnownRecordsVerificationV1Schema.parse({
+    version: 1,
+    scope: 'known-v1-records',
+    vaultId: VAULT_ID,
+    vaultRevision: fixture.vault.revision,
+    restoreSessionId: summary.restoreSessionId,
+    transcriptSha256: summary.transcriptSha256,
+    canonicalEntriesSha256: summary.canonicalEntriesSha256,
+    recordCount: summary.recordCount,
+    selectedSlot: { id: SLOT_ID, type: 'portable-key', keyVersion: 1 },
+    verified: {
+      vaults: 1,
+      groups: 1,
+      items: 0,
+      attachments: 0,
+      attachmentHeaders: 0,
+      attachmentChunks: 0,
+      tombstonePredecessors: { groups: 0, items: 0, attachments: 0 },
+      tombstones: 0,
+      histories: 0,
+      audits: 0,
+    },
+  });
+  return { archive, summary, verification };
 }

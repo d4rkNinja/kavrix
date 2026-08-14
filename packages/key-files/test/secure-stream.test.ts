@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, readdir, rm, symlink } from 'node:fs/promises';
+import { link, mkdir, mkdtemp, readFile, readdir, rm, symlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -15,7 +15,9 @@ vi.mock('../src/windows-acl.js', () => ({
 }));
 
 import {
+  readSecureFile,
   validateSecureFileDestination,
+  validateSecureFileSource,
   writeSecureStreamFile,
 } from '../src/filesystem.js';
 
@@ -90,6 +92,22 @@ describe('protected streaming file publication', () => {
     await mkdir(linkTarget);
     await symlink(linkTarget, linkPath, 'junction');
     await expect(validateSecureFileDestination(linkPath)).rejects.toMatchObject({
+      code: 'KEY_FILE_UNSAFE',
+    });
+  });
+
+  it('preflights and reads an existing bounded archive without following links', async () => {
+    const path = join(directory, 'source.cvkx');
+    await writeSecureStreamFile(path, values([new Uint8Array([7, 6, 5])]), 32);
+    await expect(validateSecureFileSource(path, 32)).resolves.toBeUndefined();
+    await expect(readSecureFile(path, 32)).resolves.toEqual(Buffer.from([7, 6, 5]));
+    await expect(validateSecureFileSource(path, 2)).rejects.toMatchObject({
+      code: 'KEY_FILE_UNSAFE',
+    });
+
+    const hardLink = join(directory, 'source-link.cvkx');
+    await link(path, hardLink);
+    await expect(validateSecureFileSource(hardLink, 32)).rejects.toMatchObject({
       code: 'KEY_FILE_UNSAFE',
     });
   });

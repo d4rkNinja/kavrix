@@ -7,6 +7,7 @@ export interface RouteContext {
   readonly ports: ApiPorts;
   readonly security: RequestSecurity;
   readonly enrollmentLifetimeSeconds: number;
+  readonly readiness: () => Promise<boolean>;
 }
 
 export type ApiRoutePlugin = FastifyPluginAsync<RouteContext>;
