@@ -1,10 +1,10 @@
 # Portable Key and Device Enrollment
 
 > Design status: this document specifies required user and protocol behavior.
-> The fresh-home `creds recover` and command-only unlock-slot lifecycle
-> compositions are implemented and covered by focused production tests; durable
-> rotation and device-token management remain planned until marked verified in
-> [implementation-status.md](./implementation-status.md).
+> The fresh-home `creds recover`, command-only unlock-slot lifecycle, and
+> command-only portable-key rotation compositions are implemented with focused
+> tests. SQLite/Windows ACL execution and release acceptance remain in progress;
+> see [implementation-status.md](./implementation-status.md).
 
 ## The three credentials are different
 
@@ -148,8 +148,11 @@ unprotected key beyond the local device.
 
 ## Create an enrollment invite on Device A
 
-`creds device invite` is available only to an unlocked, currently authorized
-device. The client requests a new invite over authenticated HTTPS. The service:
+`creds device invite create` is available only to an unlocked, currently
+authorized device. The client requests a new invite over authenticated HTTPS.
+The command defaults to a 600-second lifetime and `sync:read,sync:write`; the
+caller may pass bounded `--expires-in-seconds` and repeated `--scope` values.
+The service:
 
 1. generates or accepts only protocol-defined random invite material;
 2. stores a cryptographic hash, vault binding, creator device ID, expiry,
@@ -158,16 +161,15 @@ device. The client requests a new invite over authenticated HTTPS. The service:
 4. rate-limits creation and consumption;
 5. supports revocation before use.
 
-The default lifetime must be short and configured server-side within a bounded
-maximum. Exact duration and entropy are implementation parameters that require
-tests and documentation before release; no unsupported value is asserted here.
-Invite output is masked/one-time, absent from logs, and never placed in a command
+The server remains authoritative for the maximum lifetime, caller scope, and
+rate policy. Invite output is one-time and requires an interactive terminal or
+explicit `--stdout`; it is absent from logs and never placed in a command
 argument. `creds device invite revoke <invite-id>` uses the opaque invite record
-ID, not the secret value.
+ID, not the secret value. `creds device invite list` returns public metadata only.
 
 ## Join on Device B
 
-Canonical interactive flow:
+Canonical interactive flow (available in the packed executable):
 
 ```text
 creds device join --server <url> --vault <vault-id>
@@ -247,11 +249,12 @@ protected keychain, publish the opaque slot revision, and verify the protected
 readback. It stores the canonical profile, initializes protected sync state via
 the first opaque sync, and clears session/device/root buffers best effort.
 
-`creds recover resume <operation-id>` replays the durable join operation and
-finishes an interrupted slot/profile/sync phase. `creds recover cancel
-<operation-id>` removes only a prepared local journal and performs no network
-request. Both commands still require the canonical server/vault identity so a
-local operation cannot be applied to an ambiguous target. Recovery output is
+`creds device join resume <operation-id>` (or the equivalent `recover resume`)
+replays the durable join operation and finishes an interrupted slot/profile/sync
+phase. `creds device join cancel <operation-id>` (or `recover cancel`) removes
+only a prepared local journal and performs no network request. Both commands
+still require the canonical server/vault identity so a local operation cannot be
+applied to an ambiguous target. Device-join/recovery output is
 limited to the opaque operation, vault, and device IDs; invite, portable key,
 session successor, device secret, VRK, and decrypted records are not placed in
 argv, API payloads, logs, or renderer input.
@@ -312,19 +315,26 @@ sidecar.
 ## Portable-key rotation
 
 Portable-key rotation changes the wrapping credential, not the data-encryption
-keys:
+keys. The composed command-only path is:
 
 1. Authenticate with an active slot and unwrap the existing VRK locally.
-2. Generate or import a replacement portable key and require save/possession
-   confirmation.
-3. Derive a new portable KEK with a fresh salt and wrap the same VRK into a new
-   key version/slot.
-4. Fully unwrap and compare the replacement before activation.
-5. Publish the new wrapped slot and show per-device confirmation of the new key
-   version.
-6. Keep the old slot only during an explicitly chosen bounded grace period.
-7. Revoke the old slot only after the last-valid-slot check and a clear warning
-   for devices not yet updated.
+2. Generate a fresh bound file or import an existing unbound portable-key file;
+   read it back to confirm possession.
+3. Derive a fresh portable KEK and wrap the same VRK in a pending replacement
+   slot at the current key version.
+4. Persist a public journal record with an HMAC-authenticated checkpoint, then
+   publish and read back the pending slot.
+5. Promote the exact pending envelope to active, read it back, and unlock that
+   fetched active envelope locally with the replacement key.
+6. Revoke the old slot only after the replacement confirmation and the
+   last-valid-slot check. The old slot remains active if any earlier step fails.
+
+Use `creds key rotate resume <operation-id>` with the replacement file after an
+interruption. Resume rejects a changed source/replacement snapshot, revision,
+or checkpoint and never guesses across a concurrent vault mutation. `creds key
+rotate list` exposes only operation IDs, public states, slot IDs, and times.
+The operation journal never stores the portable key, passphrase, VRK, or
+decrypted payload data.
 
 Group/item payloads remain unchanged. If exposure is suspected, also revoke
 affected device tokens; rotating the portable slot alone does not revoke API

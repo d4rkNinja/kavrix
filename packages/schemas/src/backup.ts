@@ -184,8 +184,8 @@ const verifiedRestoreCountsSchema = z
       })
       .strict(),
     tombstones: backupSubcountSchema,
-    histories: z.literal(0),
-    audits: z.literal(0),
+    histories: backupSubcountSchema,
+    audits: backupSubcountSchema,
   })
   .strict();
 
