@@ -69,6 +69,7 @@ import {
   toTombstoneDocument,
 } from '../src/index.js';
 import {
+  CANONICAL_RESTORE_CREATED_AT,
   CANONICAL_RESTORE_EXPECTED_COUNTS,
   CANONICAL_RESTORE_LIMITS,
   CANONICAL_RESTORE_PLAINTEXT_CANARIES,
@@ -636,7 +637,7 @@ describe('canonical known-v1 restore coordinator against a replica-set target', 
           restoreSessionId: canonical.summary.restoreSessionId,
           transcriptSha256: canonical.summary.transcriptSha256,
           canonicalEntriesSha256: canonical.summary.canonicalEntriesSha256,
-          recordCount: 12,
+          recordCount: 14,
           selectedSlot: {
             id: canonical.slotIds[slotType],
             type: slotType,
@@ -682,7 +683,7 @@ describe('canonical known-v1 restore coordinator against a replica-set target', 
               freshSummary,
             ),
           ).resolves.toMatchObject({
-            recordCount: 12,
+            recordCount: 14,
             verified: CANONICAL_RESTORE_EXPECTED_COUNTS,
           });
         } finally {
@@ -722,6 +723,141 @@ describe('canonical known-v1 restore coordinator against a replica-set target', 
       });
     },
   );
+
+  it('creates an archive from Mongo, restores an isolated target, and reads exact current records', async () => {
+    let sourceVault: VaultRecord | undefined;
+    let sourceRecords: NonVaultEntry[] | undefined;
+    let archive: Buffer | undefined;
+    let summary: BackupVerification | undefined;
+    const canaries = [
+      ...CANONICAL_RESTORE_PLAINTEXT_CANARIES,
+      ...canonical.credentialCanaries(),
+    ];
+
+    await withEmptyDatabase(client, async (sourceDatabase) => {
+      const seedStore = new MongoBackupRestoreStore(client, sourceDatabase);
+      await seedStore.initialize();
+      const seeded = await restoreCanonical(canonical, seedStore, 'portable-key');
+      expect(seeded.disposition).toBe('verified-and-committed');
+
+      const source = await new MongoBackupSource(client, sourceDatabase).open(
+        canonical.vaultId,
+        CANONICAL_RESTORE_LIMITS,
+      );
+      sourceVault = source.vault;
+      sourceRecords = await collect(source.records);
+      expect(sourceVault).toEqual(canonical.vault);
+      expect(sourceRecords).toEqual(canonical.records);
+
+      const verification = await canonical.verificationFactory('portable-key')(
+        source.vault,
+      );
+      try {
+        const createdArchive = await collectBytes(
+          createEncryptedBackup(
+            {
+              vault: source.vault,
+              records: asyncValues(sourceRecords),
+              createdAt: CANONICAL_RESTORE_CREATED_AT,
+              limits: CANONICAL_RESTORE_LIMITS,
+            },
+            verification.vaultRootKey,
+          ),
+        );
+        archive = createdArchive;
+        summary = await verifyEncryptedBackup(
+          chunks(createdArchive, 29),
+          verification.vaultRootKey,
+          canonical.vaultId,
+          CANONICAL_RESTORE_LIMITS,
+        );
+        assertNoRawCanaries(
+          [createdArchive, ...(await collectDurableScanValues(sourceDatabase))],
+          canaries,
+        );
+      } finally {
+        verification.close();
+      }
+    });
+
+    if (
+      sourceVault === undefined ||
+      sourceRecords === undefined ||
+      archive === undefined ||
+      summary === undefined
+    ) {
+      throw new Error('The source backup acceptance fixture was not created.');
+    }
+    const verifiedSourceVault = sourceVault;
+    const verifiedSourceRecords = sourceRecords;
+    const verifiedArchive = archive;
+    const verifiedSummary = summary;
+    expect(verifiedSummary.recordCount).toBe(canonical.entries.length);
+    expect(verifiedSummary.header.vaultId).toBe(verifiedSourceVault.id);
+
+    await withEmptyDatabase(client, async (targetDatabase) => {
+      const targetStore = new MongoBackupRestoreStore(client, targetDatabase);
+      await targetStore.initialize();
+      const restored = await restoreEncryptedBackup(
+        chunks(verifiedArchive, 31),
+        canonical.vaultId,
+        targetStore,
+        canonical.verificationFactory('portable-key', verifiedSourceVault.revision),
+        CANONICAL_RESTORE_LIMITS,
+      );
+      expect(restored).toMatchObject({
+        disposition: 'verified-and-committed',
+        backup: verifiedSummary,
+      });
+      if (restored.disposition !== 'verified-and-committed') {
+        throw new Error('The isolated backup restore did not commit.');
+      }
+
+      const freshSource = await new MongoBackupSource(client, targetDatabase).open(
+        canonical.vaultId,
+        CANONICAL_RESTORE_LIMITS,
+      );
+      const freshRecords = await collect(freshSource.records);
+      expect(freshSource.vault).toEqual(verifiedSourceVault);
+      expect(freshRecords).toEqual(verifiedSourceRecords);
+
+      const freshClient = new MongoVaultStorage(client, targetDatabase);
+      const page = await freshClient.pullSyncPage(
+        syncCursorSchema.parse({
+          vaultId: canonical.vaultId,
+          serverSequence: 0,
+          highestSeenVaultRevision: 0,
+        }),
+        100,
+      );
+      expect(page.serverVaultRevision).toBe(verifiedSourceVault.revision);
+      expect(page.nextCursor.highestSeenVaultRevision).toBe(
+        verifiedSourceVault.revision,
+      );
+      const snapshot = new OpaqueVaultSnapshot(canonical.vaultId);
+      snapshot.applyPullPage(page);
+      await expect(
+        snapshot.getGroup(canonical.vaultId, canonical.group.id),
+      ).resolves.toEqual(canonical.group);
+      await expect(
+        snapshot.getItem(canonical.vaultId, canonical.activeItem.id),
+      ).resolves.toEqual(canonical.activeItem);
+      await expect(
+        snapshot.getItem(canonical.vaultId, canonical.deletedItem.id),
+      ).resolves.toBeNull();
+      await expect(
+        snapshot.getItem(canonical.vaultId, canonical.restoredItem.id),
+      ).resolves.toEqual(canonical.restoredItem);
+
+      const durable = await collectDurableScanValues(targetDatabase);
+      assertNoRawCanaries([verifiedArchive, ...durable], canaries);
+      await expect(
+        targetDatabase
+          .collection(mongoStorageCollectionNames.backupRestoreEntries)
+          .countDocuments(),
+      ).resolves.toBe(0);
+    });
+  });
 
   it('returns previously-committed for an exact archive without fabricating a receipt', async () => {
     await withEmptyDatabase(client, async (database) => {
@@ -773,7 +909,7 @@ describe('canonical known-v1 restore coordinator against a replica-set target', 
           restoreSessionId: canonical.summary.restoreSessionId,
           transcriptSha256: canonical.summary.transcriptSha256,
           canonicalEntriesSha256: canonical.summary.canonicalEntriesSha256,
-          recordCount: 12,
+          recordCount: 14,
           selectedSlot: {
             id: canonical.slotIds['portable-key'],
             type: 'portable-key',
@@ -866,11 +1002,11 @@ describe('canonical known-v1 restore coordinator against a replica-set target', 
   });
 
   it.each(['history', 'audit'] as const)(
-    'authenticates opaque history and audit but rejects either from semantic publication: %s',
+    'keeps authenticated future history and audit versions explicit: %s',
     async (family) => {
       const archive = await canonical.unsupportedArchive(family);
       const summary = await canonical.authenticate(archive);
-      expect(summary.recordCount).toBe(13);
+      expect(summary.recordCount).toBe(14);
       await withEmptyDatabase(client, async (database) => {
         const store = new MongoBackupRestoreStore(client, database);
         await store.initialize();
@@ -904,7 +1040,7 @@ describe('canonical known-v1 restore coordinator against a replica-set target', 
     async (kind: CanonicalInnerCorruption) => {
       const archive = await canonical.innerCorruptionArchive(kind);
       const summary = await canonical.authenticate(archive);
-      expect(summary.recordCount).toBe(12);
+      expect(summary.recordCount).toBe(14);
       await withEmptyDatabase(client, async (database) => {
         const store = new MongoBackupRestoreStore(client, database);
         await store.initialize();
@@ -1787,8 +1923,8 @@ async function expectCanonicalVisibleCounts(database: Db): Promise<void> {
     [mongoStorageCollectionNames.tombstones, 2],
     [mongoStorageCollectionNames.changes, 7],
     [mongoStorageCollectionNames.counters, 1],
-    [mongoStorageCollectionNames.histories, 0],
-    [mongoStorageCollectionNames.audits, 0],
+    [mongoStorageCollectionNames.histories, 1],
+    [mongoStorageCollectionNames.audits, 1],
     [mongoStorageCollectionNames.attachmentStaging, 1],
     [mongoStorageCollectionNames.attachmentStagingChunks, 2],
     [mongoStorageCollectionNames.backupRestoreSessions, 1],

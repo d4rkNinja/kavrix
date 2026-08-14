@@ -1,10 +1,9 @@
 # CLI reference
 
-Kavrix is not published. The public-package build produces a `creds` executable,
-but its installed command surface is intentionally limited to production-backed
-local operations. Vault operations exist in a separately tested,
-dependency-injected catalog in the repository; only the production-composed
-commands below are available in the packed executable.
+Kavrix is not published. The public-package build produces a `creds` executable
+with the production-backed command surface below. The repository also retains a
+larger dependency-injected catalog for protocol and adapter tests; commands marked
+"catalog only" are not available in the packed executable.
 
 This distinction is security-relevant: a command listed as "catalog only" below
 is not usable from the current public executable.
@@ -118,8 +117,9 @@ created.` Existing targets are never replaced.
 `backup create` requires `--file` and creates a new archive in a protected
 user-only directory. It does not accept a key or passphrase in argv, and it
 does not print archive contents or unlock material. The command currently
-backs up the enrolled local opaque vault/group/item state; attachments,
-history, and audit semantics remain gated by the later backup issues.
+backs up the enrolled local opaque vault/group/item state; the Mongo snapshot
+and protected restore composition own attachment/history/audit records, and
+known-v1 restore semantically opens the documented history and audit payloads.
 
 `backup verify` also requires `--file`, but the path must already name one
 protected regular archive. It validates the source before unlock, then uses the
@@ -394,10 +394,14 @@ case conversion, or unquoted command substitution for record selection.
 
 Parser, renderer, terminal sanitizer, masked/stdin input, local generators, RFC
 TOTP behavior, key-file creation/ACLs, static completion, package contents, lazy
-chunk loading, and packed-bin behavior have automated tests. A Windows packed
-fixture installs the npm archive, invokes the generated shim, and reads real
-canonical SQLite/sealed status state; it does not prove native-keychain behavior
-or an unlocked vault operation. The public executable does not yet compose
-enrollment, unlock, online sync, credential reads, clipboard, TUI, or semantic
-backup restore use cases. Cross-platform shell completion packaging is prepared, but a published
-package and final target-platform release evidence do not exist.
+chunk loading, and packed-bin behavior have automated tests. The Scenario A
+acceptance test exercises initialization, unlock, encrypted mutations, sync,
+redacted reads, guarded copy, lock, and reopen through source-level production
+composition with real SQLite/client adapters and an opaque HTTPS fixture. A
+Windows packed fixture installs the npm archive, invokes the generated shim, and
+reads real canonical SQLite/sealed status state; it does not prove native-keychain
+behavior or the full online journey through the installed child. Interruption,
+fresh-home recovery/device-B, backup/restore, and whole-system canary coverage
+remain later acceptance gates. Cross-platform shell completion packaging is
+prepared, but a published package and final target-platform release evidence do
+not exist.

@@ -41,6 +41,7 @@ import {
   attachmentHeaderContentHash,
   attachmentIdSchema,
   attachmentSecretStreamManifestSchema,
+  canonicalJson,
   contentHashForRecord,
   createBackupStagedEntryCommitment,
   encryptedAttachmentRecordSchema,
@@ -55,6 +56,7 @@ import {
   historyIdSchema,
   itemIdSchema,
   itemPayloadSchema,
+  keySlotAuditPayloadSchema,
   keySlotIdSchema,
   persistedAttachmentChunkRecordSchema,
   persistedAttachmentHeaderRecordSchema,
@@ -72,8 +74,10 @@ import {
   type AttachmentSecretStreamChunkRecord,
   type AttachmentSecretStreamHeaderRecord,
   type EncryptedAttachmentRecord,
+  type EncryptedAuditRecord,
   type EncryptedBackupEntry,
   type EncryptedGroupRecord,
+  type EncryptedHistoryRecord,
   type EncryptedItemRecord,
   type ItemPayload,
   type KeySlotId,
@@ -123,8 +127,8 @@ export const CANONICAL_RESTORE_EXPECTED_COUNTS = Object.freeze({
   attachmentChunks: 2,
   tombstonePredecessors: Object.freeze({ groups: 0, items: 1, attachments: 0 }),
   tombstones: 2,
-  histories: 0 as const,
-  audits: 0 as const,
+  histories: 1,
+  audits: 1,
 });
 
 export type CanonicalRestoreSlotType = 'portable-key' | 'passphrase' | 'recovery-key';
@@ -182,6 +186,8 @@ export async function createCanonicalKnownV1RestoreFixture(): Promise<CanonicalK
   const deletedItemId = itemIdSchema.parse('restore.acceptance.item.deleted');
   const restoredItemId = itemIdSchema.parse('restore.acceptance.item.restored');
   const attachmentId = attachmentIdSchema.parse('restore.acceptance.attachment.active');
+  const historyId = historyIdSchema.parse('restore.acceptance.history');
+  const auditId = auditEventIdSchema.parse('restore.acceptance.audit');
   const templateId = templateIdSchema.parse('restore.acceptance.template');
   const fieldId = fieldIdSchema.parse('restore.acceptance.field');
   const slotIds = Object.freeze({
@@ -490,9 +496,58 @@ export async function createCanonicalKnownV1RestoreFixture(): Promise<CanonicalK
         ciphertextHash: attachmentChunkCiphertextHash(base),
       });
     });
+    const historyPayload = itemPayload(activeItemId, 1, CANONICAL_RESTORE_CREATED_AT, {
+      attachmentIds: [attachmentId],
+    });
+    const historyEncryptedPayload = await encryptCanonicalPayload(
+      historyPayload,
+      activeItemKey,
+      aad('history', vaultId, historyId, groupId, activeItemId),
+    );
+    const history = encryptedHistoryRecordSchema.parse({
+      id: historyId,
+      vaultId,
+      groupId,
+      itemId: activeItemId,
+      schemaVersion,
+      encryptedPayload: historyEncryptedPayload,
+      itemRecordRevision: historyPayload.revision,
+      ciphertextHash: digestCiphertext(historyEncryptedPayload),
+      createdAt: CANONICAL_RESTORE_CREATED_AT,
+    });
+    const auditPayload = keySlotAuditPayloadSchema.parse({
+      version: 1,
+      action: 'create',
+      slotId: slotIds['portable-key'],
+      slotType: 'portable-key',
+      resultingState: 'active',
+      keyVersion,
+      actorDeviceId: 'restore.acceptance.device',
+      occurredAt: CANONICAL_RESTORE_CREATED_AT,
+    });
+    const auditPlaintext = new TextEncoder().encode(canonicalJson(auditPayload));
+    let auditEncryptedPayload: AeadEnvelope;
+    try {
+      auditEncryptedPayload = await encryptPayload(
+        auditPlaintext,
+        rootKey,
+        aad('audit-event', vaultId, auditId),
+      );
+    } finally {
+      zeroize(auditPlaintext);
+    }
+    const audit = encryptedAuditRecordSchema.parse({
+      id: auditId,
+      vaultId,
+      schemaVersion,
+      encryptedPayload: auditEncryptedPayload,
+      recordRevision: recordRevisionSchema.parse(1),
+      createdAt: CANONICAL_RESTORE_CREATED_AT,
+    });
     const records = [
       encryptedBackupEntrySchema.parse({ kind: 'group', record: group }),
       encryptedBackupEntrySchema.parse({ kind: 'item', record: activeItem }),
+      encryptedBackupEntrySchema.parse({ kind: 'history', record: history }),
       encryptedBackupEntrySchema.parse({ kind: 'attachment', record: attachment }),
       encryptedBackupEntrySchema.parse({
         kind: 'attachment-header',
@@ -516,12 +571,13 @@ export async function createCanonicalKnownV1RestoreFixture(): Promise<CanonicalK
         kind: 'tombstone',
         record: restoredTombstone,
       }),
+      encryptedBackupEntrySchema.parse({ kind: 'audit', record: audit }),
     ] as readonly NonVaultEntry[];
     const entries = [
       encryptedBackupEntrySchema.parse({ kind: 'vault', record: vault }),
       ...records,
     ];
-    if (entries.length !== 12) throw new Error('Canonical restore fixture drifted.');
+    if (entries.length !== 14) throw new Error('Canonical restore fixture drifted.');
     if (
       restoredTombstone.lastCiphertextHash !==
         contentHashForRecord(restoredActivePredecessor) ||
@@ -539,7 +595,7 @@ export async function createCanonicalKnownV1RestoreFixture(): Promise<CanonicalK
     const commitment = createBackupStagedEntryCommitment();
     for (const entry of entries) commitment.update(entry);
     if (
-      summary.recordCount !== 12 ||
+      summary.recordCount !== 14 ||
       summary.canonicalEntriesSha256 !== commitment.finalize()
     ) {
       throw new Error('Canonical restore fixture commitment drifted.');
@@ -610,10 +666,22 @@ export async function createCanonicalKnownV1RestoreFixture(): Promise<CanonicalK
               formattedRecovery,
               new TextDecoder().decode(passphrase),
             ],
-      unsupportedArchive: (family: 'history' | 'audit') => {
+      unsupportedArchive: async (family: 'history' | 'audit') => {
         if (closed) throw new Error('Canonical restore fixture is closed.');
-        const sentinel = opaqueUnsupportedEntry(family, vaultId, groupId, activeItemId);
-        return createArchive(vault, [...cloneEntries(records), sentinel], rootKey);
+        const future = await futureVersionEntry(
+          family,
+          history,
+          audit,
+          activeItemKey,
+          rootKey,
+        );
+        return createArchive(
+          vault,
+          cloneEntries(records).map((entry) =>
+            entry.kind === family ? future : entry,
+          ),
+          rootKey,
+        );
       },
       innerCorruptionArchive: (kind: CanonicalInnerCorruption) => {
         if (closed) throw new Error('Canonical restore fixture is closed.');
@@ -753,6 +821,8 @@ function aad(
     | 'wrapped-item-key'
     | 'item'
     | 'wrapped-attachment-key'
+    | 'history'
+    | 'audit-event'
     | 'attachment'
     | 'attachment-chunk',
   vaultId: VaultId,
@@ -769,6 +839,8 @@ function aad(
     'wrapped-attachment-key': 'attachment-key',
     attachment: 'attachment-metadata',
     'attachment-chunk': 'attachment-chunk',
+    history: 'history-event',
+    'audit-event': 'audit-event',
   } as const;
   return associatedDataSchema.parse({
     version: 1,
@@ -783,67 +855,41 @@ function aad(
   });
 }
 
-/**
- * These outer-valid records exist only to prove that backup authentication is
- * independent from semantic support. Their bytes deliberately do not define a
- * history/audit key owner or plaintext contract and must never be decrypted.
- */
-function opaqueUnsupportedEntry(
+async function futureVersionEntry(
   family: 'history' | 'audit',
-  vaultId: VaultId,
-  groupId: string,
-  itemId: string,
-): NonVaultEntry {
-  const id =
-    family === 'history'
-      ? historyIdSchema.parse('restore.acceptance.history.opaque')
-      : auditEventIdSchema.parse('restore.acceptance.audit.opaque');
-  const entityType = family === 'history' ? 'history' : 'audit-event';
-  const encryptedPayload = aeadEnvelopeSchema.parse({
-    version: 1,
-    algorithm: 'xchacha20-poly1305-ietf',
-    nonce: Buffer.alloc(24, 7).toString('base64url'),
-    ciphertext: Buffer.alloc(9, 11).toString('base64url'),
-    authenticationTag: Buffer.alloc(16, 13).toString('base64url'),
-    aad: {
-      version: 1,
-      schemaVersion: 1,
-      keyVersion: 1,
-      vaultId,
-      entityType,
-      entityId: id,
-      ...(family === 'history' ? { groupId, parentId: itemId } : {}),
-      purpose: family === 'history' ? 'history-event' : 'audit-event',
-    },
-    keyVersion: 1,
-  });
-  if (family === 'history') {
+  history: EncryptedHistoryRecord,
+  audit: EncryptedAuditRecord,
+  itemKey: ItemKey,
+  rootKey: VaultRootKey,
+): Promise<NonVaultEntry> {
+  const record = family === 'history' ? history : audit;
+  const plaintext = new TextEncoder().encode(JSON.stringify({ version: 2 }));
+  try {
+    const encryptedPayload = await encryptPayload(
+      plaintext,
+      family === 'history' ? itemKey : rootKey,
+      record.encryptedPayload.aad,
+    );
+    if (family === 'history') {
+      return strictNonVault({
+        kind: family,
+        record: encryptedHistoryRecordSchema.parse({
+          ...history,
+          encryptedPayload,
+          ciphertextHash: digestCiphertext(encryptedPayload),
+        }),
+      });
+    }
     return strictNonVault({
       kind: family,
-      record: encryptedHistoryRecordSchema.parse({
-        id,
-        vaultId,
-        groupId,
-        itemId,
-        schemaVersion: 1,
+      record: encryptedAuditRecordSchema.parse({
+        ...audit,
         encryptedPayload,
-        itemRecordRevision: recordRevisionSchema.parse(1),
-        ciphertextHash: digestCiphertext(encryptedPayload),
-        createdAt: CANONICAL_RESTORE_CREATED_AT,
       }),
     });
+  } finally {
+    zeroize(plaintext);
   }
-  return strictNonVault({
-    kind: family,
-    record: encryptedAuditRecordSchema.parse({
-      id,
-      vaultId,
-      schemaVersion: 1,
-      encryptedPayload,
-      recordRevision: recordRevisionSchema.parse(1),
-      createdAt: CANONICAL_RESTORE_CREATED_AT,
-    }),
-  });
 }
 
 function cloneEntries(entries: readonly NonVaultEntry[]): readonly NonVaultEntry[] {
