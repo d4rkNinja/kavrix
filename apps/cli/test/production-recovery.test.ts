@@ -17,7 +17,6 @@ import {
   vaultIdSchema,
   vaultRecordSchema,
   type ApiBearerToken,
-  type DeviceId,
   type DeviceUnlockSecret,
   type KeySlotId,
   type SessionCredentialSecret,
@@ -56,10 +55,11 @@ describe('production fresh-home recovery', () => {
     let remoteVault = fixture.vault;
     const profiles = {
       listProfiles: vi.fn().mockResolvedValue([]),
-      store: vi.fn(async (profile: VaultProfile) => {
+      store: vi.fn((profile: VaultProfile) => {
         storedProfile = structuredClone(profile);
+        return Promise.resolve();
       }),
-      load: vi.fn(async () => storedProfile),
+      load: vi.fn(() => Promise.resolve(storedProfile)),
     };
     const local = {} as SyncLocalStorePort;
     const environment: RecoveryEnvironment = {
@@ -72,9 +72,9 @@ describe('production fresh-home recovery', () => {
       deviceId: DEVICE_ID,
       scopes: ['sync:read', 'sync:write', 'device:manage'],
     });
-    const fetchVault = vi.fn(async () => remoteVault);
+    const fetchVault = vi.fn(() => Promise.resolve(remoteVault));
     const publishKeySlot = vi.fn(
-      async (
+      (
         _bearer: ApiBearerToken,
         _vaultId: VaultId,
         _slotId: KeySlotId,
@@ -85,6 +85,7 @@ describe('production fresh-home recovery', () => {
         }>,
       ) => {
         remoteVault = request.record;
+        return Promise.resolve();
       },
     );
     const controlPlane: RecoveryControlPlane = {
@@ -162,12 +163,15 @@ describe('production fresh-home recovery', () => {
       (slot) => slot.type === 'device-key' && slot.deviceId === DEVICE_ID,
     );
     expect(publishedSlot).toBeDefined();
+    if (publishedSlot === undefined) {
+      throw new Error('Recovery did not publish a device slot.');
+    }
     const verifiedRoot = await unlockDeviceKeySlot(
       publishedSlot as Extract<VaultRecord['keySlots'][number], { type: 'device-key' }>,
       storedDeviceSecrets[0] as DeviceUnlockSecret,
       {
         vaultId: VAULT_ID,
-        slotId: publishedSlot?.id as KeySlotId,
+        slotId: publishedSlot.id,
         schemaVersion: 1,
         keyVersion: 1,
       },
@@ -292,19 +296,27 @@ describe('production fresh-home recovery', () => {
           openEnvironment: vi.fn().mockResolvedValue(environment),
           controlPlaneFactory: vi.fn(() => ({}) as RecoveryControlPlane),
           coordinatorFactory: vi.fn(() => coordinator),
-          keyFileReaderFactory: vi.fn(({ secrets, passphraseFromStdin }) => {
-            expect(passphraseFromStdin).toBe(true);
-            return {
-              readFormattedPortableKey: async () => {
-                const passphrase = await secrets.read({
-                  kind: 'passphrase',
-                  fromStdin: true,
-                });
-                expect(passphrase).toBe('file-passphrase-canary');
-                return 'cvk1_test';
-              },
-            };
-          }),
+          keyFileReaderFactory: vi.fn(
+            ({
+              secrets,
+              passphraseFromStdin,
+            }: {
+              secrets: SecretInputPort;
+              passphraseFromStdin: boolean;
+            }) => {
+              expect(passphraseFromStdin).toBe(true);
+              return {
+                readFormattedPortableKey: async () => {
+                  const passphrase = await secrets.read({
+                    kind: 'passphrase',
+                    fromStdin: true,
+                  });
+                  expect(passphrase).toBe('file-passphrase-canary');
+                  return 'cvk1_test';
+                },
+              };
+            },
+          ),
         },
       ),
     ).rejects.toBeInstanceOf(CliUsageError);
@@ -330,10 +342,9 @@ describe('production fresh-home recovery', () => {
       openSyncStore: vi.fn(),
       close,
     };
-    const secrets = {
-      read: vi.fn(),
-      readBatch: vi.fn(),
-    } as unknown as SecretInputPort;
+    const read = vi.fn();
+    const readBatch = vi.fn();
+    const secrets: SecretInputPort = { read, readBatch };
 
     await executeProductionRecoveryCancel(
       {
@@ -357,8 +368,8 @@ describe('production fresh-home recovery', () => {
     );
 
     expect(cancel).toHaveBeenCalledWith(OPERATION_ID);
-    expect(secrets.read).not.toHaveBeenCalled();
-    expect(secrets.readBatch).not.toHaveBeenCalled();
+    expect(read).not.toHaveBeenCalled();
+    expect(readBatch).not.toHaveBeenCalled();
     expect(close).toHaveBeenCalledOnce();
   });
 });
@@ -426,14 +437,17 @@ function createBackend(
       delete: vi.fn(),
     },
     keychain: {
-      load: vi.fn(async () => {
+      load: vi.fn(() => {
         const value = storedDeviceSecrets[0];
-        return value === undefined
-          ? null
-          : deviceUnlockSecretSchema.parse(Uint8Array.from(value));
+        return Promise.resolve(
+          value === undefined
+            ? null
+            : deviceUnlockSecretSchema.parse(Uint8Array.from(value)),
+        );
       }),
-      store: vi.fn(async (_locator, secret: DeviceUnlockSecret) => {
+      store: vi.fn((_locator, secret: DeviceUnlockSecret) => {
         storedDeviceSecrets.push(Uint8Array.from(secret));
+        return Promise.resolve();
       }),
       delete: vi.fn(),
     },

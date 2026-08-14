@@ -4,10 +4,18 @@ function isAnsiFinal(code: number): boolean {
   return code >= 0x40 && code <= 0x7e;
 }
 
+function skipCsi(value: string, start: number): number {
+  for (let index = start; index < value.length; index += 1) {
+    if (isAnsiFinal(value.charCodeAt(index))) return index;
+  }
+  return value.length - 1;
+}
+
 function skipStringEscape(value: string, start: number): number {
   for (let index = start; index < value.length; index += 1) {
     const code = value.charCodeAt(index);
     if (code === 0x07) return index;
+    if (code === 0x9c) return index;
     if (code === 0x1b && value.charCodeAt(index + 1) === 0x5c) return index + 1;
   }
   return value.length - 1;
@@ -15,12 +23,7 @@ function skipStringEscape(value: string, start: number): number {
 
 function skipEscape(value: string, start: number): number {
   const next = value.charCodeAt(start + 1);
-  if (next === 0x5b) {
-    for (let index = start + 2; index < value.length; index += 1) {
-      if (isAnsiFinal(value.charCodeAt(index))) return index;
-    }
-    return value.length - 1;
-  }
+  if (next === 0x5b) return skipCsi(value, start + 2);
   if (
     next === 0x5d ||
     next === 0x50 ||
@@ -31,6 +34,12 @@ function skipEscape(value: string, start: number): number {
     return skipStringEscape(value, start + 2);
   }
   return Math.min(start + 1, value.length - 1);
+}
+
+function isC1StringCommand(code: number): boolean {
+  return (
+    code === 0x90 || code === 0x98 || code === 0x9d || code === 0x9e || code === 0x9f
+  );
 }
 
 function isBidiControl(codePoint: number): boolean {
@@ -55,6 +64,14 @@ export function sanitizeTerminalText(value: string, ascii = false): string {
       index = skipEscape(value, index);
       continue;
     }
+    if (code === 0x9b) {
+      index = skipCsi(value, index + 1);
+      continue;
+    }
+    if (isC1StringCommand(code)) {
+      index = skipStringEscape(value, index + 1);
+      continue;
+    }
     if (code === 0x09 || code === 0x0a || code === 0x0d) {
       output += ' ';
       continue;
@@ -64,7 +81,7 @@ export function sanitizeTerminalText(value: string, ascii = false): string {
     const codePoint = value.codePointAt(index);
     if (codePoint === undefined) continue;
     if (codePoint > 0xffff) index += 1;
-    if (isBidiControl(codePoint)) {
+    if (isBidiControl(codePoint) || codePoint === 0x2028 || codePoint === 0x2029) {
       output += ascii ? '?' : REPLACEMENT;
       continue;
     }
