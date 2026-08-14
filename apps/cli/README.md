@@ -113,5 +113,6 @@ encrypted local mutations, online sync, redacted reads, guarded copy, and device
 `apps/cli/test/basic-vault-acceptance.test.ts` verifies Scenario A through the source-level
 production composition with real SQLite/client adapters and an opaque HTTPS fixture. The packed
 archive build and Windows launcher smoke also pass, but that smoke does not claim a native-
-keychain or packed online-vault journey; interruption, recovery/device-B, backup/restore, and
-whole-system canary coverage remain assigned to issues #46-#49.
+keychain or packed online-vault journey; real-adapter interruption/retry/conflict coverage is
+provided by `apps/cli/test/interruption-recovery-acceptance.test.ts`, while recovery/device-B,
+backup/restore, and whole-system canary coverage remain assigned to issues #47-#49.
