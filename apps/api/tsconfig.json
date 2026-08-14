@@ -9,7 +9,9 @@
     "scripts/**/*.ts",
     "test/**/*.ts",
     "integration/**/*.ts",
-    "vitest.integration.config.ts"
+    "operational/**/*.ts",
+    "vitest.integration.config.ts",
+    "vitest.operational.config.ts"
   ],
   "references": [
     { "path": "../../packages/core/tsconfig.build.json" },
