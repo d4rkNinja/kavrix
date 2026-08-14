@@ -4,7 +4,8 @@
     "noEmit": true,
     "declaration": false,
     "declarationMap": false,
+    "ignoreDeprecations": "6.0",
     "sourceMap": false
   },
-  "include": ["vitest.config.ts"]
+  "include": ["vitest.config.ts", "vitest.platform.config.ts", "scripts/**/*.ts"]
 }
