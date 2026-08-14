@@ -470,6 +470,47 @@ describe('publish workflow policy', () => {
     }
   });
 
+  it('keeps the declared cross-platform architecture and Node matrices exact', () => {
+    const verify = jobBlock(ciWorkflow, 'verify');
+    const runtime = jobBlock(ciWorkflow, 'runtime-range');
+
+    expect(verify.match(/^ {10}- label:/gmu) ?? []).toHaveLength(5);
+    for (const pairing of [
+      /runner: ubuntu-24\.04\r?\n {12}expected_arch: x64/u,
+      /runner: ubuntu-24\.04-arm\r?\n {12}expected_arch: arm64/u,
+      /runner: macos-15-intel\r?\n {12}expected_arch: x64/u,
+      /runner: macos-15\r?\n {12}expected_arch: arm64/u,
+      /runner: windows-2025\r?\n {12}expected_arch: x64/u,
+    ]) {
+      expect(verify).toMatch(pairing);
+    }
+    expect(verify).toContain('name: Verify runner architecture');
+    expect(verify).toContain('run: pnpm verify');
+    expect(verify).toContain(
+      'run: pnpm --filter kavrix --fail-if-no-match package:smoke',
+    );
+
+    expect(runtime.match(/^ {10}- label:/gmu) ?? []).toHaveLength(7);
+    for (const pairing of [
+      /runner: ubuntu-24\.04\r?\n {12}node: 24\.12\.0/u,
+      /runner: windows-2025\r?\n {12}node: 24\.12\.0/u,
+      /runner: macos-15\r?\n {12}node: 24\.12\.0/u,
+      /runner: ubuntu-24\.04\r?\n {12}node: 25\.1\.0/u,
+      /runner: windows-2025\r?\n {12}node: 25\.1\.0/u,
+      /runner: ubuntu-24\.04\r?\n {12}node: 26\.7\.0/u,
+      /runner: windows-2025\r?\n {12}node: 26\.7\.0/u,
+    ]) {
+      expect(runtime).toMatch(pairing);
+    }
+    expect(runtime).toContain('name: Verify the runtime under test');
+    expect(runtime).toContain('run: pnpm build');
+    expect(runtime).toContain('--filter @kavrix/crypto --filter @kavrix/local-store');
+    expect(runtime).toContain(
+      'run: pnpm --filter kavrix --fail-if-no-match package:smoke',
+    );
+    expect(ciWorkflow).not.toContain('Actions spending limit');
+  });
+
   it('preserves tag target checks while documenting the signer-policy STOP', () => {
     const validate = jobBlock(publishWorkflow, 'validate');
     expect(validate).toContain('git show-ref --verify --quiet');

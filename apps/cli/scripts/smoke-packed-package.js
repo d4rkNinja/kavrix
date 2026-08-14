@@ -261,8 +261,8 @@ try {
   ) {
     throw new Error('Packed CLI portable key-file creation failed.');
   }
-  for (const hidden of ['show', 'copy', 'device']) {
-    const unsupported = run(process.execPath, [executable, hidden]);
+  for (const hiddenArguments of [['backup', 'restore'], ['run'], ['tui']]) {
+    const unsupported = run(process.execPath, [executable, ...hiddenArguments]);
     if (
       unsupported.status !== 2 ||
       unsupported.stdout !== '' ||
@@ -491,6 +491,8 @@ function assertInstalledPublicCommandCatalog(shim) {
     'totp',
     'key',
     'init',
+    'connect',
+    'recover',
     'unlock',
     'lock',
     'status',
@@ -503,6 +505,8 @@ function assertInstalledPublicCommandCatalog(shim) {
     'reveal',
     'get',
     'sync',
+    'backup',
+    'device',
     'completion',
   ];
   const help = runCommandShim(shim, ['--help']);
@@ -545,11 +549,7 @@ async function assertInstalledInternalCommandsRemainUnavailable({
   cryptoChunkNames,
   productionChunkNames,
 }) {
-  const invocations = [
-    ['show', 'group.canary', 'credential.canary'],
-    ['copy', 'group.canary', 'credential.canary', 'field.canary'],
-    ['device', 'invite', 'list', '--vault', 'vault.canary'],
-  ];
+  const invocations = [['backup', 'restore'], ['run'], ['tui']];
   const expectedUsage =
     "Error [CLI_USAGE]: Invalid command usage. Run 'creds --help'.\n";
   const cleanEnvironment = cleanNodeWarningEnvironment({ CREDS_HOME: home });
@@ -1098,6 +1098,7 @@ function runNodeCli(cliPath, arguments_, options) {
 function run(command, arguments_, options = {}) {
   const result = spawnSync(command, arguments_, {
     ...options,
+    maxBuffer: options.maxBuffer ?? 8 * 1024 * 1024,
     encoding: 'utf8',
     shell: false,
     windowsHide: true,

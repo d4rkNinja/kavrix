@@ -1,4 +1,4 @@
-import type { Writable } from 'node:stream';
+import type { Readable, Writable } from 'node:stream';
 
 import { Command } from 'commander';
 import {
@@ -15,7 +15,7 @@ import {
 import { z } from 'zod';
 import type { VaultRootKey } from '@kavrix/crypto';
 import type { SqliteSyncLocalStore } from '@kavrix/local-store';
-import { lifecycleOperationIdSchema, type LifecycleOperationId } from '@kavrix/client';
+import type { LifecycleOperationId } from '@kavrix/client/cli-contracts';
 
 import {
   cliKeySlotListSchema,
@@ -86,6 +86,8 @@ export type CliCommandContext = Readonly<{
   initialization?: CliInitializationDependencies;
   productionStatus?: ProductionStatusCallback;
   environment?: Readonly<Record<string, string | undefined>>;
+  stdin: Readable;
+  stderr: Writable;
   stdout: Writable;
   stdoutIsTty: boolean;
 }>;
@@ -451,7 +453,7 @@ const keyCommand: CliCommandDescriptor = Object.freeze({
             rejectRotationStdinCollision(options);
             const operation: PortableKeyRotationOperation = {
               kind: 'resume',
-              operationId: parseRotationOperationId(arguments_[0]),
+              operationId: await parseRotationOperationId(arguments_[0]),
               replacementFile: {
                 path: requiredOption(
                   options,
@@ -590,6 +592,14 @@ const initializationCommand: CliCommandDescriptor = Object.freeze({
         ? startVaultInitialization(deps, secrets, startOptions)
         : startVaultInitialization(deps, secrets, startOptions, serverUrl),
     );
+    if (context.initialization === undefined && context.environment !== undefined) {
+      const { executeProductionSync } = await import('./production/sync.js');
+      await executeProductionSync({
+        environment: context.environment,
+        secrets,
+        backendPolicy: parseStatusBackendPolicy(options),
+      });
+    }
     context.stdout.write(renderInitializationReceipt(receipt));
   },
 });
@@ -699,7 +709,7 @@ const recoverCommand: CliCommandDescriptor = Object.freeze({
           options,
           context.environment ?? process.env,
         );
-        const operationId = parseRecoveryOperationId(arguments_[0]);
+        const operationId = await parseRecoveryOperationId(arguments_[0]);
         const source = parseRecoverySourceOptions(options, true);
         if (source.inviteFromStdin) {
           throw new CliUsageError(
@@ -749,7 +759,7 @@ const recoverCommand: CliCommandDescriptor = Object.freeze({
         }
         const { executeProductionRecoveryCancel } =
           await import('./production/recovery.js');
-        const operationId = parseRecoveryOperationId(arguments_[0]);
+        const operationId = await parseRecoveryOperationId(arguments_[0]);
         await executeProductionRecoveryCancel({
           environment: context.environment,
           secrets: secretInput(context, 'recover'),
@@ -881,37 +891,8 @@ const lockCommand: CliCommandDescriptor = Object.freeze({
 async function unwrapVaultRootKeyFromContext(
   unlocked: ProductionUnlockedContext,
 ): Promise<VaultRootKey> {
-  const { unlockDeviceKeySlot } = await import('@kavrix/crypto');
-  const { slotBinding } = await import('@kavrix/client');
-  const store = await unlocked.environment.openSyncStore(unlocked.profile);
-  const vaultRecord = await store.getVault(unlocked.profile.vaultId);
-  if (vaultRecord === null) {
-    throw new Error('Vault record not found');
-  }
-  const deviceSecret = await unlocked.backend.keychain.load(
-    unlocked.profile.deviceLocator,
-  );
-  if (deviceSecret === null) {
-    throw new Error('Device secret not found');
-  }
-  const slot = vaultRecord.keySlots.find(
-    (candidate) => candidate.id === unlocked.profile.deviceLocator.keySlotId,
-  );
-  if (slot?.type !== 'device-key') {
-    throw new Error('Device key slot not found');
-  }
-  if (slot.deviceId !== unlocked.profile.deviceId) {
-    throw new Error('Device key slot not found');
-  }
-  try {
-    return await unlockDeviceKeySlot(
-      slot,
-      deviceSecret,
-      slotBinding(vaultRecord, slot),
-    );
-  } finally {
-    deviceSecret.fill(0);
-  }
+  const { unwrapRememberedDeviceRootKey } = await import('./production/unlock.js');
+  return unwrapRememberedDeviceRootKey(unlocked);
 }
 
 /**
@@ -2313,19 +2294,22 @@ const showCommand: CliCommandDescriptor = Object.freeze({
       rawResult = await context.ports.show(groupQuery, credentialQuery);
     } else {
       const { executeProductionShow } = await import('./production/show.js');
+      const { projectCredentialShow } = await import('@kavrix/client/cli-contracts');
       await withUnlockedVault(
         context,
         'show',
         options,
         async (unlocked, store, rootKey) => {
-          rawResult = await executeProductionShow(
-            {
-              source: store,
-              vaultId: unlocked.profile.vaultId,
-              rootKey,
-            },
-            groupQuery,
-            credentialQuery,
+          rawResult = projectCredentialShow(
+            await executeProductionShow(
+              {
+                source: store,
+                vaultId: unlocked.profile.vaultId,
+                rootKey,
+              },
+              groupQuery,
+              credentialQuery,
+            ),
           );
         },
       );
@@ -2726,6 +2710,167 @@ const syncCommand: CliCommandDescriptor = Object.freeze({
   },
 });
 
+const backupCommand: CliCommandDescriptor = Object.freeze({
+  name: 'backup',
+  description: 'Create and verify authenticated encrypted vault archives.',
+  children: [
+    {
+      name: 'create',
+      description: 'Create one bounded encrypted archive without replacing a file.',
+      options: [
+        {
+          flags: '--file <path>',
+          description: 'New archive path; existing files and links are refused.',
+        },
+        vaultOption,
+        jsonOption,
+        secretBackendOption,
+        backendPassphraseStdinOption,
+      ],
+      execute: async (context, _arguments, options) => {
+        const { parseBackupCreateRequest, parseBackupCreateResult } =
+          await import('./contracts.js');
+        const request = parseBackupCreateRequest({
+          destination: requiredOption(options, 'file', 'backup destination'),
+          ...(options['vault'] === undefined
+            ? {}
+            : {
+                vaultId: parseInputString(options, 'vault', (value) =>
+                  vaultIdSchema.parse(value),
+                ),
+              }),
+        });
+        let raw: unknown;
+        if (context.ports?.createBackup !== undefined) {
+          raw = await context.ports.createBackup(request);
+        } else {
+          if (context.environment === undefined) {
+            throw new CliUnavailableError('backup create');
+          }
+          const { executeProductionBackupCreate } =
+            await import('./production/backups.js');
+          raw = await executeProductionBackupCreate({
+            environment: context.environment,
+            secrets: secretInput(context, 'backup create'),
+            backendPolicy: parseStatusBackendPolicy(options),
+            destination: request.destination,
+            ...(request.vaultId === undefined ? {} : { vaultId: request.vaultId }),
+          });
+        }
+        const { renderBackupCreate } = await import('./render.js');
+        context.stdout.write(
+          renderBackupCreate(
+            parseBackupCreateResult(raw),
+            optionBoolean(options, 'json'),
+          ),
+        );
+      },
+    },
+    {
+      name: 'verify',
+      description: 'Authenticate one complete archive without publishing it.',
+      options: [
+        {
+          flags: '--file <path>',
+          description: 'Existing archive path; it is opened read-only.',
+        },
+        vaultOption,
+        jsonOption,
+        secretBackendOption,
+        backendPassphraseStdinOption,
+      ],
+      execute: async (context, _arguments, options) => {
+        const { parseBackupVerifyRequest, parseBackupVerifyResult } =
+          await import('./contracts.js');
+        const request = parseBackupVerifyRequest({
+          source: requiredOption(options, 'file', 'backup archive'),
+          ...(options['vault'] === undefined
+            ? {}
+            : {
+                vaultId: parseInputString(options, 'vault', (value) =>
+                  vaultIdSchema.parse(value),
+                ),
+              }),
+        });
+        let raw: unknown;
+        if (context.ports?.verifyBackup !== undefined) {
+          raw = await context.ports.verifyBackup(request);
+        } else {
+          if (context.environment === undefined) {
+            throw new CliUnavailableError('backup verify');
+          }
+          const { executeProductionBackupVerify } =
+            await import('./production/backups.js');
+          raw = await executeProductionBackupVerify({
+            environment: context.environment,
+            secrets: secretInput(context, 'backup verify'),
+            backendPolicy: parseStatusBackendPolicy(options),
+            source: request.source,
+            ...(request.vaultId === undefined ? {} : { vaultId: request.vaultId }),
+          });
+        }
+        const { renderBackupVerify } = await import('./render.js');
+        context.stdout.write(
+          renderBackupVerify(
+            parseBackupVerifyResult(raw),
+            optionBoolean(options, 'json'),
+          ),
+        );
+      },
+    },
+    {
+      name: 'restore',
+      description: 'Restore one authenticated archive into an isolated target.',
+      options: [
+        {
+          flags: '--file <path>',
+          description: 'Existing archive path; it is opened read-only.',
+        },
+        vaultOption,
+        {
+          flags: '--slot <slot-id>',
+          description: 'Exact archived portable, passphrase, or recovery slot to use.',
+        },
+        jsonOption,
+        secretBackendOption,
+        backendPassphraseStdinOption,
+      ],
+      execute: async (context, _arguments, options) => {
+        const { parseBackupRestoreRequest, parseBackupRestoreResult } =
+          await import('./contracts.js');
+        const request = parseBackupRestoreRequest({
+          source: requiredOption(options, 'file', 'backup archive'),
+          ...(options['vault'] === undefined
+            ? {}
+            : {
+                vaultId: parseInputString(options, 'vault', (value) =>
+                  vaultIdSchema.parse(value),
+                ),
+              }),
+          ...(options['slot'] === undefined
+            ? {}
+            : {
+                slotId: parseInputString(options, 'slot', (value) =>
+                  keySlotIdSchema.parse(value),
+                ),
+              }),
+        });
+        if (context.ports?.restoreBackup === undefined) {
+          throw new CliUnavailableError('backup restore');
+        }
+        const raw = await context.ports.restoreBackup(request);
+        const { renderBackupRestore } = await import('./render.js');
+        context.stdout.write(
+          renderBackupRestore(
+            parseBackupRestoreResult(raw),
+            optionBoolean(options, 'json'),
+          ),
+        );
+      },
+    },
+  ],
+});
+
 export const CLI_COMMAND_CATALOG: readonly CliCommandDescriptor[] = Object.freeze([
   versionCommand,
   generationCommand,
@@ -2746,6 +2891,7 @@ export const CLI_COMMAND_CATALOG: readonly CliCommandDescriptor[] = Object.freez
   revealCommand,
   getCommand,
   syncCommand,
+  backupCommand,
   {
     name: 'device',
     description: 'Manage this device and zero-knowledge enrollment.',
@@ -3109,9 +3255,19 @@ export const PUBLIC_CLI_COMMAND_CATALOG: readonly CliCommandDescriptor[] =
     revealCommand,
     getCommand,
     syncCommand,
+    publicBackupCommand(),
     publicDeviceCommand(),
     completionCommand(() => PUBLIC_CLI_COMMAND_CATALOG),
   ]);
+
+function publicBackupCommand(): CliCommandDescriptor {
+  const children = backupCommand.children;
+  if (children === undefined) throw new Error('The backup catalog is incomplete');
+  return Object.freeze({
+    ...backupCommand,
+    children: Object.freeze(children.filter(({ name }) => name !== 'restore')),
+  });
+}
 
 function publicDeviceCommand(): CliCommandDescriptor {
   const device = CLI_COMMAND_CATALOG.find((descriptor) => descriptor.name === 'device');
@@ -3299,7 +3455,10 @@ function parseRecoverySourceOptions(
   };
 }
 
-function parseRecoveryOperationId(value: string | undefined): LifecycleOperationId {
+async function parseRecoveryOperationId(
+  value: string | undefined,
+): Promise<LifecycleOperationId> {
+  const { lifecycleOperationIdSchema } = await import('@kavrix/client/cli-contracts');
   const parsed = lifecycleOperationIdSchema.safeParse(
     requiredArgument(value, 'operation ID'),
   );
@@ -3351,7 +3510,10 @@ async function executeRecoveryStart(
   return parseRecoverResult(raw);
 }
 
-function parseRotationOperationId(value: string | undefined): LifecycleOperationId {
+async function parseRotationOperationId(
+  value: string | undefined,
+): Promise<LifecycleOperationId> {
+  const { lifecycleOperationIdSchema } = await import('@kavrix/client/cli-contracts');
   const parsed = lifecycleOperationIdSchema.safeParse(
     requiredArgument(value, 'operation ID'),
   );
@@ -4106,6 +4268,7 @@ async function withInitialization<Output>(
       environment: context.environment,
       secrets: secretInput(context, 'init'),
       backendPolicy,
+      terminal: { input: context.stdin, output: context.stderr },
       keyFilePassphraseFromStdin: optionBoolean(options, 'keyFilePassphraseStdin'),
       ...(serverUrl !== undefined ? { serverUrl } : {}),
     },

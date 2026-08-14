@@ -22,6 +22,7 @@ import {
   attachmentIdSchema,
   attachmentSecretStreamManifestSchema,
   auditEventIdSchema,
+  canonicalJson,
   backupVerificationSchema,
   contentHashForRecord,
   createBackupStagedEntryCommitment,
@@ -30,6 +31,7 @@ import {
   encryptedBackupEntrySchema,
   encryptedHistoryRecordSchema,
   historyIdSchema,
+  keySlotAuditPayloadSchema,
   keySlotIdSchema,
   persistedAttachmentChunkRecordSchema,
   persistedAttachmentHeaderRecordSchema,
@@ -464,68 +466,124 @@ describe('known-record restore verifier', () => {
     }
   });
 
-  it('rejects schema-valid opaque history and audit records as unsupported before crypto semantics', async () => {
+  it('opens documented v1 history and audit payloads and counts both semantic families', async () => {
     const material = await fixture();
     try {
-      const group = material.groups[0];
-      const item = group === undefined ? undefined : material.items.get(group.id)?.[0];
-      if (group === undefined || item === undefined) throw new Error('fixture');
-      const historyId = historyIdSchema.parse('history.restore.verifier');
-      const history = encryptedHistoryRecordSchema.parse({
-        id: historyId,
-        vaultId: material.vault.id,
-        groupId: group.id,
-        itemId: item.id,
-        schemaVersion: material.vault.schemaVersion,
-        encryptedPayload: {
-          ...item.encryptedPayload,
-          aad: associatedDataSchema.parse({
-            version: 1,
-            schemaVersion: material.vault.schemaVersion,
-            keyVersion: material.vault.currentKeyVersion,
-            vaultId: material.vault.id,
-            entityType: 'history',
-            entityId: historyId,
-            groupId: group.id,
-            parentId: item.id,
-            purpose: 'history-event',
+      const semantic = await semanticEntries(material);
+      const entries = [...material.entries, ...semantic];
+      const session = await material.makeFactory()(material.vault);
+      await expect(
+        session.verify(tracked(entries), summaryFor(entries, material.vault)),
+      ).resolves.toMatchObject({
+        verified: { histories: 1, audits: 1 },
+      });
+      session.close();
+    } finally {
+      material.dispose();
+    }
+  });
+
+  it('rejects semantic history/audit corruption and keeps future payload versions explicit', async () => {
+    const material = await fixture();
+    try {
+      const semantic = await semanticEntries(material);
+      const history = required(semantic[0]);
+      const audit = required(semantic[1]);
+
+      const corruptedHistoryBytes = Buffer.from(
+        history.record.encryptedPayload.ciphertext,
+        'base64url',
+      );
+      corruptedHistoryBytes[0] = (corruptedHistoryBytes[0] ?? 0) ^ 1;
+      const corruptedHistory = encryptedBackupEntrySchema.parse({
+        ...history,
+        record: {
+          ...history.record,
+          encryptedPayload: {
+            ...history.record.encryptedPayload,
+            ciphertext: corruptedHistoryBytes.toString('base64url'),
+          },
+          ciphertextHash: digestCiphertext({
+            ...history.record.encryptedPayload,
+            ciphertext: corruptedHistoryBytes.toString('base64url'),
           }),
         },
-        itemRecordRevision: item.recordRevision,
-        ciphertextHash: digest('history-ciphertext'),
-        createdAt: timestamp,
       });
-      const auditId = auditEventIdSchema.parse('audit.restore.verifier');
-      const audit = encryptedAuditRecordSchema.parse({
-        id: auditId,
-        vaultId: material.vault.id,
-        schemaVersion: material.vault.schemaVersion,
-        encryptedPayload: {
-          ...item.encryptedPayload,
-          aad: associatedDataSchema.parse({
-            version: 1,
-            schemaVersion: material.vault.schemaVersion,
-            keyVersion: material.vault.currentKeyVersion,
-            vaultId: material.vault.id,
-            entityType: 'audit-event',
-            entityId: auditId,
-            purpose: 'audit-event',
-          }),
+      const corrupted = [...material.entries, corruptedHistory, audit];
+      const invalidSession = await material.makeFactory()(material.vault);
+      await expect(
+        invalidSession.verify(
+          tracked(corrupted),
+          summaryFor(corrupted, material.vault),
+        ),
+      ).rejects.toEqual(safe('invalid'));
+      invalidSession.close();
+
+      const mismatchedHistory = await historyWithMismatchedPayload(material, history);
+      const semanticHistoryInvalidEntries = [
+        ...material.entries,
+        mismatchedHistory,
+        audit,
+      ];
+      const semanticHistoryInvalidSession = await material.makeFactory()(
+        material.vault,
+      );
+      await expect(
+        semanticHistoryInvalidSession.verify(
+          tracked(semanticHistoryInvalidEntries),
+          summaryFor(semanticHistoryInvalidEntries, material.vault),
+        ),
+      ).rejects.toEqual(safe('invalid'));
+      semanticHistoryInvalidSession.close();
+
+      const corruptedAuditBytes = Buffer.from(
+        audit.record.encryptedPayload.ciphertext,
+        'base64url',
+      );
+      corruptedAuditBytes[0] = (corruptedAuditBytes[0] ?? 0) ^ 1;
+      const corruptedAudit = encryptedBackupEntrySchema.parse({
+        ...audit,
+        record: {
+          ...audit.record,
+          encryptedPayload: {
+            ...audit.record.encryptedPayload,
+            ciphertext: corruptedAuditBytes.toString('base64url'),
+          },
         },
-        recordRevision: 1,
-        createdAt: timestamp,
       });
-      for (const unsupportedEntry of [
-        encryptedBackupEntrySchema.parse({ kind: 'history', record: history }),
-        encryptedBackupEntrySchema.parse({ kind: 'audit', record: audit }),
-      ]) {
-        const entries = [required(material.entries[0]), unsupportedEntry];
-        const source = tracked(entries);
+      const auditInvalidEntries = [...material.entries, history, corruptedAudit];
+      const auditInvalidSession = await material.makeFactory()(material.vault);
+      await expect(
+        auditInvalidSession.verify(
+          tracked(auditInvalidEntries),
+          summaryFor(auditInvalidEntries, material.vault),
+        ),
+      ).rejects.toEqual(safe('invalid'));
+      auditInvalidSession.close();
+
+      const mismatchedAudit = await auditWithMissingSlot(material, audit);
+      const semanticAuditInvalidEntries = [
+        ...material.entries,
+        history,
+        mismatchedAudit,
+      ];
+      const semanticAuditInvalidSession = await material.makeFactory()(material.vault);
+      await expect(
+        semanticAuditInvalidSession.verify(
+          tracked(semanticAuditInvalidEntries),
+          summaryFor(semanticAuditInvalidEntries, material.vault),
+        ),
+      ).rejects.toEqual(safe('invalid'));
+      semanticAuditInvalidSession.close();
+
+      const futureHistory = await futureVersionEntry(material, history, 'history');
+      const futureAudit = await futureVersionEntry(material, audit, 'audit');
+      for (const future of [futureHistory, futureAudit]) {
+        const entries = [...material.entries, future];
         const session = await material.makeFactory()(material.vault);
         await expect(
-          session.verify(source, summaryFor(entries, material.vault)),
+          session.verify(tracked(entries), summaryFor(entries, material.vault)),
         ).rejects.toEqual(safe('unsupported'));
-        expect(source.returnCalls).toBe(1);
         session.close();
       }
     } finally {
@@ -1203,6 +1261,255 @@ async function attachmentEntries(
   }
 }
 
+async function semanticEntries(
+  material: Awaited<ReturnType<typeof fixture>>,
+): Promise<
+  readonly [
+    Extract<EncryptedBackupEntry, { kind: 'history' }>,
+    Extract<EncryptedBackupEntry, { kind: 'audit' }>,
+  ]
+> {
+  const group = material.groups[0];
+  const item = group === undefined ? undefined : material.items.get(group.id)?.[0];
+  const itemPayload = material.itemPayloads[0];
+  const slot = material.vault.keySlots[0];
+  if (
+    group === undefined ||
+    item === undefined ||
+    itemPayload === undefined ||
+    slot === undefined
+  ) {
+    throw new Error('fixture');
+  }
+  const groupKey = await unwrapGroupKey(
+    group.wrappedGroupKey,
+    material.rootKey,
+    group.wrappedGroupKey.aad,
+  );
+  const itemKey = await unwrapItemKey(
+    item.wrappedItemKey,
+    groupKey,
+    item.wrappedItemKey.aad,
+  );
+  try {
+    const historyId = historyIdSchema.parse('history.restore.verifier.semantic');
+    const historyAad = associatedDataSchema.parse({
+      version: 1,
+      schemaVersion: material.vault.schemaVersion,
+      keyVersion: item.encryptedPayload.keyVersion,
+      vaultId: material.vault.id,
+      entityType: 'history',
+      entityId: historyId,
+      groupId: group.id,
+      parentId: item.id,
+      purpose: 'history-event',
+    });
+    const historyPlaintext = new TextEncoder().encode(JSON.stringify(itemPayload));
+    let historyEnvelope: Awaited<ReturnType<typeof encryptPayload>>;
+    try {
+      historyEnvelope = await encryptPayload(historyPlaintext, itemKey, historyAad);
+    } finally {
+      zeroize(historyPlaintext);
+    }
+    const history: Extract<EncryptedBackupEntry, { kind: 'history' }> = {
+      kind: 'history',
+      record: encryptedHistoryRecordSchema.parse({
+        id: historyId,
+        vaultId: material.vault.id,
+        groupId: group.id,
+        itemId: item.id,
+        schemaVersion: material.vault.schemaVersion,
+        encryptedPayload: historyEnvelope,
+        itemRecordRevision: item.recordRevision,
+        ciphertextHash: digestCiphertext(historyEnvelope),
+        createdAt: timestamp,
+      }),
+    };
+
+    const auditId = auditEventIdSchema.parse('audit.restore.verifier.semantic');
+    const auditPayload = keySlotAuditPayloadSchema.parse({
+      version: 1,
+      action: 'create',
+      slotId: slot.id,
+      slotType: slot.type,
+      resultingState: 'active',
+      keyVersion: slot.keyVersion,
+      actorDeviceId: 'device.restore.verifier',
+      occurredAt: timestamp,
+    });
+    const auditAad = associatedDataSchema.parse({
+      version: 1,
+      schemaVersion: material.vault.schemaVersion,
+      keyVersion: material.vault.currentKeyVersion,
+      vaultId: material.vault.id,
+      entityType: 'audit-event',
+      entityId: auditId,
+      purpose: 'audit-event',
+    });
+    const auditPlaintext = new TextEncoder().encode(canonicalJson(auditPayload));
+    let auditEnvelope: Awaited<ReturnType<typeof encryptPayload>>;
+    try {
+      auditEnvelope = await encryptPayload(auditPlaintext, material.rootKey, auditAad);
+    } finally {
+      zeroize(auditPlaintext);
+    }
+    const audit: Extract<EncryptedBackupEntry, { kind: 'audit' }> = {
+      kind: 'audit',
+      record: encryptedAuditRecordSchema.parse({
+        id: auditId,
+        vaultId: material.vault.id,
+        schemaVersion: material.vault.schemaVersion,
+        encryptedPayload: auditEnvelope,
+        recordRevision: material.vault.revision,
+        createdAt: timestamp,
+      }),
+    };
+    return [history, audit];
+  } finally {
+    zeroize(groupKey);
+    zeroize(itemKey);
+  }
+}
+
+async function futureVersionEntry(
+  material: Awaited<ReturnType<typeof fixture>>,
+  entry: Extract<EncryptedBackupEntry, { kind: 'history' | 'audit' }>,
+  family: 'history' | 'audit',
+): Promise<Extract<EncryptedBackupEntry, { kind: 'history' | 'audit' }>> {
+  if (entry.kind !== family) throw new Error('fixture');
+  if (family === 'history') {
+    const group = material.groups[0];
+    const item = group === undefined ? undefined : material.items.get(group.id)?.[0];
+    if (group === undefined || item === undefined) throw new Error('fixture');
+    const groupKey = await unwrapGroupKey(
+      group.wrappedGroupKey,
+      material.rootKey,
+      group.wrappedGroupKey.aad,
+    );
+    const itemKey = await unwrapItemKey(
+      item.wrappedItemKey,
+      groupKey,
+      item.wrappedItemKey.aad,
+    );
+    const plaintext = new TextEncoder().encode(
+      JSON.stringify({ version: 2, future: 'history' }),
+    );
+    try {
+      const encryptedPayload = await encryptPayload(
+        plaintext,
+        itemKey,
+        entry.record.encryptedPayload.aad,
+      );
+      return {
+        kind: 'history',
+        record: encryptedHistoryRecordSchema.parse({
+          ...entry.record,
+          encryptedPayload,
+          ciphertextHash: digestCiphertext(encryptedPayload),
+        }),
+      };
+    } finally {
+      zeroize(plaintext);
+      zeroize(groupKey);
+      zeroize(itemKey);
+    }
+  }
+
+  const plaintext = new TextEncoder().encode(JSON.stringify({ version: 2 }));
+  try {
+    const encryptedPayload = await encryptPayload(
+      plaintext,
+      material.rootKey,
+      entry.record.encryptedPayload.aad,
+    );
+    return {
+      kind: 'audit',
+      record: encryptedAuditRecordSchema.parse({ ...entry.record, encryptedPayload }),
+    };
+  } finally {
+    zeroize(plaintext);
+  }
+}
+
+async function historyWithMismatchedPayload(
+  material: Awaited<ReturnType<typeof fixture>>,
+  entry: Extract<EncryptedBackupEntry, { kind: 'history' }>,
+): Promise<Extract<EncryptedBackupEntry, { kind: 'history' }>> {
+  const group = material.groups[0];
+  const item = group === undefined ? undefined : material.items.get(group.id)?.[0];
+  const itemPayload = material.itemPayloads[0];
+  if (group === undefined || item === undefined || itemPayload === undefined) {
+    throw new Error('fixture');
+  }
+  const groupKey = await unwrapGroupKey(
+    group.wrappedGroupKey,
+    material.rootKey,
+    group.wrappedGroupKey.aad,
+  );
+  const itemKey = await unwrapItemKey(
+    item.wrappedItemKey,
+    groupKey,
+    item.wrappedItemKey.aad,
+  );
+  const plaintext = new TextEncoder().encode(
+    JSON.stringify({ ...itemPayload, revision: itemPayload.revision + 1 }),
+  );
+  try {
+    const encryptedPayload = await encryptPayload(
+      plaintext,
+      itemKey,
+      entry.record.encryptedPayload.aad,
+    );
+    return {
+      kind: 'history',
+      record: encryptedHistoryRecordSchema.parse({
+        ...entry.record,
+        encryptedPayload,
+        ciphertextHash: digestCiphertext(encryptedPayload),
+      }),
+    };
+  } finally {
+    zeroize(plaintext);
+    zeroize(groupKey);
+    zeroize(itemKey);
+  }
+}
+
+async function auditWithMissingSlot(
+  material: Awaited<ReturnType<typeof fixture>>,
+  entry: Extract<EncryptedBackupEntry, { kind: 'audit' }>,
+): Promise<Extract<EncryptedBackupEntry, { kind: 'audit' }>> {
+  const slot = material.vault.keySlots[0];
+  if (slot === undefined) throw new Error('fixture');
+  const payload = keySlotAuditPayloadSchema.parse({
+    version: 1,
+    action: 'create',
+    slotId: keySlotIdSchema.parse('slot.restore.verifier.missing'),
+    slotType: slot.type,
+    resultingState: 'active',
+    keyVersion: slot.keyVersion,
+    actorDeviceId: 'device.restore.verifier',
+    occurredAt: timestamp,
+  });
+  const plaintext = new TextEncoder().encode(canonicalJson(payload));
+  try {
+    const encryptedPayload = await encryptPayload(
+      plaintext,
+      material.rootKey,
+      entry.record.encryptedPayload.aad,
+    );
+    return {
+      kind: 'audit',
+      record: encryptedAuditRecordSchema.parse({
+        ...entry.record,
+        encryptedPayload,
+      }),
+    };
+  } finally {
+    zeroize(plaintext);
+  }
+}
+
 function safe(kind: 'invalid' | 'unsupported'): RestoreKnownRecordsVerificationError {
   return new RestoreKnownRecordsVerificationError(kind);
 }
@@ -1210,4 +1517,17 @@ function safe(kind: 'invalid' | 'unsupported'): RestoreKnownRecordsVerificationE
 function required<T>(value: T | undefined): T {
   if (value === undefined) throw new Error('Missing test fixture value');
   return value;
+}
+
+function digestCiphertext(
+  envelope: Extract<
+    EncryptedBackupEntry,
+    { kind: 'history' }
+  >['record']['encryptedPayload'],
+): ReturnType<typeof sha256DigestSchema.parse> {
+  return sha256DigestSchema.parse(
+    createHash('sha256')
+      .update(Buffer.from(envelope.ciphertext, 'base64url'))
+      .digest('base64url'),
+  );
 }
