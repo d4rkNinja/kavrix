@@ -131,6 +131,30 @@ credential store. Cross-platform CI must explicitly set
 upgrade requires reviewing the Rust `keyring` backend, every shipped native
 artifact, platform support, advisories, and the handling of byte buffers.
 
+### Opt-in native platform acceptance
+
+The repository-wide `pnpm platform:acceptance` command is the authoritative
+opt-in gate for real keychain, key-file, and clipboard behavior. It requires
+all four values below to be exactly `1` before it starts Vitest:
+
+```text
+KAVRIX_KEYCHAIN_INTEGRATION=1
+KAVRIX_KEY_FILE_INTEGRATION=1
+KAVRIX_CLIPBOARD_INTEGRATION=1
+KAVRIX_CLIPBOARD_EXCLUSIVE_SESSION=1
+```
+
+The gate runs the native keychain round trips, the generated protected-key-file
+permission/link checks, and the exclusive clipboard snapshot/copy/guarded-clear
+restore test. It invokes an explicit file list with bounded shell-free child
+execution and rejects skipped, pending, todo, failed, malformed, or incomplete
+reports. It is deliberately absent from ordinary `pnpm test`: the clipboard
+test temporarily replaces user clipboard content, and native stores require an
+OS account/session with a usable credential service. A missing native service,
+desktop clipboard, ACL capability, or Unix permission capability is a failed
+acceptance prerequisite, never evidence for a fallback or a passing platform
+claim.
+
 ### Embedded third-party material
 
 The passphrase generator embeds EFF Short Wordlist #1 (1,296 entries) from
