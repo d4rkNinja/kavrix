@@ -7,7 +7,7 @@ preferWorkspacePackages: true
 autoInstallPeers: false
 minimumReleaseAge: 10080
 minimumReleaseAgeExclude:
-  - nanoid@3.3.17
+  - nanoid@3.3.18
 trustPolicy: no-downgrade
 
 overrides:
@@ -21,7 +21,7 @@ overrides:
   '@typescript-eslint/typescript-estree': 8.65.0
   '@typescript-eslint/utils': 8.65.0
   '@typescript-eslint/visitor-keys': 8.65.0
-  nanoid: 3.3.17
+  nanoid: 3.3.18
   postcss: 8.5.25
   rolldown: 1.2.1
 

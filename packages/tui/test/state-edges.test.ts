@@ -486,6 +486,14 @@ describe('formatting edge behavior', () => {
 
     expect(sanitizeTerminalText('\u001bPprivate\u001b\\after')).toBe('after');
     expect(sanitizeTerminalText('\u001b[31')).toBe('');
+    expect(sanitizeTerminalText('\u009b2Jafter')).toBe('after');
+    expect(sanitizeTerminalText('\u009dC1-OSC-PAYLOAD\u009cafter')).toBe('after');
+    expect(sanitizeTerminalText('\u0090C1-DCS-PAYLOAD\u009cafter')).toBe('after');
+    expect(sanitizeTerminalText('\u0098C1-SOS-PAYLOAD\u009cafter')).toBe('after');
+    expect(sanitizeTerminalText('\u009eC1-PM-PAYLOAD\u009cafter')).toBe('after');
+    expect(sanitizeTerminalText('\u009fC1-APC-PAYLOAD\u009cafter')).toBe('after');
+    expect(sanitizeTerminalText('\u009dunterminated-C1-STRING')).toBe('');
+    expect(sanitizeTerminalText('a\u2028b\u2029c')).toBe('a�b�c');
     expect(sanitizeTerminalText(`a${String.fromCharCode(0x85)}b`)).toBe('ab');
   });
 });

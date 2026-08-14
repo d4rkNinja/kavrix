@@ -33,6 +33,7 @@ import {
   mongoApiCollectionOptions,
   mongoApiDocumentSchemas,
   mongoApiDeviceDocumentSchema,
+  mongoApiDeviceRevocationLockDocumentSchema,
   mongoApiCredentialClaimDocumentSchema,
   mongoApiEnrollmentDocumentSchema,
   mongoApiIndexes,
@@ -146,6 +147,7 @@ describe('Mongo API persistence contracts', () => {
       api_invites: mongoApiInviteDocumentSchema,
       api_enrollments: mongoApiEnrollmentDocumentSchema,
       api_rate_limits: mongoApiRateLimitDocumentSchema,
+      api_device_revocation_locks: mongoApiDeviceRevocationLockDocumentSchema,
       api_credential_claims: mongoApiCredentialClaimDocumentSchema,
     });
   });

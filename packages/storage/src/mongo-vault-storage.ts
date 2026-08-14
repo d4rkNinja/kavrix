@@ -11,6 +11,7 @@ import {
   attachmentIdSchema,
   auditEventIdSchema,
   changeRecordSchema,
+  encryptedAuditRecordSchema,
   groupIdSchema,
   historyIdSchema,
   itemIdSchema,
@@ -107,6 +108,7 @@ import {
   templateMigrationPublicationDocumentSchema,
   synchronizeVaultRecordRevision,
   toAttachmentDocument,
+  toAuditDocument,
   toChangeDocument,
   toGroupDocument,
   toItemDocument,
@@ -204,6 +206,37 @@ export class MongoVaultStorage implements VaultStoragePort {
       this.#processSyncMutation(mutation, session),
     );
     if (result.status === 'conflict') throw new SyncConflictError();
+  }
+
+  /** Commits a slot revision and its opaque encrypted audit in one transaction. */
+  async commitKeySlotMutation(
+    mutationInput: Extract<OpaqueMutation, { entityType: 'vault' }>,
+    auditInput: EncryptedAuditRecord,
+  ): Promise<void> {
+    const mutation = parseMutation(mutationInput);
+    if (mutation.entityType !== 'vault') throw new ValidationError();
+    const audit = parseSchema(encryptedAuditRecordSchema, auditInput, 'key-slot audit');
+    if (
+      audit.vaultId !== mutation.record.id ||
+      audit.recordRevision !== recordRevisionSchema.parse(mutation.record.revision) ||
+      audit.encryptedPayload.aad.vaultId !== mutation.record.id ||
+      audit.encryptedPayload.aad.keyVersion !== mutation.record.currentKeyVersion
+    ) {
+      throw new ValidationError();
+    }
+    await this.#withTransaction(async (session) => {
+      const result = await this.#processSyncMutation(mutation, session);
+      if (result.status === 'conflict') throw new SyncConflictError();
+      const auditId = entityDocumentId(audit.vaultId, audit.id);
+      const existingValue = await this.#audits().findOne({ _id: auditId }, { session });
+      if (existingValue !== null) {
+        if (hashCanonical(fromAuditDocument(existingValue)) !== hashCanonical(audit)) {
+          throw new SyncConflictError();
+        }
+        return;
+      }
+      await this.#audits().insertOne(toAuditDocument(audit), { session });
+    });
   }
 
   async pushSyncBatch(batchInput: SyncPushRequest): Promise<SyncPushResponse> {

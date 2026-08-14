@@ -57,6 +57,7 @@ import {
   publicInviteFromDocument,
   vaultBootstrapHash,
   type MongoApiDeviceDocument,
+  type MongoApiDeviceRevocationLockDocument,
   type MongoApiCredentialClaimDocument,
   type MongoApiEnrollmentDocument,
   type MongoApiInviteDocument,
@@ -747,34 +748,49 @@ export class MongoAuthorizationPort implements AuthorizationPort {
     vaultIdInput: VaultId,
     deviceIdInput: DeviceId,
     revokedAtInput: Timestamp,
-  ): Promise<boolean> {
+  ): Promise<'revoked' | 'not-found' | 'last-active-device'> {
     const vaultId = vaultIdSchema.parse(vaultIdInput);
     const deviceId = deviceRecordSchema.shape.id.parse(deviceIdInput);
     const revokedAt = timestampSchema.parse(revokedAtInput);
     return this.#withTransaction(async (session) => {
+      const fence = await this.#deviceRevocationLocks().updateOne(
+        { _id: vaultId },
+        {
+          $inc: { version: 1 },
+          $setOnInsert: { _id: vaultId, version: 0 },
+        },
+        { session, upsert: true },
+      );
+      if (fence.modifiedCount !== 1 && fence.upsertedCount !== 1) {
+        throw new Error('Device revocation fence did not advance');
+      }
       const value = await this.#devices().findOne(
         { _id: deviceId, vaultId },
         { session },
       );
-      if (value === null) return false;
+      if (value === null) return 'not-found';
       const device = mongoApiDeviceDocumentSchema.parse(value).record;
-      if (device.revokedAt === undefined) {
-        const revoked = deviceRecordSchema.parse({ ...device, revokedAt });
-        const update = await this.#devices().replaceOne(
-          { _id: deviceId, vaultId, 'record.revokedAt': { $exists: false } },
-          deviceDocument(revoked),
-          { session },
-        );
-        if (update.modifiedCount !== 1) {
-          throw new Error('Device revocation lost atomic ownership');
-        }
+      if (device.revokedAt !== undefined) return 'revoked';
+      const activeCount = await this.#devices().countDocuments(
+        { vaultId, 'record.revokedAt': { $exists: false } },
+        { session },
+      );
+      if (activeCount <= 1) return 'last-active-device';
+      const revoked = deviceRecordSchema.parse({ ...device, revokedAt });
+      const update = await this.#devices().replaceOne(
+        { _id: deviceId, vaultId, 'record.revokedAt': { $exists: false } },
+        deviceDocument(revoked),
+        { session },
+      );
+      if (update.modifiedCount !== 1) {
+        throw new Error('Device revocation lost atomic ownership');
       }
       await this.#sessions().updateMany(
         { vaultId, deviceId, revokedAt: { $exists: false } },
         { $set: { revokedAt } },
         { session },
       );
-      return true;
+      return 'revoked';
     });
   }
 
@@ -848,6 +864,10 @@ export class MongoAuthorizationPort implements AuthorizationPort {
 
   #credentialClaims(): Collection<MongoApiCredentialClaimDocument> {
     return this.#database.collection(mongoApiCollectionNames.credentialClaims);
+  }
+
+  #deviceRevocationLocks(): Collection<MongoApiDeviceRevocationLockDocument> {
+    return this.#database.collection(mongoApiCollectionNames.deviceRevocationLocks);
   }
 }
 

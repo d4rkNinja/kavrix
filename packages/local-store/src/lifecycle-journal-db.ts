@@ -18,6 +18,7 @@ const MAX_CONFIGURED_DATABASE_BYTES = 512 * 1024 * 1024;
 
 export const INITIALIZATION_APPLICATION_ID = 0x4b4a4931;
 export const JOIN_APPLICATION_ID = 0x4b4a4a31;
+export const PORTABLE_KEY_ROTATION_APPLICATION_ID = 0x4b4a5231;
 export const VAULT_PROFILE_APPLICATION_ID = 0x4b565031;
 export const INIT_SCHEMA = {
   lifecycle_metadata: `CREATE TABLE lifecycle_metadata (
@@ -56,6 +57,18 @@ export const JOIN_SCHEMA = {
           (state != 'committed')),
     CHECK((phase = 'committing' AND committed_json IS NOT NULL) OR
           (phase != 'committing'))
+  ) STRICT, WITHOUT ROWID`,
+} as const;
+export const PORTABLE_KEY_ROTATION_SCHEMA = {
+  lifecycle_metadata: `CREATE TABLE lifecycle_metadata (
+    key TEXT PRIMARY KEY NOT NULL,
+    value TEXT NOT NULL
+  ) STRICT, WITHOUT ROWID`,
+  portable_key_rotation_journal: `CREATE TABLE portable_key_rotation_journal (
+    operation_id TEXT PRIMARY KEY NOT NULL,
+    state TEXT NOT NULL CHECK(state IN ('prepared','pending-published','active-published','completed')),
+    record_json TEXT NOT NULL,
+    serialized_bytes INTEGER NOT NULL CHECK(serialized_bytes >= 2)
   ) STRICT, WITHOUT ROWID`,
 } as const;
 

@@ -88,6 +88,13 @@ export function createDefaultMutationDependencies(): VaultMutationServiceDepende
   };
 }
 
+function defaultFieldLabel(fieldKey: string): string {
+  return fieldKey
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/[-_]+/g, ' ')
+    .replace(/\b\w/g, (character) => character.toUpperCase());
+}
+
 export async function executeProductionCreateGroup(
   options: ProductionMutationOptions,
   request: CliCreateGroupRequest,
@@ -208,7 +215,7 @@ export async function executeProductionAddField(
       id: fieldId,
       stableKey: request.fieldKey,
       type,
-      label: request.label ?? request.fieldKey,
+      label: request.label ?? defaultFieldLabel(request.fieldKey),
       required: false,
       sensitive,
       repeatable: false,
@@ -297,9 +304,13 @@ export async function executeProductionSetField(
     const stringValue = new TextDecoder().decode(ownedValue);
     const timestamp = new Date().toISOString();
 
-    let fieldDef =
-      found.item.itemFields.find((f) => f.stableKey === request.fieldKey) ??
-      found.template.fields.find((f) => f.stableKey === request.fieldKey);
+    const itemField = found.item.itemFields.find(
+      (f) => f.stableKey === request.fieldKey,
+    );
+    const templateField = found.template.fields.find(
+      (f) => f.stableKey === request.fieldKey,
+    );
+    let fieldDef = itemField ?? templateField;
 
     let updatedItemFields = found.item.itemFields;
 
@@ -309,7 +320,7 @@ export async function executeProductionSetField(
         id: fieldId,
         stableKey: request.fieldKey,
         type: 'secret',
-        label: request.fieldKey,
+        label: defaultFieldLabel(request.fieldKey),
         required: false,
         sensitive: true,
         repeatable: false,
@@ -327,7 +338,11 @@ export async function executeProductionSetField(
       updatedItemFields = [...updatedItemFields, fieldDef];
     }
 
-    const existingValues = found.item.itemValues.filter(
+    const isTemplateField = itemField === undefined && templateField !== undefined;
+    const existingTemplateValues = found.item.templateValues.filter(
+      (v) => v.stableKey !== request.fieldKey,
+    );
+    const existingItemValues = found.item.itemValues.filter(
       (v) => v.stableKey !== request.fieldKey,
     );
 
@@ -359,7 +374,12 @@ export async function executeProductionSetField(
     await service.updateItem(found.group.id, {
       ...found.item,
       itemFields: updatedItemFields,
-      itemValues: [...existingValues, newStoredValue],
+      templateValues: isTemplateField
+        ? [...existingTemplateValues, newStoredValue]
+        : found.item.templateValues,
+      itemValues: isTemplateField
+        ? found.item.itemValues
+        : [...existingItemValues, newStoredValue],
     });
 
     return {
@@ -502,21 +522,28 @@ export async function executeProductionArchiveField(
     throw new Error('Credential item is not active or found');
   }
 
+  const itemFieldIndex = found.item.itemFields.findIndex(
+    (f) => f.stableKey === request.fieldKey,
+  );
+  const templateField = found.template.fields.find(
+    (f) => f.stableKey === request.fieldKey,
+  );
   const fieldDef =
-    found.item.itemFields.find((f) => f.stableKey === request.fieldKey) ??
-    found.template.fields.find((f) => f.stableKey === request.fieldKey);
+    itemFieldIndex >= 0 ? found.item.itemFields[itemFieldIndex] : templateField;
   if (fieldDef === undefined) {
     throw new Error(`Field "${request.fieldKey}" not found`);
   }
 
-  const activeValueIndex = found.item.itemValues.findIndex(
+  const activeValues =
+    itemFieldIndex >= 0 ? found.item.itemValues : found.item.templateValues;
+  const activeValueIndex = activeValues.findIndex(
     (v) => v.stableKey === request.fieldKey,
   );
   if (activeValueIndex < 0) {
     throw new Error(`Active value for field "${request.fieldKey}" not found`);
   }
 
-  const activeValue = found.item.itemValues[activeValueIndex];
+  const activeValue = activeValues[activeValueIndex];
   if (activeValue === undefined) {
     throw new Error(`Active value for field "${request.fieldKey}" not found`);
   }
@@ -533,9 +560,18 @@ export async function executeProductionArchiveField(
     reason: 'user-archived' as const,
   };
 
-  const updatedValues = found.item.itemValues.filter(
-    (_, index) => index !== activeValueIndex,
-  );
+  const updatedItemFields =
+    itemFieldIndex >= 0
+      ? found.item.itemFields.filter((_, index) => index !== itemFieldIndex)
+      : found.item.itemFields;
+  const updatedTemplateValues =
+    itemFieldIndex < 0
+      ? found.item.templateValues.filter((_, index) => index !== activeValueIndex)
+      : found.item.templateValues;
+  const updatedItemValues =
+    itemFieldIndex >= 0
+      ? found.item.itemValues.filter((_, index) => index !== activeValueIndex)
+      : found.item.itemValues;
   const updatedArchived = [...found.item.archivedFieldValues, archivedEntry];
 
   const service = new VaultMutationService(
@@ -548,7 +584,9 @@ export async function executeProductionArchiveField(
 
   await service.updateItem(found.group.id, {
     ...found.item,
-    itemValues: updatedValues,
+    templateValues: updatedTemplateValues,
+    itemFields: updatedItemFields,
+    itemValues: updatedItemValues,
     archivedFieldValues: updatedArchived,
   });
 }
@@ -593,10 +631,38 @@ export async function executeProductionRestoreField(
   const updatedArchived = found.item.archivedFieldValues.filter(
     (_, index) => index !== archivedIndex,
   );
-  const updatedValues = [
-    ...found.item.itemValues.filter((v) => v.stableKey !== request.fieldKey),
-    restoredValue,
-  ];
+  const currentItemField = found.item.itemFields.find(
+    (field) =>
+      field.id === archivedEntry.definition.id &&
+      field.stableKey === archivedEntry.definition.stableKey,
+  );
+  const isTemplateField = found.template.fields.some(
+    (field) => field.stableKey === archivedEntry.definition.stableKey,
+  );
+  if (
+    currentItemField !== undefined ||
+    (isTemplateField &&
+      found.item.templateValues.some((v) => v.stableKey === request.fieldKey)) ||
+    (!isTemplateField &&
+      found.item.itemValues.some((v) => v.stableKey === request.fieldKey))
+  ) {
+    throw new Error(`Field "${request.fieldKey}" already exists`);
+  }
+  const updatedTemplateValues = isTemplateField
+    ? [
+        ...found.item.templateValues.filter((v) => v.stableKey !== request.fieldKey),
+        restoredValue,
+      ]
+    : found.item.templateValues;
+  const updatedItemFields = isTemplateField
+    ? found.item.itemFields
+    : [...found.item.itemFields, archivedEntry.definition];
+  const updatedItemValues = isTemplateField
+    ? found.item.itemValues
+    : [
+        ...found.item.itemValues.filter((v) => v.stableKey !== request.fieldKey),
+        restoredValue,
+      ];
 
   const service = new VaultMutationService(
     options.source,
@@ -608,7 +674,9 @@ export async function executeProductionRestoreField(
 
   await service.updateItem(found.group.id, {
     ...found.item,
-    itemValues: updatedValues,
+    templateValues: updatedTemplateValues,
+    itemFields: updatedItemFields,
+    itemValues: updatedItemValues,
     archivedFieldValues: updatedArchived,
   });
 }

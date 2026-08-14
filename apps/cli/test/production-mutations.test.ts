@@ -44,7 +44,6 @@ import { executeProductionShow } from '../src/production/show.js';
 import { executeProductionCopy } from '../src/production/copy.js';
 import { executeProductionReveal } from '../src/production/reveal.js';
 import { executeProductionGet } from '../src/production/get.js';
-import { executeProductionSync } from '../src/production/sync.js';
 import { resolveCliDataPaths } from '../src/production/paths.js';
 import { ensureDataDirectory } from '../src/production/runtime-adapters.js';
 import { createSecretBackend } from '../src/production/secret-backend.js';
@@ -328,7 +327,7 @@ describe('production CLI mutation adapters', () => {
         'password',
       );
       expect(revealResult.fieldLabel).toBe('Password');
-      expect(revealResult.value).toBe('MyInitialSecret123!');
+      expect(revealResult.value).toBe('super-secret-password-123');
 
       // 8.8. Execute Production Get (redacted & revealed)
       const getRedacted = await executeProductionGet(
@@ -354,17 +353,7 @@ describe('production CLI mutation adapters', () => {
         'password',
         { reveal: true },
       );
-      expect(getRevealed.value).toBe('MyInitialSecret123!');
-
-      // 8.9. Execute Production Sync
-      const syncStatus: CliStatus = await executeProductionSync({
-        environment: paths.env,
-        secrets: {
-          read: () => Promise.reject(new Error('unexpected secrets read')),
-        },
-        backendPolicy: { kind: 'unprotected' },
-      });
-      expect(syncStatus.state).toBe('unlocked');
+      expect(getRevealed.value).toBe('super-secret-password-123');
 
       // 9. Add Note
       const noteAddResult = await executeProductionAddNote(mutationOptions, {

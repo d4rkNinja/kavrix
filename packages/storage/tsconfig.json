@@ -4,7 +4,13 @@
     "noEmit": true,
     "ignoreDeprecations": "6.0"
   },
-  "include": ["src/**/*.ts", "test/**/*.ts", "integration/**/*.ts", "*.ts"],
+  "include": [
+    "src/**/*.ts",
+    "test/**/*.ts",
+    "integration/**/*.ts",
+    "scripts/**/*.ts",
+    "*.ts"
+  ],
   "references": [
     { "path": "../client/tsconfig.build.json" },
     { "path": "../crypto/tsconfig.build.json" },
