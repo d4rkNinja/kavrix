@@ -14,6 +14,7 @@ import {
   attachmentStreamFinalizeInputSchema,
   attachmentStreamStartInputSchema,
   associatedDataSchema,
+  encryptedAuditRecordSchema,
   changeRecordSchema,
   controlListPageOptionsSchema,
   contentHashForRecord,
@@ -25,6 +26,7 @@ import {
   inviteIdSchema,
   keySlotIdSchema,
   publicInviteRecordSchema,
+  recordRevisionSchema,
   sha256DigestSchema,
   syncPushResponseSchema,
   templateMigrationPublicationResponseSchema,
@@ -45,6 +47,7 @@ import {
   type DeviceId,
   type DeviceRecord,
   type EncryptedAttachmentRecord,
+  type EncryptedAuditRecord,
   type EncryptedGroupRecord,
   type EncryptedItemRecord,
   type InviteId,
@@ -385,10 +388,19 @@ export class MemoryAuthorization implements AuthorizationPort {
     vault: VaultId,
     targetDeviceId: DeviceId,
     revokedAt: Timestamp,
-  ): Promise<boolean> {
+  ): Promise<'revoked' | 'not-found' | 'last-active-device'> {
     const device = this.devices.get(targetDeviceId);
     if (device?.vaultId !== vault) {
-      return Promise.resolve(false);
+      return Promise.resolve('not-found');
+    }
+    if (device.revokedAt !== undefined) {
+      return Promise.resolve('revoked');
+    }
+    const activeCount = [...this.devices.values()].filter(
+      (candidate) => candidate.vaultId === vault && candidate.revokedAt === undefined,
+    ).length;
+    if (activeCount <= 1) {
+      return Promise.resolve('last-active-device');
     }
     this.devices.set(
       targetDeviceId,
@@ -399,7 +411,7 @@ export class MemoryAuthorization implements AuthorizationPort {
         this.sessions.delete(hash);
       }
     }
-    return Promise.resolve(true);
+    return Promise.resolve('revoked');
   }
 
   public seedSession(
@@ -450,6 +462,7 @@ export class MemoryStorage implements ApiStoragePort {
   readonly items = new Map<string, EncryptedItemRecord>();
   readonly attachmentHeaders = new Map<string, PersistedAttachmentHeaderRecord>();
   readonly attachmentChunks = new Map<string, PersistedAttachmentChunkRecord>();
+  readonly audits = new Map<string, EncryptedAuditRecord>();
   readonly attachmentStaging = new Map<
     string,
     {
@@ -629,6 +642,28 @@ export class MemoryStorage implements ApiStoragePort {
     }
     this.vaults.set(mutation.record.id, structuredClone(mutation.record));
     return Promise.resolve();
+  }
+
+  public async commitKeySlotMutation(
+    mutation: Extract<OpaqueMutation, { entityType: 'vault' }>,
+    auditInput: EncryptedAuditRecord,
+  ): Promise<void> {
+    const audit = encryptedAuditRecordSchema.parse(auditInput);
+    if (
+      audit.vaultId !== mutation.record.id ||
+      audit.recordRevision !== recordRevisionSchema.parse(mutation.record.revision) ||
+      audit.encryptedPayload.aad.vaultId !== mutation.record.id ||
+      audit.encryptedPayload.aad.keyVersion !== mutation.record.currentKeyVersion
+    ) {
+      throw new ValidationError();
+    }
+    await this.commit(mutation);
+    const key = `${audit.vaultId}:${audit.id}`;
+    const existing = this.audits.get(key);
+    if (existing !== undefined && JSON.stringify(existing) !== JSON.stringify(audit)) {
+      throw new ValidationError();
+    }
+    this.audits.set(key, structuredClone(audit));
   }
 
   public pullSyncPage(cursor: SyncCursor, limit: number): Promise<SyncPullResponse> {

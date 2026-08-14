@@ -1171,11 +1171,6 @@ function assertReceiptPublication(
   publication: Publication,
   summary: BackupVerification,
 ): void {
-  if (publication.histories.length !== 0 || publication.audits.length !== 0) {
-    throw new ValidationError(
-      'The restore verification receipt does not match publication.',
-    );
-  }
   const counts = {
     vaults: 0,
     groups: 0,

@@ -98,6 +98,10 @@ describe('production environment ownership', () => {
         acquisitions.push('join');
         return Promise.resolve({ close: () => Promise.resolve() } as never);
       },
+      openRotationJournal: () => {
+        acquisitions.push('rotation');
+        return Promise.resolve({ close: () => Promise.resolve() } as never);
+      },
       createClipboard: () => {
         acquisitions.push('clipboard');
         return { dispose: () => Promise.resolve() } as never;
@@ -116,6 +120,7 @@ describe('production environment ownership', () => {
       'profiles',
       'initialization',
       'join',
+      'rotation',
       'clipboard',
     ]);
     await environment.close();
@@ -182,6 +187,7 @@ describe('production environment ownership', () => {
     expect(events).toEqual([
       'sync',
       'clipboard',
+      'rotation',
       'join',
       'initialization',
       'profiles',
@@ -189,7 +195,7 @@ describe('production environment ownership', () => {
       'lease',
     ]);
     await expect(environment.close()).rejects.toBeInstanceOf(AggregateError);
-    expect(events).toHaveLength(7);
+    expect(events).toHaveLength(8);
   });
 });
 
@@ -263,6 +269,13 @@ function lifecycleDependencies(
       Promise.resolve({
         close: () => {
           events.push('join');
+          return Promise.resolve();
+        },
+      } as never),
+    openRotationJournal: () =>
+      Promise.resolve({
+        close: () => {
+          events.push('rotation');
           return Promise.resolve();
         },
       } as never),

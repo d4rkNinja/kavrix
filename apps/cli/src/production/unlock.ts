@@ -1,13 +1,15 @@
-import type { VaultProfile } from '@kavrix/client';
+import { slotBinding, type VaultProfile } from '@kavrix/client';
+import { unlockDeviceKeySlot, zeroize, type VaultRootKey } from '@kavrix/crypto';
+import { deviceUnlockSecretSchema } from '@kavrix/schemas';
 import { keySlotIdSchema } from '@kavrix/schemas';
 import { z } from 'zod';
 
 import type { CliUseCasePorts } from '../contracts.js';
 import type { SecretInputPort } from '../secret-input.js';
 import {
-  openProductionEnvironment,
+  openProductionCommandEnvironment,
   resolveActiveProfile,
-  type ProductionEnvironment,
+  type ProductionCommandEnvironment,
 } from './environment.js';
 import { resolveCliDataPaths } from './paths.js';
 import { createProductionPorts } from './ports.js';
@@ -54,12 +56,42 @@ export interface ProductionUnlockedRequest {
 export interface ProductionUnlockedContext {
   readonly profile: VaultProfile;
   readonly ports: CliUseCasePorts;
-  readonly environment: ProductionEnvironment;
+  readonly environment: ProductionCommandEnvironment;
   /**
    * The protected secret backend backing this invocation. It is owned by the
    * environment and closed with it; callers must never close it themselves.
    */
   readonly backend: SecretBackend;
+}
+
+/**
+ * Reopens the remembered device slot inside an already unlocked invocation.
+ * The returned root key is caller-owned and must be zeroized immediately after
+ * the bounded operation that needs it completes.
+ */
+export async function unwrapRememberedDeviceRootKey(
+  unlocked: ProductionUnlockedContext,
+): Promise<VaultRootKey> {
+  const store = await unlocked.environment.openSyncStore(unlocked.profile);
+  const vault = await store.getVault(unlocked.profile.vaultId);
+  if (vault === null) throw new Error('Vault record not found');
+  const slot = vault.keySlots.find(
+    (candidate) => candidate.id === unlocked.profile.deviceLocator.keySlotId,
+  );
+  if (slot?.type !== 'device-key' || slot.deviceId !== unlocked.profile.deviceId) {
+    throw new Error('Device key slot not found');
+  }
+  const secret = await unlocked.backend.keychain.load(unlocked.profile.deviceLocator);
+  if (secret === null) throw new Error('Device secret not found');
+  try {
+    return await unlockDeviceKeySlot(
+      slot,
+      deviceUnlockSecretSchema.parse(secret),
+      slotBinding(vault, slot),
+    );
+  } finally {
+    zeroize(secret);
+  }
 }
 
 /**
@@ -83,9 +115,9 @@ export async function runProductionUnlocked<Output>(
     request.backendPolicy,
   );
 
-  let environment: ProductionEnvironment | undefined;
+  let environment: ProductionCommandEnvironment | undefined;
   try {
-    environment = await openProductionEnvironment(paths, backend);
+    environment = await openProductionCommandEnvironment(paths, backend);
   } catch (openFailure) {
     await backend.close();
     throw openFailure;
@@ -150,9 +182,9 @@ export async function runProductionLock(
     request.backendPolicy,
   );
 
-  let environment: ProductionEnvironment | undefined;
+  let environment: ProductionCommandEnvironment | undefined;
   try {
-    environment = await openProductionEnvironment(paths, backend);
+    environment = await openProductionCommandEnvironment(paths, backend);
     await environment.clipboard.lock();
   } finally {
     if (environment !== undefined) {
