@@ -46,6 +46,7 @@ describe('Mongo API service lifecycle', () => {
         port: 3_000,
       },
       fixture.runtime,
+      { schemaMode: 'install' },
     );
 
     expect(fixture.installedNames).toEqual([
@@ -85,6 +86,7 @@ describe('Mongo API service lifecycle', () => {
             port: 3_000,
           },
           fixture.runtime,
+          { schemaMode: 'install' },
         ),
       ).rejects.toThrow();
 
