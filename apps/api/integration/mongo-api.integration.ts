@@ -18,6 +18,7 @@ import {
   initializeMongoApiPersistence,
   MongoAuthorizationPort,
 } from '../src/mongo-persistence.js';
+import { migrateMongoApiDatabase } from '../src/mongo-operations.js';
 import { MongoRateLimitPort } from '../src/mongo-rate-limit.js';
 import { createMongoApiServer } from '../src/server.js';
 import { NodeTokenPort } from '../src/token.js';
@@ -491,6 +492,7 @@ describeMongo('Mongo API adapters against a transaction-capable replica set', ()
 
   it('composes and closes a Mongo-backed Fastify server without TLS secrets', async () => {
     const composedDatabase = `${databaseName}_server`;
+    await migrateMongoApiDatabase(client.db(composedDatabase));
     const server = await createMongoApiServer({
       mongodbUri: uri,
       databaseName: composedDatabase,

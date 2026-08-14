@@ -7,9 +7,9 @@ import { z } from 'zod';
 import type { CliUseCasePorts } from '../contracts.js';
 import type { SecretInputPort } from '../secret-input.js';
 import {
-  openProductionEnvironment,
+  openProductionCommandEnvironment,
   resolveActiveProfile,
-  type ProductionEnvironment,
+  type ProductionCommandEnvironment,
 } from './environment.js';
 import { resolveCliDataPaths } from './paths.js';
 import { createProductionPorts } from './ports.js';
@@ -56,7 +56,7 @@ export interface ProductionUnlockedRequest {
 export interface ProductionUnlockedContext {
   readonly profile: VaultProfile;
   readonly ports: CliUseCasePorts;
-  readonly environment: ProductionEnvironment;
+  readonly environment: ProductionCommandEnvironment;
   /**
    * The protected secret backend backing this invocation. It is owned by the
    * environment and closed with it; callers must never close it themselves.
@@ -115,9 +115,9 @@ export async function runProductionUnlocked<Output>(
     request.backendPolicy,
   );
 
-  let environment: ProductionEnvironment | undefined;
+  let environment: ProductionCommandEnvironment | undefined;
   try {
-    environment = await openProductionEnvironment(paths, backend);
+    environment = await openProductionCommandEnvironment(paths, backend);
   } catch (openFailure) {
     await backend.close();
     throw openFailure;
@@ -182,9 +182,9 @@ export async function runProductionLock(
     request.backendPolicy,
   );
 
-  let environment: ProductionEnvironment | undefined;
+  let environment: ProductionCommandEnvironment | undefined;
   try {
-    environment = await openProductionEnvironment(paths, backend);
+    environment = await openProductionCommandEnvironment(paths, backend);
     await environment.clipboard.lock();
   } finally {
     if (environment !== undefined) {

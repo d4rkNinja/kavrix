@@ -5,7 +5,7 @@ import {
   type CredentialCopyOptions,
   type CredentialCopyReceipt,
   type CredentialShowProjection,
-} from '@kavrix/client';
+} from '@kavrix/client/cli-contracts';
 import {
   apiBearerTokenSchema,
   deviceListPageResponseSchema,
