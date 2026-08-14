@@ -35,7 +35,7 @@ Interfaces:
 
 - Produces readinessResponseSchema, ReadinessResponse, and an injected readiness callback of type () => Promise<boolean>.
 
-- [ ] Step 1: Write failing schema and route tests.
+- [x] Step 1: Write failing schema and route tests.
 
 Add tests that accept exactly ready and not_ready, reject an extra detail field, return 200 with {status: ready} when the callback resolves true, return 503 with {status: not_ready} when it resolves false, hide a rejected callback error, and require HTTPS for /ready in production.
 
@@ -46,7 +46,7 @@ expect(response.json()).toEqual({ status: 'not_ready' });
 expect(response.body).not.toContain('readiness plaintext-canary');
 ```
 
-- [ ] Step 2: Run the focused tests and observe the failure.
+- [x] Step 2: Run the focused tests and observe the failure.
 
 Run:
 
@@ -56,7 +56,7 @@ node_modules/.bin/vitest.CMD run packages/schemas/test/api.test.ts apps/api/test
 
 Expected: the new schema and route assertions fail because the readiness contract is absent.
 
-- [ ] Step 3: Implement the minimal shared schema and route.
+- [x] Step 3: Implement the minimal shared schema and route.
 
 Define the strict Zod schema:
 
@@ -69,7 +69,7 @@ export type ReadinessResponse = z.infer<typeof readinessResponseSchema>;
 
 Add readiness to RouteContext and BuildApiOptions, defaulting to an async true callback for in-memory compositions. Register /ready in health.ts. Catch dependency errors without logging them and send the strict 503 response.
 
-- [ ] Step 4: Run focused tests and formatting.
+- [x] Step 4: Run focused tests and formatting.
 
 Run:
 
@@ -94,7 +94,7 @@ Interfaces:
 
 - Produces MONGO_SCHEMA_VERSION, MONGO_SCHEMA_STATE_COLLECTION, migrateMongoApiDatabase(database, now?), assertMongoApiDatabaseCompatibility(database), and MongoApiServerOptions.
 
-- [ ] Step 1: Write state and server-mode tests.
+- [x] Step 1: Write state and server-mode tests.
 
 Test that version 1 and collection name _kavrix_schema_state are exact; valid state passes; missing, malformed, and future state fail with generic Mongo schema compatibility check failed; and the existing server fixture can still explicitly exercise DDL with schemaMode install. Add a test that production start uses validation and does not install contracts.
 
@@ -107,13 +107,13 @@ await expect(assertMongoApiDatabaseCompatibility(databaseWithState(2))).rejects.
 );
 ```
 
-- [ ] Step 2: Implement the operational state and migration composition.
+- [x] Step 2: Implement the operational state and migration composition.
 
 Use a strict state schema with _id=kavrix, schemaVersion literal 1, migrationId literal baseline-contracts-v1, and an offset ISO timestamp. Add a MongoSchemaCompatibilityError whose only message is Mongo schema compatibility check failed. migrateMongoApiDatabase must install both existing storage/API contract families, scan both with the existing redacted compatibility preflight, create or collMod the state collection with a strict validator, and upsert one state document. A future state version fails before mutation; no application collection or document is deleted.
 
 assertMongoApiDatabaseCompatibility must read and parse the state before scanning storage and API documents and must not call any DDL method.
 
-- [ ] Step 3: Separate server modes.
+- [x] Step 3: Separate server modes.
 
 Add:
 
@@ -137,7 +137,7 @@ readiness: async () => {
 },
 ```
 
-- [ ] Step 4: Run focused server tests and lint.
+- [x] Step 4: Run focused server tests and lint.
 
 Run:
 
@@ -156,15 +156,15 @@ Files:
 - Modify: apps/api/package.json
 - Modify: apps/api/test/service-environment.test.ts
 
-- [ ] Step 1: Write the command redaction contract.
+- [x] Step 1: Write the command redaction contract.
 
 Read the script source in a focused test and assert that the URI is read from the environment/service parser, never process.argv, and that output does not interpolate upstream errors. Keep database-name and URI validation covered by service-environment tests.
 
-- [ ] Step 2: Implement the command.
+- [x] Step 2: Implement the command.
 
 The command parses process.env with parseMongoApiServiceEnvironment, connects using MongoClient with appName kavrix-api-migrator, calls migrateMongoApiDatabase, and closes in finally. Success output is exactly [kavrix-api] migration complete. Invalid configuration uses exit code 78 and only the setting name. Connection or migration failure uses exit code 1 and exactly [kavrix-api] migration failed. Never print URI, database contents, error.message, or a stack trace.
 
-- [ ] Step 3: Wire and exercise the package script.
+- [x] Step 3: Wire and exercise the package script.
 
 Add this script:
 
@@ -194,7 +194,7 @@ Interfaces:
 - Produces runOperationalAcceptance(options?), executeOperationalAcceptance(options?), and root command operational:acceptance.
 - Reuses BoundedChildInvocation and runBoundedChild from apps/api/scripts/api-integration-gate.ts.
 
-- [ ] Step 1: Write gate contract tests.
+- [x] Step 1: Write gate contract tests.
 
 Cover absent or blank URI failure before child execution; URI only in environment and never args; shell false; exact migration and Vitest args; generic migration/Vitest failure; malformed/empty/pending JSON reports; output-limit overflow; and timeout. A successful fake migration plus valid one-file JSON report returns a summary.
 
@@ -205,15 +205,15 @@ await expect(runOperationalAcceptance({ environment: {}, runChild })).rejects.to
 expect(runChild).not.toHaveBeenCalled();
 ```
 
-- [ ] Step 2: Implement the two-child bounded gate.
+- [x] Step 2: Implement the two-child bounded gate.
 
 Require nonblank KAVRIX_MONGODB_URI. Preserve a valid KAVRIX_DATABASE_NAME or generate one matching the API database grammar, then pass it only through child env. First invoke process.execPath with the resolved tsx CLI and apps/api/scripts/mongo-migrate.ts. Then invoke Vitest with apps/api/vitest.operational.config.ts and exactly apps/api/operational/operational-acceptance.integration.ts. Validate every report field using the existing no-skip/all-passed rules. Use a 4 MiB bound and 10 minute timeout for both children. Print only Operational acceptance passed (N tests). or generic failure text.
 
-- [ ] Step 3: Add the config and root command.
+- [x] Step 3: Add the config and root command.
 
 Add operational:acceptance: tsx ./scripts/operational-acceptance.ts. Configure one exact include, fileParallelism false, 30-second test/hook timeouts, and passWithNoTests false. Include apps/api/operational in the API typecheck configuration.
 
-- [ ] Step 4: Run contract tests and the no-environment command.
+- [x] Step 4: Run contract tests and the no-environment command.
 
 Run:
 
@@ -234,19 +234,19 @@ Files:
 - Modify: apps/api/integration/mongo-bootstrap.integration.ts
 - Modify: apps/api/integration/mongo-api.integration.ts
 
-- [ ] Step 1: Implement topology and transaction proof.
+- [x] Step 1: Implement topology and transaction proof.
 
 Use KAVRIX_MONGODB_URI and KAVRIX_DATABASE_NAME from env, connect to admin, require hello.setName and a positive logicalSessionTimeoutMinutes, and execute one bounded withTransaction probe with an opaque identifier. Run migrateMongoApiDatabase on the same database and assert state version 1.
 
-- [ ] Step 2: Implement the two-process smoke.
+- [x] Step 2: Implement the two-process smoke.
 
 Spawn process.execPath with only the built apps/api/dist/main.js argument, production env, loopback host, separate ports, and KAVRIX_API_TRUSTED_PROXIES=127.0.0.1. Wait for both /health and /ready using x-forwarded-proto=https. Send SIGTERM to both, require clean exit code 0 within a bound, and assert combined stdout/stderr excludes the URI, operational-plaintext-canary, and operational-opaque-secret-canary. Stop children and drop the unique DB in finally.
 
-- [ ] Step 3: Migrate direct integration setup first.
+- [x] Step 3: Migrate direct integration setup first.
 
 Before real createMongoApiServer or startMongoApiServer calls in the three existing integration files, run the migration function for the unique database. Preserve unit tests that intentionally call installMongo*Contracts.
 
-- [ ] Step 4: Run focused source checks.
+- [x] Step 4: Run focused source checks.
 
 Run:
 
@@ -267,11 +267,11 @@ Files:
 - Modify: .github/workflows/ci.yml
 - Modify: docs/superpowers/plans/2026-08-14-operational-acceptance.md
 
-- [ ] Step 1: Document migration, least privilege, readiness, and rollback.
+- [x] Step 1: Document migration, least privilege, readiness, and rollback.
 
 Replace the stale no-migration/no-readiness wording. Document the order: frozen install, API build, API migrate, operational acceptance, then API start. State that the migration principal owns validator/index DDL and the running API principal is data-plane only; upgrades are forward-only; rollback restores an operator-verified backup into an isolated database; and /ready is the dependency-aware probe.
 
-- [ ] Step 2: Add the exact CI invocation.
+- [x] Step 2: Add the exact CI invocation.
 
 After the existing Mongo build and storage/API gates in the pinned mongo-integration job, add:
 
@@ -282,11 +282,11 @@ After the existing Mongo build and storage/API gates in the pinned mongo-integra
 
 Keep URI values in the job environment and preserve all existing image, runner, canary, and coverage pins.
 
-- [ ] Step 3: Record honest status.
+- [x] Step 3: Record honest status.
 
 Add or update a Production API and Mongo operational acceptance row as Pending rerun until a changed-SHA hosted run exists. Record local readiness/migration/gate evidence and the exact local Mongo/topology blockers. Do not reuse an older successful run.
 
-- [ ] Step 4: Run final checks and commit.
+- [x] Step 4: Run final checks and commit.
 
 Run:
 
@@ -306,3 +306,18 @@ Commit:
 git add packages/schemas apps/api scripts/operational-acceptance.ts scripts/operational-acceptance.test.ts package.json docs/self-hosting.md docs/implementation-status.md .github/workflows/ci.yml docs/superpowers/specs/2026-08-14-operational-acceptance-design.md docs/superpowers/plans/2026-08-14-operational-acceptance.md
 git commit -m "feat: add API Mongo operational acceptance (#75)"
 ```
+
+## Verification notes
+
+- Focused #75 coverage: 91 tests passed across readiness, migration, service
+  startup, schemas, and the bounded gate; API unit tests passed 140/140 and
+  storage unit tests passed 69/69.
+- Build, Prettier, and all 15 workspace typecheck projects passed. Targeted
+  ESLint for the changed source passed. Repository ESLint still reports the
+  existing 18 CLI-only violations; the full test command timed out after
+  managed Windows ACL/native-keychain failures.
+- A temporary MongoDB 8.3 single-member replica set passed the complete
+  two-process operational acceptance gate. Existing real-Mongo storage and API
+  suites also ran, but exposed two pre-existing backup/restore expectation
+  failures and two pre-existing Mongo authorization update-path conflicts;
+  those are not attributed to #75.

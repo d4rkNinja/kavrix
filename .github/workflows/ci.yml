@@ -187,6 +187,8 @@ jobs:
         run: pnpm --filter @kavrix/storage --fail-if-no-match test:integration
       - name: API authorization and plaintext rejection canary
         run: pnpm --filter @kavrix/api --fail-if-no-match test:integration
+      - name: API and Mongo operational acceptance
+        run: pnpm operational:acceptance
       - name: Enforce repository coverage thresholds with real adapters
         run: pnpm test:coverage
       - name: Stop MongoDB
