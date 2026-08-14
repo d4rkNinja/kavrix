@@ -122,9 +122,7 @@ function restoreProtocolFixture(fixture: BackupFixture): {
 } {
   const entries = [
     { kind: 'vault' as const, record: fixture.vault },
-    ...fixture.orderedRecords.filter(
-      (entry) => entry.kind !== 'history' && entry.kind !== 'audit',
-    ),
+    ...fixture.orderedRecords,
   ];
   const commitment = createBackupStagedEntryCommitment();
   for (const entry of entries) commitment.update(entry);
@@ -160,8 +158,8 @@ function restoreProtocolFixture(fixture: BackupFixture): {
       attachmentChunks: fixture.attachmentChunks.length,
       tombstonePredecessors: { groups: 0, items: 1, attachments: 0 },
       tombstones: 1,
-      histories: 0,
-      audits: 0,
+      histories: 1,
+      audits: 1,
     },
   };
   return { entries, summary, receipt };
@@ -316,7 +314,7 @@ describe('authenticated encrypted-backup restore against a MongoDB replica set',
     });
   });
 
-  it('publishes and finalizes an exact protocol-v2 zero-history/audit entry set', async () => {
+  it('publishes and finalizes an exact protocol-v2 history/audit entry set', async () => {
     await withEmptyDatabase(client, async (database) => {
       const store = new MongoBackupRestoreStore(client, database, {
         now: () => new Date(CREATED_AT),

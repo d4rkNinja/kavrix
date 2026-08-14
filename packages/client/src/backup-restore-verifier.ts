@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 import { CryptoAuthenticationError } from '@kavrix/core';
 import type {
   RestoreVerificationSession,
@@ -16,6 +18,7 @@ import {
   associatedDataSchema,
   attachmentRecordHashMatchesCanonicalContent,
   attachmentSecretStreamManifestSchema,
+  auditPayloadSchema,
   backupVerificationSchema,
   canonicalJson,
   contentHashForRecord,
@@ -23,14 +26,20 @@ import {
   encryptedAttachmentRecordSchema,
   encryptedBackupEntrySchema,
   encryptedGroupRecordSchema,
+  encryptedAuditRecordSchema,
+  encryptedHistoryRecordSchema,
   encryptedItemRecordSchema,
+  historyPayloadSchema,
+  sha256DigestSchema,
   restoreKnownRecordsVerificationV1Schema,
   vaultRevisionSchema,
   vaultRecordSchema,
   type AttachmentSecretStreamManifest,
   type BackupVerification,
   type EncryptedAttachmentRecord,
+  type EncryptedAuditRecord,
   type EncryptedBackupEntry,
+  type EncryptedHistoryRecord,
   type RestoreKnownRecordsVerificationV1,
   type TombstoneRecord,
   type VaultRecord,
@@ -46,6 +55,7 @@ import {
   openGroupRecordForState,
   openItemRecordForState,
   parseCanonicalPayload,
+  MAX_VAULT_PAYLOAD_BYTES,
   type ActiveVault,
   type OpenGroup,
   type OpenItem,
@@ -96,8 +106,8 @@ interface Counts {
   attachmentChunks: number;
   tombstonePredecessors: { groups: number; items: number; attachments: number };
   tombstones: number;
-  histories: 0;
-  audits: 0;
+  histories: number;
+  audits: number;
 }
 
 export function createRestoreKnownRecordsVerificationSessionFactoryV1(
@@ -176,6 +186,8 @@ async function verifyKnownRecords(
   const attachments = new Map<string, OpenAttachment>();
   const predecessors = new Map<string, OpenGroup | OpenItem | OpenAttachment>();
   const tombstones = new Map<string, TombstoneRecord>();
+  const historyIds = new Set<string>();
+  const auditIds = new Set<string>();
   const counts: Counts = {
     vaults: 0,
     groups: 0,
@@ -359,9 +371,36 @@ async function verifyKnownRecords(
           counts.tombstones = add(counts.tombstones, 1);
           break;
         }
-        case 'history':
-        case 'audit':
-          throw unsupported();
+        case 'history': {
+          const [currentActiveVault, currentVault] = requireVault(activeVault, vault);
+          if (historyIds.has(entry.record.id)) throw invalid();
+          const item = items.get(entry.record.itemId);
+          if (item?.record.groupId !== entry.record.groupId) {
+            throw invalid();
+          }
+          await verifyHistoryRecord(
+            entry.record,
+            item,
+            currentActiveVault,
+            currentVault,
+          );
+          historyIds.add(entry.record.id);
+          counts.histories = add(counts.histories, 1);
+          break;
+        }
+        case 'audit': {
+          const [currentActiveVault, currentVault] = requireVault(activeVault, vault);
+          if (auditIds.has(entry.record.id)) throw invalid();
+          await verifyAuditRecord(
+            entry.record,
+            currentActiveVault,
+            currentVault,
+            rootKey,
+          );
+          auditIds.add(entry.record.id);
+          counts.audits = add(counts.audits, 1);
+          break;
+        }
         case 'attachment-header':
         case 'attachment-chunk':
           throw invalid();
@@ -483,6 +522,167 @@ async function openAttachment(
   } finally {
     zeroize(plaintext);
   }
+}
+
+async function verifyHistoryRecord(
+  candidate: EncryptedHistoryRecord,
+  item: OpenItem,
+  vault: ActiveVault,
+  archivedVault: VaultRecord,
+): Promise<void> {
+  const parsed = encryptedHistoryRecordSchema.safeParse(candidate);
+  if (
+    !parsed.success ||
+    parsed.data.vaultId !== archivedVault.id ||
+    parsed.data.groupId !== item.record.groupId ||
+    parsed.data.itemId !== item.record.id ||
+    parsed.data.schemaVersion !== vault.schemaVersion ||
+    parsed.data.encryptedPayload.keyVersion !==
+      item.record.encryptedPayload.keyVersion ||
+    parsed.data.itemRecordRevision > item.record.recordRevision ||
+    parsed.data.ciphertextHash !==
+      ciphertextDigest(parsed.data.encryptedPayload.ciphertext)
+  ) {
+    throw invalid();
+  }
+
+  let plaintext: Uint8Array | undefined;
+  try {
+    plaintext = await decryptPayload(
+      parsed.data.encryptedPayload,
+      item.key,
+      parsed.data.encryptedPayload.aad,
+    );
+    const payload = parseKnownVersionedPayload(plaintext, historyPayloadSchema);
+    if (
+      payload.id !== parsed.data.itemId ||
+      payload.vaultId !== parsed.data.vaultId ||
+      payload.groupId !== parsed.data.groupId ||
+      payload.revision !== parsed.data.itemRecordRevision
+    ) {
+      throw new CryptoAuthenticationError();
+    }
+  } catch (error) {
+    if (error instanceof RestoreKnownRecordsVerificationError) throw error;
+    throw invalid();
+  } finally {
+    zeroize(plaintext);
+  }
+}
+
+async function verifyAuditRecord(
+  candidate: EncryptedAuditRecord,
+  vault: ActiveVault,
+  archivedVault: VaultRecord,
+  rootKey: VaultRootKey,
+): Promise<void> {
+  const parsed = encryptedAuditRecordSchema.safeParse(candidate);
+  if (
+    !parsed.success ||
+    parsed.data.vaultId !== archivedVault.id ||
+    parsed.data.schemaVersion !== vault.schemaVersion ||
+    parsed.data.recordRevision > archivedVault.revision ||
+    !archivedVault.keySlots.some(
+      (slot) => slot.keyVersion === parsed.data.encryptedPayload.keyVersion,
+    )
+  ) {
+    throw invalid();
+  }
+
+  let plaintext: Uint8Array | undefined;
+  try {
+    plaintext = await decryptPayload(
+      parsed.data.encryptedPayload,
+      rootKey,
+      parsed.data.encryptedPayload.aad,
+    );
+    const payload = parseKnownVersionedPayload(
+      plaintext,
+      auditPayloadSchema,
+      'canonical-json',
+    );
+    const slot = archivedVault.keySlots.find(
+      (candidateSlot) => candidateSlot.id === payload.slotId,
+    );
+    if (
+      slot?.type !== payload.slotType ||
+      slot.keyVersion !== payload.keyVersion ||
+      (payload.action === 'create' && payload.resultingState !== 'active') ||
+      (payload.action === 'revoke' && payload.resultingState !== 'revoked')
+    ) {
+      throw new CryptoAuthenticationError();
+    }
+  } catch (error) {
+    if (error instanceof RestoreKnownRecordsVerificationError) throw error;
+    throw invalid();
+  } finally {
+    zeroize(plaintext);
+  }
+}
+
+function parseKnownVersionedPayload<TOutput>(
+  plaintext: Uint8Array,
+  schema: {
+    safeParse(
+      value: unknown,
+    ): Readonly<{ success: true; data: TOutput }> | Readonly<{ success: false }>;
+  },
+  format: 'json-stringify' | 'canonical-json' = 'json-stringify',
+): TOutput {
+  try {
+    const text = new TextDecoder('utf-8', { fatal: true }).decode(plaintext);
+    const decoded = JSON.parse(text) as unknown;
+    if (
+      typeof decoded === 'object' &&
+      decoded !== null &&
+      'version' in decoded &&
+      typeof decoded.version === 'number' &&
+      Number.isInteger(decoded.version) &&
+      decoded.version > 1
+    ) {
+      throw unsupported();
+    }
+  } catch (error) {
+    if (error instanceof RestoreKnownRecordsVerificationError) throw error;
+    throw invalid();
+  }
+  return format === 'canonical-json'
+    ? parseCanonicalJsonPayload(plaintext, schema)
+    : parseCanonicalPayload(plaintext, schema);
+}
+
+function parseCanonicalJsonPayload<TOutput>(
+  plaintext: Uint8Array,
+  schema: {
+    safeParse(
+      value: unknown,
+    ): Readonly<{ success: true; data: TOutput }> | Readonly<{ success: false }>;
+  },
+): TOutput {
+  if (plaintext.byteLength === 0 || plaintext.byteLength > MAX_VAULT_PAYLOAD_BYTES) {
+    throw new CryptoAuthenticationError();
+  }
+  try {
+    const text = new TextDecoder('utf-8', { fatal: true }).decode(plaintext);
+    const decoded = JSON.parse(text) as unknown;
+    const result = schema.safeParse(decoded);
+    if (!result.success || canonicalJson(result.data) !== text) {
+      throw new CryptoAuthenticationError();
+    }
+    return result.data;
+  } catch {
+    throw new CryptoAuthenticationError();
+  }
+}
+
+function ciphertextDigest(
+  ciphertext: string,
+): ReturnType<typeof sha256DigestSchema.parse> {
+  return sha256DigestSchema.parse(
+    createHash('sha256')
+      .update(Buffer.from(ciphertext, 'base64url'))
+      .digest('base64url'),
+  );
 }
 
 async function verifyAttachmentStream(
@@ -711,6 +911,8 @@ function observedCount(counts: Counts): number {
     counts.tombstonePredecessors.items,
     counts.tombstonePredecessors.attachments,
     counts.tombstones,
+    counts.histories,
+    counts.audits,
   ].reduce(add, 0);
 }
 

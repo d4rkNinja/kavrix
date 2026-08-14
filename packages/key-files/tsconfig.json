@@ -4,6 +4,6 @@
     "ignoreDeprecations": "6.0",
     "noEmit": true
   },
-  "include": ["src/**/*.ts", "test/**/*.ts"],
+  "include": ["src/**/*.ts", "test/**/*.ts", "integration/**/*.ts"],
   "references": [{ "path": "../crypto/tsconfig.build.json" }]
 }

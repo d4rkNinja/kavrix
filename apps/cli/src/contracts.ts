@@ -1,19 +1,31 @@
 import {
   credentialCopyReceiptSchema,
   credentialShowProjectionSchema,
+  lifecycleOperationIdSchema,
   type CredentialCopyOptions,
   type CredentialCopyReceipt,
   type CredentialShowProjection,
-} from '@kavrix/client';
+} from '@kavrix/client/cli-contracts';
 import {
   apiBearerTokenSchema,
+  deviceListPageResponseSchema,
   inviteListPageResponseSchema,
   deviceIdSchema,
   inviteIdSchema,
+  keySlotIdSchema,
+  keyVersionSchema,
+  MAX_VAULT_KEY_SLOTS,
+  portableKeyRotationStateSchema,
+  sha256DigestSchema,
   schemaVersionSchema,
+  timestampSchema,
   vaultIdSchema,
   type ControlListPageOptions,
+  type DeviceId,
+  type DeviceListPageResponse,
   type GroupPayload,
+  type InviteIssueRequest,
+  type InviteIssueResponse,
   type InviteId,
   type InviteListPageResponse,
   type ItemPayload,
@@ -63,6 +75,18 @@ export const cliStatusSchema = z
   });
 
 const cliConflictIdSchema = z.string().min(16).max(256);
+const cliBackupPathSchema = z
+  .string()
+  .min(1)
+  .max(32_768)
+  .refine(
+    (value) =>
+      !Array.from(value).some((character) => {
+        const codePoint = character.codePointAt(0);
+        return codePoint !== undefined && (codePoint <= 31 || codePoint === 127);
+      }),
+    { error: 'The backup path contains a control character.' },
+  );
 const cliConflictSchema = z
   .object({
     vaultId: vaultIdSchema,
@@ -106,6 +130,163 @@ export const cliConnectResultSchema = z
   })
   .strict();
 
+export const cliRecoverRequestSchema = z
+  .object({
+    serverUrl: z.string().min(1).max(2_048),
+    vaultId: vaultIdSchema,
+  })
+  .strict();
+
+export const cliRecoverResultSchema = z
+  .object({
+    operationId: lifecycleOperationIdSchema,
+    vaultId: vaultIdSchema,
+    deviceId: deviceIdSchema,
+  })
+  .strict();
+
+export const cliBackupCreateRequestSchema = z
+  .object({
+    destination: cliBackupPathSchema,
+    vaultId: vaultIdSchema.optional(),
+  })
+  .strict();
+
+export const cliBackupVerifyRequestSchema = z
+  .object({
+    source: cliBackupPathSchema,
+    vaultId: vaultIdSchema.optional(),
+  })
+  .strict();
+
+export const cliBackupRestoreRequestSchema = z
+  .object({
+    source: cliBackupPathSchema,
+    vaultId: vaultIdSchema.optional(),
+    slotId: keySlotIdSchema.optional(),
+  })
+  .strict();
+
+export const cliBackupCreateResultSchema = z
+  .object({
+    action: z.literal('created'),
+    vaultId: vaultIdSchema,
+    recordCount: z.number().int().positive().max(10_000),
+    bytes: z
+      .number()
+      .int()
+      .positive()
+      .max(128 * 1024 * 1024),
+  })
+  .strict();
+
+export const cliBackupVerifyResultSchema = z
+  .object({
+    action: z.literal('verified'),
+    vaultId: vaultIdSchema,
+    recordCount: z.number().int().positive().max(10_000),
+    bytes: z
+      .number()
+      .int()
+      .positive()
+      .max(128 * 1024 * 1024),
+    schemaVersion: schemaVersionSchema,
+    createdAt: timestampSchema,
+    restoreSessionId: sha256DigestSchema,
+  })
+  .strict();
+
+export const cliBackupRestoreResultSchema = z
+  .object({
+    action: z.enum(['restored', 'already-committed']),
+    vaultId: vaultIdSchema,
+    recordCount: z.number().int().positive().max(10_000),
+    bytes: z
+      .number()
+      .int()
+      .positive()
+      .max(128 * 1024 * 1024),
+    restoreSessionId: sha256DigestSchema,
+    selectedSlotId: keySlotIdSchema.optional(),
+  })
+  .strict();
+
+const cliKeySlotTypeSchema = z.enum([
+  'portable-key',
+  'passphrase',
+  'recovery-key',
+  'device-key',
+]);
+const cliKeySlotStateSchema = z.enum(['pending', 'active', 'superseded', 'revoked']);
+
+/** Public slot metadata; derivation and wrapped-root fields are intentionally absent. */
+export const cliKeySlotSchema = z
+  .object({
+    id: keySlotIdSchema,
+    type: cliKeySlotTypeSchema,
+    state: cliKeySlotStateSchema,
+    keyVersion: keyVersionSchema,
+    createdAt: timestampSchema,
+    revokedAt: timestampSchema.optional(),
+    deviceId: deviceIdSchema.optional(),
+  })
+  .strict()
+  .superRefine((slot, context) => {
+    if (slot.type === 'device-key' && slot.deviceId === undefined) {
+      context.addIssue({
+        code: 'custom',
+        path: ['deviceId'],
+        message: 'Device slots require a device ID.',
+      });
+    }
+    if (slot.type !== 'device-key' && slot.deviceId !== undefined) {
+      context.addIssue({
+        code: 'custom',
+        path: ['deviceId'],
+        message: 'Only device slots may expose a device ID.',
+      });
+    }
+  });
+
+export const cliKeySlotListSchema = z.array(cliKeySlotSchema).max(MAX_VAULT_KEY_SLOTS);
+export const cliKeySlotResultSchema = z
+  .object({
+    action: z.enum(['created', 'disabled', 'revoked']),
+    slot: cliKeySlotSchema,
+  })
+  .strict();
+
+export const cliPortableKeyRotationListingSchema = z
+  .object({
+    operationId: lifecycleOperationIdSchema,
+    state: portableKeyRotationStateSchema,
+    vaultId: vaultIdSchema,
+    deviceId: deviceIdSchema,
+    sourceSlotId: keySlotIdSchema,
+    replacementSlotId: keySlotIdSchema,
+    createdAt: timestampSchema,
+    updatedAt: timestampSchema,
+  })
+  .strict();
+
+export const cliPortableKeyRotationResultSchema = z.discriminatedUnion('action', [
+  z
+    .object({
+      action: z.enum(['rotated', 'resumed']),
+      operationId: lifecycleOperationIdSchema,
+      sourceSlotId: keySlotIdSchema,
+      replacementSlotId: keySlotIdSchema,
+      state: z.literal('completed'),
+    })
+    .strict(),
+  z
+    .object({
+      action: z.literal('listed'),
+      operations: z.array(cliPortableKeyRotationListingSchema).max(256),
+    })
+    .strict(),
+]);
+
 /**
  * The invite redemption request.
  *
@@ -139,9 +320,28 @@ export type CliConflictResolutionResult = z.infer<
 >;
 export type CliConnectRequest = z.infer<typeof cliConnectRequestSchema>;
 export type CliConnectResult = z.infer<typeof cliConnectResultSchema>;
+export type CliRecoverRequest = z.infer<typeof cliRecoverRequestSchema>;
+export type CliRecoverResult = z.infer<typeof cliRecoverResultSchema>;
+export type CliBackupCreateRequest = z.infer<typeof cliBackupCreateRequestSchema>;
+export type CliBackupCreateResult = z.infer<typeof cliBackupCreateResultSchema>;
+export type CliBackupVerifyRequest = z.infer<typeof cliBackupVerifyRequestSchema>;
+export type CliBackupVerifyResult = z.infer<typeof cliBackupVerifyResultSchema>;
+export type CliBackupRestoreRequest = z.infer<typeof cliBackupRestoreRequestSchema>;
+export type CliBackupRestoreResult = z.infer<typeof cliBackupRestoreResultSchema>;
+export type CliKeySlot = z.infer<typeof cliKeySlotSchema>;
+export type CliKeySlotResult = z.infer<typeof cliKeySlotResultSchema>;
+export type CliPortableKeyRotationListing = z.infer<
+  typeof cliPortableKeyRotationListingSchema
+>;
+export type CliPortableKeyRotationResult = z.infer<
+  typeof cliPortableKeyRotationResultSchema
+>;
 export type CliShowResult = CredentialShowProjection;
 export type CliInviteJoinRequest = z.infer<typeof cliInviteJoinRequestSchema>;
 export type CliInviteJoinResult = z.infer<typeof cliInviteJoinResultSchema>;
+export type CliInviteIssueRequest = InviteIssueRequest;
+export type CliInviteIssueResult = InviteIssueResponse;
+export type CliDeviceListPage = DeviceListPageResponse;
 
 export interface CliUseCasePorts {
   status(): Promise<CliStatus>;
@@ -157,7 +357,16 @@ export interface CliUseCasePorts {
     vaultId: VaultId,
     options: ControlListPageOptions,
   ): Promise<InviteListPageResponse>;
+  listDevicePage?(
+    vaultId: VaultId,
+    options: ControlListPageOptions,
+  ): Promise<CliDeviceListPage>;
+  issueInvite?(
+    vaultId: VaultId,
+    request: CliInviteIssueRequest,
+  ): Promise<CliInviteIssueResult>;
   revokeInvite(vaultId: VaultId, inviteId: InviteId): Promise<void>;
+  revokeDevice?(vaultId: VaultId, deviceId: DeviceId): Promise<void>;
   /**
    * Completes the two-step enrollment protocol. The adapter owns durable,
    * idempotent generation and reuse of independent enrollment/session successor
@@ -218,6 +427,18 @@ export interface CliUseCasePorts {
     request: CliConflictResolutionRequest,
   ): Promise<CliConflictResolutionResult>;
   connect?(request: CliConnectRequest): Promise<CliConnectResult>;
+  recover?(
+    request: CliRecoverRequest,
+    inviteToken: string,
+    portableKey: string,
+  ): Promise<CliRecoverResult>;
+  createBackup?(request: CliBackupCreateRequest): Promise<CliBackupCreateResult>;
+  verifyBackup?(request: CliBackupVerifyRequest): Promise<CliBackupVerifyResult>;
+  restoreBackup?(request: CliBackupRestoreRequest): Promise<CliBackupRestoreResult>;
+  listKeySlots?(): Promise<readonly CliKeySlot[]>;
+  createKeySlot?(request: unknown): Promise<CliKeySlotResult>;
+  disableKeySlot?(slotId: string): Promise<CliKeySlotResult>;
+  revokeKeySlot?(slotId: string, request: unknown): Promise<CliKeySlotResult>;
 }
 
 export function parseStatus(value: unknown): CliStatus {
@@ -248,6 +469,38 @@ export function parseConnectResult(value: unknown): CliConnectResult {
   return cliConnectResultSchema.parse(value);
 }
 
+export function parseRecoverRequest(value: unknown): CliRecoverRequest {
+  return cliRecoverRequestSchema.parse(value);
+}
+
+export function parseRecoverResult(value: unknown): CliRecoverResult {
+  return cliRecoverResultSchema.parse(value);
+}
+
+export function parseBackupCreateRequest(value: unknown): CliBackupCreateRequest {
+  return cliBackupCreateRequestSchema.parse(value);
+}
+
+export function parseBackupCreateResult(value: unknown): CliBackupCreateResult {
+  return cliBackupCreateResultSchema.parse(value);
+}
+
+export function parseBackupVerifyRequest(value: unknown): CliBackupVerifyRequest {
+  return cliBackupVerifyRequestSchema.parse(value);
+}
+
+export function parseBackupVerifyResult(value: unknown): CliBackupVerifyResult {
+  return cliBackupVerifyResultSchema.parse(value);
+}
+
+export function parseBackupRestoreRequest(value: unknown): CliBackupRestoreRequest {
+  return cliBackupRestoreRequestSchema.parse(value);
+}
+
+export function parseBackupRestoreResult(value: unknown): CliBackupRestoreResult {
+  return cliBackupRestoreResultSchema.parse(value);
+}
+
 export function parseShowResult(value: unknown): CliShowResult {
   return credentialShowProjectionSchema.parse(value);
 }
@@ -258,6 +511,10 @@ export function parseCopyReceipt(value: unknown): CredentialCopyReceipt {
 
 export function parseInvitePage(value: unknown): InviteListPageResponse {
   return inviteListPageResponseSchema.parse(value);
+}
+
+export function parseDevicePage(value: unknown): CliDeviceListPage {
+  return deviceListPageResponseSchema.parse(value);
 }
 
 export function parseJoinResult(value: unknown): CliInviteJoinResult {

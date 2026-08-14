@@ -16,6 +16,7 @@ export interface CliDataPaths {
   readonly profileStore: string;
   readonly initializationJournal: string;
   readonly joinJournal: string;
+  readonly rotationJournal: string;
   readonly sealedSecrets: string;
   vaultStore(vaultId: string): string;
 }
@@ -36,6 +37,7 @@ export function resolveCliDataPaths(
     profileStore: join(home, 'profiles.db'),
     initializationJournal: join(home, 'init-journal.db'),
     joinJournal: join(home, 'join-journal.db'),
+    rotationJournal: join(home, 'portable-key-rotation-journal.db'),
     sealedSecrets: join(home, 'sealed'),
     vaultStore: (vaultId: string) =>
       join(home, `vault-${requireSafeSegment(vaultId)}.db`),

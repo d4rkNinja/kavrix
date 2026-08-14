@@ -4,12 +4,14 @@ import {
   acquireLocalWriterLease,
   openSqliteInitializationJournal,
   openSqliteJoinLifecycleJournal,
+  openSqlitePortableKeyRotationJournal,
   openSqliteSyncLocalStore,
   openSqliteVaultProfileStore,
   recoverStaleLocalWriterLease,
   type LocalWriterLease,
   type SqliteInitializationJournal,
   type SqliteJoinLifecycleJournal,
+  type SqlitePortableKeyRotationJournal,
   type SqliteSyncLocalStore,
   type SqliteVaultProfileStore,
 } from '@kavrix/local-store';
@@ -28,6 +30,15 @@ export interface ProductionEnvironment {
   readonly profiles: SqliteVaultProfileStore;
   readonly initializationJournal: SqliteInitializationJournal;
   readonly joinJournal: SqliteJoinLifecycleJournal;
+  readonly rotationJournal: SqlitePortableKeyRotationJournal;
+  readonly clipboard: SecureClipboard;
+  openSyncStore(profile: VaultProfile): Promise<SqliteSyncLocalStore>;
+  close(): Promise<void>;
+}
+
+/** Resources required by ordinary command-only unlocked operations. */
+export interface ProductionCommandEnvironment {
+  readonly profiles: SqliteVaultProfileStore;
   readonly clipboard: SecureClipboard;
   openSyncStore(profile: VaultProfile): Promise<SqliteSyncLocalStore>;
   close(): Promise<void>;
@@ -47,6 +58,7 @@ export interface ProductionEnvironmentDependencies {
   readonly openProfiles: typeof openSqliteVaultProfileStore;
   readonly openInitializationJournal: typeof openSqliteInitializationJournal;
   readonly openJoinJournal: typeof openSqliteJoinLifecycleJournal;
+  readonly openRotationJournal: typeof openSqlitePortableKeyRotationJournal;
   readonly openSyncStore: typeof openSqliteSyncLocalStore;
   readonly createClipboard: typeof createSecureClipboard;
 }
@@ -60,6 +72,16 @@ export type ProductionStatusEnvironmentDependencies = Pick<
   | 'openSyncStore'
 >;
 
+export type ProductionCommandEnvironmentDependencies = Pick<
+  ProductionEnvironmentDependencies,
+  | 'ensureDataDirectory'
+  | 'acquireLease'
+  | 'recoverLease'
+  | 'openProfiles'
+  | 'openSyncStore'
+  | 'createClipboard'
+>;
+
 const DEFAULT_DEPENDENCIES: ProductionEnvironmentDependencies = {
   ensureDataDirectory,
   acquireLease: acquireLocalWriterLease,
@@ -67,6 +89,7 @@ const DEFAULT_DEPENDENCIES: ProductionEnvironmentDependencies = {
   openProfiles: openSqliteVaultProfileStore,
   openInitializationJournal: openSqliteInitializationJournal,
   openJoinJournal: openSqliteJoinLifecycleJournal,
+  openRotationJournal: openSqlitePortableKeyRotationJournal,
   openSyncStore: openSqliteSyncLocalStore,
   createClipboard: createSecureClipboard,
 };
@@ -79,6 +102,15 @@ const DEFAULT_STATUS_DEPENDENCIES: ProductionStatusEnvironmentDependencies = {
   openSyncStore: openSqliteSyncLocalStore,
 };
 
+const DEFAULT_COMMAND_DEPENDENCIES: ProductionCommandEnvironmentDependencies = {
+  ensureDataDirectory,
+  acquireLease: acquireLocalWriterLease,
+  recoverLease: recoverStaleLocalWriterLease,
+  openProfiles: openSqliteVaultProfileStore,
+  openSyncStore: openSqliteSyncLocalStore,
+  createClipboard: createSecureClipboard,
+};
+
 export async function openProductionEnvironment(
   paths: CliDataPaths,
   secrets: SecretBackend,
@@ -88,6 +120,7 @@ export async function openProductionEnvironment(
   let profiles: SqliteVaultProfileStore | undefined;
   let initializationJournal: SqliteInitializationJournal | undefined;
   let joinJournal: SqliteJoinLifecycleJournal | undefined;
+  let rotationJournal: SqlitePortableKeyRotationJournal | undefined;
   let clipboard: SecureClipboard | undefined;
   try {
     await dependencies.ensureDataDirectory(paths.home);
@@ -100,12 +133,19 @@ export async function openProductionEnvironment(
       path: paths.joinJournal,
       protectedSecrets: secrets.joinJournalSecrets,
     });
+    rotationJournal = await dependencies.openRotationJournal({
+      path: paths.rotationJournal,
+    });
     clipboard = dependencies.createClipboard();
   } catch (openFailure) {
     const cleanupOperations: (() => unknown)[] = [];
     if (clipboard !== undefined) {
       const acquired = clipboard;
       cleanupOperations.push(() => acquired.dispose());
+    }
+    if (rotationJournal !== undefined) {
+      const acquired = rotationJournal;
+      cleanupOperations.push(() => acquired.close());
     }
     if (joinJournal !== undefined) {
       const acquired = joinJournal;
@@ -134,6 +174,7 @@ export async function openProductionEnvironment(
   const ownedProfiles = requiredResource(profiles);
   const ownedInitializationJournal = requiredResource(initializationJournal);
   const ownedJoinJournal = requiredResource(joinJournal);
+  const ownedRotationJournal = requiredResource(rotationJournal);
   const ownedClipboard = requiredResource(clipboard);
   const ownedLease = requiredResource(lease);
   const syncStores = createSyncStoreCache(paths, dependencies.openSyncStore);
@@ -143,6 +184,7 @@ export async function openProductionEnvironment(
     profiles: ownedProfiles,
     initializationJournal: ownedInitializationJournal,
     joinJournal: ownedJoinJournal,
+    rotationJournal: ownedRotationJournal,
     clipboard: ownedClipboard,
     openSyncStore: syncStores.open,
     close: () => {
@@ -150,8 +192,75 @@ export async function openProductionEnvironment(
         const failures = await cleanup([
           ...syncStores.closeOperations(),
           () => ownedClipboard.dispose(),
+          () => ownedRotationJournal.close(),
           () => ownedJoinJournal.close(),
           () => ownedInitializationJournal.close(),
+          () => ownedProfiles.close(),
+          () => secrets.close(),
+          () => ownedLease.release(),
+        ]);
+        if (failures.length > 0) throw closeFailure(failures);
+      })();
+      return closePromise;
+    },
+  };
+}
+
+/**
+ * Opens only the resources needed by ordinary command-only operations.
+ * Lifecycle journals are deliberately excluded: they are owned by init,
+ * recovery, and rotation flows and must not be reopened by every unlock.
+ */
+export async function openProductionCommandEnvironment(
+  paths: CliDataPaths,
+  secrets: SecretBackend,
+  dependencies: ProductionCommandEnvironmentDependencies = DEFAULT_COMMAND_DEPENDENCIES,
+): Promise<ProductionCommandEnvironment> {
+  let lease: LocalWriterLease | undefined;
+  let profiles: SqliteVaultProfileStore | undefined;
+  let clipboard: SecureClipboard | undefined;
+  try {
+    await dependencies.ensureDataDirectory(paths.home);
+    lease = await acquireGlobalLease(paths.writerLease, dependencies);
+    profiles = await dependencies.openProfiles({ path: paths.profileStore });
+    clipboard = dependencies.createClipboard();
+  } catch (openFailure) {
+    const cleanupOperations: (() => unknown)[] = [];
+    if (clipboard !== undefined) {
+      const acquired = clipboard;
+      cleanupOperations.push(() => acquired.dispose());
+    }
+    if (profiles !== undefined) {
+      const acquired = profiles;
+      cleanupOperations.push(() => acquired.close());
+    }
+    cleanupOperations.push(() => secrets.close());
+    if (lease !== undefined) {
+      const acquired = lease;
+      cleanupOperations.push(() => acquired.release());
+    }
+    const cleanupFailures = await cleanup(cleanupOperations);
+    if (cleanupFailures.length > 0) {
+      throw closeFailure([openFailure, ...cleanupFailures]);
+    }
+    throw openFailure;
+  }
+
+  const ownedProfiles = requiredResource(profiles);
+  const ownedClipboard = requiredResource(clipboard);
+  const ownedLease = requiredResource(lease);
+  const syncStores = createSyncStoreCache(paths, dependencies.openSyncStore);
+  let closePromise: Promise<void> | undefined;
+
+  return {
+    profiles: ownedProfiles,
+    clipboard: ownedClipboard,
+    openSyncStore: syncStores.open,
+    close: () => {
+      closePromise ??= (async () => {
+        const failures = await cleanup([
+          ...syncStores.closeOperations(),
+          () => ownedClipboard.dispose(),
           () => ownedProfiles.close(),
           () => secrets.close(),
           () => ownedLease.release(),
