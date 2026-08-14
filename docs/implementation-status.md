@@ -60,8 +60,8 @@ confirmation for device revocation; API/Mongo revocation atomically invalidates
 target sessions and denies revoking the last active device. The CLI also
 composes native-keychain-only remember/forget operations with separate API
 session locators and exact slot targeting. Focused CLI/API, production-port,
-client, schema, and slot-lifecycle tests pass. The remote issues remain open
-because external push/PR/closure actions are not authorized in this run.
+client, schema, and slot-lifecycle tests pass. PRs #108 and #109 are open for
+these branches; the issues remain open pending merge and acceptance.
 
 Issue #41 is implemented locally on `feat/issue-41-backup-create`: the public
 catalog now exposes bounded `backup create` with pre-unlock protected
@@ -69,15 +69,16 @@ destination validation, authenticated create-only streaming, snapshot cleanup,
 and redacted receipts. The current CLI source is the durable local opaque
 vault/group/item state and still refuses unsupported attachment/history/audit
 source records; the complete Mongo snapshot adapter remains in the
-storage/operator boundary.
+storage/operator boundary. PR #110 is open; the issue remains open pending
+merge and acceptance.
 
 Issue #42 is implemented locally on `feat/issue-42-backup-verify`: the public
 catalog now exposes non-publishing `backup verify` with protected source
 preflight, active remembered-device authentication, bounded framing/graph
 verification, safe error codes, and wiped archive/root-key buffers. It proves
 outer archive integrity only; semantic history/audit decryptability and restore
-publication remain later gates. The remote issue remains open because external
-push/PR/closure actions are not authorized in this run.
+publication remain later gates. PR #111 is open; the issue remains open pending
+merge and acceptance.
 
 Issue #43 is implemented locally on `feat/issue-43-backup-restore`: the
 dependency-injected catalog accepts an opaque archive/vault/slot selector and
@@ -87,8 +88,8 @@ delegating to explicit isolated-target and semantic-verification ports. It
 maps exact committed replay and `BACKUP_COMMIT_UNCERTAIN`, preserves the
 archive/target instruction on uncertain publication, and wipes the bounded
 archive buffer. The packed executable omits restore until a safe target
-adapter is configured; the remote issue remains open because external
-push/PR/closure actions are not authorized in this run.
+adapter is configured; PR #112 is open and the issue remains open pending merge
+and acceptance.
 
 Issue #44 is implemented locally on `feat/issue-44-semantic-backup-restore`:
 the known-v1 restore verifier now opens item-key history snapshots and
@@ -96,9 +97,8 @@ root-key key-slot audit payloads with strict identity/revision/hash and
 slot/action validation, canonical payload bounds, duplicate-family checks, and
 generic corruption handling. Authenticated future payload versions remain
 explicitly unsupported. Receipt algebra and Mongo publication now include both
-families; focused client/schema/import-export/storage tests pass. The remote
-issue remains open because external push/PR/closure actions are not authorized
-in this run.
+families; focused client/schema/import-export/storage tests pass. PR #113 is
+open and the issue remains open pending merge and acceptance.
 
 Issue #45 is implemented locally on `feat/issue-45-basic-vault-acceptance`: the
 source-level production CLI composition now passes the single-device Scenario A
@@ -107,8 +107,8 @@ init, unlock, encrypted group/item/field mutations, sync, masked show, guarded
 copy, lock, reopen, rename, archive/restore, and field reads. The generated
 package build and Windows launcher smoke pass, while a packed online-vault
 journey, native-keychain evidence, and the later interruption/recovery/backup/
-canary scenarios remain separate gates. The remote issue remains open because
-external push/PR/closure actions are not authorized in this run.
+canary scenarios remain separate gates. PR #114 is open and the issue remains
+open pending merge and acceptance.
 
 Issue #46 is implemented locally on `feat/issue-46-interruption-recovery`: real
 SQLite and native protected-state acceptance coverage now injects failures after
@@ -118,8 +118,8 @@ offline queue preservation, exact batch replay, response-loss deduplication,
 monotonic cursor recovery, and reopened redacted conflict resolution; all eight
 cases pass with opaque transport payload and local-row canary assertions. The
 existing client lifecycle suite remains the evidence for the durable init
-journal boundaries. The remote issue remains open because external
-push/PR/closure actions are not authorized in this run.
+journal boundaries. PR #115 is open and the issue remains open pending merge
+and acceptance.
 
 Issue #47 is implemented locally on `feat/issue-47-device-b-acceptance`: the
 real-adapter acceptance flow creates encrypted data on Device A, issues a
@@ -129,8 +129,8 @@ then revokes Device B and proves a fresh session is denied. The opaque control-
 plane fixture validates bootstrap, invite, enrollment, key-slot, sync, and
 revocation contracts; request bodies/headers, server state, and both homes pass
 portable-key, VRK, username, and password canary scans. The focused test passes
-on managed Windows Node 24.13.1; the remote issue remains open because external
-push/PR/closure actions are not authorized in this run.
+on managed Windows Node 24.13.1; PR #116 is open and the issue remains open
+pending merge and acceptance.
 
 Issue #48 is implemented locally on `feat/issue-48-backup-restore-acceptance`:
 the real-Mongo acceptance gate seeds a source database through the canonical
@@ -139,9 +139,8 @@ restore coordinator, creates and authenticates an archive from
 rollback anchor, compares exact opaque records, reads active/deleted/restored
 records through a fresh sync snapshot, and scans the archive and durable BSON
 for plaintext and credential canaries. No live result is claimed in this
-workspace because `KAVRIX_MONGODB_URI` is not configured; the remote issue
-remains open because external push/PR/closure actions are not authorized in
-this run.
+workspace because `KAVRIX_MONGODB_URI` is not configured; PR #117 is open and
+the issue remains open pending merge and acceptance.
 
 Issue #49 is implemented locally on `feat/issue-49-whole-system-security-acceptance`:
 the CLI and TUI terminal boundaries now consume 8-bit C1 CSI/string commands and
@@ -152,9 +151,8 @@ captured logs, local artifacts, encrypted backup bytes, completion, and
 post-lock clipboard state across the documented encodings. The full flow could
 not reach its first `init` assertion in this managed workstation because the
 existing Windows ACL helper returns `KEY_FILE_UNSAFE` and native credential-store
-operations also fail; no passing end-to-end local canary result is claimed. The
-remote issue remains open because external push/PR/closure actions are not
-authorized in this run.
+operations also fail; no passing end-to-end local canary result is claimed. PR
+#118 is open and the issue remains open pending merge and acceptance.
 
 Issue #50 is verified locally on `feat/issue-50-exact-verification-gates` at
 `205ef4894e08c3a3b17cec636318700e778fedc2`. On Windows PowerShell with Node
@@ -168,8 +166,8 @@ in key-files, sealed-store, production lifecycle, and the #49 basic canary flow.
 Storage integration fails closed in all four suites because
 `KAVRIX_MONGODB_URI` is unset; the API integration gate reports that MongoDB
 integration is required. This is a recorded verification result, not a passing
-release gate. The remote issue remains open because external push/PR/closure
-actions are not authorized in this run.
+release gate. PR #119 is open and the issue remains open pending merge and
+acceptance.
 
 Issue #51 is implemented locally on `feat/issue-51-package-security-gates`:
 the npm audit initially found high-severity `nanoid <3.3.18` through the Vitest /
@@ -182,9 +180,8 @@ on Windows, including generated launcher execution, public catalog/completion,
 hidden-command refusal, canary absence, lazy-loading checks, sealed status,
 writer-lease handling, and cleanup. The first dry-run after the lock update
 needed a frozen dependency-link repair because the managed pnpm environment had
-purged `apps/cli/node_modules`; no tracked source was removed. The remote issue
-remains open because external push/PR/closure actions are not authorized in this
-run.
+purged `apps/cli/node_modules`; no tracked source was removed. PR #120 is open
+and the issue remains open pending merge and acceptance.
 
 Issue #52 is implemented locally on `feat/issue-52-mongo-exact-discovery-gate`.
 The storage package now has a bounded, shell-free exact-discovery gate matching
@@ -198,9 +195,8 @@ fail closed with `MongoDB integration environment is required.` when the
 required URI is absent. A live transaction-capable Mongo run was intentionally
 not part of that issue's verification because `KAVRIX_MONGODB_URI` was unset;
 the later #75 operational run uses a separate isolated replica-set process and
-does not change the absent-environment fail-closed result recorded here. The
-remote issue remains open because its external push/PR/closure actions have not
-been performed.
+does not change the absent-environment fail-closed result recorded here. PR
+#121 is open and the issue remains open pending merge and acceptance.
 
 Issue #53 is implemented locally on `feat/issue-53-platform-acceptance`. The
 new `pnpm platform:acceptance` command requires explicit keychain, key-file,
@@ -215,8 +211,11 @@ credential-store error in this managed session. The key-files package remains
 blocked by the existing managed Windows ACL helper (33 failures, 5 passes, 2
 platform-skipped unit tests), and the new opt-in key-file integration fails at
 the same ACL setup. No fallback was added and no platform-wide pass is claimed.
-The remote issue remains open because external push/PR/closure actions are not
-authorized in this run.
+PR #122 is open and the issue remains open pending merge and acceptance.
+
+The completed issue stack is now published as separate linked PRs: #99–#123
+cover #31, #32, #74, and #33–#54 in dependency order. They remain open and
+stacked because the roadmap requires predecessor acceptance before merge.
 
 Issue #75 is implemented locally on `feat/issue-75-operational-acceptance`.
 Migration owns the baseline MongoDB validator/index contract and records a
@@ -228,8 +227,9 @@ single-member replica set passed the full gate: two production API processes,
 HTTPS-proxy readiness, bootstrap/session authentication, sync push/pull,
 attachment streaming, a transaction-consistent opaque backup snapshot, bounded
 logs, and URI/plaintext-canary absence. CI now runs the same gate after the
-storage and API integration jobs. The remote issue remains open pending
-pull-request merge and an exact-SHA GitHub run.
+storage and API integration jobs. PR #98 is open; the #75 issue remains open
+pending merge and an exact-SHA GitHub run. The first hosted run failed before
+executing any job steps, so it does not provide passing CI evidence.
 
 | Scope                                                                                                                          | Status      | Evidence                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | Remaining limitation                                                                                                 |
 | ------------------------------------------------------------------------------------------------------------------------------ | ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
