@@ -3,6 +3,7 @@ import {
   encryptedGroupRecordSchema,
   groupIdSchema,
   keySlotIdSchema,
+  restoreKnownRecordsVerificationV1Schema,
   timestampSchema,
   vaultIdSchema,
   vaultRecordSchema,
@@ -10,7 +11,14 @@ import {
   type EncryptedGroupRecord,
   type VaultRecord,
 } from '@kavrix/schemas';
-import { createEncryptedBackup, verifyEncryptedBackup } from '@kavrix/import-export';
+import {
+  BackupError,
+  createEncryptedBackup,
+  verifyEncryptedBackup,
+  type BackupRestoreStore,
+  type RestoreVerificationSessionFactory,
+} from '@kavrix/import-export';
+import type { restoreEncryptedBackup } from '@kavrix/import-export';
 import {
   createPortableKeySlot,
   encryptPayload,
@@ -44,11 +52,13 @@ vi.mock('@kavrix/key-files', async () => {
 import { PortableKeyFileError } from '@kavrix/key-files';
 import {
   CliBackupCreationError,
+  CliBackupRestoreError,
   CliBackupVerificationError,
   CliUsageError,
 } from '../src/errors.js';
 import {
   createProtectedEncryptedBackup,
+  executeProtectedEncryptedBackupRestore,
   executeProductionBackupVerify,
   executeProductionBackupCreate,
   openLocalBackupSnapshot,
@@ -504,6 +514,177 @@ describe('production encrypted backup verification', () => {
   });
 });
 
+describe('protected isolated encrypted backup restoration', () => {
+  it('preflights the source before opening a target or restore coordinator', async () => {
+    const validateSource = vi
+      .fn<typeof mockedKeyFiles.validateSource>()
+      .mockRejectedValue(new PortableKeyFileError('KEY_FILE_UNSAFE'));
+    const restoreArchive = vi.fn<typeof restoreEncryptedBackup>();
+    const store = {} as BackupRestoreStore;
+    const openVerification = vi.fn() as unknown as RestoreVerificationSessionFactory;
+
+    const operation = executeProtectedEncryptedBackupRestore(
+      {
+        source: 'D:\\backups\\unsafe-restore.cvkx',
+        expectedVaultId: VAULT_ID,
+        store,
+        openVerification,
+      },
+      { validateSource, restoreArchive },
+    );
+
+    await expect(operation).rejects.toMatchObject({ code: 'BACKUP_INVALID' });
+    expect(validateSource).toHaveBeenCalledWith(
+      'D:\\backups\\unsafe-restore.cvkx',
+      128 * 1024 * 1024,
+    );
+    expect(restoreArchive).not.toHaveBeenCalled();
+    expect(mockedKeyFiles.readSource).not.toHaveBeenCalled();
+  });
+
+  it('passes the protected archive to the isolated restore ports and wipes it after commit', async () => {
+    const fixture = await createFixture();
+    const authenticated = await createAuthenticatedArchive(fixture);
+    const store = {} as BackupRestoreStore;
+    const openVerification = vi.fn() as unknown as RestoreVerificationSessionFactory;
+    mockedKeyFiles.readSource.mockResolvedValue(authenticated.archive);
+    const restoreArchive = vi
+      .fn<typeof restoreEncryptedBackup>()
+      .mockImplementation(
+        async (source, expectedVaultId, receivedStore, receivedFactory, limits) => {
+          let bytes = 0;
+          for await (const chunk of source) bytes += chunk.byteLength;
+          expect(bytes).toBe(authenticated.archive.byteLength);
+          expect(expectedVaultId).toBe(VAULT_ID);
+          expect(receivedStore).toBe(store);
+          expect(receivedFactory).toBe(openVerification);
+          expect(limits).toMatchObject({
+            maximumBytes: 1024 * 1024,
+            maximumRecords: 10,
+          });
+          return {
+            disposition: 'verified-and-committed',
+            backup: authenticated.summary,
+            verification: authenticated.verification,
+          };
+        },
+      );
+
+    try {
+      await expect(
+        executeProtectedEncryptedBackupRestore(
+          {
+            source: 'D:\\backups\\restore.cvkx',
+            expectedVaultId: VAULT_ID,
+            store,
+            openVerification,
+            limits: { maximumBytes: 1024 * 1024, maximumRecords: 10 },
+          },
+          {
+            validateSource: mockedKeyFiles.validateSource,
+            readSource: mockedKeyFiles.readSource,
+            restoreArchive,
+          },
+        ),
+      ).resolves.toEqual({
+        action: 'restored',
+        vaultId: VAULT_ID,
+        recordCount: authenticated.summary.recordCount,
+        bytes: authenticated.archive.byteLength,
+        restoreSessionId: authenticated.summary.restoreSessionId,
+        selectedSlotId: SLOT_ID,
+      });
+      expect(mockedKeyFiles.validateSource).toHaveBeenCalledWith(
+        'D:\\backups\\restore.cvkx',
+        1024 * 1024,
+      );
+      expect(mockedKeyFiles.readSource).toHaveBeenCalledWith(
+        'D:\\backups\\restore.cvkx',
+        1024 * 1024,
+      );
+      expect([...authenticated.archive]).toEqual(
+        Array.from({ length: authenticated.archive.length }, () => 0),
+      );
+    } finally {
+      zeroize(fixture.rootKey);
+      authenticated.archive.fill(0);
+    }
+  });
+
+  it('reports an exact committed replay without fabricating a slot receipt', async () => {
+    const fixture = await createFixture();
+    const authenticated = await createAuthenticatedArchive(fixture);
+    const store = {} as BackupRestoreStore;
+    const openVerification = vi.fn() as unknown as RestoreVerificationSessionFactory;
+    mockedKeyFiles.readSource.mockResolvedValue(authenticated.archive);
+    const restoreArchive = vi.fn<typeof restoreEncryptedBackup>().mockResolvedValue({
+      disposition: 'previously-committed',
+      backup: authenticated.summary,
+    });
+
+    try {
+      await expect(
+        executeProtectedEncryptedBackupRestore(
+          {
+            source: 'D:\\backups\\replay.cvkx',
+            expectedVaultId: VAULT_ID,
+            store,
+            openVerification,
+          },
+          { restoreArchive },
+        ),
+      ).resolves.toEqual({
+        action: 'already-committed',
+        vaultId: VAULT_ID,
+        recordCount: authenticated.summary.recordCount,
+        bytes: authenticated.archive.byteLength,
+        restoreSessionId: authenticated.summary.restoreSessionId,
+      });
+    } finally {
+      zeroize(fixture.rootKey);
+      authenticated.archive.fill(0);
+    }
+  });
+
+  it('maps uncertain publication to preservation instructions without exposing the cause', async () => {
+    const archive = Buffer.from(PLAINTEXT_CANARY, 'utf8');
+    mockedKeyFiles.readSource.mockResolvedValue(archive);
+    const store = {} as BackupRestoreStore;
+    const openVerification = vi.fn() as unknown as RestoreVerificationSessionFactory;
+    const restoreArchive = vi
+      .fn<typeof restoreEncryptedBackup>()
+      .mockRejectedValue(
+        new BackupError(
+          'BACKUP_COMMIT_UNCERTAIN',
+          `target contains ${PLAINTEXT_CANARY}`,
+        ),
+      );
+
+    try {
+      const operation = executeProtectedEncryptedBackupRestore(
+        {
+          source: 'D:\\backups\\uncertain.cvkx',
+          expectedVaultId: VAULT_ID,
+          store,
+          openVerification,
+        },
+        { restoreArchive },
+      );
+      const caught = await operation.catch((error: unknown) => error);
+      expect(caught).toBeInstanceOf(CliBackupRestoreError);
+      if (!(caught instanceof CliBackupRestoreError)) {
+        throw new Error('Expected a safe backup restore error.');
+      }
+      expect(caught.code).toBe('BACKUP_COMMIT_UNCERTAIN');
+      expect(caught.message).toContain('Preserve the archive and isolated target');
+      expect(caught.message).not.toContain(PLAINTEXT_CANARY);
+      expect([...archive]).toEqual(Array.from({ length: archive.length }, () => 0));
+    } finally {
+      archive.fill(0);
+    }
+  });
+});
+
 function createSnapshot(
   vault: VaultRecord,
   records:
@@ -623,4 +804,56 @@ async function createFixture(): Promise<{
     updatedAt: CREATED_AT,
   });
   return { rootKey, vault, group };
+}
+
+async function createAuthenticatedArchive(
+  fixture: Awaited<ReturnType<typeof createFixture>>,
+): Promise<{
+  archive: Buffer;
+  summary: Awaited<ReturnType<typeof verifyEncryptedBackup>>;
+  verification: ReturnType<typeof restoreKnownRecordsVerificationV1Schema.parse>;
+}> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of createEncryptedBackup(
+    {
+      vault: fixture.vault,
+      records: values([{ kind: 'group', record: fixture.group }]),
+      createdAt: CREATED_AT,
+      limits: { maximumBytes: 1024 * 1024, maximumRecords: 10 },
+    },
+    fixture.rootKey,
+  )) {
+    chunks.push(Buffer.from(chunk));
+  }
+  const archive = Buffer.concat(chunks);
+  const summary = await verifyEncryptedBackup(
+    values([archive]),
+    fixture.rootKey,
+    VAULT_ID,
+    { maximumBytes: 1024 * 1024, maximumRecords: 10 },
+  );
+  const verification = restoreKnownRecordsVerificationV1Schema.parse({
+    version: 1,
+    scope: 'known-v1-records',
+    vaultId: VAULT_ID,
+    vaultRevision: fixture.vault.revision,
+    restoreSessionId: summary.restoreSessionId,
+    transcriptSha256: summary.transcriptSha256,
+    canonicalEntriesSha256: summary.canonicalEntriesSha256,
+    recordCount: summary.recordCount,
+    selectedSlot: { id: SLOT_ID, type: 'portable-key', keyVersion: 1 },
+    verified: {
+      vaults: 1,
+      groups: 1,
+      items: 0,
+      attachments: 0,
+      attachmentHeaders: 0,
+      attachmentChunks: 0,
+      tombstonePredecessors: { groups: 0, items: 0, attachments: 0 },
+      tombstones: 0,
+      histories: 0,
+      audits: 0,
+    },
+  });
+  return { archive, summary, verification };
 }

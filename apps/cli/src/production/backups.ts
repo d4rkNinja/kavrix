@@ -2,9 +2,12 @@ import {
   BackupError,
   createEncryptedBackup,
   resolveBackupLimits,
+  restoreEncryptedBackup,
   verifyEncryptedBackup,
   type BackupLimits,
+  type BackupRestoreStore,
   type EncryptedBackupEntry,
+  type RestoreVerificationSessionFactory,
 } from '@kavrix/import-export';
 import {
   encryptedGroupRecordSchema,
@@ -30,10 +33,15 @@ import { zeroize, type VaultRootKey } from '@kavrix/crypto';
 
 import {
   CliBackupCreationError,
+  CliBackupRestoreError,
   CliBackupVerificationError,
   CliUsageError,
 } from '../errors.js';
-import type { CliBackupCreateResult, CliBackupVerifyResult } from '../contracts.js';
+import type {
+  CliBackupCreateResult,
+  CliBackupRestoreResult,
+  CliBackupVerifyResult,
+} from '../contracts.js';
 import type { SecretInputPort } from '../secret-input.js';
 import type { SecretBackendPolicy } from './secret-backend.js';
 import { runProductionUnlocked, unwrapRememberedDeviceRootKey } from './unlock.js';
@@ -100,6 +108,14 @@ export interface ProductionBackupVerifyRequest {
   readonly allowInsecureLoopbackDevelopment?: boolean;
 }
 
+export type ProtectedBackupRestoreInput = Readonly<{
+  source: string;
+  expectedVaultId: VaultId;
+  store: BackupRestoreStore;
+  openVerification: RestoreVerificationSessionFactory;
+  limits?: BackupLimits;
+}>;
+
 export interface ProductionBackupCreateDependencies {
   readonly validateDestination: typeof validateSecureFileDestination;
   readonly runUnlocked: typeof runProductionUnlocked;
@@ -118,6 +134,12 @@ export interface ProductionBackupVerifyDependencies {
   readonly unwrapRootKey: typeof unwrapRememberedDeviceRootKey;
 }
 
+export interface ProtectedBackupRestoreDependencies {
+  readonly validateSource: typeof validateSecureFileSource;
+  readonly readSource: typeof readSecureFile;
+  readonly restoreArchive: typeof restoreEncryptedBackup;
+}
+
 const DEFAULT_DEPENDENCIES: ProductionBackupCreateDependencies = {
   validateDestination: validateSecureFileDestination,
   runUnlocked: runProductionUnlocked,
@@ -131,6 +153,12 @@ const DEFAULT_VERIFY_DEPENDENCIES: ProductionBackupVerifyDependencies = {
   verifyArchive: verifyEncryptedBackup,
   runUnlocked: runProductionUnlocked,
   unwrapRootKey: unwrapRememberedDeviceRootKey,
+};
+
+const DEFAULT_RESTORE_DEPENDENCIES: ProtectedBackupRestoreDependencies = {
+  validateSource: validateSecureFileSource,
+  readSource: readSecureFile,
+  restoreArchive: restoreEncryptedBackup,
 };
 
 /**
@@ -293,6 +321,64 @@ export async function executeProductionBackupVerify(
       throw new CliBackupVerificationError('BACKUP_INVALID');
     }
     throw error;
+  }
+}
+
+/**
+ * Composes protected archive I/O with the canonical isolated restore
+ * coordinator. The target store and slot-verification factory are explicit
+ * ports so this CLI layer never imports MongoDB or receives plaintext keys.
+ */
+export async function executeProtectedEncryptedBackupRestore(
+  input: ProtectedBackupRestoreInput,
+  overrides: Partial<ProtectedBackupRestoreDependencies> = {},
+): Promise<CliBackupRestoreResult> {
+  const dependencies = { ...DEFAULT_RESTORE_DEPENDENCIES, ...overrides };
+  const source = validateDestinationPath(input.source);
+  const limits = resolveCliBackupLimits(input.limits);
+  try {
+    await dependencies.validateSource(source, limits.maximumBytes);
+  } catch (error) {
+    if (error instanceof PortableKeyFileError) {
+      throw new CliBackupRestoreError('BACKUP_INVALID');
+    }
+    throw error;
+  }
+
+  let archive: Buffer | undefined;
+  try {
+    archive = await dependencies.readSource(source, limits.maximumBytes);
+    const restored = await dependencies.restoreArchive(
+      oneChunk(archive),
+      input.expectedVaultId,
+      input.store,
+      input.openVerification,
+      limits,
+    );
+    return {
+      action:
+        restored.disposition === 'verified-and-committed'
+          ? 'restored'
+          : 'already-committed',
+      vaultId: restored.backup.header.vaultId,
+      recordCount: restored.backup.recordCount,
+      bytes: archive.byteLength,
+      restoreSessionId: restored.backup.restoreSessionId,
+      ...(restored.disposition === 'verified-and-committed'
+        ? { selectedSlotId: restored.verification.selectedSlot.id }
+        : {}),
+    };
+  } catch (error) {
+    if (error instanceof CliBackupRestoreError) throw error;
+    if (error instanceof BackupError) {
+      throw new CliBackupRestoreError(error.code);
+    }
+    if (error instanceof PortableKeyFileError) {
+      throw new CliBackupRestoreError('BACKUP_INVALID');
+    }
+    throw new CliBackupRestoreError();
+  } finally {
+    archive?.fill(0);
   }
 }
 

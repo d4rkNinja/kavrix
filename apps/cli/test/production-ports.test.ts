@@ -20,7 +20,6 @@ import {
   type ProductionPortsOptions,
   type ProductionVaultSession,
 } from '../src/production/ports.js';
-import { CliUnavailableError } from '../src/errors.js';
 import { showFixture } from './fixtures.js';
 
 describe('production CLI ports', () => {
@@ -223,6 +222,7 @@ describe('production CLI ports', () => {
         events.push('show');
         return Promise.resolve(fixture);
       },
+      copy: () => Promise.reject(new Error('copy should not run')),
       lock: () => {
         events.push('lock');
         return Promise.resolve();
@@ -248,6 +248,7 @@ describe('production CLI ports', () => {
       },
       synchronize,
       show: () => Promise.reject(new Error('show should not run')),
+      copy: () => Promise.reject(new Error('copy should not run')),
       lock: () => {
         events.push('lock');
         return Promise.resolve();
@@ -278,6 +279,7 @@ describe('production CLI ports', () => {
       unlockRememberedDevice: () => Promise.resolve(),
       synchronize: () => Promise.reject(operationFailure),
       show,
+      copy: () => Promise.reject(new Error('copy should not run')),
       lock: () => {
         events.push('lock');
         return Promise.reject(cleanupFailure);
@@ -297,14 +299,34 @@ describe('production CLI ports', () => {
     expect(events).toEqual(['open-store', 'open', 'lock']);
   });
 
-  it('fails copy closed before opening or unlocking a session', async () => {
+  it('opens, unlocks, copies, and locks through the production session', async () => {
     const events: string[] = [];
-    const options = productionOptions(events);
+    const copy = vi.fn(() => {
+      events.push('copy');
+      return Promise.resolve({ label: 'Password', clearAfterSeconds: 30 });
+    });
+    const options = productionOptions(events, {
+      unlockRememberedDevice: () => {
+        events.push('unlock');
+        return Promise.resolve();
+      },
+      synchronize: () => {
+        events.push('sync');
+        return Promise.resolve({});
+      },
+      show: () => Promise.reject(new Error('show should not run')),
+      copy,
+      lock: () => {
+        events.push('lock');
+        return Promise.resolve();
+      },
+    });
 
     await expect(
       createProductionPorts(options).copy('group', 'item', 'password'),
-    ).rejects.toEqual(new CliUnavailableError('copy'));
-    expect(events).toEqual([]);
+    ).resolves.toEqual({ label: 'Password', clearAfterSeconds: 30 });
+    expect(copy).toHaveBeenCalledWith('group', 'item', 'password', {});
+    expect(events).toEqual(['open-store', 'open', 'unlock', 'sync', 'copy', 'lock']);
   });
 });
 
@@ -318,6 +340,15 @@ function productionOptions(
 } {
   const vaultId = vaultIdSchema.parse('vault.primary');
   const deviceId = deviceIdSchema.parse('device.primary');
+  const environment: ProductionPortsOptions['environment'] = {
+    openSyncStore: () => {
+      events.push('open-store');
+      return Promise.resolve({
+        listPendingMutations: () => Promise.resolve([{} as never, {} as never]),
+      } as never);
+    },
+    clipboard: {} as never,
+  };
   return {
     profile: {
       version: 1,
@@ -337,15 +368,7 @@ function productionOptions(
         purpose: 'api-session',
       }),
     },
-    environment: {
-      openSyncStore: () => {
-        events.push('open-store');
-        return Promise.resolve({
-          listPendingMutations: () => Promise.resolve([{} as never, {} as never]),
-        } as never);
-      },
-      clipboard: {} as never,
-    } as never,
+    environment,
     secrets: {
       sessions: {} as never,
       keychain: {} as never,

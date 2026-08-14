@@ -27,6 +27,7 @@ export type CliDependencies = Readonly<{
   ports: CliUseCasePorts;
   secrets: SecretInputPort;
   initialization?: CliInitializationDependencies;
+  environment?: Readonly<Record<string, string | undefined>>;
   runtime: CliRuntime;
 }>;
 
@@ -75,6 +76,8 @@ function createProgram(
     ...(dependencies.environment === undefined
       ? {}
       : { environment: dependencies.environment }),
+    stdin: runtime.stdin,
+    stderr: runtime.stderr,
     stdout: runtime.stdout,
     stdoutIsTty:
       (runtime.stdout as Writable & Readonly<{ isTTY?: boolean }>).isTTY === true,

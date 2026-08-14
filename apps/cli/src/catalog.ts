@@ -1,4 +1,4 @@
-import type { Writable } from 'node:stream';
+import type { Readable, Writable } from 'node:stream';
 
 import { Command } from 'commander';
 import {
@@ -15,7 +15,7 @@ import {
 import { z } from 'zod';
 import type { VaultRootKey } from '@kavrix/crypto';
 import type { SqliteSyncLocalStore } from '@kavrix/local-store';
-import { lifecycleOperationIdSchema, type LifecycleOperationId } from '@kavrix/client';
+import type { LifecycleOperationId } from '@kavrix/client/cli-contracts';
 
 import {
   cliKeySlotListSchema,
@@ -86,6 +86,8 @@ export type CliCommandContext = Readonly<{
   initialization?: CliInitializationDependencies;
   productionStatus?: ProductionStatusCallback;
   environment?: Readonly<Record<string, string | undefined>>;
+  stdin: Readable;
+  stderr: Writable;
   stdout: Writable;
   stdoutIsTty: boolean;
 }>;
@@ -451,7 +453,7 @@ const keyCommand: CliCommandDescriptor = Object.freeze({
             rejectRotationStdinCollision(options);
             const operation: PortableKeyRotationOperation = {
               kind: 'resume',
-              operationId: parseRotationOperationId(arguments_[0]),
+              operationId: await parseRotationOperationId(arguments_[0]),
               replacementFile: {
                 path: requiredOption(
                   options,
@@ -590,6 +592,14 @@ const initializationCommand: CliCommandDescriptor = Object.freeze({
         ? startVaultInitialization(deps, secrets, startOptions)
         : startVaultInitialization(deps, secrets, startOptions, serverUrl),
     );
+    if (context.initialization === undefined && context.environment !== undefined) {
+      const { executeProductionSync } = await import('./production/sync.js');
+      await executeProductionSync({
+        environment: context.environment,
+        secrets,
+        backendPolicy: parseStatusBackendPolicy(options),
+      });
+    }
     context.stdout.write(renderInitializationReceipt(receipt));
   },
 });
@@ -699,7 +709,7 @@ const recoverCommand: CliCommandDescriptor = Object.freeze({
           options,
           context.environment ?? process.env,
         );
-        const operationId = parseRecoveryOperationId(arguments_[0]);
+        const operationId = await parseRecoveryOperationId(arguments_[0]);
         const source = parseRecoverySourceOptions(options, true);
         if (source.inviteFromStdin) {
           throw new CliUsageError(
@@ -749,7 +759,7 @@ const recoverCommand: CliCommandDescriptor = Object.freeze({
         }
         const { executeProductionRecoveryCancel } =
           await import('./production/recovery.js');
-        const operationId = parseRecoveryOperationId(arguments_[0]);
+        const operationId = await parseRecoveryOperationId(arguments_[0]);
         await executeProductionRecoveryCancel({
           environment: context.environment,
           secrets: secretInput(context, 'recover'),
@@ -2284,19 +2294,22 @@ const showCommand: CliCommandDescriptor = Object.freeze({
       rawResult = await context.ports.show(groupQuery, credentialQuery);
     } else {
       const { executeProductionShow } = await import('./production/show.js');
+      const { projectCredentialShow } = await import('@kavrix/client/cli-contracts');
       await withUnlockedVault(
         context,
         'show',
         options,
         async (unlocked, store, rootKey) => {
-          rawResult = await executeProductionShow(
-            {
-              source: store,
-              vaultId: unlocked.profile.vaultId,
-              rootKey,
-            },
-            groupQuery,
-            credentialQuery,
+          rawResult = projectCredentialShow(
+            await executeProductionShow(
+              {
+                source: store,
+                vaultId: unlocked.profile.vaultId,
+                rootKey,
+              },
+              groupQuery,
+              credentialQuery,
+            ),
           );
         },
       );
@@ -2805,6 +2818,56 @@ const backupCommand: CliCommandDescriptor = Object.freeze({
         );
       },
     },
+    {
+      name: 'restore',
+      description: 'Restore one authenticated archive into an isolated target.',
+      options: [
+        {
+          flags: '--file <path>',
+          description: 'Existing archive path; it is opened read-only.',
+        },
+        vaultOption,
+        {
+          flags: '--slot <slot-id>',
+          description: 'Exact archived portable, passphrase, or recovery slot to use.',
+        },
+        jsonOption,
+        secretBackendOption,
+        backendPassphraseStdinOption,
+      ],
+      execute: async (context, _arguments, options) => {
+        const { parseBackupRestoreRequest, parseBackupRestoreResult } =
+          await import('./contracts.js');
+        const request = parseBackupRestoreRequest({
+          source: requiredOption(options, 'file', 'backup archive'),
+          ...(options['vault'] === undefined
+            ? {}
+            : {
+                vaultId: parseInputString(options, 'vault', (value) =>
+                  vaultIdSchema.parse(value),
+                ),
+              }),
+          ...(options['slot'] === undefined
+            ? {}
+            : {
+                slotId: parseInputString(options, 'slot', (value) =>
+                  keySlotIdSchema.parse(value),
+                ),
+              }),
+        });
+        if (context.ports?.restoreBackup === undefined) {
+          throw new CliUnavailableError('backup restore');
+        }
+        const raw = await context.ports.restoreBackup(request);
+        const { renderBackupRestore } = await import('./render.js');
+        context.stdout.write(
+          renderBackupRestore(
+            parseBackupRestoreResult(raw),
+            optionBoolean(options, 'json'),
+          ),
+        );
+      },
+    },
   ],
 });
 
@@ -3192,10 +3255,19 @@ export const PUBLIC_CLI_COMMAND_CATALOG: readonly CliCommandDescriptor[] =
     revealCommand,
     getCommand,
     syncCommand,
-    backupCommand,
+    publicBackupCommand(),
     publicDeviceCommand(),
     completionCommand(() => PUBLIC_CLI_COMMAND_CATALOG),
   ]);
+
+function publicBackupCommand(): CliCommandDescriptor {
+  const children = backupCommand.children;
+  if (children === undefined) throw new Error('The backup catalog is incomplete');
+  return Object.freeze({
+    ...backupCommand,
+    children: Object.freeze(children.filter(({ name }) => name !== 'restore')),
+  });
+}
 
 function publicDeviceCommand(): CliCommandDescriptor {
   const device = CLI_COMMAND_CATALOG.find((descriptor) => descriptor.name === 'device');
@@ -3383,7 +3455,10 @@ function parseRecoverySourceOptions(
   };
 }
 
-function parseRecoveryOperationId(value: string | undefined): LifecycleOperationId {
+async function parseRecoveryOperationId(
+  value: string | undefined,
+): Promise<LifecycleOperationId> {
+  const { lifecycleOperationIdSchema } = await import('@kavrix/client/cli-contracts');
   const parsed = lifecycleOperationIdSchema.safeParse(
     requiredArgument(value, 'operation ID'),
   );
@@ -3435,7 +3510,10 @@ async function executeRecoveryStart(
   return parseRecoverResult(raw);
 }
 
-function parseRotationOperationId(value: string | undefined): LifecycleOperationId {
+async function parseRotationOperationId(
+  value: string | undefined,
+): Promise<LifecycleOperationId> {
+  const { lifecycleOperationIdSchema } = await import('@kavrix/client/cli-contracts');
   const parsed = lifecycleOperationIdSchema.safeParse(
     requiredArgument(value, 'operation ID'),
   );
@@ -4190,6 +4268,7 @@ async function withInitialization<Output>(
       environment: context.environment,
       secrets: secretInput(context, 'init'),
       backendPolicy,
+      terminal: { input: context.stdin, output: context.stderr },
       keyFilePassphraseFromStdin: optionBoolean(options, 'keyFilePassphraseStdin'),
       ...(serverUrl !== undefined ? { serverUrl } : {}),
     },

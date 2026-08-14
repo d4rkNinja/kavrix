@@ -2,7 +2,7 @@ import type {
   CredentialCopyReceipt,
   CredentialShowField,
   CredentialShowNote,
-} from '@kavrix/client';
+} from '@kavrix/client/cli-contracts';
 import {
   isSensitiveFieldType,
   type DeviceListPageResponse,
@@ -14,6 +14,7 @@ import {
 import type {
   CliConnectResult,
   CliBackupCreateResult,
+  CliBackupRestoreResult,
   CliBackupVerifyResult,
   CliConflict,
   CliConflictResolutionResult,
@@ -144,6 +145,25 @@ export function renderBackupVerify(
   };
   if (json) return safeJson(safe);
   return `Encrypted backup verified for vault ${safe.vaultId} (${String(safe.recordCount)} records, ${String(safe.bytes)} bytes; created ${safe.createdAt}).\n`;
+}
+
+export function renderBackupRestore(
+  result: CliBackupRestoreResult,
+  json: boolean,
+): string {
+  const safe = {
+    action: result.action,
+    vaultId: sanitizeTerminalText(result.vaultId),
+    recordCount: result.recordCount,
+    bytes: result.bytes,
+    restoreSessionId: sanitizeTerminalText(result.restoreSessionId),
+    ...(result.selectedSlotId === undefined
+      ? {}
+      : { selectedSlotId: sanitizeTerminalText(result.selectedSlotId) }),
+  };
+  if (json) return safeJson(safe);
+  const verb = result.action === 'restored' ? 'restored' : 'was already restored';
+  return `Encrypted backup ${verb} for vault ${safe.vaultId} (${String(safe.recordCount)} records, ${String(safe.bytes)} bytes).\n`;
 }
 
 export function renderDeviceJoin(result: CliRecoverResult, json: boolean): string {

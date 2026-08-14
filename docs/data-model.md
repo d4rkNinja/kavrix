@@ -301,8 +301,12 @@ identify vault, opaque entity, operation class, sequence/revision, ciphertext
 hash, and timestamp only when synchronization requires it. Plaintext field
 names, values, diffs, names, or notes never appear in the outer event.
 
-History stores versioned encrypted item/group payloads and can report changed
-field labels only after local decryption. Retention and purge are explicit.
+History stores versioned encrypted item snapshots and can report changed field
+labels only after local decryption. Known-v1 restore validates the snapshot's
+item/vault/group identity, revision, and outer ciphertext hash with the item
+key. The documented v1 audit payload records key-slot create/revoke state and
+is validated against the archived slot metadata under the vault root key.
+Retention and purge are explicit.
 
 ## MongoDB collections
 

@@ -36,6 +36,14 @@ export interface ProductionEnvironment {
   close(): Promise<void>;
 }
 
+/** Resources required by ordinary command-only unlocked operations. */
+export interface ProductionCommandEnvironment {
+  readonly profiles: SqliteVaultProfileStore;
+  readonly clipboard: SecureClipboard;
+  openSyncStore(profile: VaultProfile): Promise<SqliteSyncLocalStore>;
+  close(): Promise<void>;
+}
+
 /** Resources needed by the locked, local-only status vertical slice. */
 export interface ProductionStatusEnvironment {
   readonly profiles: SqliteVaultProfileStore;
@@ -64,6 +72,16 @@ export type ProductionStatusEnvironmentDependencies = Pick<
   | 'openSyncStore'
 >;
 
+export type ProductionCommandEnvironmentDependencies = Pick<
+  ProductionEnvironmentDependencies,
+  | 'ensureDataDirectory'
+  | 'acquireLease'
+  | 'recoverLease'
+  | 'openProfiles'
+  | 'openSyncStore'
+  | 'createClipboard'
+>;
+
 const DEFAULT_DEPENDENCIES: ProductionEnvironmentDependencies = {
   ensureDataDirectory,
   acquireLease: acquireLocalWriterLease,
@@ -82,6 +100,15 @@ const DEFAULT_STATUS_DEPENDENCIES: ProductionStatusEnvironmentDependencies = {
   recoverLease: recoverStaleLocalWriterLease,
   openProfiles: openSqliteVaultProfileStore,
   openSyncStore: openSqliteSyncLocalStore,
+};
+
+const DEFAULT_COMMAND_DEPENDENCIES: ProductionCommandEnvironmentDependencies = {
+  ensureDataDirectory,
+  acquireLease: acquireLocalWriterLease,
+  recoverLease: recoverStaleLocalWriterLease,
+  openProfiles: openSqliteVaultProfileStore,
+  openSyncStore: openSqliteSyncLocalStore,
+  createClipboard: createSecureClipboard,
 };
 
 export async function openProductionEnvironment(
@@ -168,6 +195,72 @@ export async function openProductionEnvironment(
           () => ownedRotationJournal.close(),
           () => ownedJoinJournal.close(),
           () => ownedInitializationJournal.close(),
+          () => ownedProfiles.close(),
+          () => secrets.close(),
+          () => ownedLease.release(),
+        ]);
+        if (failures.length > 0) throw closeFailure(failures);
+      })();
+      return closePromise;
+    },
+  };
+}
+
+/**
+ * Opens only the resources needed by ordinary command-only operations.
+ * Lifecycle journals are deliberately excluded: they are owned by init,
+ * recovery, and rotation flows and must not be reopened by every unlock.
+ */
+export async function openProductionCommandEnvironment(
+  paths: CliDataPaths,
+  secrets: SecretBackend,
+  dependencies: ProductionCommandEnvironmentDependencies = DEFAULT_COMMAND_DEPENDENCIES,
+): Promise<ProductionCommandEnvironment> {
+  let lease: LocalWriterLease | undefined;
+  let profiles: SqliteVaultProfileStore | undefined;
+  let clipboard: SecureClipboard | undefined;
+  try {
+    await dependencies.ensureDataDirectory(paths.home);
+    lease = await acquireGlobalLease(paths.writerLease, dependencies);
+    profiles = await dependencies.openProfiles({ path: paths.profileStore });
+    clipboard = dependencies.createClipboard();
+  } catch (openFailure) {
+    const cleanupOperations: (() => unknown)[] = [];
+    if (clipboard !== undefined) {
+      const acquired = clipboard;
+      cleanupOperations.push(() => acquired.dispose());
+    }
+    if (profiles !== undefined) {
+      const acquired = profiles;
+      cleanupOperations.push(() => acquired.close());
+    }
+    cleanupOperations.push(() => secrets.close());
+    if (lease !== undefined) {
+      const acquired = lease;
+      cleanupOperations.push(() => acquired.release());
+    }
+    const cleanupFailures = await cleanup(cleanupOperations);
+    if (cleanupFailures.length > 0) {
+      throw closeFailure([openFailure, ...cleanupFailures]);
+    }
+    throw openFailure;
+  }
+
+  const ownedProfiles = requiredResource(profiles);
+  const ownedClipboard = requiredResource(clipboard);
+  const ownedLease = requiredResource(lease);
+  const syncStores = createSyncStoreCache(paths, dependencies.openSyncStore);
+  let closePromise: Promise<void> | undefined;
+
+  return {
+    profiles: ownedProfiles,
+    clipboard: ownedClipboard,
+    openSyncStore: syncStores.open,
+    close: () => {
+      closePromise ??= (async () => {
+        const failures = await cleanup([
+          ...syncStores.closeOperations(),
+          () => ownedClipboard.dispose(),
           () => ownedProfiles.close(),
           () => secrets.close(),
           () => ownedLease.release(),
