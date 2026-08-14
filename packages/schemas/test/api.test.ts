@@ -21,6 +21,7 @@ import {
   encryptedGroupRecordSchema,
   encryptedItemRecordSchema,
   healthResponseSchema,
+  readinessResponseSchema,
   inviteIssueRequestSchema,
   inviteIssueResponseSchema,
   inviteListPageResponseSchema,
@@ -117,6 +118,20 @@ describe('API wire contracts', () => {
     expect(
       healthResponseSchema.safeParse({ status: 'ok', detail: 'internal' }).success,
     ).toBe(false);
+  });
+
+  it('uses one strict readiness response contract', () => {
+    expect(readinessResponseSchema.parse({ status: 'ready' })).toEqual({
+      status: 'ready',
+    });
+    expect(readinessResponseSchema.parse({ status: 'not_ready' })).toEqual({
+      status: 'not_ready',
+    });
+    expect(
+      readinessResponseSchema.safeParse({ status: 'ready', detail: 'internal' })
+        .success,
+    ).toBe(false);
+    expect(readinessResponseSchema.safeParse({ status: 'ok' }).success).toBe(false);
   });
 
   it('accepts only canonical 256-bit bearer tokens', () => {
