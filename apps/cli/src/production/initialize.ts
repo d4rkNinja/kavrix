@@ -1,3 +1,5 @@
+import { Writable, type Readable } from 'node:stream';
+
 import type {
   VaultInitializationCoordinator,
   LifecycleOperationId,
@@ -38,6 +40,7 @@ export interface ProductionInitializationRequest {
   readonly environment: Readonly<Record<string, string | undefined>>;
   readonly secrets: SecretInputPort;
   readonly backendPolicy: SecretBackendPolicy;
+  readonly terminal?: Readonly<{ input: Readable; output: Writable }>;
   readonly serverUrl?: string;
   readonly keyFilePassphraseFromStdin?: boolean;
   readonly allowInsecureLoopbackDevelopment?: boolean;
@@ -150,9 +153,11 @@ export async function runProductionInitialization<Output>(
       : {}),
   });
 
+  const terminal = request.terminal ?? { input: process.stdin, output: process.stderr };
+  const sensitiveOutput = createSensitiveTerminalOutput(terminal.output);
   const sensitiveDisplay = new NodeSensitiveInitializationDisplay(
-    process.stdin,
-    process.stderr,
+    terminal.input,
+    sensitiveOutput,
   );
 
   const dependencies: CliInitializationDependencies = {
@@ -168,9 +173,13 @@ export async function runProductionInitialization<Output>(
     | Readonly<{ succeeded: true; value: Output }>
     | Readonly<{ succeeded: false; error: unknown }>;
   try {
-    outcome = { succeeded: true, value: await operation(dependencies) };
-  } catch (error) {
-    outcome = { succeeded: false, error };
+    try {
+      outcome = { succeeded: true, value: await operation(dependencies) };
+    } catch (error) {
+      outcome = { succeeded: false, error };
+    }
+  } finally {
+    sensitiveOutput.destroy();
   }
 
   let cleanup:
@@ -194,4 +203,30 @@ export async function runProductionInitialization<Output>(
   }
   if (!outcome.succeeded) throw outcome.error;
   return outcome.value;
+}
+
+/**
+ * Gives the sensitive display an intentional stream identity while preserving
+ * the caller's TTY capability. Direct process stdout/stderr remains refused by
+ * NodeSensitiveInitializationDisplay; production composition opts into this
+ * forwarding stream only after it has selected the terminal output.
+ */
+function createSensitiveTerminalOutput(output: Writable): Writable {
+  const isTTY = (output as Writable & { isTTY?: boolean }).isTTY === true;
+  const proxy = new Writable({
+    write(chunk, encoding, callback) {
+      try {
+        output.write(chunk, encoding, callback);
+      } catch (error) {
+        callback(error instanceof Error ? error : new Error('Terminal write failed.'));
+      }
+    },
+  });
+  Object.defineProperty(proxy, 'isTTY', { value: isTTY, configurable: false });
+  const forwardError = (error: Error): void => {
+    proxy.destroy(error);
+  };
+  output.on('error', forwardError);
+  proxy.once('close', () => output.off('error', forwardError));
+  return proxy;
 }

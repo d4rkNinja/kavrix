@@ -79,6 +79,11 @@ export type CreateEncryptedBackupInput = Readonly<{
   limits?: BackupLimits;
 }>;
 
+export type VerifyEncryptedBackupOptions = Readonly<{
+  /** Observes parsed graph entries; the summary returns only after final auth. */
+  onEntry?: (entry: EncryptedBackupEntry) => void | Promise<void>;
+}>;
+
 export type RestoreVerificationSession = Readonly<{
   readonly vaultRootKey: VaultRootKey;
   readonly selectedSlot: RestoreKnownRecordsVerificationV1['selectedSlot'];
@@ -200,12 +205,23 @@ export async function verifyEncryptedBackup(
   vaultRootKey: VaultRootKey,
   expectedVaultId: VaultId,
   limits?: BackupLimits,
+  options?: VerifyEncryptedBackupOptions,
 ): Promise<BackupVerification> {
   return processEncryptedBackup(
     source,
     expectedVaultId,
     resolveBackupLimits(limits),
-    () => Promise.resolve({ vaultRootKey }),
+    () =>
+      Promise.resolve({
+        vaultRootKey,
+        ...(options?.onEntry === undefined
+          ? {}
+          : {
+              onEntry: async (entry: EncryptedBackupEntry): Promise<void> => {
+                await options.onEntry?.(entry);
+              },
+            }),
+      }),
   );
 }
 

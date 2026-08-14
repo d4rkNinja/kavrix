@@ -2,7 +2,7 @@ import type {
   CredentialCopyReceipt,
   CredentialShowField,
   CredentialShowNote,
-} from '@kavrix/client';
+} from '@kavrix/client/cli-contracts';
 import {
   isSensitiveFieldType,
   type DeviceListPageResponse,
@@ -13,6 +13,9 @@ import {
 
 import type {
   CliConnectResult,
+  CliBackupCreateResult,
+  CliBackupRestoreResult,
+  CliBackupVerifyResult,
   CliConflict,
   CliConflictResolutionResult,
   CliKeySlot,
@@ -113,6 +116,56 @@ export function renderRecover(result: CliRecoverResult, json: boolean): string {
   return `Vault recovered ${safe.vaultId} on device ${safe.deviceId}.\n`;
 }
 
+export function renderBackupCreate(
+  result: CliBackupCreateResult,
+  json: boolean,
+): string {
+  const safe = {
+    action: result.action,
+    vaultId: sanitizeTerminalText(result.vaultId),
+    recordCount: result.recordCount,
+    bytes: result.bytes,
+  };
+  if (json) return safeJson(safe);
+  return `Encrypted backup created for vault ${safe.vaultId} (${String(safe.recordCount)} records, ${String(safe.bytes)} bytes).\n`;
+}
+
+export function renderBackupVerify(
+  result: CliBackupVerifyResult,
+  json: boolean,
+): string {
+  const safe = {
+    action: result.action,
+    vaultId: sanitizeTerminalText(result.vaultId),
+    recordCount: result.recordCount,
+    bytes: result.bytes,
+    schemaVersion: result.schemaVersion,
+    createdAt: result.createdAt,
+    restoreSessionId: sanitizeTerminalText(result.restoreSessionId),
+  };
+  if (json) return safeJson(safe);
+  return `Encrypted backup verified for vault ${safe.vaultId} (${String(safe.recordCount)} records, ${String(safe.bytes)} bytes; created ${safe.createdAt}).\n`;
+}
+
+export function renderBackupRestore(
+  result: CliBackupRestoreResult,
+  json: boolean,
+): string {
+  const safe = {
+    action: result.action,
+    vaultId: sanitizeTerminalText(result.vaultId),
+    recordCount: result.recordCount,
+    bytes: result.bytes,
+    restoreSessionId: sanitizeTerminalText(result.restoreSessionId),
+    ...(result.selectedSlotId === undefined
+      ? {}
+      : { selectedSlotId: sanitizeTerminalText(result.selectedSlotId) }),
+  };
+  if (json) return safeJson(safe);
+  const verb = result.action === 'restored' ? 'restored' : 'was already restored';
+  return `Encrypted backup ${verb} for vault ${safe.vaultId} (${String(safe.recordCount)} records, ${String(safe.bytes)} bytes).\n`;
+}
+
 export function renderDeviceJoin(result: CliRecoverResult, json: boolean): string {
   const safe = {
     operationId: sanitizeTerminalText(result.operationId),
@@ -164,6 +217,33 @@ export function renderKeySlotResult(result: CliKeySlotResult, json: boolean): st
   };
   if (json) return safeJson(safe);
   return `Unlock slot ${safe.slot.id} ${safe.action}.\n`;
+}
+
+export function renderDeviceKeyAction(
+  result: CliKeySlotResult,
+  action: 'remembered' | 'forgotten',
+  json: boolean,
+): string {
+  const safe = {
+    action,
+    slot: {
+      id: sanitizeTerminalText(result.slot.id),
+      type: result.slot.type,
+      state: result.slot.state,
+      keyVersion: result.slot.keyVersion,
+      createdAt: result.slot.createdAt,
+      ...(result.slot.revokedAt === undefined
+        ? {}
+        : { revokedAt: result.slot.revokedAt }),
+      ...(result.slot.deviceId === undefined
+        ? {}
+        : { deviceId: sanitizeTerminalText(result.slot.deviceId) }),
+    },
+  };
+  if (json) return safeJson(safe);
+  return action === 'remembered'
+    ? `Device remembered in the native keychain (unlock slot ${safe.slot.id}); API session credentials unchanged.\n`
+    : `Device unlock slot ${safe.slot.id} forgotten locally; remote slot and API session credentials unchanged.\n`;
 }
 
 export function renderPortableKeyRotation(

@@ -1,5 +1,5 @@
 import { AmbiguousNameError, NotFoundError } from '@kavrix/core';
-import { lifecycleOperationIdSchema, type LifecycleOperationId } from '@kavrix/client';
+import { lifecycleOperationIdSchema } from '@kavrix/client';
 import {
   apiBearerTokenSchema,
   deviceIdSchema,
@@ -7,8 +7,11 @@ import {
   encodeControlListCursor,
   inviteIssueResponseSchema,
   inviteIdSchema,
+  keySlotIdSchema,
   publicDeviceRecordSchema,
   publicInviteRecordSchema,
+  schemaVersionSchema,
+  sha256DigestSchema,
   vaultIdSchema,
 } from '@kavrix/schemas';
 import { Readable, Writable } from 'node:stream';
@@ -26,6 +29,7 @@ import {
   type SecretInputPort,
 } from '../src/index.js';
 import { NOTE_CANARY, PUBLIC_CANARY, SECRET_CANARY, showFixture } from './fixtures.js';
+import { cliKeySlotResultSchema } from '../src/contracts.js';
 
 const TOKEN = apiBearerTokenSchema.parse('A'.repeat(43));
 const ACQUIRED_TOKEN = acquiredSecretSchema.parse(TOKEN);
@@ -654,6 +658,92 @@ describe('CLI command shell', () => {
     expect(revokeDevice).toHaveBeenCalledWith('vault.primary', 'device.primary');
   });
 
+  it('remembers a device through a generated device-key slot without touching session credentials', async () => {
+    const result = cliKeySlotResultSchema.parse({
+      action: 'created',
+      slot: {
+        id: 'slot.device.remembered',
+        type: 'device-key',
+        state: 'active',
+        keyVersion: 1,
+        createdAt: '2026-08-10T00:00:00.000Z',
+        deviceId: 'device.primary',
+      },
+    });
+    const createKeySlot = vi.fn((operation: unknown) => {
+      expect(operation).toMatchObject({
+        kind: 'create',
+        slotType: 'device-key',
+        reauthentication: { kind: 'portable-key', formattedKey: PORTABLE_KEY },
+      });
+      return Promise.resolve(result);
+    });
+    const read = vi.fn(() => Promise.resolve(ACQUIRED_PORTABLE_KEY));
+    const remembered = await execute(
+      ['device', 'remember', '--reauth', 'portable-key'],
+      { createKeySlot },
+      { read, readBatch: () => Promise.reject(new Error('Unexpected secret batch')) },
+    );
+    expect(remembered.exitCode).toBe(CLI_EXIT_CODES.success);
+    expect(remembered.stdout).toContain('Device remembered in the native keychain');
+    expect(remembered.stdout).toContain('API session credentials unchanged');
+    expect(remembered.stdout).not.toContain(PORTABLE_KEY);
+    expect(read).toHaveBeenCalledWith({ kind: 'portable-key', fromStdin: false });
+  });
+
+  it('forgets only the explicitly addressed device-key slot and keeps the remote/session records unchanged', async () => {
+    const result = cliKeySlotResultSchema.parse({
+      action: 'disabled',
+      slot: {
+        id: 'slot.device.forgotten',
+        type: 'device-key',
+        state: 'active',
+        keyVersion: 1,
+        createdAt: '2026-08-10T00:00:00.000Z',
+        deviceId: 'device.primary',
+      },
+    });
+    const disableKeySlot = vi.fn((slotId: string) => {
+      expect(slotId).toBe('slot.device.forgotten');
+      return Promise.resolve(result);
+    });
+    const forgotten = await execute(
+      [
+        'device',
+        'forget',
+        'slot.device.forgotten',
+        '--reauth',
+        'portable-key',
+        '--json',
+      ],
+      { disableKeySlot },
+      {
+        read: () => Promise.resolve(ACQUIRED_PORTABLE_KEY),
+        readBatch: () => Promise.reject(new Error('Unexpected secret batch')),
+      },
+    );
+    expect(forgotten.exitCode).toBe(CLI_EXIT_CODES.success);
+    expect(JSON.parse(forgotten.stdout)).toEqual({
+      action: 'forgotten',
+      slot: result.slot,
+    });
+    expect(forgotten.stdout).not.toContain(PORTABLE_KEY);
+    expect(disableKeySlot).toHaveBeenCalledWith('slot.device.forgotten');
+  });
+
+  it('rejects device forget without an exact slot ID before reading reauthentication', async () => {
+    const disableKeySlot = vi.fn(() => Promise.resolve({} as never));
+    const read = vi.fn(() => Promise.resolve(ACQUIRED_PORTABLE_KEY));
+    const result = await execute(
+      ['device', 'forget', '--reauth', 'portable-key'],
+      { disableKeySlot },
+      { read, readBatch: () => Promise.reject(new Error('Unexpected secret batch')) },
+    );
+    expect(result.exitCode).toBe(CLI_EXIT_CODES.usage);
+    expect(disableKeySlot).not.toHaveBeenCalled();
+    expect(read).not.toHaveBeenCalled();
+  });
+
   it('shapes join input from a masked prompt or explicit stdin and never prints secrets', async () => {
     const reads: boolean[] = [];
     const secrets: SecretInputPort = {
@@ -753,9 +843,7 @@ describe('CLI command shell', () => {
   it('recovers through the injected use case without placing secrets in output', async () => {
     const recover = vi.fn(() =>
       Promise.resolve({
-        operationId: lifecycleOperationIdSchema.parse(
-          'operation.recover.cli.0001',
-        ) as LifecycleOperationId,
+        operationId: lifecycleOperationIdSchema.parse('operation.recover.cli.0001'),
         vaultId: vaultIdSchema.parse('vault.recover'),
         deviceId: deviceIdSchema.parse('device.recover'),
       }),
@@ -847,6 +935,10 @@ describe('CLI command shell', () => {
     });
     const deviceListHelp = await execute(['device', 'list', '--help'], { show });
     const deviceRevokeHelp = await execute(['device', 'revoke', '--help'], { show });
+    const deviceRememberHelp = await execute(['device', 'remember', '--help'], {
+      show,
+    });
+    const deviceForgetHelp = await execute(['device', 'forget', '--help'], { show });
     const deviceJoinHelp = await execute(['device', 'join', '--help'], { show });
     const joinHelp = await execute(['device', 'invite', 'join', '--help'], { show });
     const keyHelp = await execute(['key', '--help'], { show });
@@ -864,6 +956,10 @@ describe('CLI command shell', () => {
     expect(inviteCreateHelp.stdout).toContain('--stdout');
     expect(deviceListHelp.stdout).toContain('--cursor <opaque>');
     expect(deviceRevokeHelp.stdout).toContain('--confirm');
+    expect(deviceRememberHelp.stdout).toContain(
+      '--reauth <device-key|portable-key|passphrase|recovery-key>',
+    );
+    expect(deviceForgetHelp.stdout).toContain('<slot-id>');
     expect(deviceJoinHelp.stdout).toContain('--invite-stdin');
     expect(deviceJoinHelp.stdout).toContain('resume');
     expect(help.stdout).not.toContain(runtimeCanary);
@@ -879,11 +975,18 @@ describe('CLI command shell', () => {
 
   it('limits the production bin catalog to commands with real static behavior', async () => {
     const publishedCommands =
-      'version generate totp key init connect recover unlock lock status group credential field note show copy reveal get sync device completion';
+      'version generate totp key init connect recover unlock lock status group credential field note show copy reveal get sync backup device completion';
     expect(PUBLIC_CLI_COMMAND_CATALOG.map(({ name }) => name)).toEqual(
       publishedCommands.split(' '),
     );
     const help = await executePublic(['--help']);
+    const backupHelp = await executePublic(['backup', '--help']);
+    const unavailableRestore = await executePublic([
+      'backup',
+      'restore',
+      '--file',
+      'D:\\backups\\vault.cvkx',
+    ]);
     expect(help.exitCode).toBe(CLI_EXIT_CODES.success);
     expect(
       [...help.stdout.matchAll(/^ {2}([a-z][a-z-]*)(?:\s|$)/gmu)].map(
@@ -894,6 +997,10 @@ describe('CLI command shell', () => {
       expect(help.stdout).toContain(command);
     }
     expect(help.stdout).toContain('device');
+    expect(backupHelp.stdout).toContain('create');
+    expect(backupHelp.stdout).toContain('verify');
+    expect(backupHelp.stdout).not.toContain('restore');
+    expect(unavailableRestore.exitCode).toBe(CLI_EXIT_CODES.usage);
 
     const expectedCompletions = {
       bash: `_creds_complete() { COMPREPLY=( $(compgen -W '${publishedCommands}' -- "\${COMP_WORDS[COMP_CWORD]}") ); }\ncomplete -F _creds_complete creds\n`,
@@ -1100,6 +1207,150 @@ describe('CLI command shell', () => {
     });
     expect(readBatch).not.toHaveBeenCalled();
     expect(joinInvite).not.toHaveBeenCalled();
+  });
+
+  it('creates a backup through the injected port with a bounded redacted receipt', async () => {
+    const createBackup = vi.fn(() =>
+      Promise.resolve({
+        action: 'created' as const,
+        vaultId: vaultIdSchema.parse('vault.primary'),
+        recordCount: 2,
+        bytes: 512,
+      }),
+    );
+
+    const text = await execute(
+      ['backup', 'create', '--file', 'D:\\backups\\vault.cvkx'],
+      { createBackup },
+    );
+    expect(text).toEqual({
+      exitCode: CLI_EXIT_CODES.success,
+      stdout:
+        'Encrypted backup created for vault vault.primary (2 records, 512 bytes).\n',
+      stderr: '',
+    });
+    expect(createBackup).toHaveBeenCalledWith({
+      destination: 'D:\\backups\\vault.cvkx',
+    });
+
+    const json = await execute(
+      ['backup', 'create', '--file', 'D:\\backups\\vault.cvkx', '--json'],
+      { createBackup },
+    );
+    expect(JSON.parse(json.stdout)).toEqual({
+      action: 'created',
+      vaultId: 'vault.primary',
+      recordCount: 2,
+      bytes: 512,
+    });
+    expect(json.stdout).not.toContain('D:\\backups');
+
+    const missing = await execute(['backup', 'create'], { createBackup });
+    expect(missing.exitCode).toBe(CLI_EXIT_CODES.usage);
+    expect(createBackup).toHaveBeenCalledTimes(2);
+  });
+
+  it('verifies a backup through the injected port without printing its path', async () => {
+    const verifyBackup = vi.fn(() =>
+      Promise.resolve({
+        action: 'verified' as const,
+        vaultId: vaultIdSchema.parse('vault.primary'),
+        recordCount: 2,
+        bytes: 512,
+        schemaVersion: schemaVersionSchema.parse(1),
+        createdAt: '2026-08-14T00:00:00.000Z',
+        restoreSessionId: sha256DigestSchema.parse('A'.repeat(43)),
+      }),
+    );
+
+    const text = await execute(
+      ['backup', 'verify', '--file', 'D:\\backups\\vault.cvkx'],
+      { verifyBackup },
+    );
+    expect(text).toEqual({
+      exitCode: CLI_EXIT_CODES.success,
+      stdout:
+        'Encrypted backup verified for vault vault.primary (2 records, 512 bytes; created 2026-08-14T00:00:00.000Z).\n',
+      stderr: '',
+    });
+    expect(verifyBackup).toHaveBeenCalledWith({
+      source: 'D:\\backups\\vault.cvkx',
+    });
+
+    const json = await execute(
+      ['backup', 'verify', '--file', 'D:\\backups\\vault.cvkx', '--json'],
+      { verifyBackup },
+    );
+    expect(JSON.parse(json.stdout)).toEqual({
+      action: 'verified',
+      vaultId: 'vault.primary',
+      recordCount: 2,
+      bytes: 512,
+      schemaVersion: 1,
+      createdAt: '2026-08-14T00:00:00.000Z',
+      restoreSessionId: 'A'.repeat(43),
+    });
+    expect(json.stdout).not.toContain('D:\\backups');
+
+    const missing = await execute(['backup', 'verify'], { verifyBackup });
+    expect(missing.exitCode).toBe(CLI_EXIT_CODES.usage);
+    expect(verifyBackup).toHaveBeenCalledTimes(2);
+  });
+
+  it('restores a backup through the injected isolated-target port without printing its path', async () => {
+    const restoreBackup = vi.fn(() =>
+      Promise.resolve({
+        action: 'restored' as const,
+        vaultId: vaultIdSchema.parse('vault.primary'),
+        recordCount: 2,
+        bytes: 512,
+        restoreSessionId: sha256DigestSchema.parse('A'.repeat(43)),
+        selectedSlotId: keySlotIdSchema.parse('slot.restore.cli0001'),
+      }),
+    );
+
+    const text = await execute(
+      [
+        'backup',
+        'restore',
+        '--file',
+        'D:\\backups\\vault.cvkx',
+        '--vault',
+        'vault.primary',
+        '--slot',
+        'slot.restore.cli0001',
+      ],
+      { restoreBackup },
+    );
+    expect(text).toEqual({
+      exitCode: CLI_EXIT_CODES.success,
+      stdout:
+        'Encrypted backup restored for vault vault.primary (2 records, 512 bytes).\n',
+      stderr: '',
+    });
+    expect(restoreBackup).toHaveBeenCalledWith({
+      source: 'D:\\backups\\vault.cvkx',
+      vaultId: 'vault.primary',
+      slotId: 'slot.restore.cli0001',
+    });
+
+    const json = await execute(
+      ['backup', 'restore', '--file', 'D:\\backups\\vault.cvkx', '--json'],
+      { restoreBackup },
+    );
+    expect(JSON.parse(json.stdout)).toEqual({
+      action: 'restored',
+      vaultId: 'vault.primary',
+      recordCount: 2,
+      bytes: 512,
+      restoreSessionId: 'A'.repeat(43),
+      selectedSlotId: 'slot.restore.cli0001',
+    });
+    expect(json.stdout).not.toContain('D:\\backups');
+
+    const missing = await execute(['backup', 'restore'], { restoreBackup });
+    expect(missing.exitCode).toBe(CLI_EXIT_CODES.usage);
+    expect(restoreBackup).toHaveBeenCalledTimes(2);
   });
 });
 

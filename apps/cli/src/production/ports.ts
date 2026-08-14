@@ -1,6 +1,7 @@
 import {
   VaultClientSession,
   type ControlPlaneClient,
+  type CredentialCopyOptions,
   type CredentialCopyReceipt,
   type VaultProfile,
 } from '@kavrix/client';
@@ -33,7 +34,10 @@ import type {
 } from '../contracts.js';
 import { CliUnavailableError, CliUsageError } from '../errors.js';
 import type { SecretInputPort } from '../secret-input.js';
-import type { ProductionEnvironment } from './environment.js';
+import type {
+  ProductionCommandEnvironment,
+  ProductionEnvironment,
+} from './environment.js';
 import type { SecretBackend } from './secret-backend.js';
 import { productionClock, randomIdempotencyKeys } from './runtime-adapters.js';
 import type { UnlockMethod } from './unlock.js';
@@ -43,7 +47,10 @@ const CLIPBOARD_CLEAR_MS = 30_000;
 
 export interface ProductionPortsOptions {
   readonly profile: VaultProfile;
-  readonly environment: ProductionEnvironment;
+  readonly environment: Pick<
+    ProductionCommandEnvironment,
+    'openSyncStore' | 'clipboard'
+  >;
   readonly secrets: SecretBackend;
   readonly secretsInput?: SecretInputPort;
   readonly unlockMethod?: UnlockMethod;
@@ -74,6 +81,12 @@ export interface ProductionVaultSession {
     }>,
   ): Promise<ResolveSyncConflictResult>;
   show(groupQuery: string, credentialQuery: string): Promise<CliShowResult>;
+  copy(
+    groupQuery: string,
+    credentialQuery: string,
+    fieldQuery: string,
+    options?: CredentialCopyOptions,
+  ): Promise<CredentialCopyReceipt>;
   lock(): Promise<void>;
 }
 
@@ -293,8 +306,16 @@ export function createProductionPorts(
     show: (groupQuery, credentialQuery): Promise<CliShowResult> =>
       withUnlocked((session) => session.show(groupQuery, credentialQuery), true),
 
-    copy: (): Promise<CredentialCopyReceipt> =>
-      Promise.reject(new CliUnavailableError('copy')),
+    copy: (
+      groupQuery: string,
+      credentialQuery: string,
+      fieldQuery: string,
+      copyOptions = {},
+    ): Promise<CredentialCopyReceipt> =>
+      withUnlocked(
+        (session) => session.copy(groupQuery, credentialQuery, fieldQuery, copyOptions),
+        true,
+      ),
 
     listInvitePage: (
       vaultId: VaultId,
