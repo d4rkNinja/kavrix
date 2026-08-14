@@ -115,7 +115,7 @@ production composition with real SQLite/client adapters and an opaque HTTPS fixt
 archive build and Windows launcher smoke also pass, but that smoke does not claim a native-
 keychain or packed online-vault journey; real-adapter interruption/retry/conflict coverage is
 provided by `apps/cli/test/interruption-recovery-acceptance.test.ts`, while recovery/device-B,
-backup/restore, and whole-system canary coverage remain assigned to issues #48-#49.
+backup/restore, and whole-system canary coverage remain separate acceptance gates.
 
 `apps/cli/test/device-b-acceptance.test.ts` verifies the fresh-home Device B journey with
 real SQLite and protected-adapter composition: Device A creates and synchronizes encrypted
@@ -132,3 +132,12 @@ the semantic verifier, and reads exact current records through a fresh storage/s
 The gate also scans the archive and durable BSON for plaintext and credential canaries. It runs
 only when `KAVRIX_MONGODB_URI` selects a transaction-capable replica set; the packed CLI still
 does not accept a MongoDB URI or expose restore without an explicit safe target adapter.
+
+Issue #49 adds the whole-system canary gate in
+`apps/cli/test/basic-vault-acceptance.test.ts`: a runtime-generated credential canary is checked
+across opaque HTTP requests/responses, command arguments/environment, stdout/stderr, captured
+logs, real local artifacts, encrypted backup bytes, completion output, and post-lock clipboard
+state using UTF-8, UTF-16LE, Base64, Base64url, JSON-escaped, and direct forms. The CLI and TUI
+sanitizers also consume 8-bit C1 string commands and neutralize Unicode line separators. The
+focused boundary tests pass; the real local flow remains environment-blocked when Windows ACL
+or native credential-store operations are unavailable.
