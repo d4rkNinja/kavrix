@@ -148,8 +148,11 @@ unprotected key beyond the local device.
 
 ## Create an enrollment invite on Device A
 
-`creds device invite` is available only to an unlocked, currently authorized
-device. The client requests a new invite over authenticated HTTPS. The service:
+`creds device invite create` is available only to an unlocked, currently
+authorized device. The client requests a new invite over authenticated HTTPS.
+The command defaults to a 600-second lifetime and `sync:read,sync:write`; the
+caller may pass bounded `--expires-in-seconds` and repeated `--scope` values.
+The service:
 
 1. generates or accepts only protocol-defined random invite material;
 2. stores a cryptographic hash, vault binding, creator device ID, expiry,
@@ -158,16 +161,15 @@ device. The client requests a new invite over authenticated HTTPS. The service:
 4. rate-limits creation and consumption;
 5. supports revocation before use.
 
-The default lifetime must be short and configured server-side within a bounded
-maximum. Exact duration and entropy are implementation parameters that require
-tests and documentation before release; no unsupported value is asserted here.
-Invite output is masked/one-time, absent from logs, and never placed in a command
+The server remains authoritative for the maximum lifetime, caller scope, and
+rate policy. Invite output is one-time and requires an interactive terminal or
+explicit `--stdout`; it is absent from logs and never placed in a command
 argument. `creds device invite revoke <invite-id>` uses the opaque invite record
-ID, not the secret value.
+ID, not the secret value. `creds device invite list` returns public metadata only.
 
 ## Join on Device B
 
-Canonical interactive flow:
+Canonical interactive flow (available in the packed executable):
 
 ```text
 creds device join --server <url> --vault <vault-id>
@@ -247,11 +249,12 @@ protected keychain, publish the opaque slot revision, and verify the protected
 readback. It stores the canonical profile, initializes protected sync state via
 the first opaque sync, and clears session/device/root buffers best effort.
 
-`creds recover resume <operation-id>` replays the durable join operation and
-finishes an interrupted slot/profile/sync phase. `creds recover cancel
-<operation-id>` removes only a prepared local journal and performs no network
-request. Both commands still require the canonical server/vault identity so a
-local operation cannot be applied to an ambiguous target. Recovery output is
+`creds device join resume <operation-id>` (or the equivalent `recover resume`)
+replays the durable join operation and finishes an interrupted slot/profile/sync
+phase. `creds device join cancel <operation-id>` (or `recover cancel`) removes
+only a prepared local journal and performs no network request. Both commands
+still require the canonical server/vault identity so a local operation cannot be
+applied to an ambiguous target. Device-join/recovery output is
 limited to the opaque operation, vault, and device IDs; invite, portable key,
 session successor, device secret, VRK, and decrypted records are not placed in
 argv, API payloads, logs, or renderer input.

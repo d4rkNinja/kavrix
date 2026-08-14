@@ -4,6 +4,7 @@ import { createServer } from 'node:net';
 import { MongoClient } from 'mongodb';
 import { describe, expect, it } from 'vitest';
 
+import { migrateMongoApiDatabase } from '../src/mongo-operations.js';
 import { apiServiceExitCode, runMongoApiService } from '../src/service.js';
 import { startMongoApiServer } from '../src/server.js';
 
@@ -34,6 +35,15 @@ describeMongo('Mongo API service process composition', () => {
     const uri = requireMongoUri();
     const databaseName = `kavrix_service_test_${randomUUID().replaceAll('-', '')}`;
     const port = await availablePort();
+    const migrationClient = new MongoClient(uri, {
+      appName: 'kavrix-service-test-migrator',
+    });
+    await migrationClient.connect();
+    try {
+      await migrateMongoApiDatabase(migrationClient.db(databaseName));
+    } finally {
+      await migrationClient.close();
+    }
     const signals = new IntegrationSignals();
     const output: string[] = [];
     const running = runMongoApiService({

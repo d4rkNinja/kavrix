@@ -388,10 +388,19 @@ export class MemoryAuthorization implements AuthorizationPort {
     vault: VaultId,
     targetDeviceId: DeviceId,
     revokedAt: Timestamp,
-  ): Promise<boolean> {
+  ): Promise<'revoked' | 'not-found' | 'last-active-device'> {
     const device = this.devices.get(targetDeviceId);
     if (device?.vaultId !== vault) {
-      return Promise.resolve(false);
+      return Promise.resolve('not-found');
+    }
+    if (device.revokedAt !== undefined) {
+      return Promise.resolve('revoked');
+    }
+    const activeCount = [...this.devices.values()].filter(
+      (candidate) => candidate.vaultId === vault && candidate.revokedAt === undefined,
+    ).length;
+    if (activeCount <= 1) {
+      return Promise.resolve('last-active-device');
     }
     this.devices.set(
       targetDeviceId,
@@ -402,7 +411,7 @@ export class MemoryAuthorization implements AuthorizationPort {
         this.sessions.delete(hash);
       }
     }
-    return Promise.resolve(true);
+    return Promise.resolve('revoked');
   }
 
   public seedSession(

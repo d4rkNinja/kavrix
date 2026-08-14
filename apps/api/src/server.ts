@@ -16,6 +16,7 @@ import {
   MongoAuthorizationPort,
   MongoVaultBootstrapPort,
 } from './mongo-persistence.js';
+import { assertMongoApiDatabaseCompatibility } from './mongo-operations.js';
 import { MongoRateLimitPort } from './mongo-rate-limit.js';
 import { NodeTokenPort } from './token.js';
 
@@ -41,6 +42,12 @@ const mongoApiServerConfigSchema = z
   .strict();
 
 export type MongoApiServerConfig = z.infer<typeof mongoApiServerConfigSchema>;
+
+export type MongoApiServerSchemaMode = 'validate' | 'install';
+
+export interface MongoApiServerOptions {
+  readonly schemaMode?: MongoApiServerSchemaMode;
+}
 
 export interface MongoApiServer {
   readonly app: FastifyInstance;
@@ -76,16 +83,21 @@ export function parseMongoApiServerConfig(input: unknown): MongoApiServerConfig 
 export async function createMongoApiServer(
   input: MongoApiServerConfig,
   runtime: MongoApiServerRuntime = defaultMongoApiServerRuntime,
+  options: MongoApiServerOptions = {},
 ): Promise<MongoApiServer> {
   const config = parseMongoApiServerConfig(input);
   const client = runtime.createClient(config.mongodbUri);
   try {
     await client.connect();
     const database = client.db(config.databaseName);
-    await installMongoStorageContracts(database);
-    await installMongoApiContracts(database);
-    await assertMongoStorageCompatibility(database);
-    await assertMongoApiCompatibility(database);
+    if (options.schemaMode === 'install') {
+      await installMongoStorageContracts(database);
+      await installMongoApiContracts(database);
+      await assertMongoStorageCompatibility(database);
+      await assertMongoApiCompatibility(database);
+    } else {
+      await assertMongoApiDatabaseCompatibility(database);
+    }
     const storage = new MongoVaultStorage(client, database);
     const authorization = new MongoAuthorizationPort(client, database);
     const app = runtime.buildApi({
@@ -104,6 +116,14 @@ export async function createMongoApiServer(
         : { trustedProxy: config.trustedProxy }),
       ...(config.bodyLimit === undefined ? {} : { bodyLimit: config.bodyLimit }),
       vaultBootstrapEnabled: config.vaultBootstrapEnabled === true,
+      readiness: async () => {
+        try {
+          await database.command({ ping: 1 });
+          return true;
+        } catch {
+          return false;
+        }
+      },
     });
     app.addHook('onClose', async () => client.close());
     return {
@@ -120,7 +140,9 @@ export async function createMongoApiServer(
 export async function startMongoApiServer(
   input: MongoApiServerConfig,
 ): Promise<StartedMongoApiServer> {
-  const server = await createMongoApiServer(input);
+  const server = await createMongoApiServer(input, defaultMongoApiServerRuntime, {
+    schemaMode: 'validate',
+  });
   try {
     const address = await server.app.listen({
       host: server.config.host,

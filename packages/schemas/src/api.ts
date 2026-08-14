@@ -43,6 +43,9 @@ import {
 } from './sync.js';
 
 export const healthResponseSchema = z.object({ status: z.literal('ok') }).strict();
+export const readinessResponseSchema = z
+  .object({ status: z.enum(['ready', 'not_ready']) })
+  .strict();
 
 export const CONTROL_LIST_CURSOR_VERSION = 1;
 export const DEFAULT_CONTROL_LIST_PAGE_SIZE = 50;
@@ -825,6 +828,7 @@ export const templateMigrationPublicationResponseSchema = z
 export const opaqueMutationRequestSchema = opaqueMutationSchema;
 
 export type HealthResponse = z.infer<typeof healthResponseSchema>;
+export type ReadinessResponse = z.infer<typeof readinessResponseSchema>;
 export type ApiBearerToken = z.infer<typeof apiBearerTokenSchema>;
 export type ControlListCursor = z.infer<typeof controlListCursorSchema>;
 export type ControlListCursorPayload = z.infer<typeof controlListCursorPayloadSchema>;
@@ -836,6 +840,7 @@ export type ApiSessionResponse = z.infer<typeof apiSessionResponseSchema>;
 export type VaultBootstrapRequest = z.infer<typeof vaultBootstrapRequestSchema>;
 export type VaultBootstrapResponse = z.infer<typeof vaultBootstrapResponseSchema>;
 export type InviteIssueRequest = z.infer<typeof inviteIssueRequestSchema>;
+export type InviteIssueResponse = z.infer<typeof inviteIssueResponseSchema>;
 export type InviteRedeemResponse = z.infer<typeof inviteRedeemResponseSchema>;
 export type PublicInviteRecord = z.infer<typeof publicInviteRecordSchema>;
 export type EnrollmentCompleteRequest = z.infer<typeof enrollmentCompleteRequestSchema>;

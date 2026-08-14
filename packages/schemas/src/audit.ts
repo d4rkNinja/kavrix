@@ -17,4 +17,8 @@ export const keySlotAuditPayloadSchema = z
   })
   .strict();
 
+/** The currently documented semantic audit payload family. */
+export const auditPayloadSchema = keySlotAuditPayloadSchema;
+
 export type KeySlotAuditPayload = z.infer<typeof keySlotAuditPayloadSchema>;
+export type AuditPayload = z.infer<typeof auditPayloadSchema>;
