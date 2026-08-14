@@ -115,4 +115,12 @@ production composition with real SQLite/client adapters and an opaque HTTPS fixt
 archive build and Windows launcher smoke also pass, but that smoke does not claim a native-
 keychain or packed online-vault journey; real-adapter interruption/retry/conflict coverage is
 provided by `apps/cli/test/interruption-recovery-acceptance.test.ts`, while recovery/device-B,
-backup/restore, and whole-system canary coverage remain assigned to issues #47-#49.
+backup/restore, and whole-system canary coverage remain assigned to issues #48-#49.
+
+`apps/cli/test/device-b-acceptance.test.ts` verifies the fresh-home Device B journey with
+real SQLite and protected-adapter composition: Device A creates and synchronizes encrypted
+data, Device B enrolls through a framed invite/portable-key flow, decrypts only locally, and
+is denied by a later session after Device A revokes it. The fixture validates canonical
+opaque requests and scans bodies, credential headers, server state, and both local homes for
+plaintext canaries. The test is source-level rather than a claim about a packed native-
+keychain online run.
