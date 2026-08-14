@@ -23,7 +23,7 @@ afterEach(async () => {
   for (const root of roots.splice(0)) {
     if (
       dirname(root) !== TEST_TMPDIR ||
-      !root.startsWith(join(TEST_TMPDIR, 'kavrix-sqlite-v3-test-'))
+      !root.startsWith(join(TEST_TMPDIR, 'kavrix-sqlite-v4-test-'))
     ) {
       throw new Error('Refusing to remove an unverified test directory');
     }
@@ -31,8 +31,8 @@ afterEach(async () => {
   }
 });
 
-describe('SQLite local format v3', () => {
-  it('creates and reopens the exact v3 marker and user version', async () => {
+describe('SQLite local format v4', () => {
+  it('creates and reopens the exact v4 marker and user version', async () => {
     const path = databasePath();
     const store = await openSqliteSyncLocalStore({ path });
     store.close();
@@ -42,10 +42,10 @@ describe('SQLite local format v3', () => {
 
     const raw = new DatabaseSync(path, { readOnly: true });
     try {
-      expect(raw.prepare('PRAGMA user_version').get()).toEqual({ user_version: 3 });
+      expect(raw.prepare('PRAGMA user_version').get()).toEqual({ user_version: 4 });
       expect(
         raw.prepare(`SELECT value FROM store_metadata WHERE key = 'format'`).get(),
-      ).toEqual({ value: 'kavrix-local-sync-v3' });
+      ).toEqual({ value: 'kavrix-local-sync-v4' });
       expect(
         raw
           .prepare(
@@ -159,10 +159,10 @@ describe('SQLite local format v3', () => {
 
     const check = new DatabaseSync(path, { readOnly: true });
     try {
-      expect(check.prepare('PRAGMA user_version').get()).toEqual({ user_version: 3 });
+      expect(check.prepare('PRAGMA user_version').get()).toEqual({ user_version: 4 });
       expect(
         check.prepare(`SELECT value FROM store_metadata WHERE key = 'format'`).get(),
-      ).toEqual({ value: 'kavrix-local-sync-v3' });
+      ).toEqual({ value: 'kavrix-local-sync-v4' });
     } finally {
       check.close();
     }
@@ -359,7 +359,7 @@ describe('SQLite local format v3', () => {
 function databasePath(): string {
   const root = join(
     TEST_TMPDIR,
-    `kavrix-sqlite-v3-test-${randomUUID().replaceAll('-', '')}`,
+    `kavrix-sqlite-v4-test-${randomUUID().replaceAll('-', '')}`,
   );
   roots.push(root);
   return join(root, 'state.sqlite');
@@ -371,6 +371,7 @@ function downgradeToV2(path: string): void {
     raw.exec(`PRAGMA foreign_keys = OFF`);
     raw.exec(`
       BEGIN IMMEDIATE;
+      DROP TABLE sync_conflicts;
       DROP TABLE outbound_observation_pins;
       DROP TABLE completed_outbound_observations;
       CREATE TEMP TABLE migrate_template_children AS

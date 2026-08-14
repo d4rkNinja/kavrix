@@ -53,6 +53,36 @@ export interface SyncConflict {
   readonly current: OpaqueSyncRecord | null;
 }
 
+/** Redacted, durable conflict metadata safe for CLI projections. */
+export interface SyncConflictMetadata {
+  readonly vaultId: VaultId;
+  readonly entityType: OpaqueMutation['entityType'];
+  readonly entityId: string;
+  readonly idempotencyKey: string;
+  readonly expectedRevision: RecordRevision | VaultRevision | null;
+  readonly currentRevision: RecordRevision | VaultRevision;
+  readonly currentState: 'present' | 'deleted' | 'missing';
+}
+
+export type SyncConflictResolutionStrategy = 'keep-local' | 'accept-remote';
+
+export interface ResolveSyncConflictInput {
+  readonly vaultId: VaultId;
+  readonly conflictId: string;
+  readonly currentRevision: RecordRevision | VaultRevision;
+  readonly strategy: SyncConflictResolutionStrategy;
+  /** Fresh only for keep-local; accept-remote does not create a mutation. */
+  readonly replacementIdempotencyKey: string | null;
+  readonly resolvedAt: Timestamp;
+}
+
+export interface ResolveSyncConflictResult {
+  readonly status: 'accepted-remote' | 'queued-local';
+  readonly conflictId: string;
+  readonly strategy: SyncConflictResolutionStrategy;
+  readonly replacementIdempotencyKey: string | null;
+}
+
 interface SyncStatusBase {
   readonly state: SyncState;
   readonly vaultId: VaultId;

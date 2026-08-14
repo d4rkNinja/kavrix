@@ -8,6 +8,7 @@ export * from './errors.js';
 export * from './hierarchy.js';
 export * from './key-file.js';
 export * from './keys.js';
+export * from './portable-key-rotation.js';
 export * from './rotation.js';
 export * from './secretstream.js';
 export * from './slots.js';

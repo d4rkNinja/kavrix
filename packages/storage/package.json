@@ -22,7 +22,7 @@
     "build": "tsc -b tsconfig.build.json",
     "typecheck": "tsc -b tsconfig.build.json --pretty false && tsc -p tsconfig.json --pretty false",
     "test": "vitest run --root ../.. packages/storage/test",
-    "test:integration": "vitest run --root ../.. --config packages/storage/vitest.integration.config.ts"
+    "test:integration": "tsx ./scripts/storage-integration-gate.ts"
   },
   "dependencies": {
     "@kavrix/core": "workspace:*",

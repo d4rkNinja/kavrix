@@ -55,6 +55,7 @@ import type {
   PersistedPublicationRow,
   VaultStateLimits,
 } from './sqlite-vault-schema.js';
+import { SqliteSyncConflicts } from './sqlite-conflicts.js';
 
 type ParsedReconciliation = ReconcileOutboundObservationInput &
   Readonly<{
@@ -70,16 +71,20 @@ export class SqliteOutboundReconciliation {
   readonly #database: DatabaseSync;
   readonly #limits: VaultStateLimits;
   readonly #vaultState: SqliteVaultState;
+  readonly #conflicts: SqliteSyncConflicts;
   readonly #pins: SqliteOutboundPins;
 
   constructor(
     database: DatabaseSync,
     limits: VaultStateLimits,
     vaultState: SqliteVaultState,
+    conflicts?: SqliteSyncConflicts,
   ) {
     this.#database = database;
     this.#limits = limits;
     this.#vaultState = vaultState;
+    this.#conflicts =
+      conflicts ?? new SqliteSyncConflicts(database, limits, vaultState);
     this.#pins = new SqliteOutboundPins(database, limits);
   }
 
@@ -490,9 +495,17 @@ export class SqliteOutboundReconciliation {
         `DELETE FROM deletion_predecessors WHERE owner_key = ?`,
       );
       for (const [index, result] of parsed.response.results.entries()) {
-        if (result.status !== 'accepted') continue;
         const mutation = parsed.request.mutations[index];
         if (mutation === undefined) throw invalidState();
+        if (result.status === 'conflict') {
+          this.#conflicts.record(
+            parsed.vaultId,
+            mutation,
+            result.currentRevision,
+            result.current,
+          );
+          continue;
+        }
         this.#vaultState.recordCompletedMutation(mutation, 'generic');
         if (deletePending.run(parsed.vaultId, mutation.idempotencyKey).changes !== 1) {
           throw invalidState();

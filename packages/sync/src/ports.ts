@@ -24,6 +24,9 @@ import type {
   PushBatchRequest,
   PushBatchResponse,
   ReconcileOutboundObservationInput,
+  ResolveSyncConflictInput,
+  ResolveSyncConflictResult,
+  SyncConflictMetadata,
   SyncCursor,
   SyncStatus,
 } from './types.js';
@@ -90,6 +93,10 @@ export interface SyncLocalStorePort {
   reconcileOutboundObservation(
     input: ReconcileOutboundObservationInput,
   ): Promise<CompletedOutboundObservation>;
+  /** Returns only redacted metadata for durable unresolved conflicts. */
+  listConflicts?(vaultId: VaultId): Promise<readonly SyncConflictMetadata[]>;
+  /** Resolves one exact conflict without exposing its opaque records. */
+  resolveConflict?(input: ResolveSyncConflictInput): Promise<ResolveSyncConflictResult>;
 }
 
 /** Implementations must use protected local storage, separate from the sync server. */

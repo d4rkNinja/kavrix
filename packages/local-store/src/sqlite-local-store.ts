@@ -31,7 +31,10 @@ import type {
   EnsureOutboundReplayStartInput,
   OutboundReplayState,
   ReconcileOutboundObservationInput,
+  ResolveSyncConflictInput,
+  ResolveSyncConflictResult,
   Sha256Digest,
+  SyncConflictMetadata,
   SyncCursor,
   SyncLocalStorePort,
 } from '@kavrix/sync';
@@ -71,6 +74,7 @@ import {
 } from './sqlite-local-database.js';
 import { invalidState, normalizeFailure } from './sqlite-local-errors.js';
 import { SqliteOutboundReconciliation } from './sqlite-outbound-reconciliation.js';
+import { SqliteSyncConflicts } from './sqlite-conflicts.js';
 import { prepareSecureDatabasePath, secureSqliteFiles } from './path-security.js';
 import { SqliteVaultState } from './sqlite-vault-state.js';
 
@@ -90,6 +94,7 @@ export class SqliteSyncLocalStore
   readonly #databasePath: string;
   readonly #limits: StoreLimits;
   readonly #vaultState: SqliteVaultState;
+  readonly #conflicts: SqliteSyncConflicts;
   readonly #outbound: SqliteOutboundReconciliation;
   #closed = false;
 
@@ -102,10 +107,12 @@ export class SqliteSyncLocalStore
     this.#databasePath = databasePath;
     this.#limits = limits;
     this.#vaultState = new SqliteVaultState(database, limits);
+    this.#conflicts = new SqliteSyncConflicts(database, limits, this.#vaultState);
     this.#outbound = new SqliteOutboundReconciliation(
       database,
       limits,
       this.#vaultState,
+      this.#conflicts,
     );
   }
 
@@ -240,6 +247,32 @@ export class SqliteSyncLocalStore
       return Promise.resolve(rows.map((row) => parseMutationRow(row, vaultId)));
     } catch (error) {
       return Promise.reject(normalizeFailure(error));
+    }
+  }
+
+  public listConflicts(
+    vaultIdInput: VaultId,
+  ): Promise<readonly SyncConflictMetadata[]> {
+    try {
+      this.#assertOpen();
+      return Promise.resolve(this.#conflicts.list(parseVaultId(vaultIdInput)));
+    } catch (error) {
+      return Promise.reject(normalizeFailure(error));
+    }
+  }
+
+  public async resolveConflict(
+    input: ResolveSyncConflictInput,
+  ): Promise<ResolveSyncConflictResult> {
+    try {
+      this.#assertOpen();
+      const result = withTransaction(this.#database, () =>
+        this.#conflicts.resolve(input),
+      );
+      await this.#afterWrite();
+      return result;
+    } catch (error) {
+      throw normalizeFailure(error);
     }
   }
 

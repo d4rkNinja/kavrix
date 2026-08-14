@@ -2,14 +2,29 @@ import type {
   CredentialCopyReceipt,
   CredentialShowField,
   CredentialShowNote,
-} from '@kavrix/client';
+} from '@kavrix/client/cli-contracts';
 import {
   isSensitiveFieldType,
+  type DeviceListPageResponse,
+  type InviteIssueResponse,
   type InviteListPageResponse,
   type PublicInviteRecord,
 } from '@kavrix/schemas';
 
-import type { CliShowResult, CliStatus } from './contracts.js';
+import type {
+  CliConnectResult,
+  CliBackupCreateResult,
+  CliBackupRestoreResult,
+  CliBackupVerifyResult,
+  CliConflict,
+  CliConflictResolutionResult,
+  CliKeySlot,
+  CliKeySlotResult,
+  CliPortableKeyRotationResult,
+  CliRecoverResult,
+  CliShowResult,
+  CliStatus,
+} from './contracts.js';
 import { safeJson, sanitizeTerminalText } from './terminal.js';
 
 type SafeInvite = Readonly<{
@@ -44,6 +59,230 @@ export function renderStatus(status: CliStatus, json: boolean): string {
   ]
     .join('\n')
     .concat('\n');
+}
+
+export function renderConflicts(
+  conflicts: readonly CliConflict[],
+  json: boolean,
+): string {
+  const safe = conflicts.map((conflict) => ({
+    vaultId: sanitizeTerminalText(conflict.vaultId),
+    entityType: conflict.entityType,
+    entityId: sanitizeTerminalText(conflict.entityId),
+    idempotencyKey: sanitizeTerminalText(conflict.idempotencyKey),
+    expectedRevision: conflict.expectedRevision,
+    currentRevision: conflict.currentRevision,
+    currentState: conflict.currentState,
+  }));
+  if (json) return safeJson(safe);
+  if (safe.length === 0) return 'No unresolved sync conflicts.\n';
+  return `${safe
+    .map(
+      (conflict) =>
+        `${conflict.idempotencyKey}\t${conflict.entityType}\t${conflict.entityId}\t${String(conflict.expectedRevision ?? 'none')}\t${String(conflict.currentRevision)}\t${conflict.currentState}`,
+    )
+    .join('\n')}\n`;
+}
+
+export function renderConflictResolution(
+  result: CliConflictResolutionResult,
+  json: boolean,
+): string {
+  const safe = {
+    status: result.status,
+    conflictId: sanitizeTerminalText(result.conflictId),
+    strategy: result.strategy,
+  };
+  if (json) return safeJson(safe);
+  return `Conflict ${safe.conflictId} resolved with ${safe.strategy}.\n`;
+}
+
+export function renderConnect(result: CliConnectResult, json: boolean): string {
+  const safe = {
+    vaultId: sanitizeTerminalText(result.vaultId),
+    deviceId: sanitizeTerminalText(result.deviceId),
+  };
+  if (json) return safeJson(safe);
+  return `Connected vault ${safe.vaultId} on device ${safe.deviceId}.\n`;
+}
+
+export function renderRecover(result: CliRecoverResult, json: boolean): string {
+  const safe = {
+    operationId: sanitizeTerminalText(result.operationId),
+    vaultId: sanitizeTerminalText(result.vaultId),
+    deviceId: sanitizeTerminalText(result.deviceId),
+  };
+  if (json) return safeJson(safe);
+  return `Vault recovered ${safe.vaultId} on device ${safe.deviceId}.\n`;
+}
+
+export function renderBackupCreate(
+  result: CliBackupCreateResult,
+  json: boolean,
+): string {
+  const safe = {
+    action: result.action,
+    vaultId: sanitizeTerminalText(result.vaultId),
+    recordCount: result.recordCount,
+    bytes: result.bytes,
+  };
+  if (json) return safeJson(safe);
+  return `Encrypted backup created for vault ${safe.vaultId} (${String(safe.recordCount)} records, ${String(safe.bytes)} bytes).\n`;
+}
+
+export function renderBackupVerify(
+  result: CliBackupVerifyResult,
+  json: boolean,
+): string {
+  const safe = {
+    action: result.action,
+    vaultId: sanitizeTerminalText(result.vaultId),
+    recordCount: result.recordCount,
+    bytes: result.bytes,
+    schemaVersion: result.schemaVersion,
+    createdAt: result.createdAt,
+    restoreSessionId: sanitizeTerminalText(result.restoreSessionId),
+  };
+  if (json) return safeJson(safe);
+  return `Encrypted backup verified for vault ${safe.vaultId} (${String(safe.recordCount)} records, ${String(safe.bytes)} bytes; created ${safe.createdAt}).\n`;
+}
+
+export function renderBackupRestore(
+  result: CliBackupRestoreResult,
+  json: boolean,
+): string {
+  const safe = {
+    action: result.action,
+    vaultId: sanitizeTerminalText(result.vaultId),
+    recordCount: result.recordCount,
+    bytes: result.bytes,
+    restoreSessionId: sanitizeTerminalText(result.restoreSessionId),
+    ...(result.selectedSlotId === undefined
+      ? {}
+      : { selectedSlotId: sanitizeTerminalText(result.selectedSlotId) }),
+  };
+  if (json) return safeJson(safe);
+  const verb = result.action === 'restored' ? 'restored' : 'was already restored';
+  return `Encrypted backup ${verb} for vault ${safe.vaultId} (${String(safe.recordCount)} records, ${String(safe.bytes)} bytes).\n`;
+}
+
+export function renderDeviceJoin(result: CliRecoverResult, json: boolean): string {
+  const safe = {
+    operationId: sanitizeTerminalText(result.operationId),
+    vaultId: sanitizeTerminalText(result.vaultId),
+    deviceId: sanitizeTerminalText(result.deviceId),
+  };
+  if (json) return safeJson(safe);
+  return `Device joined vault ${safe.vaultId} on device ${safe.deviceId}.\n`;
+}
+
+export function renderKeySlots(slots: readonly CliKeySlot[], json: boolean): string {
+  const safe = slots.map((slot) => ({
+    id: sanitizeTerminalText(slot.id),
+    type: slot.type,
+    state: slot.state,
+    keyVersion: slot.keyVersion,
+    createdAt: slot.createdAt,
+    ...(slot.revokedAt === undefined ? {} : { revokedAt: slot.revokedAt }),
+    ...(slot.deviceId === undefined
+      ? {}
+      : { deviceId: sanitizeTerminalText(slot.deviceId) }),
+  }));
+  if (json) return safeJson(safe);
+  if (safe.length === 0) return 'No unlock slots.\n';
+  return `${safe
+    .map(
+      (slot) =>
+        `${slot.id}\t${slot.type}\t${slot.state}\tv${String(slot.keyVersion)}\t${slot.createdAt}${slot.deviceId === undefined ? '' : `\t${slot.deviceId}`}`,
+    )
+    .join('\n')}\n`;
+}
+
+export function renderKeySlotResult(result: CliKeySlotResult, json: boolean): string {
+  const safe = {
+    action: result.action,
+    slot: {
+      id: sanitizeTerminalText(result.slot.id),
+      type: result.slot.type,
+      state: result.slot.state,
+      keyVersion: result.slot.keyVersion,
+      createdAt: result.slot.createdAt,
+      ...(result.slot.revokedAt === undefined
+        ? {}
+        : { revokedAt: result.slot.revokedAt }),
+      ...(result.slot.deviceId === undefined
+        ? {}
+        : { deviceId: sanitizeTerminalText(result.slot.deviceId) }),
+    },
+  };
+  if (json) return safeJson(safe);
+  return `Unlock slot ${safe.slot.id} ${safe.action}.\n`;
+}
+
+export function renderDeviceKeyAction(
+  result: CliKeySlotResult,
+  action: 'remembered' | 'forgotten',
+  json: boolean,
+): string {
+  const safe = {
+    action,
+    slot: {
+      id: sanitizeTerminalText(result.slot.id),
+      type: result.slot.type,
+      state: result.slot.state,
+      keyVersion: result.slot.keyVersion,
+      createdAt: result.slot.createdAt,
+      ...(result.slot.revokedAt === undefined
+        ? {}
+        : { revokedAt: result.slot.revokedAt }),
+      ...(result.slot.deviceId === undefined
+        ? {}
+        : { deviceId: sanitizeTerminalText(result.slot.deviceId) }),
+    },
+  };
+  if (json) return safeJson(safe);
+  return action === 'remembered'
+    ? `Device remembered in the native keychain (unlock slot ${safe.slot.id}); API session credentials unchanged.\n`
+    : `Device unlock slot ${safe.slot.id} forgotten locally; remote slot and API session credentials unchanged.\n`;
+}
+
+export function renderPortableKeyRotation(
+  result: CliPortableKeyRotationResult,
+  json: boolean,
+): string {
+  const safe =
+    result.action === 'listed'
+      ? {
+          action: result.action,
+          operations: result.operations.map((operation) => ({
+            operationId: sanitizeTerminalText(operation.operationId),
+            state: operation.state,
+            vaultId: sanitizeTerminalText(operation.vaultId),
+            deviceId: sanitizeTerminalText(operation.deviceId),
+            sourceSlotId: sanitizeTerminalText(operation.sourceSlotId),
+            replacementSlotId: sanitizeTerminalText(operation.replacementSlotId),
+            createdAt: operation.createdAt,
+            updatedAt: operation.updatedAt,
+          })),
+        }
+      : {
+          action: result.action,
+          operationId: sanitizeTerminalText(result.operationId),
+          sourceSlotId: sanitizeTerminalText(result.sourceSlotId),
+          replacementSlotId: sanitizeTerminalText(result.replacementSlotId),
+          state: result.state,
+        };
+  if (json) return safeJson(safe);
+  if (safe.action === 'listed') {
+    if (safe.operations.length === 0) return 'No portable-key rotations.\n';
+    return `${safe.operations
+      .map(
+        (operation) =>
+          `${operation.operationId}\t${operation.state}\t${operation.vaultId}\t${operation.sourceSlotId}\t${operation.replacementSlotId}\t${operation.updatedAt}`,
+      )
+      .join('\n')}\n`;
+  }
+  return `Portable-key rotation ${safe.action} (${safe.operationId}).\n`;
 }
 
 export function renderShow(result: CliShowResult, json: boolean): string {
@@ -131,6 +370,56 @@ export function renderInvites(page: InviteListPageResponse, json: boolean): stri
     .join('\n');
   const continuation = nextCursor === null ? '' : `Next cursor: ${nextCursor}\n`;
   return `${rows}\n${continuation}`;
+}
+
+export function renderDevices(page: DeviceListPageResponse, json: boolean): string {
+  const safe = page.devices.map((device) => ({
+    id: sanitizeTerminalText(device.id),
+    vaultId: sanitizeTerminalText(device.vaultId),
+    schemaVersion: device.schemaVersion,
+    tokenVersion: device.tokenVersion,
+    ...(device.encryptedLabel === undefined
+      ? {}
+      : { encryptedLabel: device.encryptedLabel }),
+    scopes: device.scopes.map(sanitizeTerminalText),
+    createdAt: device.createdAt,
+    ...(device.lastSeenAt === undefined ? {} : { lastSeenAt: device.lastSeenAt }),
+    ...(device.revokedAt === undefined ? {} : { revokedAt: device.revokedAt }),
+  }));
+  const nextCursor =
+    page.nextCursor === null ? null : sanitizeTerminalText(page.nextCursor);
+  if (json) return safeJson({ devices: safe, nextCursor });
+  if (safe.length === 0) return 'No devices.\n';
+  const rows = safe
+    .map((device) =>
+      [
+        device.id,
+        device.revokedAt === undefined ? 'active' : 'revoked',
+        device.scopes.join(','),
+        device.createdAt,
+        device.lastSeenAt ?? 'never',
+      ].join('\t'),
+    )
+    .join('\n');
+  const continuation = nextCursor === null ? '' : `Next cursor: ${nextCursor}\n`;
+  return `${rows}\n${continuation}`;
+}
+
+/** Renders the returned bearer exactly once after the command authorizes it. */
+export function renderInviteIssue(result: InviteIssueResponse, json: boolean): string {
+  const safe = {
+    inviteId: sanitizeTerminalText(result.inviteId),
+    inviteToken: sanitizeTerminalText(result.inviteToken),
+    expiresAt: sanitizeTerminalText(result.expiresAt),
+  };
+  if (json) return safeJson(safe);
+  return [
+    `Invite token (display once): ${safe.inviteToken}`,
+    `Invite ID: ${safe.inviteId}`,
+    `Expires: ${safe.expiresAt}`,
+  ]
+    .join('\n')
+    .concat('\n');
 }
 
 function safeShow(result: CliShowResult): CliShowResult {

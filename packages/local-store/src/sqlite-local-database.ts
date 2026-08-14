@@ -24,7 +24,12 @@ import {
   SqliteVaultState,
   VAULT_STATE_SCHEMA_DEFINITIONS,
 } from './sqlite-vault-state.js';
-import { migrateLegacyV2Database } from './sqlite-local-migration.js';
+import {
+  migrateLegacyV2Database,
+  migrateSchemaV3Database,
+} from './sqlite-local-migration.js';
+import { SYNC_CONFLICT_SCHEMA_DEFINITIONS } from './sqlite-conflict-schema.js';
+import { SqliteSyncConflicts } from './sqlite-conflicts.js';
 import {
   parseMutationRow as parseVaultMutationRow,
   parsePredecessorRow,
@@ -37,8 +42,10 @@ import type {
 } from './sqlite-vault-schema.js';
 
 const APPLICATION_ID = 0x4b565258;
-const SCHEMA_VERSION = 3;
-const FORMAT_MARKER = 'kavrix-local-sync-v3';
+const SCHEMA_VERSION = 4;
+const FORMAT_MARKER = 'kavrix-local-sync-v4';
+const PREVIOUS_SCHEMA_VERSION = 3;
+const PREVIOUS_FORMAT_MARKER = 'kavrix-local-sync-v3';
 const LEGACY_SCHEMA_VERSION = 2;
 const LEGACY_FORMAT_MARKER = 'kavrix-local-sync-v2';
 const DEFAULT_LIMITS = {
@@ -103,18 +110,23 @@ const SCHEMA_DEFINITIONS = {
     acknowledged_json TEXT NOT NULL,
     serialized_bytes INTEGER NOT NULL CHECK(serialized_bytes >= 2)
   ) STRICT`,
+  ...SYNC_CONFLICT_SCHEMA_DEFINITIONS,
   ...VAULT_STATE_SCHEMA_DEFINITIONS,
 } as const;
 const SCHEMA_DEFINITION_SQL = `${Object.values(SCHEMA_DEFINITIONS).join(';\n')};`;
 
 const {
   active_push_batches: _activePushBatches,
+  sync_conflicts: _syncConflicts,
+  sync_conflicts_vault_sequence: _syncConflictsVaultSequence,
   completed_outbound_observations: _completedOutboundObservations,
   outbound_observation_pins: _outboundObservationPins,
   pending_template_migrations: _pendingTemplateMigrations,
   ...LEGACY_V2_UNCHANGED_SCHEMA_DEFINITIONS
 } = SCHEMA_DEFINITIONS;
 void _activePushBatches;
+void _syncConflicts;
+void _syncConflictsVaultSequence;
 void _completedOutboundObservations;
 void _outboundObservationPins;
 void _pendingTemplateMigrations;
@@ -128,6 +140,14 @@ const LEGACY_V2_SCHEMA_DEFINITIONS = {
   ) STRICT, WITHOUT ROWID`,
   ...LEGACY_V2_VAULT_STATE_SCHEMA_DEFINITIONS,
 } as const;
+
+const {
+  sync_conflicts: _v3SyncConflicts,
+  sync_conflicts_vault_sequence: _v3SyncConflictsVaultSequence,
+  ...SCHEMA_V3_DEFINITIONS
+} = SCHEMA_DEFINITIONS;
+void _v3SyncConflicts;
+void _v3SyncConflictsVaultSequence;
 
 export interface SqliteSyncLocalStoreOptions {
   readonly path: string;
@@ -212,6 +232,8 @@ export function initializeDatabase(database: DatabaseSync, limits: StoreLimits):
       [
         VAULT_STATE_SCHEMA_DEFINITIONS.completed_outbound_observations,
         VAULT_STATE_SCHEMA_DEFINITIONS.outbound_observation_pins,
+        SYNC_CONFLICT_SCHEMA_DEFINITIONS.sync_conflicts,
+        SYNC_CONFLICT_SCHEMA_DEFINITIONS.sync_conflicts_vault_sequence,
       ],
       FORMAT_MARKER,
       SCHEMA_VERSION,
@@ -225,6 +247,29 @@ export function initializeDatabase(database: DatabaseSync, limits: StoreLimits):
           true,
         );
         verifyLegacyCanonicalRows(database, limits);
+      },
+    );
+  } else if (
+    applicationId === APPLICATION_ID &&
+    userVersion === PREVIOUS_SCHEMA_VERSION
+  ) {
+    migrateSchemaV3Database(
+      database,
+      [
+        SYNC_CONFLICT_SCHEMA_DEFINITIONS.sync_conflicts,
+        SYNC_CONFLICT_SCHEMA_DEFINITIONS.sync_conflicts_vault_sequence,
+      ],
+      FORMAT_MARKER,
+      SCHEMA_VERSION,
+      () => {
+        verifyDatabaseVersion(
+          database,
+          limits,
+          PREVIOUS_SCHEMA_VERSION,
+          PREVIOUS_FORMAT_MARKER,
+          SCHEMA_V3_DEFINITIONS,
+          true,
+        );
       },
     );
   } else if (applicationId !== APPLICATION_ID || userVersion !== SCHEMA_VERSION) {
@@ -307,9 +352,20 @@ function verifyDatabaseVersion(
     limits.maxCompletedBatches,
     limits.maxCompletedPushBatchBytes,
   );
+  if (schemaVersion === SCHEMA_VERSION) {
+    assertTableBounds(
+      database,
+      'sync_conflicts',
+      limits.maxCompletedMutations,
+      limits.maxCompletedMutationBytes,
+    );
+  }
   const vaultState = new SqliteVaultState(database, limits);
   vaultState.assertNoQueueCoexistence();
   vaultState.assertBounds();
+  if (schemaVersion === SCHEMA_VERSION) {
+    new SqliteSyncConflicts(database, limits, vaultState).assertCanonicalRows();
+  }
 }
 
 function verifySchemaObjects(
@@ -567,7 +623,11 @@ export function withTransaction<Result>(
 
 function assertTableBounds(
   database: DatabaseSync,
-  table: 'completed_push_batches' | 'opaque_records' | 'pending_mutations',
+  table:
+    | 'completed_push_batches'
+    | 'opaque_records'
+    | 'pending_mutations'
+    | 'sync_conflicts',
   maxRows: number,
   maxBytes: number,
 ): void {

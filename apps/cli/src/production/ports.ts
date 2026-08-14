@@ -1,14 +1,24 @@
 import {
   VaultClientSession,
   type ControlPlaneClient,
+  type CredentialCopyOptions,
   type CredentialCopyReceipt,
   type VaultProfile,
 } from '@kavrix/client';
-import type { ProtectedSyncStatePort, SyncStatus } from '@kavrix/sync';
+import type {
+  ProtectedSyncStatePort,
+  ResolveSyncConflictResult,
+  SyncConflictMetadata,
+  SyncStatus,
+} from '@kavrix/sync';
 import type {
   ApiBearerToken,
   ControlListPageOptions,
+  DeviceId,
+  DeviceListPageResponse,
   InviteId,
+  InviteIssueRequest,
+  InviteIssueResponse,
   InviteListPageResponse,
   VaultId,
 } from '@kavrix/schemas';
@@ -24,7 +34,10 @@ import type {
 } from '../contracts.js';
 import { CliUnavailableError, CliUsageError } from '../errors.js';
 import type { SecretInputPort } from '../secret-input.js';
-import type { ProductionEnvironment } from './environment.js';
+import type {
+  ProductionCommandEnvironment,
+  ProductionEnvironment,
+} from './environment.js';
 import type { SecretBackend } from './secret-backend.js';
 import { productionClock, randomIdempotencyKeys } from './runtime-adapters.js';
 import type { UnlockMethod } from './unlock.js';
@@ -34,7 +47,10 @@ const CLIPBOARD_CLEAR_MS = 30_000;
 
 export interface ProductionPortsOptions {
   readonly profile: VaultProfile;
-  readonly environment: ProductionEnvironment;
+  readonly environment: Pick<
+    ProductionCommandEnvironment,
+    'openSyncStore' | 'clipboard'
+  >;
   readonly secrets: SecretBackend;
   readonly secretsInput?: SecretInputPort;
   readonly unlockMethod?: UnlockMethod;
@@ -56,7 +72,21 @@ export interface ProductionVaultSession {
   unlockPortable?(formattedPortableKey: string, slotId?: KeySlotId): Promise<void>;
   unlockRecovery?(formattedRecoveryKey: string, slotId?: KeySlotId): Promise<void>;
   synchronize(): Promise<unknown>;
+  listConflicts?(): Promise<readonly SyncConflictMetadata[]>;
+  resolveConflict?(
+    input: Readonly<{
+      conflictId: string;
+      currentRevision: number;
+      strategy: 'keep-local' | 'accept-remote';
+    }>,
+  ): Promise<ResolveSyncConflictResult>;
   show(groupQuery: string, credentialQuery: string): Promise<CliShowResult>;
+  copy(
+    groupQuery: string,
+    credentialQuery: string,
+    fieldQuery: string,
+    options?: CredentialCopyOptions,
+  ): Promise<CredentialCopyReceipt>;
   lock(): Promise<void>;
 }
 
@@ -74,13 +104,22 @@ export async function readProductionStatus(
   const { vaultId, deviceId } = options.profile;
   const store = await options.environment.openSyncStore(options.profile);
   const pending = await store.listPendingMutations(vaultId);
+  const conflictStore = store as unknown as {
+    listConflicts?: (vaultId: VaultId) => Promise<readonly SyncConflictMetadata[]>;
+  };
+  const conflicts =
+    conflictStore.listConflicts === undefined
+      ? []
+      : await conflictStore.listConflicts(vaultId);
   const protectedState = await options.protectedSyncState.load(vaultId, deviceId);
   return {
     // No daemon holds keys between invocations, so a fresh process is locked.
     vaultState: 'locked',
     vaultId,
     deviceId,
-    syncState: mapSyncState(options.syncState ?? 'offline'),
+    syncState: mapSyncState(
+      conflicts.length > 0 ? 'conflict' : (options.syncState ?? 'offline'),
+    ),
     pendingChanges: pending.length,
     ...(protectedState === null ? {} : { lastSyncAt: protectedState.updatedAt }),
   };
@@ -242,6 +281,22 @@ export function createProductionPorts(
       });
     },
 
+    listConflicts: async () =>
+      withUnlocked((session) => {
+        if (session.listConflicts === undefined) {
+          throw new CliUnavailableError('sync conflicts list');
+        }
+        return session.listConflicts();
+      }),
+
+    resolveConflict: async (input) =>
+      withUnlocked((session) => {
+        if (session.resolveConflict === undefined) {
+          throw new CliUnavailableError('sync conflicts resolve');
+        }
+        return session.resolveConflict(input);
+      }),
+
     lock: async () => {
       // Keys never outlive the process; clearing the clipboard is the only
       // cross-process state a lock can still reach.
@@ -251,8 +306,16 @@ export function createProductionPorts(
     show: (groupQuery, credentialQuery): Promise<CliShowResult> =>
       withUnlocked((session) => session.show(groupQuery, credentialQuery), true),
 
-    copy: (): Promise<CredentialCopyReceipt> =>
-      Promise.reject(new CliUnavailableError('copy')),
+    copy: (
+      groupQuery: string,
+      credentialQuery: string,
+      fieldQuery: string,
+      copyOptions = {},
+    ): Promise<CredentialCopyReceipt> =>
+      withUnlocked(
+        (session) => session.copy(groupQuery, credentialQuery, fieldQuery, copyOptions),
+        true,
+      ),
 
     listInvitePage: (
       vaultId: VaultId,
@@ -262,9 +325,30 @@ export function createProductionPorts(
         client.listInvitePage(bearer, vaultId, pageOptions),
       ),
 
+    listDevicePage: (
+      vaultId: VaultId,
+      pageOptions: ControlListPageOptions,
+    ): Promise<DeviceListPageResponse> =>
+      withRemoteVault(options, vaultId, (client, bearer) =>
+        client.listDevicePage(bearer, vaultId, pageOptions),
+      ),
+
+    issueInvite: (
+      vaultId: VaultId,
+      request: InviteIssueRequest,
+    ): Promise<InviteIssueResponse> =>
+      withRemoteVault(options, vaultId, (client, bearer) =>
+        client.issueInvite(bearer, vaultId, request),
+      ),
+
     revokeInvite: (vaultId: VaultId, inviteId: InviteId): Promise<void> =>
       withRemoteVault(options, vaultId, (client, bearer) =>
         client.revokeInvite(bearer, vaultId, inviteId),
+      ),
+
+    revokeDevice: (vaultId: VaultId, deviceId: DeviceId): Promise<void> =>
+      withRemoteVault(options, vaultId, (client, bearer) =>
+        client.revokeDevice(bearer, vaultId, deviceId),
       ),
 
     // The catalog reads the invite token and the portable key as one masked

@@ -111,6 +111,57 @@ export class SqliteMutationQueue {
     return 'queued';
   }
 
+  replacePendingMutation(
+    vaultId: VaultId,
+    previousInput: OpaqueMutation,
+    replacementInput: OpaqueMutation,
+    current: Parameters<SqliteRecordState['assertMutationApplies']>[0],
+  ): void {
+    const previous = parseMutationInput(previousInput);
+    const replacement = parseMutationInput(replacementInput);
+    if (
+      mutationVaultId(previous) !== vaultId ||
+      mutationVaultId(replacement) !== vaultId ||
+      previous.entityType !== replacement.entityType ||
+      previous.record.id !== replacement.record.id
+    ) {
+      throw invalidState();
+    }
+    if (this.findClaim(replacement.idempotencyKey) !== null) throw invalidState();
+    this.#records.assertMutationApplies(current, replacement);
+    if (isDeleteMutation(previous) && isDeleteMutation(replacement)) {
+      this.#records.rebasePendingDeletePredecessor(previous, replacement, current);
+    }
+    const encoded = encodeBounded(replacement, this.#limits.maxSerializedRowBytes);
+    const changed = this.#database
+      .prepare(
+        `UPDATE pending_mutations
+            SET idempotency_key = ?, mutation_json = ?, serialized_bytes = ?
+          WHERE vault_id = ? AND idempotency_key = ?`,
+      )
+      .run(
+        replacement.idempotencyKey,
+        encoded.json,
+        encoded.bytes,
+        vaultId,
+        previous.idempotencyKey,
+      );
+    if (changed.changes !== 1) throw invalidState();
+  }
+
+  removePendingMutation(vaultId: VaultId, mutationInput: OpaqueMutation): void {
+    const mutation = parseMutationInput(mutationInput);
+    if (mutationVaultId(mutation) !== vaultId) throw invalidState();
+    this.#records.removePendingDeletePredecessor(mutation);
+    const changed = this.#database
+      .prepare(
+        `DELETE FROM pending_mutations
+          WHERE vault_id = ? AND idempotency_key = ?`,
+      )
+      .run(vaultId, mutation.idempotencyKey);
+    if (changed.changes !== 1) throw invalidState();
+  }
+
   recordCompleted(
     mutationInput: OpaqueMutation,
     queueKind: 'generic' | 'template-migration',

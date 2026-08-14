@@ -98,6 +98,58 @@ describe('zero-knowledge Fastify API', () => {
     expect(secure.headers['cache-control']).toBe('no-store');
   });
 
+  it('serves dependency readiness without exposing the dependency error', async () => {
+    const readyFixture = await createTestPorts();
+    const readyApp = tracked(
+      buildApi({
+        ports: readyFixture.ports,
+        environment: 'test',
+        readiness: () => Promise.resolve(true),
+      }),
+    );
+    const ready = await readyApp.inject({ method: 'GET', url: '/ready' });
+    expect(ready.statusCode).toBe(200);
+    expect(ready.json()).toEqual({ status: 'ready' });
+
+    const unavailableFixture = await createTestPorts();
+    const unavailableApp = tracked(
+      buildApi({
+        ports: unavailableFixture.ports,
+        environment: 'test',
+        readiness: () => Promise.resolve(false),
+      }),
+    );
+    const unavailable = await unavailableApp.inject({
+      method: 'GET',
+      url: '/ready',
+    });
+    expect(unavailable.statusCode).toBe(503);
+    expect(unavailable.json()).toEqual({ status: 'not_ready' });
+
+    const failedFixture = await createTestPorts();
+    const failedApp = tracked(
+      buildApi({
+        ports: failedFixture.ports,
+        environment: 'test',
+        readiness: () => Promise.reject(new Error('readiness plaintext-canary')),
+      }),
+    );
+    const failed = await failedApp.inject({ method: 'GET', url: '/ready' });
+    expect(failed.statusCode).toBe(503);
+    expect(failed.body).not.toContain('readiness plaintext-canary');
+
+    const productionFixture = await createTestPorts();
+    const productionApp = tracked(
+      buildApi({
+        ports: productionFixture.ports,
+        environment: 'production',
+        readiness: () => Promise.resolve(true),
+      }),
+    );
+    const insecure = await productionApp.inject({ method: 'GET', url: '/ready' });
+    expect(insecure.statusCode).toBe(426);
+  });
+
   it('returns one generic error for missing, malformed, and unknown sessions', async () => {
     const fixture = await createTestPorts();
     const app = tracked(buildApi({ ports: fixture.ports, environment: 'test' }));
@@ -780,6 +832,53 @@ describe('zero-knowledge Fastify API', () => {
         limit: expectedLimit,
       });
     }
+  });
+
+  it('allows self-revocation only while another device remains and denies last-device revocation', async () => {
+    const fixture = await createTestPorts();
+    const app = tracked(buildApi({ ports: fixture.ports, environment: 'test' }));
+    const otherDevice = deviceIdSchema.parse('device-2');
+    const otherIssued = await fixture.ports.tokens.issue();
+    fixture.authorization.seedSession(otherIssued.hash, {
+      vaultId,
+      deviceId: otherDevice,
+      scopes: ['sync:read', 'sync:write', 'device:manage'],
+    });
+
+    const selfRevoked = await app.inject({
+      method: 'DELETE',
+      url: `/v1/vaults/${vaultId}/devices/${deviceId}`,
+      headers: authHeader(fixture.token),
+    });
+    expect(selfRevoked.statusCode).toBe(204);
+    await expect(
+      app.inject({
+        method: 'GET',
+        url: '/v1/session',
+        headers: authHeader(fixture.token),
+      }),
+    ).resolves.toMatchObject({ statusCode: 401 });
+    await expect(
+      app.inject({
+        method: 'GET',
+        url: '/v1/session',
+        headers: authHeader(otherIssued.token),
+      }),
+    ).resolves.toMatchObject({ statusCode: 200 });
+
+    const lastDenied = await app.inject({
+      method: 'DELETE',
+      url: `/v1/vaults/${vaultId}/devices/${otherDevice}`,
+      headers: authHeader(otherIssued.token),
+    });
+    expect(lastDenied.statusCode).toBe(403);
+    await expect(
+      app.inject({
+        method: 'GET',
+        url: '/v1/session',
+        headers: authHeader(otherIssued.token),
+      }),
+    ).resolves.toMatchObject({ statusCode: 200 });
   });
 
   it('rejects malformed or misbound request cursors and accepts an arbitrary same-vault position', async () => {

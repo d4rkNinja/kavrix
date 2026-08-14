@@ -77,7 +77,9 @@ The first actionable child is issue #31 because issue #30 is merged and its pare
 
 For each next open granular issue, create a fresh issue branch from the latest `main` (or reuse the already isolated issue branch only when it contains no unrelated changes), read the complete issue discussion and linked PRs, locate the owning boundary, write a failing observable test, implement the smallest root-cause fix, run the affected and repository gates, commit, push, create the linked PR, inspect CI, and only then advance. The next dependency sequence after #31 is #32, then the parent #8; subsequent parent/child sequences are #33–#36 for #9, #37–#40 for #10, #41–#44 for #11, #45–#53 for #12, #54–#56 for #13, and #58–#75 for #57. Refresh this list from GitHub before each transition so already-closed or reordered work is not duplicated.
 
-- [ ] Issue #32: expose explicit CLI conflict listing and resolution.
+- [x] Issue #32: expose explicit CLI conflict listing and resolution locally; durable v4 ledger, migration, redacted CLI contracts, revision-bound policies, and focused tests pass. Push/PR remains pending explicit external authorization.
+- [x] Issue #74: compose a non-destructive existing-vault `connect` flow after #32; validate exact session/vault/device binding and active device slot, persist only the canonical profile, bootstrap the opaque local sync store, and close resources on success/failure. Push/PR remains pending explicit external authorization.
+- [x] Issue #33: compose protected/unprotected `init --key-file` import with guarded filesystem I/O, required unbound binding, masked/stdin passphrase handling, and staged confirmation frames. Push/PR remains pending explicit external authorization.
 - [ ] Verify/close parent #8 after #30–#32 evidence is complete.
 - [ ] Issues #33–#36: protected import/recovery/unlock-slot/portable-key rotation composition.
 - [ ] Issues #37–#40: device invite/join/list/revoke/remember/forget composition.

@@ -9,6 +9,7 @@ import {
   type VaultInitializationInput,
   type VaultLifecycleReceipt,
 } from '@kavrix/client';
+import type { PortableKeyFileBinding } from '@kavrix/crypto';
 import { deviceIdSchema, vaultIdSchema, vaultPreferencesSchema } from '@kavrix/schemas';
 import { z } from 'zod';
 
@@ -91,8 +92,15 @@ export interface SensitiveInitializationDisplayPort {
 }
 
 export interface ProtectedPortableKeyFileReaderPort {
-  /** Returns one formatted portable key without echoing or logging the path/key. */
-  readFormattedPortableKey(path: string): Promise<unknown>;
+  /**
+   * Returns one formatted portable key without echoing or logging the path/key.
+   * The callback is invoked only when the file needs passphrase protection.
+   */
+  readFormattedPortableKey(
+    path: string,
+    expectedBinding?: PortableKeyFileBinding,
+    acquirePassphrase?: () => Promise<AcquiredSecret>,
+  ): Promise<unknown>;
 }
 
 export type CliInitializationDependencies = Readonly<{
@@ -115,6 +123,7 @@ export type CliInitializationStartOptions =
       source: 'key-file';
       path: string;
       confirmationFromStdin: boolean;
+      passphraseFromStdin: boolean;
     }>
   | Readonly<{
       source: 'stdin-protocol';
@@ -156,6 +165,7 @@ export async function startVaultInitialization(
   }
 
   let importedPortable: AcquiredSecret;
+  let passphraseAlreadyFramed = false;
   if (options.source === 'masked-portable') {
     importedPortable = await secrets.read({
       kind: 'portable-key',
@@ -165,11 +175,29 @@ export async function startVaultInitialization(
     const keyFiles = dependencies.keyFiles;
     if (keyFiles === undefined) throw new CliUnavailableError('init');
     const path = parseKeyFilePath(options.path);
+    const acquirePassphrase = async (): Promise<AcquiredSecret> => {
+      if (options.passphraseFromStdin) {
+        passphraseAlreadyFramed = true;
+        const frames = await readExactSecretFrames(
+          secrets,
+          ['passphrase'],
+          true,
+          false,
+        );
+        return requiredFrame(frames, 0);
+      }
+      return secrets.read({ kind: 'passphrase', fromStdin: false });
+    };
     try {
       importedPortable = acquiredSecretSchema.parse(
-        await keyFiles.readFormattedPortableKey(path),
+        await keyFiles.readFormattedPortableKey(
+          path,
+          { kind: 'unbound' },
+          acquirePassphrase,
+        ),
       );
-    } catch {
+    } catch (error) {
+      if (error instanceof CliUsageError) throw error;
       throw new CliUsageError('The protected portable key file is invalid.');
     }
   } else {
@@ -191,7 +219,11 @@ export async function startVaultInitialization(
       creation.operationId,
       creation.takeDisplayMaterial(),
     );
-    const confirmation = await readConfirmation(secrets, options.confirmationFromStdin);
+    const confirmation = await readConfirmation(
+      secrets,
+      options.confirmationFromStdin,
+      passphraseAlreadyFramed,
+    );
     return await creation.confirm(confirmation);
   } catch (error) {
     creation.cancel();
@@ -244,12 +276,13 @@ async function displayAndAcknowledge(
 async function readConfirmation(
   secrets: SecretInputPort,
   fromStdin: boolean,
+  passphraseAlreadyFramed = false,
 ): Promise<VaultInitializationConfirmation> {
   const frames = await readExactSecretFrames(
     secrets,
     ['portable-key', 'recovery-key'],
-    fromStdin,
-    fromStdin,
+    fromStdin || passphraseAlreadyFramed,
+    fromStdin || passphraseAlreadyFramed,
   );
   return {
     portableKey: requiredFrame(frames, 0),

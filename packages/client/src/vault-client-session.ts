@@ -18,6 +18,8 @@ import {
   deviceUnlockSecretSchema,
   keySlotIdSchema,
   sessionCredentialSecretSchema,
+  recordRevisionSchema,
+  timestampSchema,
   vaultRecordSchema,
   type ApiBearerToken,
   type EncryptedGroupRecord,
@@ -35,7 +37,11 @@ import {
   SyncRollbackError,
   SyncTransportFailure,
   type SyncEngineOptions,
+  type ResolveSyncConflictInput,
+  type ResolveSyncConflictResult,
   type SyncLocalStorePort,
+  type SyncConflictMetadata,
+  type SyncConflictResolutionStrategy,
   type SyncRunResult,
 } from '@kavrix/sync';
 import type { SecureClipboardPort } from '@kavrix/clipboard';
@@ -272,6 +278,45 @@ export class VaultClientSession {
         }
         throw error;
       }
+    });
+  }
+
+  async listConflicts(): Promise<readonly SyncConflictMetadata[]> {
+    return this.#runActive(async () => {
+      if (this.#store.listConflicts === undefined) {
+        throw new VaultClientSessionError('protocol');
+      }
+      return this.#store.listConflicts(this.#profile.vaultId);
+    });
+  }
+
+  async resolveConflict(
+    input: Readonly<{
+      conflictId: string;
+      currentRevision: number;
+      strategy: SyncConflictResolutionStrategy;
+    }>,
+  ): Promise<ResolveSyncConflictResult> {
+    return this.#runActive(async () => {
+      if (this.#store.resolveConflict === undefined) {
+        throw new VaultClientSessionError('protocol');
+      }
+      const replacementIdempotencyKey =
+        input.strategy === 'keep-local'
+          ? this.#syncOptions.idempotencyKeys.next()
+          : null;
+      const resolvedAt = timestampSchema.parse(
+        this.#syncOptions.clock.now().toISOString(),
+      );
+      const request: ResolveSyncConflictInput = {
+        vaultId: this.#profile.vaultId,
+        conflictId: input.conflictId,
+        currentRevision: recordRevisionSchema.parse(input.currentRevision),
+        strategy: input.strategy,
+        replacementIdempotencyKey,
+        resolvedAt,
+      };
+      return this.#store.resolveConflict(request);
     });
   }
 

@@ -458,6 +458,21 @@ export const syncStateSchema = z.enum([
   'error',
 ]);
 
+export const syncConflictResolutionStrategySchema = z.enum([
+  'keep-local',
+  'accept-remote',
+]);
+
+export const syncConflictResolutionSchema = z
+  .object({
+    version: z.literal(1),
+    strategy: syncConflictResolutionStrategySchema,
+    currentRevision: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+    replacementIdempotencyKey: z.string().nullable(),
+    resolvedAt: timestampSchema,
+  })
+  .strict();
+
 export type ChangeRecord = z.infer<typeof changeRecordSchema>;
 export type DeviceRecord = z.infer<typeof deviceRecordSchema>;
 export type ProtectedLocalDeviceState = z.infer<typeof protectedLocalDeviceStateSchema>;
@@ -477,3 +492,4 @@ export type AttachmentStreamFinalizeInput = z.infer<
 >;
 export type SyncCursor = z.infer<typeof syncCursorSchema>;
 export type SyncState = z.infer<typeof syncStateSchema>;
+export type SyncConflictResolution = z.infer<typeof syncConflictResolutionSchema>;

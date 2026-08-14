@@ -23,6 +23,9 @@ describe('production CLI data paths', () => {
     expect(paths.profileStore).toBe(join(paths.home, 'profiles.db'));
     expect(paths.initializationJournal).toBe(join(paths.home, 'init-journal.db'));
     expect(paths.joinJournal).toBe(join(paths.home, 'join-journal.db'));
+    expect(paths.rotationJournal).toBe(
+      join(paths.home, 'portable-key-rotation-journal.db'),
+    );
     expect(paths.sealedSecrets).toBe(join(paths.home, 'sealed'));
   });
 
