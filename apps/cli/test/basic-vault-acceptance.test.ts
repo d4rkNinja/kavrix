@@ -407,7 +407,7 @@ function visibleRecordFor(
 ): OpaqueSyncRecord {
   if (mutation.entityType === 'vault') return mutation.record;
   if (mutation.record.tombstonedAt === undefined) return mutation.record;
-  if (predecessor === undefined || !hasTombstonedAt(predecessor)) {
+  if (predecessor === undefined) {
     throw new Error('Acceptance tombstone predecessor is missing.');
   }
   return tombstoneRecordSchema.parse({
