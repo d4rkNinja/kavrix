@@ -15,6 +15,7 @@ import {
   mongoApiCollectionNames,
   type MongoApiCredentialClaimDocument,
 } from '../src/mongo-documents.js';
+import { migrateMongoApiDatabase } from '../src/mongo-operations.js';
 import { createMongoApiServer, type MongoApiServer } from '../src/server.js';
 import { NodeTokenPort } from '../src/token.js';
 import { authHeader, vaultFixture } from '../test/helpers.js';
@@ -34,6 +35,7 @@ describeMongo('Mongo initial-vault bootstrap', () => {
 
   beforeAll(async () => {
     await inspectionClient.connect();
+    await migrateMongoApiDatabase(inspectionClient.db(databaseName));
     server = await createMongoApiServer({
       mongodbUri: uri,
       databaseName,

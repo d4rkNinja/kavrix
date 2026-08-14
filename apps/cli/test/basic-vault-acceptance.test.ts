@@ -1,4 +1,5 @@
 import { PassThrough, Readable, Writable } from 'node:stream';
+import { createHash, randomUUID } from 'node:crypto';
 import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -10,6 +11,14 @@ import type * as KeychainModule from '@kavrix/keychain';
 const testAdapters = vi.hoisted(() => {
   const entries = new Map<string, Uint8Array>();
   let copyCount = 0;
+  let clipboardValue: Uint8Array | undefined;
+
+  const clearClipboard = (): boolean => {
+    if (clipboardValue === undefined) return false;
+    clipboardValue.fill(0);
+    clipboardValue = undefined;
+    return true;
+  };
 
   const entryFactory: KeychainModule.NativeEntryFactory = (
     service: string,
@@ -41,8 +50,9 @@ const testAdapters = vi.hoisted(() => {
       secret: Uint8Array,
       options: ClipboardModule.ClipboardCopyOptions,
     ): Promise<ClipboardModule.ClipboardCopyReceipt> => {
-      void secret;
       void options;
+      clearClipboard();
+      clipboardValue = Uint8Array.from(secret);
       copyCount += 1;
       return Promise.resolve({
         generation: copyCount,
@@ -52,8 +62,8 @@ const testAdapters = vi.hoisted(() => {
         clearAfterMs: 30_000,
       });
     },
-    lock: (): Promise<boolean> => Promise.resolve(false),
-    dispose: (): Promise<boolean> => Promise.resolve(false),
+    lock: (): Promise<boolean> => Promise.resolve(clearClipboard()),
+    dispose: (): Promise<boolean> => Promise.resolve(clearClipboard()),
     takeBackgroundError: (): Error | null => null,
   });
 
@@ -63,8 +73,11 @@ const testAdapters = vi.hoisted(() => {
     reset: (): void => {
       for (const secret of entries.values()) secret.fill(0);
       entries.clear();
+      clearClipboard();
       copyCount = 0;
     },
+    clipboardBytes: (): Uint8Array =>
+      clipboardValue === undefined ? new Uint8Array() : Uint8Array.from(clipboardValue),
   };
 });
 
@@ -105,7 +118,8 @@ import type { SecretInputPort } from '../src/secret-input.js';
 
 const SERVER_URL = 'https://acceptance.example/';
 const PUBLIC_VALUE = 'acceptance-user-opaque';
-const SECRET_VALUE = 'acceptance-password-never-plaintext';
+const SECRET_VALUE = `acceptance-password-${randomUUID()}-never-plaintext`;
+let observedSurfaces: string[] = [];
 
 type ActiveMutationRecord = Extract<
   OpaqueMutation,
@@ -179,7 +193,7 @@ class OpaqueAcceptanceControlPlane {
   assertNoPlaintextBodies(): void {
     const encoded = this.requestBodies.join('\n');
     expect(encoded).not.toContain(PUBLIC_VALUE);
-    expect(encoded).not.toContain(SECRET_VALUE);
+    assertCanaryAbsent('HTTP request bodies', encoded, SECRET_VALUE);
   }
 
   private bootstrap(url: URL, body: string): Response {
@@ -420,6 +434,7 @@ type TombstonableActiveRecord = Extract<
 >;
 
 function jsonResponse(url: URL, status: number, value: unknown): Response {
+  observedSurfaces.push(JSON.stringify(value));
   const response = new Response(JSON.stringify(value), {
     status,
     headers: { 'content-type': 'application/json; charset=utf-8' },
@@ -432,16 +447,23 @@ describe('basic command-only vault acceptance', () => {
   let controlPlane: OpaqueAcceptanceControlPlane;
 
   afterEach(async () => {
+    vi.restoreAllMocks();
     vi.unstubAllGlobals();
     testAdapters.reset();
+    observedSurfaces = [];
     if (home.length > 0) await rm(home, { recursive: true, force: true });
     home = '';
   });
 
-  it('completes init, mutation, sync, masked read, copy, lock, reopen, update, archive, restore, and read', async () => {
+  it('proves the CLI journey keeps a runtime canary out of every observable surface', async () => {
     home = await mkdtemp(join(tmpdir(), 'kavrix-basic-acceptance-'));
     controlPlane = new OpaqueAcceptanceControlPlane();
     vi.stubGlobal('fetch', controlPlane.fetch.bind(controlPlane));
+    for (const method of ['debug', 'info', 'log', 'warn', 'error'] as const) {
+      vi.spyOn(console, method).mockImplementation((...values) => {
+        observedSurfaces.push(values.map((value) => String(value)).join(' '));
+      });
+    }
 
     const initialization = await execute(
       [
@@ -528,7 +550,7 @@ describe('basic command-only vault acceptance', () => {
     ]);
     expect(shown.stdout).toContain('acceptance-user-opaque');
     expect(shown.stdout).toContain('[REDACTED]');
-    expect(shown.stdout).not.toContain(SECRET_VALUE);
+    assertCanaryAbsent('show stdout', shown.stdout, SECRET_VALUE);
 
     const copied = await execute([
       'copy',
@@ -539,7 +561,7 @@ describe('basic command-only vault acceptance', () => {
       'native',
     ]);
     expect(copied.stdout).toContain('Copied Password');
-    expect(copied.stdout).not.toContain(SECRET_VALUE);
+    assertCanaryAbsent('copy stdout', copied.stdout, SECRET_VALUE);
 
     await execute(['lock', '--secret-backend', 'native']);
     const reopened = await execute([
@@ -550,7 +572,7 @@ describe('basic command-only vault acceptance', () => {
       'native',
     ]);
     expect(reopened.stdout).toContain('[REDACTED]');
-    expect(reopened.stdout).not.toContain(SECRET_VALUE);
+    assertCanaryAbsent('reopen stdout', reopened.stdout, SECRET_VALUE);
 
     const listed = await execute([
       'credential',
@@ -609,10 +631,52 @@ describe('basic command-only vault acceptance', () => {
       'native',
     ]);
     expect(maskedRead.stdout).toBe('[REDACTED]\n');
-    expect(maskedRead.stdout).not.toContain(SECRET_VALUE);
+    assertCanaryAbsent('masked get stdout', maskedRead.stdout, SECRET_VALUE);
+
+    const finalSync = await execute(['sync', '--json', '--secret-backend', 'native']);
+    expect(JSON.parse(finalSync.stdout)).toMatchObject({
+      syncState: 'idle',
+      pendingChanges: 0,
+    });
+
+    const backupPath = join(home, 'acceptance-backup.cvkx');
+    await execute([
+      'backup',
+      'create',
+      '--file',
+      backupPath,
+      '--secret-backend',
+      'native',
+    ]);
+    await execute([
+      'backup',
+      'verify',
+      '--file',
+      backupPath,
+      '--secret-backend',
+      'native',
+    ]);
+    for (const shell of ['bash', 'zsh', 'fish', 'powershell'] as const) {
+      await execute(['completion', shell]);
+    }
+
+    const archive = await readFile(backupPath);
+    try {
+      assertCanaryAbsent('encrypted backup bytes', archive, SECRET_VALUE);
+    } finally {
+      archive.fill(0);
+    }
 
     controlPlane.assertNoPlaintextBodies();
-    expect(await treeContains(home, SECRET_VALUE)).toBe(false);
+    for (const [index, surface] of observedSurfaces.entries()) {
+      assertCanaryAbsent(`observable surface ${String(index)}`, surface, SECRET_VALUE);
+    }
+    assertCanaryAbsent(
+      'clipboard after lock',
+      testAdapters.clipboardBytes(),
+      SECRET_VALUE,
+    );
+    await assertTreeCanaryFree(home, SECRET_VALUE);
   }, 120_000);
 });
 
@@ -646,7 +710,16 @@ async function execute(
     throw new Error(`Acceptance command failed with exit code ${String(exitCode)}.`);
   }
   terminal?.input.destroy();
-  return { stdout: stdout.value(), stderr: stderr.value() };
+  const result = { stdout: stdout.value(), stderr: stderr.value() };
+  observedSurfaces.push(
+    JSON.stringify({
+      arguments_,
+      environment: dependencies.environment,
+      stdout: result.stdout,
+      stderr: result.stderr,
+    }),
+  );
+  return result;
 }
 
 function scriptedSecrets(
@@ -721,21 +794,71 @@ function capture(isTTY: boolean, onWrite?: (value: string) => void): CapturedOut
   return { stream, value: () => content };
 }
 
-async function treeContains(root: string, needle: string): Promise<boolean> {
-  const visit = async (directory: string): Promise<boolean> => {
+type CanaryNeedle = Readonly<{ encoding: string; bytes: Buffer }>;
+
+function canaryNeedles(canary: string): readonly CanaryNeedle[] {
+  const utf8 = Buffer.from(canary, 'utf8');
+  return [
+    { encoding: 'utf8', bytes: utf8 },
+    { encoding: 'utf16le', bytes: Buffer.from(canary, 'utf16le') },
+    { encoding: 'base64', bytes: Buffer.from(utf8.toString('base64'), 'utf8') },
+    {
+      encoding: 'base64url',
+      bytes: Buffer.from(utf8.toString('base64url'), 'utf8'),
+    },
+    { encoding: 'json-escaped', bytes: Buffer.from(JSON.stringify(canary), 'utf8') },
+    { encoding: 'direct-substring', bytes: utf8 },
+  ];
+}
+
+function canaryFingerprint(canary: string): string {
+  return createHash('sha256').update(canary, 'utf8').digest('hex').slice(0, 16);
+}
+
+function canaryEncoding(
+  value: string | Uint8Array,
+  needles: readonly CanaryNeedle[],
+): string | undefined {
+  const bytes = Buffer.from(value);
+  return needles.find(({ bytes: needle }) => bytes.includes(needle))?.encoding;
+}
+
+function assertCanaryAbsent(
+  surface: string,
+  value: string | Uint8Array,
+  canary: string,
+): void {
+  const encoding = canaryEncoding(value, canaryNeedles(canary));
+  if (encoding !== undefined) {
+    throw new Error(
+      `Plaintext canary matched ${surface}/${encoding} (${canaryFingerprint(canary)}).`,
+    );
+  }
+}
+
+async function assertTreeCanaryFree(root: string, canary: string): Promise<void> {
+  const needles = canaryNeedles(canary);
+  const visit = async (directory: string): Promise<void> => {
     for (const entry of await readdir(directory, { withFileTypes: true })) {
       const path = resolve(directory, entry.name);
-      if (entry.isDirectory() && (await visit(path))) return true;
+      if (entry.isDirectory()) {
+        await visit(path);
+        continue;
+      }
       if (entry.isFile()) {
         const bytes = await readFile(path);
         try {
-          if (bytes.includes(Buffer.from(needle, 'utf8'))) return true;
+          const encoding = canaryEncoding(bytes, needles);
+          if (encoding !== undefined) {
+            throw new Error(
+              `Plaintext canary matched local artifact/${encoding} (${canaryFingerprint(canary)}).`,
+            );
+          }
         } finally {
           bytes.fill(0);
         }
       }
     }
-    return false;
   };
-  return visit(root);
+  await visit(root);
 }

@@ -72,11 +72,7 @@ import {
   createProductionPortableKeyFileReader,
   type ProductionPortableKeyFileReaderDependencies,
 } from './portable-key-files.js';
-import {
-  createSecretBackend,
-  type SecretBackend,
-  type SecretBackendPolicy,
-} from './secret-backend.js';
+import { createSecretBackend, type SecretBackendPolicy } from './secret-backend.js';
 
 const REQUIRED_RECOVERY_SCOPES = ['sync:read', 'sync:write', 'device:manage'] as const;
 const DEVICE_KEY_PROVIDER = 'native';
@@ -426,8 +422,16 @@ export async function executeProductionRecoveryCancel(
       { cause: operationFailure },
     );
   }
-  if (operationFailure !== undefined) throw operationFailure;
-  if (cleanupFailure !== undefined) throw cleanupFailure;
+  if (operationFailure !== undefined) {
+    throw operationFailure instanceof Error
+      ? operationFailure
+      : new VaultLifecycleError('protocol');
+  }
+  if (cleanupFailure !== undefined) {
+    throw cleanupFailure instanceof Error
+      ? cleanupFailure
+      : new VaultLifecycleError('protocol');
+  }
 }
 
 async function finalizeRecovery(
@@ -700,12 +704,13 @@ async function readPortableKeyFileSource(
     stagedPassphrase === undefined
       ? secrets
       : {
-          read: async ({ kind, fromStdin }) => {
-            if (kind !== 'passphrase' || !fromStdin) {
-              throw new CliUsageError('Secret input used invalid framing.');
-            }
-            return acquiredSecretSchema.parse(stagedPassphrase);
-          },
+          read: ({ kind, fromStdin }) =>
+            Promise.resolve().then(() => {
+              if (kind !== 'passphrase' || !fromStdin) {
+                throw new CliUsageError('Secret input used invalid framing.');
+              }
+              return acquiredSecretSchema.parse(stagedPassphrase);
+            }),
           readBatch: () =>
             Promise.reject(new CliUsageError('Secret input used invalid framing.')),
         };
