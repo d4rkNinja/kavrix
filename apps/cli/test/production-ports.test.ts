@@ -1,5 +1,6 @@
 import {
   apiBearerTokenSchema,
+  publicDeviceRecordSchema,
   deviceIdSchema,
   inviteIssueRequestSchema,
   inviteIssueResponseSchema,
@@ -19,15 +20,18 @@ import {
   type ProductionPortsOptions,
   type ProductionVaultSession,
 } from '../src/production/ports.js';
-import { CliUnavailableError } from '../src/errors.js';
 import { showFixture } from './fixtures.js';
 
 describe('production CLI ports', () => {
-  it('forwards one invite page request and exposes no device-list adapter', async () => {
+  it('forwards invite and device page requests through the authenticated client', async () => {
     const options = productionOptions();
-    const sessionSecret = new Uint8Array(32).fill(7);
+    const inviteSessionSecret = new Uint8Array(32).fill(7);
+    const deviceSessionSecret = new Uint8Array(32).fill(9);
     Object.assign(options.secrets.sessions, {
-      load: vi.fn(() => Promise.resolve(sessionSecret)),
+      load: vi
+        .fn()
+        .mockResolvedValueOnce(inviteSessionSecret)
+        .mockResolvedValueOnce(deviceSessionSecret),
     });
     const invite = publicInviteRecordSchema.parse({
       id: 'invite.primary',
@@ -39,9 +43,21 @@ describe('production CLI ports', () => {
       expiresAt: '2026-08-10T01:00:00.000Z',
     });
     const page = { invites: [invite], nextCursor: null };
+    const device = publicDeviceRecordSchema.parse({
+      id: options.profile.deviceId,
+      vaultId: options.profile.vaultId,
+      schemaVersion: 1,
+      tokenVersion: 1,
+      scopes: ['device:manage'],
+      createdAt: '2026-08-10T00:00:00.000Z',
+    });
+    const devicePage = { devices: [device], nextCursor: null };
     const listInvitePage = vi
       .spyOn(ControlPlaneClient.prototype, 'listInvitePage')
       .mockResolvedValue(page);
+    const listDevicePage = vi
+      .spyOn(ControlPlaneClient.prototype, 'listDevicePage')
+      .mockResolvedValue(devicePage);
     const ports = createProductionPorts(options);
 
     await expect(
@@ -53,7 +69,39 @@ describe('production CLI ports', () => {
       options.profile.vaultId,
       { limit: 1 },
     );
-    expect(ports).not.toHaveProperty('listDevicePage');
+    if (ports.listDevicePage === undefined) throw new Error('Missing device list port');
+    await expect(
+      ports.listDevicePage(options.profile.vaultId, { limit: 1 }),
+    ).resolves.toEqual(devicePage);
+    expect(listDevicePage).toHaveBeenCalledWith(
+      apiBearerTokenSchema.parse(Buffer.alloc(32, 9).toString('base64url')),
+      options.profile.vaultId,
+      { limit: 1 },
+    );
+    expect([...inviteSessionSecret]).toEqual(Array.from({ length: 32 }, () => 0));
+    expect([...deviceSessionSecret]).toEqual(Array.from({ length: 32 }, () => 0));
+  });
+
+  it('revokes a device through the authenticated control-plane port and clears session bytes', async () => {
+    const options = productionOptions();
+    const sessionSecret = new Uint8Array(32).fill(10);
+    Object.assign(options.secrets.sessions, {
+      load: vi.fn(() => Promise.resolve(sessionSecret)),
+    });
+    const revokeDevice = vi
+      .spyOn(ControlPlaneClient.prototype, 'revokeDevice')
+      .mockResolvedValue();
+    const ports = createProductionPorts(options);
+
+    if (ports.revokeDevice === undefined) throw new Error('Missing device revoke port');
+    await expect(
+      ports.revokeDevice(options.profile.vaultId, deviceIdSchema.parse('device.other')),
+    ).resolves.toBeUndefined();
+    expect(revokeDevice).toHaveBeenCalledWith(
+      apiBearerTokenSchema.parse(Buffer.alloc(32, 10).toString('base64url')),
+      options.profile.vaultId,
+      'device.other',
+    );
     expect([...sessionSecret]).toEqual(Array.from({ length: 32 }, () => 0));
   });
 
@@ -174,6 +222,7 @@ describe('production CLI ports', () => {
         events.push('show');
         return Promise.resolve(fixture);
       },
+      copy: () => Promise.reject(new Error('copy should not run')),
       lock: () => {
         events.push('lock');
         return Promise.resolve();
@@ -199,6 +248,7 @@ describe('production CLI ports', () => {
       },
       synchronize,
       show: () => Promise.reject(new Error('show should not run')),
+      copy: () => Promise.reject(new Error('copy should not run')),
       lock: () => {
         events.push('lock');
         return Promise.resolve();
@@ -229,6 +279,7 @@ describe('production CLI ports', () => {
       unlockRememberedDevice: () => Promise.resolve(),
       synchronize: () => Promise.reject(operationFailure),
       show,
+      copy: () => Promise.reject(new Error('copy should not run')),
       lock: () => {
         events.push('lock');
         return Promise.reject(cleanupFailure);
@@ -248,14 +299,34 @@ describe('production CLI ports', () => {
     expect(events).toEqual(['open-store', 'open', 'lock']);
   });
 
-  it('fails copy closed before opening or unlocking a session', async () => {
+  it('opens, unlocks, copies, and locks through the production session', async () => {
     const events: string[] = [];
-    const options = productionOptions(events);
+    const copy = vi.fn(() => {
+      events.push('copy');
+      return Promise.resolve({ label: 'Password', clearAfterSeconds: 30 });
+    });
+    const options = productionOptions(events, {
+      unlockRememberedDevice: () => {
+        events.push('unlock');
+        return Promise.resolve();
+      },
+      synchronize: () => {
+        events.push('sync');
+        return Promise.resolve({});
+      },
+      show: () => Promise.reject(new Error('show should not run')),
+      copy,
+      lock: () => {
+        events.push('lock');
+        return Promise.resolve();
+      },
+    });
 
     await expect(
       createProductionPorts(options).copy('group', 'item', 'password'),
-    ).rejects.toEqual(new CliUnavailableError('copy'));
-    expect(events).toEqual([]);
+    ).resolves.toEqual({ label: 'Password', clearAfterSeconds: 30 });
+    expect(copy).toHaveBeenCalledWith('group', 'item', 'password', {});
+    expect(events).toEqual(['open-store', 'open', 'unlock', 'sync', 'copy', 'lock']);
   });
 });
 
@@ -269,6 +340,15 @@ function productionOptions(
 } {
   const vaultId = vaultIdSchema.parse('vault.primary');
   const deviceId = deviceIdSchema.parse('device.primary');
+  const environment: ProductionPortsOptions['environment'] = {
+    openSyncStore: () => {
+      events.push('open-store');
+      return Promise.resolve({
+        listPendingMutations: () => Promise.resolve([{} as never, {} as never]),
+      } as never);
+    },
+    clipboard: {} as never,
+  };
   return {
     profile: {
       version: 1,
@@ -288,15 +368,7 @@ function productionOptions(
         purpose: 'api-session',
       }),
     },
-    environment: {
-      openSyncStore: () => {
-        events.push('open-store');
-        return Promise.resolve({
-          listPendingMutations: () => Promise.resolve([{} as never, {} as never]),
-        } as never);
-      },
-      clipboard: {} as never,
-    } as never,
+    environment,
     secrets: {
       sessions: {} as never,
       keychain: {} as never,

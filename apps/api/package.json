@@ -23,6 +23,7 @@
   "scripts": {
     "build": "tsc -b tsconfig.build.json",
     "start": "node ./dist/main.js",
+    "migrate": "tsx ./scripts/mongo-migrate.ts",
     "typecheck": "tsc -b tsconfig.build.json --pretty false && tsc -p tsconfig.json --pretty false",
     "test": "vitest run --root ../.. apps/api",
     "test:integration": "tsx ./scripts/api-integration-gate.ts"

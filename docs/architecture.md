@@ -227,11 +227,14 @@ canonical entry commitment, record count, and supported-family algebra;
 finalization alone yields committed success.
 
 The supported semantic subset is canonical preferences, groups, items,
-attachments, and deleted/restored tombstones, with literal-zero history and
-audit entries. Authentication-only parsing still preserves structurally valid
-opaque history/audit records, but semantic restore rejects either family before
-publication. MongoDB remains unable to decrypt any record and never receives
-the credential or VRK.
+attachments, deleted/restored tombstones, v1 item-history snapshots, and v1
+key-slot audit payloads. History opens under the referenced item key and audit
+opens under the vault root key; each validator checks the decrypted identity,
+revision, slot/action relationship, and canonical representation without
+retaining plaintext in the receipt. Authentication-only parsing still accepts
+outer-valid records, while malformed/tampered semantic payloads fail closed and
+future semantic versions remain explicitly unsupported. MongoDB remains unable
+to decrypt any record and never receives the credential or VRK.
 
 This boundary does not automatically fence concurrent normal writers. Until
 Task 5B's shared writer epoch is implemented and proven, restore requires a new

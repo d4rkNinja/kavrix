@@ -40,6 +40,7 @@ export interface BuildApiOptions {
   readonly sourceRatePolicy?: ApiRatePolicy;
   readonly enrollmentLifetimeSeconds?: number;
   readonly trustedProxy?: string | string[];
+  readonly readiness?: () => Promise<boolean>;
   readonly vaultBootstrapEnabled?: boolean;
 }
 
@@ -53,6 +54,7 @@ export function buildApi(options: BuildApiOptions): FastifyInstance {
   const sourcePolicy =
     options.sourceRatePolicy ?? ({ limit: 600, windowSeconds: 60 } as const);
   const enrollmentLifetimeSeconds = options.enrollmentLifetimeSeconds ?? 600;
+  const readiness = options.readiness ?? (() => Promise.resolve(true));
   assertPositiveInteger(bodyLimit, 'body limit');
   assertRatePolicy(authenticatedPolicy);
   assertRatePolicy(anonymousPolicy);
@@ -98,6 +100,7 @@ export function buildApi(options: BuildApiOptions): FastifyInstance {
     ports: options.ports,
     security,
     enrollmentLifetimeSeconds,
+    readiness,
   };
 
   app.addHook('onRequest', async (request, reply) => {

@@ -1,5 +1,6 @@
 import { DomainError } from '@kavrix/core';
 
+import type { BackupErrorCode } from '@kavrix/import-export';
 import { CliUnsupportedRuntimeError } from './runtime-preflight.js';
 
 export const CLI_EXIT_CODES = Object.freeze({
@@ -31,6 +32,11 @@ export type CliFeature =
   | 'device invite list'
   | 'device invite revoke'
   | 'device invite join'
+  | 'device list'
+  | 'device revoke'
+  | 'device remember'
+  | 'device forget'
+  | 'device join'
   | 'group'
   | 'group create'
   | 'group list'
@@ -62,7 +68,10 @@ export type CliFeature =
   | 'sync conflicts list'
   | 'sync conflicts resolve'
   | 'connect'
-  | 'recover';
+  | 'recover'
+  | 'backup create'
+  | 'backup verify'
+  | 'backup restore';
 
 export class CliUsageError extends Error {
   readonly code = 'CLI_USAGE' as const;
@@ -97,6 +106,41 @@ export class CliKeyFileCreationError extends Error {
   }
 }
 
+export class CliBackupCreationError extends Error {
+  readonly code = 'BACKUP_CREATE_FAILED' as const;
+
+  constructor() {
+    super('The encrypted backup could not be created.');
+    this.name = 'CliBackupCreationError';
+  }
+}
+
+export class CliBackupVerificationError extends Error {
+  readonly code: BackupErrorCode;
+  readonly safe = true;
+
+  constructor(code: BackupErrorCode = 'BACKUP_AUTHENTICATION_FAILED') {
+    super('The encrypted backup could not be verified.');
+    this.name = 'CliBackupVerificationError';
+    this.code = code;
+  }
+}
+
+export class CliBackupRestoreError extends Error {
+  readonly code: BackupErrorCode;
+  readonly safe = true;
+
+  constructor(code: BackupErrorCode = 'BACKUP_AUTHENTICATION_FAILED') {
+    super(
+      code === 'BACKUP_COMMIT_UNCERTAIN'
+        ? 'The backup restore outcome is uncertain. Preserve the archive and isolated target; retry the same archive only.'
+        : 'The encrypted backup could not be restored.',
+    );
+    this.name = 'CliBackupRestoreError';
+    this.code = code;
+  }
+}
+
 export type CliErrorPresentation = Readonly<{
   exitCode: number;
   code: string;
@@ -122,6 +166,27 @@ export function presentCliError(error: unknown): CliErrorPresentation {
     };
   }
   if (error instanceof CliKeyFileCreationError) {
+    return {
+      exitCode: CLI_EXIT_CODES.failure,
+      code: error.code,
+      message: error.message,
+    };
+  }
+  if (error instanceof CliBackupCreationError) {
+    return {
+      exitCode: CLI_EXIT_CODES.failure,
+      code: error.code,
+      message: error.message,
+    };
+  }
+  if (error instanceof CliBackupVerificationError) {
+    return {
+      exitCode: CLI_EXIT_CODES.failure,
+      code: error.code,
+      message: error.message,
+    };
+  }
+  if (error instanceof CliBackupRestoreError) {
     return {
       exitCode: CLI_EXIT_CODES.failure,
       code: error.code,

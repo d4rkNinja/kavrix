@@ -58,6 +58,7 @@
     "@kavrix/clipboard": "workspace:*",
     "@kavrix/core": "workspace:*",
     "@kavrix/crypto": "workspace:*",
+    "@kavrix/import-export": "workspace:*",
     "@kavrix/key-files": "workspace:*",
     "@kavrix/keychain": "workspace:*",
     "@kavrix/local-store": "workspace:*",
