@@ -5,6 +5,7 @@ export * from './backup.js';
 export * from './encrypted-records.js';
 export * from './content-hash.js';
 export * from './fields.js';
+export * from './history.js';
 export * from './identifiers.js';
 export * from './keychain.js';
 export * from './notes.js';

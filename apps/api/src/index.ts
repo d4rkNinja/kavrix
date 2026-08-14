@@ -2,6 +2,7 @@ export * from './app.js';
 export * from './errors.js';
 export * from './invite-id.js';
 export * from './mongo-persistence.js';
+export * from './mongo-operations.js';
 export * from './mongo-rate-limit.js';
 export * from './ports.js';
 export * from './server.js';

@@ -187,15 +187,29 @@ describe('CLI runtime boundaries', () => {
       '\u001bPdevice-command\u0007tail',
       '\u001bcreset',
       '\u009b2Jclear',
+      '\u009d8;;https://c1-osc.invalid\u009cC1-OSC-PAYLOAD',
+      '\u0090C1-DCS-PAYLOAD\u009c',
+      '\u0098C1-SOS-PAYLOAD\u009c',
+      '\u009eC1-PM-PAYLOAD\u009c',
+      '\u009fC1-APC-PAYLOAD\u009c',
       '\u202ereverse',
+      '\u2028line-separator\u2029paragraph-separator',
       '\r\n\t',
     ].join('|');
     const safe = sanitizeTerminalText(hostile);
     expect(safe).not.toContain('\u001b');
     expect(safe).not.toContain('\u009b');
+    expect(safe).not.toContain('c1-osc.invalid');
+    expect(safe).not.toContain('C1-DCS-PAYLOAD');
+    expect(safe).not.toContain('C1-SOS-PAYLOAD');
+    expect(safe).not.toContain('C1-PM-PAYLOAD');
+    expect(safe).not.toContain('C1-APC-PAYLOAD');
     expect(safe).not.toContain('\u202e');
+    expect(safe).not.toContain('\u2028');
+    expect(safe).not.toContain('\u2029');
     expect(safe).not.toContain('https://unsafe.invalid');
     expect(safe).toContain('\\r\\n\\t');
+    expect(sanitizeTerminalText('\u009dunterminated-C1-STRING')).toBe('�');
     expect(sanitizeTerminalOutput('one\r\ntwo\rthree')).toBe('one\ntwo\nthree');
     expect(safeJson({ ['bad\u001b[2J']: ['ok', 'bad\u202e'] })).toBe(
       '{\n  "bad�": [\n    "ok",\n    "bad�"\n  ]\n}\n',
