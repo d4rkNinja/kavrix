@@ -124,3 +124,11 @@ is denied by a later session after Device A revokes it. The fixture validates ca
 opaque requests and scans bodies, credential headers, server state, and both local homes for
 plaintext canaries. The test is source-level rather than a claim about a packed native-
 keychain online run.
+
+Issue #48's real-Mongo acceptance gate is
+`packages/storage/integration/mongo-backup-source.integration.ts`. It creates an archive from
+an opaque Mongo snapshot, authenticates it, restores it into a separate empty database with
+the semantic verifier, and reads exact current records through a fresh storage/sync snapshot.
+The gate also scans the archive and durable BSON for plaintext and credential canaries. It runs
+only when `KAVRIX_MONGODB_URI` selects a transaction-capable replica set; the packed CLI still
+does not accept a MongoDB URI or expose restore without an explicit safe target adapter.
