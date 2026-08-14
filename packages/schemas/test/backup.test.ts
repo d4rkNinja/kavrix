@@ -173,7 +173,7 @@ describe('restoreKnownRecordsVerificationV1Schema', () => {
     ).toBe(1);
   });
 
-  it('requires literal-zero history and audit counts', () => {
+  it('accepts bounded semantic history and audit counts in the count algebra', () => {
     for (const family of ['histories', 'audits'] as const) {
       const base = receipt();
       expect(
@@ -182,7 +182,7 @@ describe('restoreKnownRecordsVerificationV1Schema', () => {
           recordCount: 2,
           verified: { ...base.verified, [family]: 1 },
         }).success,
-      ).toBe(false);
+      ).toBe(true);
     }
   });
 

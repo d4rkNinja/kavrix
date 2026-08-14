@@ -1,8 +1,10 @@
 export {
   openSqliteInitializationJournal,
   openSqliteJoinLifecycleJournal,
+  openSqlitePortableKeyRotationJournal,
   SqliteInitializationJournal,
   SqliteJoinLifecycleJournal,
+  SqlitePortableKeyRotationJournal,
   type SqliteJoinLifecycleJournalOptions,
   type SqliteLifecycleJournalOptions,
 } from './lifecycle-journals.js';
@@ -29,6 +31,8 @@ export type {
   InitializationJournalRecord,
   JoinJournalRecord,
   JoinLifecycleJournalPort,
+  PortableKeyRotationJournalPort,
+  PortableKeyRotationJournalRecord,
   LifecycleOperationId,
   VaultProfile,
   VaultProfileStorePort,

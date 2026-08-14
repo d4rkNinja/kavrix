@@ -9,6 +9,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./cli-contracts": {
+      "types": "./dist/cli-contracts.d.ts",
+      "import": "./dist/cli-contracts.js"
     }
   },
   "files": [
