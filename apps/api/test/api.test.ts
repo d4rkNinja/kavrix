@@ -98,6 +98,58 @@ describe('zero-knowledge Fastify API', () => {
     expect(secure.headers['cache-control']).toBe('no-store');
   });
 
+  it('serves dependency readiness without exposing the dependency error', async () => {
+    const readyFixture = await createTestPorts();
+    const readyApp = tracked(
+      buildApi({
+        ports: readyFixture.ports,
+        environment: 'test',
+        readiness: () => Promise.resolve(true),
+      }),
+    );
+    const ready = await readyApp.inject({ method: 'GET', url: '/ready' });
+    expect(ready.statusCode).toBe(200);
+    expect(ready.json()).toEqual({ status: 'ready' });
+
+    const unavailableFixture = await createTestPorts();
+    const unavailableApp = tracked(
+      buildApi({
+        ports: unavailableFixture.ports,
+        environment: 'test',
+        readiness: () => Promise.resolve(false),
+      }),
+    );
+    const unavailable = await unavailableApp.inject({
+      method: 'GET',
+      url: '/ready',
+    });
+    expect(unavailable.statusCode).toBe(503);
+    expect(unavailable.json()).toEqual({ status: 'not_ready' });
+
+    const failedFixture = await createTestPorts();
+    const failedApp = tracked(
+      buildApi({
+        ports: failedFixture.ports,
+        environment: 'test',
+        readiness: () => Promise.reject(new Error('readiness plaintext-canary')),
+      }),
+    );
+    const failed = await failedApp.inject({ method: 'GET', url: '/ready' });
+    expect(failed.statusCode).toBe(503);
+    expect(failed.body).not.toContain('readiness plaintext-canary');
+
+    const productionFixture = await createTestPorts();
+    const productionApp = tracked(
+      buildApi({
+        ports: productionFixture.ports,
+        environment: 'production',
+        readiness: () => Promise.resolve(true),
+      }),
+    );
+    const insecure = await productionApp.inject({ method: 'GET', url: '/ready' });
+    expect(insecure.statusCode).toBe(426);
+  });
+
   it('returns one generic error for missing, malformed, and unknown sessions', async () => {
     const fixture = await createTestPorts();
     const app = tracked(buildApi({ ports: fixture.ports, environment: 'test' }));

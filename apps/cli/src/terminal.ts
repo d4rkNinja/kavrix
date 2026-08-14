@@ -2,6 +2,7 @@ const REPLACEMENT = '\uFFFD';
 const ESCAPE = 0x1b;
 const BELL = 0x07;
 const STRING_TERMINATOR = 0x5c;
+const C1_STRING_TERMINATOR = 0x9c;
 
 export function sanitizeTerminalText(value: string): string {
   const withoutEscapes = replaceEscapeSequences(value);
@@ -45,6 +46,11 @@ function replaceEscapeSequences(value: string): string {
       safe += REPLACEMENT;
       continue;
     }
+    if (isC1StringCommand(code)) {
+      index = consumeStringSequence(value, index + 1);
+      safe += REPLACEMENT;
+      continue;
+    }
     safe += value.slice(index, index + 1);
   }
   return safe;
@@ -78,11 +84,18 @@ function consumeStringSequence(value: string, startIndex: number): number {
   for (let index = startIndex; index < value.length; index += 1) {
     const code = value.charCodeAt(index);
     if (code === BELL) return index;
+    if (code === C1_STRING_TERMINATOR) return index;
     if (code === ESCAPE && value.charCodeAt(index + 1) === STRING_TERMINATOR) {
       return index + 1;
     }
   }
   return value.length - 1;
+}
+
+function isC1StringCommand(code: number): boolean {
+  return (
+    code === 0x90 || code === 0x98 || code === 0x9d || code === 0x9e || code === 0x9f
+  );
 }
 
 function isTerminalControl(codePoint: number): boolean {
@@ -92,6 +105,8 @@ function isTerminalControl(codePoint: number): boolean {
     codePoint === 0x061c ||
     codePoint === 0x200e ||
     codePoint === 0x200f ||
+    codePoint === 0x2028 ||
+    codePoint === 0x2029 ||
     (codePoint >= 0x202a && codePoint <= 0x202e) ||
     (codePoint >= 0x2066 && codePoint <= 0x2069)
   );
