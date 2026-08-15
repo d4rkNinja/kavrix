@@ -11,6 +11,7 @@ import {
   type InviteIssueRequest,
   type ItemPayload,
   type KeySlotId,
+  type TemplateMigrationPlan,
   vaultIdSchema,
 } from '@kavrix/schemas';
 import { z } from 'zod';
@@ -25,6 +26,8 @@ import {
   parseRecoverRequest,
   type CliRecoverResult,
   type CliStatus,
+  type CliTemplateMigrationApplyResult,
+  type CliTemplateMigrationStatusResult,
   type CliTemplateSummary,
   type CliUseCasePorts,
 } from './contracts.js';
@@ -1262,6 +1265,180 @@ const templateCommand: CliCommandDescriptor = Object.freeze({
         }
         context.stdout.write(`Template for "${query}" deleted.\n`);
       },
+    },
+    {
+      name: 'migrate',
+      description: 'Plan, preview, and apply lossless template migrations.',
+      options: [secretBackendOption, backendPassphraseStdinOption],
+      children: [
+        {
+          name: 'plan',
+          description: 'Preview a template migration plan and affected item counts.',
+          arguments: [{ syntax: '<group>', description: 'Group name or ID.' }],
+          options: [
+            {
+              flags: '--target <template>',
+              description: 'Target template key, name, or group query.',
+            },
+            {
+              flags: '--template-file <file>',
+              description: 'Path to JSON template file.',
+            },
+            {
+              flags: '--to-version <version>',
+              description: 'Target template schema version.',
+            },
+            jsonOption,
+            secretBackendOption,
+            backendPassphraseStdinOption,
+          ],
+          execute: async (context, arguments_, options) => {
+            const groupQuery = requiredArgument(arguments_[0], 'group query');
+            const targetTemplateQuery = optionString(options, 'target');
+            const templateFile = optionString(options, 'templateFile');
+            const toVersionRaw = optionString(options, 'toVersion');
+            const toVersion = toVersionRaw ? Number(toVersionRaw) : undefined;
+            const { cliPlanTemplateMigrationRequestSchema } =
+              await import('./mutation-contracts.js');
+            const request = cliPlanTemplateMigrationRequestSchema.parse({
+              groupQuery,
+              ...(targetTemplateQuery ? { targetTemplateQuery } : {}),
+              ...(templateFile ? { templateFile } : {}),
+              ...(toVersion !== undefined ? { toVersion } : {}),
+            });
+
+            let plan: TemplateMigrationPlan;
+            if (context.ports?.planTemplateMigration !== undefined) {
+              plan = await context.ports.planTemplateMigration(request);
+            } else {
+              const { executeProductionPlanTemplateMigration } =
+                await import('./production/mutations.js');
+              plan = await withUnlockedVault(
+                context,
+                'template migrate plan',
+                options,
+                async (unlocked, store, rootKey) =>
+                  executeProductionPlanTemplateMigration(
+                    {
+                      source: store,
+                      vaultId: unlocked.profile.vaultId,
+                      rootKey,
+                    },
+                    request,
+                  ),
+              );
+            }
+            const { renderTemplateMigrationPlan } = await import('./render.js');
+            context.stdout.write(
+              renderTemplateMigrationPlan(plan, optionBoolean(options, 'json')),
+            );
+          },
+        },
+        {
+          name: 'apply',
+          description: 'Apply a lossless template migration to a group.',
+          arguments: [{ syntax: '<group>', description: 'Group name or ID.' }],
+          options: [
+            {
+              flags: '--target <template>',
+              description: 'Target template key, name, or group query.',
+            },
+            {
+              flags: '--template-file <file>',
+              description: 'Path to JSON template file.',
+            },
+            {
+              flags: '--to-version <version>',
+              description: 'Target template schema version.',
+            },
+            {
+              flags: '--confirm-risky',
+              description: 'Confirm migration steps that require confirmation.',
+            },
+            jsonOption,
+            secretBackendOption,
+            backendPassphraseStdinOption,
+          ],
+          execute: async (context, arguments_, options) => {
+            const groupQuery = requiredArgument(arguments_[0], 'group query');
+            const targetTemplateQuery = optionString(options, 'target');
+            const templateFile = optionString(options, 'templateFile');
+            const toVersionRaw = optionString(options, 'toVersion');
+            const toVersion = toVersionRaw ? Number(toVersionRaw) : undefined;
+            const confirmRisky = optionBoolean(options, 'confirmRisky');
+            const { cliApplyTemplateMigrationRequestSchema } =
+              await import('./mutation-contracts.js');
+            const request = cliApplyTemplateMigrationRequestSchema.parse({
+              groupQuery,
+              ...(targetTemplateQuery ? { targetTemplateQuery } : {}),
+              ...(templateFile ? { templateFile } : {}),
+              ...(toVersion !== undefined ? { toVersion } : {}),
+              ...(confirmRisky ? { confirmRisky } : {}),
+            });
+
+            let result: CliTemplateMigrationApplyResult;
+            if (context.ports?.applyTemplateMigration !== undefined) {
+              result = await context.ports.applyTemplateMigration(request);
+            } else {
+              const { executeProductionApplyTemplateMigration } =
+                await import('./production/mutations.js');
+              result = await withUnlockedVault(
+                context,
+                'template migrate apply',
+                options,
+                async (unlocked, store, rootKey) =>
+                  executeProductionApplyTemplateMigration(
+                    {
+                      source: store,
+                      queue: store,
+                      vaultId: unlocked.profile.vaultId,
+                      rootKey,
+                    },
+                    request,
+                  ),
+              );
+            }
+            const { renderTemplateMigrationApply } = await import('./render.js');
+            context.stdout.write(
+              renderTemplateMigrationApply(result, optionBoolean(options, 'json')),
+            );
+          },
+        },
+        {
+          name: 'status',
+          description: 'Show template migration status and active version for a group.',
+          arguments: [{ syntax: '<group>', description: 'Group name or ID.' }],
+          options: [jsonOption, secretBackendOption, backendPassphraseStdinOption],
+          execute: async (context, arguments_, options) => {
+            const groupQuery = requiredArgument(arguments_[0], 'group query');
+            let status: CliTemplateMigrationStatusResult;
+            if (context.ports?.getTemplateMigrationStatus !== undefined) {
+              status = await context.ports.getTemplateMigrationStatus(groupQuery);
+            } else {
+              const { executeProductionGetTemplateMigrationStatus } =
+                await import('./production/mutations.js');
+              status = await withUnlockedVault(
+                context,
+                'template migrate status',
+                options,
+                async (unlocked, store, rootKey) =>
+                  executeProductionGetTemplateMigrationStatus(
+                    {
+                      source: store,
+                      vaultId: unlocked.profile.vaultId,
+                      rootKey,
+                    },
+                    groupQuery,
+                  ),
+              );
+            }
+            const { renderTemplateMigrationStatus } = await import('./render.js');
+            context.stdout.write(
+              renderTemplateMigrationStatus(status, optionBoolean(options, 'json')),
+            );
+          },
+        },
+      ],
     },
   ],
 });
