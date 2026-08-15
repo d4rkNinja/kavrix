@@ -407,7 +407,7 @@ function visibleRecordFor(
 ): OpaqueSyncRecord {
   if (mutation.entityType === 'vault') return mutation.record;
   if (mutation.record.tombstonedAt === undefined) return mutation.record;
-  if (predecessor === undefined) {
+  if (predecessor === undefined || !('recordRevision' in predecessor)) {
     throw new Error('Acceptance tombstone predecessor is missing.');
   }
   return tombstoneRecordSchema.parse({
@@ -425,12 +425,16 @@ function visibleRecordFor(
 function hasTombstonedAt(
   record: ActiveMutationRecord,
 ): record is TombstonableActiveRecord {
-  return 'tombstonedAt' in record;
+  return (
+    'recordRevision' in record &&
+    'tombstonedAt' in record &&
+    record.tombstonedAt !== undefined
+  );
 }
 
 type TombstonableActiveRecord = Extract<
   ActiveMutationRecord,
-  { recordRevision: number }
+  { recordRevision: number; tombstonedAt?: string | undefined }
 >;
 
 function jsonResponse(url: URL, status: number, value: unknown): Response {
