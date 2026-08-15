@@ -23,6 +23,7 @@ import {
   type ControlListPageOptions,
   type DeviceId,
   type DeviceListPageResponse,
+  type GroupId,
   type GroupPayload,
   type GroupTemplate,
   type InviteIssueRequest,
@@ -30,6 +31,9 @@ import {
   type InviteId,
   type InviteListPageResponse,
   type ItemPayload,
+  type TemplateId,
+  type TemplateMigrationId,
+  type TemplateMigrationPlan,
   type VaultId,
 } from '@kavrix/schemas';
 import { z } from 'zod';
@@ -37,6 +41,7 @@ import { z } from 'zod';
 import type {
   CliAddFieldRequest,
   CliAddNoteRequest,
+  CliApplyTemplateMigrationRequest,
   CliArchiveEntityRequest,
   CliArchiveFieldRequest,
   CliArchiveNoteRequest,
@@ -46,6 +51,7 @@ import type {
   CliCredentialMutationResult,
   CliGroupMutationResult,
   CliNoteMutationResult,
+  CliPlanTemplateMigrationRequest,
   CliRemoveFieldRequest,
   CliRemoveNoteRequest,
   CliRestoreEntityRequest,
@@ -270,6 +276,26 @@ export interface CliTemplateSummary {
   readonly groupId?: string | undefined;
 }
 
+export interface CliTemplateMigrationStatusResult {
+  readonly groupId: GroupId;
+  readonly groupName: string;
+  readonly templateId: TemplateId;
+  readonly templateName: string;
+  readonly currentVersion: number;
+  readonly itemCount: number;
+  readonly fieldCount: number;
+  readonly pendingMigrations?: readonly string[] | undefined;
+}
+
+export interface CliTemplateMigrationApplyResult {
+  readonly migrationId: TemplateMigrationId;
+  readonly groupId: GroupId;
+  readonly fromVersion: number;
+  readonly toVersion: number;
+  readonly totalItems: number;
+  readonly affectedSteps: number;
+}
+
 export const cliPortableKeyRotationListingSchema = z
   .object({
     operationId: lifecycleOperationIdSchema,
@@ -405,6 +431,15 @@ export interface CliUseCasePorts {
   archiveTemplate?(request: CliArchiveEntityRequest): Promise<void>;
   restoreTemplate?(request: CliRestoreEntityRequest): Promise<void>;
   deleteTemplate?(query: string): Promise<void>;
+  planTemplateMigration?(
+    request: CliPlanTemplateMigrationRequest,
+  ): Promise<TemplateMigrationPlan>;
+  applyTemplateMigration?(
+    request: CliApplyTemplateMigrationRequest,
+  ): Promise<CliTemplateMigrationApplyResult>;
+  getTemplateMigrationStatus?(
+    groupQuery: string,
+  ): Promise<CliTemplateMigrationStatusResult>;
   createCredential?(
     request: CliCreateCredentialRequest,
   ): Promise<CliCredentialMutationResult>;

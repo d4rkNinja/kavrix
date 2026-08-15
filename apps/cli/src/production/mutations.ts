@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
 
 import {
   VaultMutationService,
@@ -9,12 +10,18 @@ import {
   type VaultReadSourcePort,
 } from '@kavrix/client';
 import { type VaultRootKey, zeroize } from '@kavrix/crypto';
-import { AmbiguousNameError, NotFoundError, builtInTemplates } from '@kavrix/core';
+import {
+  AmbiguousNameError,
+  NotFoundError,
+  builtInTemplates,
+  planTemplateMigration,
+} from '@kavrix/core';
 import {
   auditEventIdSchema,
   fieldDefinitionSchema,
   fieldIdSchema,
   groupIdSchema,
+  groupTemplateSchema,
   isSensitiveFieldType,
   itemIdSchema,
   noteIdSchema,
@@ -26,13 +33,16 @@ import {
   templateVersionSchema,
   type GroupPayload,
   type GroupTemplate,
+  type ItemPayload,
   type Note,
+  type TemplateMigrationPlan,
   type VaultId,
 } from '@kavrix/schemas';
 
 import type {
   CliAddFieldRequest,
   CliAddNoteRequest,
+  CliApplyTemplateMigrationRequest,
   CliArchiveEntityRequest,
   CliArchiveFieldRequest,
   CliArchiveNoteRequest,
@@ -42,6 +52,7 @@ import type {
   CliCredentialMutationResult,
   CliGroupMutationResult,
   CliNoteMutationResult,
+  CliPlanTemplateMigrationRequest,
   CliRemoveFieldRequest,
   CliRemoveNoteRequest,
   CliRestoreEntityRequest,
@@ -52,7 +63,11 @@ import type {
   CliUpdateNoteRequest,
   CliUpdateTemplateRequest,
 } from '../mutation-contracts.js';
-import type { CliTemplateSummary } from '../contracts.js';
+import type {
+  CliTemplateMigrationApplyResult,
+  CliTemplateMigrationStatusResult,
+  CliTemplateSummary,
+} from '../contracts.js';
 import { productionClock, randomIdempotencyKeys } from './runtime-adapters.js';
 
 export interface ProductionMutationOptions {
@@ -297,6 +312,168 @@ export async function executeProductionInspectTemplate(
   try {
     const group = await readSession.showGroup(trimmed);
     return group.template;
+  } finally {
+    readSession.lock();
+  }
+}
+
+async function resolveTargetTemplate(
+  group: GroupPayload,
+  request: {
+    readonly targetTemplateQuery?: string | undefined;
+    readonly templateFile?: string | undefined;
+    readonly toVersion?: number | undefined;
+  },
+  readSession: VaultReadSession,
+): Promise<GroupTemplate> {
+  let baseTemplate: GroupTemplate;
+  if (request.templateFile !== undefined) {
+    const content = await readFile(request.templateFile, 'utf8');
+    baseTemplate = groupTemplateSchema.parse(JSON.parse(content));
+  } else if (request.targetTemplateQuery !== undefined) {
+    const trimmed = request.targetTemplateQuery.trim();
+    const builtIn = builtInTemplates.find(
+      (t) =>
+        t.builtInKey === trimmed ||
+        t.id === trimmed ||
+        t.name.toLowerCase() === trimmed.toLowerCase(),
+    );
+    if (builtIn !== undefined) {
+      baseTemplate = builtIn;
+    } else {
+      const otherGroup = await readSession.showGroup(trimmed);
+      baseTemplate = otherGroup.template;
+    }
+  } else {
+    baseTemplate = group.template;
+  }
+
+  const targetVersion =
+    request.toVersion !== undefined
+      ? templateVersionSchema.parse(request.toVersion)
+      : templateVersionSchema.parse(
+          baseTemplate.version > group.template.version
+            ? baseTemplate.version
+            : group.template.version + 1,
+        );
+
+  const now = productionClock().now().toISOString();
+  return {
+    ...baseTemplate,
+    id: group.template.id,
+    version: targetVersion,
+    updatedAt: now,
+  };
+}
+
+export async function executeProductionPlanTemplateMigration(
+  options: {
+    readonly source: VaultReadSourcePort;
+    readonly vaultId: VaultId;
+    readonly rootKey: VaultRootKey;
+  },
+  request: CliPlanTemplateMigrationRequest,
+): Promise<TemplateMigrationPlan> {
+  const readSession = new VaultReadSession(options.source, options.vaultId);
+  await readSession.unlock(options.rootKey);
+  try {
+    const group = await readSession.showGroup(request.groupQuery);
+    const targetTemplate = await resolveTargetTemplate(group, request, readSession);
+    const items = await readSession.listItems(group.id);
+    const timestamp = productionClock().now().toISOString();
+    return planTemplateMigration({
+      migrationId: templateMigrationIdSchema.parse(
+        `migration.${randomBytes(12).toString('hex')}`,
+      ),
+      auditEventId: auditEventIdSchema.parse(
+        `audit.${randomBytes(12).toString('hex')}`,
+      ),
+      fromTemplate: group.template,
+      toTemplate: targetTemplate,
+      items,
+      timestamp,
+    });
+  } finally {
+    readSession.lock();
+  }
+}
+
+export async function executeProductionApplyTemplateMigration(
+  options: ProductionMutationOptions,
+  request: CliApplyTemplateMigrationRequest,
+): Promise<CliTemplateMigrationApplyResult> {
+  const readSession = new VaultReadSession(options.source, options.vaultId);
+  await readSession.unlock(options.rootKey);
+  let group: GroupPayload;
+  let targetTemplate: GroupTemplate;
+  let items: readonly ItemPayload[];
+  try {
+    group = await readSession.showGroup(request.groupQuery);
+    targetTemplate = await resolveTargetTemplate(group, request, readSession);
+    items = await readSession.listItems(group.id);
+  } finally {
+    readSession.lock();
+  }
+
+  const timestamp = productionClock().now().toISOString();
+  const plan = planTemplateMigration({
+    migrationId: templateMigrationIdSchema.parse(
+      `migration.${randomBytes(12).toString('hex')}`,
+    ),
+    auditEventId: auditEventIdSchema.parse(`audit.${randomBytes(12).toString('hex')}`),
+    fromTemplate: group.template,
+    toTemplate: targetTemplate,
+    items,
+    timestamp,
+  });
+
+  const service = new VaultMutationService(
+    options.source,
+    options.queue,
+    options.vaultId,
+    options.rootKey,
+    createDefaultMutationDependencies(),
+  );
+
+  await service.migrateGroupTemplate(
+    group.id,
+    group.revision,
+    targetTemplate,
+    request.confirmRisky ?? false,
+  );
+
+  return {
+    migrationId: plan.id,
+    groupId: group.id,
+    fromVersion: plan.fromVersion,
+    toVersion: plan.toVersion,
+    totalItems: plan.totalItems,
+    affectedSteps: plan.steps.length,
+  };
+}
+
+export async function executeProductionGetTemplateMigrationStatus(
+  options: {
+    readonly source: VaultReadSourcePort;
+    readonly vaultId: VaultId;
+    readonly rootKey: VaultRootKey;
+  },
+  groupQuery: string,
+): Promise<CliTemplateMigrationStatusResult> {
+  const readSession = new VaultReadSession(options.source, options.vaultId);
+  await readSession.unlock(options.rootKey);
+  try {
+    const group = await readSession.showGroup(groupQuery);
+    const items = await readSession.listItems(group.id);
+    return {
+      groupId: group.id,
+      groupName: group.name,
+      templateId: group.template.id,
+      templateName: group.template.name,
+      currentVersion: group.template.version,
+      itemCount: items.length,
+      fieldCount: group.template.fields.length,
+    };
   } finally {
     readSession.lock();
   }

@@ -62,6 +62,31 @@ export const cliUpdateTemplateRequestSchema = z
   })
   .strict();
 
+export const cliPlanTemplateMigrationRequestSchema = z
+  .object({
+    groupQuery: cleanNameSchema,
+    targetTemplateQuery: cleanNameSchema.optional(),
+    templateFile: z.string().trim().min(1).max(4096).optional(),
+    toVersion: z.number().int().positive().optional(),
+  })
+  .strict();
+
+export const cliApplyTemplateMigrationRequestSchema = z
+  .object({
+    groupQuery: cleanNameSchema,
+    targetTemplateQuery: cleanNameSchema.optional(),
+    templateFile: z.string().trim().min(1).max(4096).optional(),
+    toVersion: z.number().int().positive().optional(),
+    confirmRisky: z.boolean().optional(),
+  })
+  .strict();
+
+export const cliTemplateMigrationStatusRequestSchema = z
+  .object({
+    groupQuery: cleanNameSchema,
+  })
+  .strict();
+
 export const cliCreateCredentialRequestSchema = z
   .object({
     groupQuery: cleanNameSchema,
@@ -218,6 +243,15 @@ export const cliNoteMutationResultSchema = z
 export type CliCreateGroupRequest = z.infer<typeof cliCreateGroupRequestSchema>;
 export type CliCreateTemplateRequest = z.infer<typeof cliCreateTemplateRequestSchema>;
 export type CliUpdateTemplateRequest = z.infer<typeof cliUpdateTemplateRequestSchema>;
+export type CliPlanTemplateMigrationRequest = z.infer<
+  typeof cliPlanTemplateMigrationRequestSchema
+>;
+export type CliApplyTemplateMigrationRequest = z.infer<
+  typeof cliApplyTemplateMigrationRequestSchema
+>;
+export type CliTemplateMigrationStatusRequest = z.infer<
+  typeof cliTemplateMigrationStatusRequestSchema
+>;
 export type CliCreateCredentialRequest = z.infer<
   typeof cliCreateCredentialRequestSchema
 >;

@@ -10,6 +10,7 @@ import {
   type InviteIssueResponse,
   type InviteListPageResponse,
   type PublicInviteRecord,
+  type TemplateMigrationPlan,
 } from '@kavrix/schemas';
 
 import type {
@@ -25,6 +26,8 @@ import type {
   CliRecoverResult,
   CliShowResult,
   CliStatus,
+  CliTemplateMigrationApplyResult,
+  CliTemplateMigrationStatusResult,
   CliTemplateSummary,
 } from './contracts.js';
 import { safeJson, sanitizeTerminalText } from './terminal.js';
@@ -701,6 +704,94 @@ export function renderTemplateInspect(template: GroupTemplate, json: boolean): s
       ];
       return `  - [${String(f.sortOrder)}] ${sanitizeTerminalText(f.label)} (${sanitizeTerminalText(f.stableKey)}): ${flags.join(', ')}`;
     }),
+  ];
+  return lines.join('\n').concat('\n');
+}
+
+function formatMigrationStepDescription(
+  step: TemplateMigrationPlan['steps'][number],
+): string {
+  if (step.kind === 'add-field') {
+    return `add-field: ${sanitizeTerminalText(step.field.label)} (${sanitizeTerminalText(step.field.stableKey)})`;
+  }
+  if (step.kind === 'restore-field') {
+    return `restore-field: ${sanitizeTerminalText(step.field.label)} (${sanitizeTerminalText(step.field.stableKey)})`;
+  }
+  if (step.kind === 'archive-field') {
+    return `archive-field: ${sanitizeTerminalText(step.field.label)} (${sanitizeTerminalText(step.field.stableKey)})`;
+  }
+  if (step.kind === 'rename-label') {
+    return `rename-label: ${sanitizeTerminalText(step.fromLabel)} -> ${sanitizeTerminalText(step.toLabel)}`;
+  }
+  if (step.kind === 'reorder-field') {
+    return `reorder-field: sortOrder ${String(step.fromSortOrder)} -> ${String(step.toSortOrder)}`;
+  }
+  if (step.kind === 'change-required') {
+    return `change-required: ${String(step.fromRequired)} -> ${String(step.toRequired)}`;
+  }
+  if (step.kind === 'convert-type') {
+    return `convert-type: ${step.fromType} -> ${step.toType} (${step.strategy})`;
+  }
+  return 'update-field-policy: updated field definition policy';
+}
+
+export function renderTemplateMigrationPlan(
+  plan: TemplateMigrationPlan,
+  json: boolean,
+): string {
+  if (json) {
+    return safeJson(plan);
+  }
+  const lines = [
+    `Migration Plan: ${sanitizeTerminalText(plan.id)}`,
+    `From Version: ${String(plan.fromVersion)} -> To Version: ${String(plan.toVersion)}`,
+    `Source Template: ${sanitizeTerminalText(plan.sourceTemplate.name)} (${sanitizeTerminalText(plan.sourceTemplate.id)})`,
+    `Target Template: ${sanitizeTerminalText(plan.targetTemplate.name)} (${sanitizeTerminalText(plan.targetTemplate.id)})`,
+    `Total Items: ${String(plan.totalItems)}`,
+    `Status: ${plan.status}`,
+    `Steps (${String(plan.steps.length)}):`,
+    ...plan.steps.map((step) => {
+      const desc = formatMigrationStepDescription(step);
+      const flags = [
+        `affected items: ${String(step.affectedItemCount)}`,
+        ...(step.requiresConfirmation ? ['[requires confirmation]'] : []),
+      ];
+      return `  - ${desc} (${flags.join(', ')})`;
+    }),
+  ];
+  return lines.join('\n').concat('\n');
+}
+
+export function renderTemplateMigrationApply(
+  result: CliTemplateMigrationApplyResult,
+  json: boolean,
+): string {
+  if (json) {
+    return safeJson(result);
+  }
+  const lines = [
+    'Migration applied successfully.',
+    `Migration ID: ${sanitizeTerminalText(result.migrationId)}`,
+    `Group ID: ${sanitizeTerminalText(result.groupId)}`,
+    `Migrated ${String(result.totalItems)} item(s) to template version ${String(result.toVersion)}.`,
+    `Applied ${String(result.affectedSteps)} migration step(s).`,
+  ];
+  return lines.join('\n').concat('\n');
+}
+
+export function renderTemplateMigrationStatus(
+  status: CliTemplateMigrationStatusResult,
+  json: boolean,
+): string {
+  if (json) {
+    return safeJson(status);
+  }
+  const lines = [
+    `Group: ${sanitizeTerminalText(status.groupName)} (${sanitizeTerminalText(status.groupId)})`,
+    `Template: ${sanitizeTerminalText(status.templateName)} (${sanitizeTerminalText(status.templateId)})`,
+    `Current Version: ${String(status.currentVersion)}`,
+    `Active Items: ${String(status.itemCount)}`,
+    `Field Count: ${String(status.fieldCount)}`,
   ];
   return lines.join('\n').concat('\n');
 }
