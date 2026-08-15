@@ -51,6 +51,10 @@ import type {
   CliInitializationDependencies,
   CliInitializationStartOptions,
 } from './initialization.js';
+import type {
+  CliFieldMutationResult,
+  CliFieldReadResult,
+} from './mutation-contracts.js';
 import { executePortableKeyFileCreation } from './key-file-create.js';
 import {
   executePassphraseGeneration,
@@ -91,6 +95,17 @@ const revisionOptionSchema = z
   .regex(/^(?:0|[1-9][0-9]*)$/u)
   .transform(Number)
   .pipe(z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER));
+/**
+ * One-based record revision an optimistic write must match.
+ *
+ * Revision zero never identifies a stored record, so a caller that passes it
+ * has miscomputed the expectation and must be rejected rather than guessed at.
+ */
+const expectedRevisionOptionSchema = z
+  .string()
+  .regex(/^[1-9][0-9]*$/u)
+  .transform(Number)
+  .pipe(z.number().int().positive().max(Number.MAX_SAFE_INTEGER));
 const conflictStrategySchema = z.enum(['keep-local', 'accept-remote']);
 const shellSchema = z.enum(['bash', 'zsh', 'fish', 'powershell']);
 const inviteExpiryOptionSchema = z
@@ -2041,6 +2056,170 @@ function zeroizeBytes(buffer: Uint8Array): void {
   buffer.fill(0);
 }
 
+/** Options every field write shares, so `field set` and `set` stay identical. */
+const fieldWriteOptions: readonly CliOptionDescriptor[] = Object.freeze([
+  {
+    flags: '--if-revision <number>',
+    description: 'Only write when the credential is still at this revision.',
+  },
+  { flags: '--json', description: 'Format the receipt as structured JSON.' },
+]);
+
+/**
+ * Acquire a field value without ever touching argv.
+ *
+ * Standard input is the scriptable path; a terminal falls back to a masked
+ * prompt, which itself fails closed when no terminal is attached.
+ */
+async function readFieldValue(
+  context: CliCommandContext,
+  feature: CliFeature,
+  options: Readonly<Record<string, unknown>>,
+): Promise<Uint8Array> {
+  const fromStdin = optionBoolean(options, 'valueStdin');
+  const acquired = await secretInput(context, feature).read({
+    kind: 'field-value',
+    fromStdin,
+  });
+  return Buffer.from(acquired, 'utf8');
+}
+
+function expectedRevision(
+  options: Readonly<Record<string, unknown>>,
+): number | undefined {
+  const raw = options['ifRevision'];
+  return raw === undefined
+    ? undefined
+    : parseInput(expectedRevisionOptionSchema, raw, 'expected revision');
+}
+
+/** Shared body of `field set` and the top-level `set`. */
+async function executeFieldSet(
+  feature: Extract<CliFeature, 'field set' | 'set'>,
+  context: CliCommandContext,
+  arguments_: readonly (string | undefined)[],
+  options: Readonly<Record<string, unknown>>,
+): Promise<void> {
+  const groupQuery = requiredArgument(arguments_[0], 'group query');
+  const credentialQuery = requiredArgument(arguments_[1], 'credential query');
+  const fieldQuery = requiredArgument(arguments_[2], 'field query');
+  const create = optionBoolean(options, 'create');
+  const asJson = optionBoolean(options, 'json');
+  const ifRevision = expectedRevision(options);
+  const secretBytes = await readFieldValue(context, feature, options);
+
+  try {
+    const { cliSetFieldRequestSchema } = await import('./mutation-contracts.js');
+    const request = cliSetFieldRequestSchema.parse({
+      groupQuery,
+      credentialQuery,
+      fieldKey: fieldQuery,
+      value: secretBytes,
+      ...(create ? { create: true } : {}),
+      ...(ifRevision === undefined ? {} : { ifRevision }),
+    });
+
+    let result: CliFieldMutationResult;
+    if (context.ports?.setField !== undefined) {
+      result = await context.ports.setField(request);
+    } else {
+      const { executeProductionSetField } = await import('./production/mutations.js');
+      let produced: CliFieldMutationResult | undefined;
+      await withUnlockedVault(
+        context,
+        feature,
+        options,
+        async (unlocked, store, rootKey) => {
+          produced = await executeProductionSetField(
+            {
+              source: store,
+              queue: store,
+              vaultId: unlocked.profile.vaultId,
+              rootKey,
+            },
+            request,
+          );
+        },
+      );
+      if (produced === undefined) {
+        throw new Error('The field write did not produce a receipt.');
+      }
+      result = produced;
+    }
+    const { renderFieldMutation } = await import('./render.js');
+    context.stdout.write(renderFieldMutation('set', result, asJson));
+  } finally {
+    zeroizeBytes(secretBytes);
+  }
+}
+
+/** Shared body of `field update` and the top-level `update`. */
+async function executeFieldUpdate(
+  feature: Extract<CliFeature, 'field update' | 'update'>,
+  context: CliCommandContext,
+  arguments_: readonly (string | undefined)[],
+  options: Readonly<Record<string, unknown>>,
+): Promise<void> {
+  const groupQuery = requiredArgument(arguments_[0], 'group query');
+  const credentialQuery = requiredArgument(arguments_[1], 'credential query');
+  const fieldQuery = requiredArgument(arguments_[2], 'field query');
+  const label = optionString(options, 'label');
+  const typeStr = optionString(options, 'type');
+  const sensitiveFlag = options['sensitive'];
+  const sensitive = typeof sensitiveFlag === 'boolean' ? sensitiveFlag : undefined;
+  const asJson = optionBoolean(options, 'json');
+  const ifRevision = expectedRevision(options);
+
+  // The request contract also rejects an empty change set, but a bare Zod
+  // failure reports nothing actionable, so name the missing flags here.
+  if (label === undefined && typeStr === undefined && sensitive === undefined) {
+    throw new CliUsageError(
+      'Provide at least one of --label, --type, --sensitive, or --no-sensitive.',
+    );
+  }
+
+  const { cliUpdateFieldRequestSchema } = await import('./mutation-contracts.js');
+  const request = cliUpdateFieldRequestSchema.parse({
+    groupQuery,
+    credentialQuery,
+    fieldKey: fieldQuery,
+    ...(label ? { label } : {}),
+    ...(typeStr ? { fieldType: typeStr } : {}),
+    ...(sensitive === undefined ? {} : { sensitive }),
+    ...(ifRevision === undefined ? {} : { ifRevision }),
+  });
+
+  let result: CliFieldMutationResult;
+  if (context.ports?.updateField !== undefined) {
+    result = await context.ports.updateField(request);
+  } else {
+    const { executeProductionUpdateField } = await import('./production/mutations.js');
+    let produced: CliFieldMutationResult | undefined;
+    await withUnlockedVault(
+      context,
+      feature,
+      options,
+      async (unlocked, store, rootKey) => {
+        produced = await executeProductionUpdateField(
+          {
+            source: store,
+            queue: store,
+            vaultId: unlocked.profile.vaultId,
+            rootKey,
+          },
+          request,
+        );
+      },
+    );
+    if (produced === undefined) {
+      throw new Error('The field update did not produce a receipt.');
+    }
+    result = produced;
+  }
+  const { renderFieldMutation } = await import('./render.js');
+  context.stdout.write(renderFieldMutation('updated', result, asJson));
+}
+
 const fieldCommand: CliCommandDescriptor = Object.freeze({
   name: 'field',
   description: 'Manage dynamic credential fields.',
@@ -2061,7 +2240,6 @@ const fieldCommand: CliCommandDescriptor = Object.freeze({
         { flags: '--type <type>', description: 'Canonical field type.' },
         { flags: '--label <text>', description: 'Field display label.' },
         { flags: '--sensitive', description: 'Mark field as sensitive.' },
-        { flags: '--value <text>', description: 'Initial text field value.' },
         {
           flags: SECRET_INPUT_OPTIONS.fieldValue.flag,
           description: SECRET_INPUT_OPTIONS.fieldValue.description,
@@ -2076,9 +2254,10 @@ const fieldCommand: CliCommandDescriptor = Object.freeze({
         const typeStr = optionString(options, 'type');
         const label = optionString(options, 'label');
         const sensitive = optionBoolean(options, 'sensitive');
-        const textValue = optionString(options, 'value');
         const fromStdin = optionBoolean(options, 'valueStdin');
 
+        // A field value may be secret, and process arguments are readable by
+        // every local process, so an initial value only arrives out of band.
         let secretBytes: Uint8Array | undefined;
         if (fromStdin) {
           const acquired = await secretInput(context, 'field add').read({
@@ -2086,8 +2265,6 @@ const fieldCommand: CliCommandDescriptor = Object.freeze({
             fromStdin: true,
           });
           secretBytes = Buffer.from(acquired, 'utf8');
-        } else if (textValue !== undefined) {
-          secretBytes = Buffer.from(textValue, 'utf8');
         }
 
         const { cliAddFieldRequestSchema } = await import('./mutation-contracts.js');
@@ -2133,82 +2310,33 @@ const fieldCommand: CliCommandDescriptor = Object.freeze({
     },
     {
       name: 'set',
-      description: 'Set or update the value of a credential field.',
+      description: 'Set the value of a credential field.',
       arguments: [
         { syntax: '<group>', description: 'Group ID, unique name, or alias.' },
         {
           syntax: '<credential>',
           description: 'Credential ID, unique name, or alias.',
         },
-        { syntax: '<field-key>', description: 'Stable field key.' },
-        { syntax: '[value]', description: 'Text value for non-sensitive fields.' },
+        {
+          syntax: '<field>',
+          description: 'Field ID, stable key, exact label, or unique prefix.',
+        },
       ],
       options: [
         {
           flags: SECRET_INPUT_OPTIONS.fieldValue.flag,
           description: SECRET_INPUT_OPTIONS.fieldValue.description,
         },
+        {
+          flags: '--create',
+          description: 'Create the field when no existing field matches.',
+        },
+        ...fieldWriteOptions,
         secretBackendOption,
         backendPassphraseStdinOption,
       ],
       execute: async (context, arguments_, options) => {
-        const groupQuery = requiredArgument(arguments_[0], 'group query');
-        const credentialQuery = requiredArgument(arguments_[1], 'credential query');
-        const fieldKey = requiredArgument(arguments_[2], 'field key');
-        const positionalValue = arguments_[3];
-        const fromStdin = optionBoolean(options, 'valueStdin');
-
-        let secretBytes: Uint8Array;
-        if (fromStdin) {
-          const acquired = await secretInput(context, 'field set').read({
-            kind: 'field-value',
-            fromStdin: true,
-          });
-          secretBytes = Buffer.from(acquired, 'utf8');
-        } else if (positionalValue !== undefined && positionalValue.length > 0) {
-          secretBytes = Buffer.from(positionalValue, 'utf8');
-        } else {
-          throw new CliUsageError(
-            'Provide a value argument or use --value-stdin to supply secret input.',
-          );
-        }
-
-        const { cliSetFieldRequestSchema } = await import('./mutation-contracts.js');
-        const request = cliSetFieldRequestSchema.parse({
-          groupQuery,
-          credentialQuery,
-          fieldKey,
-          value: secretBytes,
-        });
-
-        try {
-          if (context.ports?.setField !== undefined) {
-            await context.ports.setField(request);
-          } else {
-            const { executeProductionSetField } =
-              await import('./production/mutations.js');
-            await withUnlockedVault(
-              context,
-              'field set',
-              options,
-              async (unlocked, store, rootKey) =>
-                executeProductionSetField(
-                  {
-                    source: store,
-                    queue: store,
-                    vaultId: unlocked.profile.vaultId,
-                    rootKey,
-                  },
-                  request,
-                ),
-            );
-          }
-          context.stdout.write(
-            `Field "${request.fieldKey}" set for credential "${credentialQuery}".\n`,
-          );
-        } finally {
-          zeroizeBytes(secretBytes);
-        }
+        await executeFieldSet('field set', context, arguments_, options);
       },
     },
     {
@@ -2220,60 +2348,22 @@ const fieldCommand: CliCommandDescriptor = Object.freeze({
           syntax: '<credential>',
           description: 'Credential ID, unique name, or alias.',
         },
-        { syntax: '<field-key>', description: 'Stable field key.' },
+        {
+          syntax: '<field>',
+          description: 'Field ID, stable key, exact label, or unique prefix.',
+        },
       ],
       options: [
         { flags: '--label <text>', description: 'Updated field display label.' },
         { flags: '--type <type>', description: 'Updated canonical field type.' },
         { flags: '--sensitive', description: 'Mark field as sensitive.' },
         { flags: '--no-sensitive', description: 'Mark field as non-sensitive.' },
+        ...fieldWriteOptions,
         secretBackendOption,
         backendPassphraseStdinOption,
       ],
       execute: async (context, arguments_, options) => {
-        const groupQuery = requiredArgument(arguments_[0], 'group query');
-        const credentialQuery = requiredArgument(arguments_[1], 'credential query');
-        const fieldKey = requiredArgument(arguments_[2], 'field key');
-        const label = optionString(options, 'label');
-        const typeStr = optionString(options, 'type');
-        const sensitiveFlag = options['sensitive'];
-        const sensitive =
-          typeof sensitiveFlag === 'boolean' ? sensitiveFlag : undefined;
-
-        const { cliUpdateFieldRequestSchema } = await import('./mutation-contracts.js');
-        const request = cliUpdateFieldRequestSchema.parse({
-          groupQuery,
-          credentialQuery,
-          fieldKey,
-          ...(label ? { label } : {}),
-          ...(typeStr ? { fieldType: typeStr } : {}),
-          ...(sensitive !== undefined ? { sensitive } : {}),
-        });
-
-        if (context.ports?.updateField !== undefined) {
-          await context.ports.updateField(request);
-        } else {
-          const { executeProductionUpdateField } =
-            await import('./production/mutations.js');
-          await withUnlockedVault(
-            context,
-            'field update',
-            options,
-            async (unlocked, store, rootKey) =>
-              executeProductionUpdateField(
-                {
-                  source: store,
-                  queue: store,
-                  vaultId: unlocked.profile.vaultId,
-                  rootKey,
-                },
-                request,
-              ),
-          );
-        }
-        context.stdout.write(
-          `Field "${request.fieldKey}" updated for credential "${credentialQuery}".\n`,
-        );
+        await executeFieldUpdate('field update', context, arguments_, options);
       },
     },
     {
@@ -3626,15 +3716,7 @@ const getCommand: CliCommandDescriptor = Object.freeze({
       ...(reveal ? { reveal: true } : {}),
     };
 
-    let result: {
-      groupName: string;
-      credentialTitle: string;
-      fieldLabel: string;
-      fieldKey: string;
-      fieldType: string;
-      sensitive: boolean;
-      value: string;
-    };
+    let result: CliFieldReadResult;
 
     if (context.ports?.get !== undefined) {
       result = await context.ports.get(
@@ -3645,7 +3727,7 @@ const getCommand: CliCommandDescriptor = Object.freeze({
       );
     } else {
       const { executeProductionGet } = await import('./production/get.js');
-      let resultVal: typeof result | undefined;
+      let resultVal: CliFieldReadResult | undefined;
       await withUnlockedVault(
         context,
         'get',
@@ -3670,21 +3752,74 @@ const getCommand: CliCommandDescriptor = Object.freeze({
       result = resultVal;
     }
 
-    if (asJson) {
-      context.stdout.write(
-        safeJson({
-          group: result.groupName,
-          credential: result.credentialTitle,
-          field: result.fieldLabel,
-          key: result.fieldKey,
-          type: result.fieldType,
-          sensitive: result.sensitive,
-          value: result.value,
-        }) + '\n',
-      );
-    } else {
-      context.stdout.write(`${sanitizeTerminalText(result.value)}\n`);
-    }
+    const { renderFieldRead } = await import('./render.js');
+    context.stdout.write(renderFieldRead(result, asJson));
+  },
+});
+
+/**
+ * Scriptable sibling of `field set`, so a script can pair `get` with a write
+ * without descending into the `field` family. Both share one handler because a
+ * second copy of the write path could drift away from these guarantees.
+ */
+const setCommand: CliCommandDescriptor = Object.freeze({
+  name: 'set',
+  description: 'Set one credential field value.',
+  arguments: [
+    { syntax: '<group>', description: 'Group ID, unique name, or alias.' },
+    {
+      syntax: '<credential>',
+      description: 'Credential ID, unique name, or alias within the group.',
+    },
+    {
+      syntax: '<field>',
+      description: 'Field ID, stable key, exact label, or unique prefix.',
+    },
+  ],
+  options: [
+    {
+      flags: SECRET_INPUT_OPTIONS.fieldValue.flag,
+      description: SECRET_INPUT_OPTIONS.fieldValue.description,
+    },
+    {
+      flags: '--create',
+      description: 'Create the field when no existing field matches.',
+    },
+    ...fieldWriteOptions,
+    secretBackendOption,
+    backendPassphraseStdinOption,
+  ],
+  execute: async (context, arguments_, options) => {
+    await executeFieldSet('set', context, arguments_, options);
+  },
+});
+
+/** Scriptable sibling of `field update`, sharing that command's handler. */
+const updateCommand: CliCommandDescriptor = Object.freeze({
+  name: 'update',
+  description: 'Update one credential field definition.',
+  arguments: [
+    { syntax: '<group>', description: 'Group ID, unique name, or alias.' },
+    {
+      syntax: '<credential>',
+      description: 'Credential ID, unique name, or alias within the group.',
+    },
+    {
+      syntax: '<field>',
+      description: 'Field ID, stable key, exact label, or unique prefix.',
+    },
+  ],
+  options: [
+    { flags: '--label <text>', description: 'Updated field display label.' },
+    { flags: '--type <type>', description: 'Updated canonical field type.' },
+    { flags: '--sensitive', description: 'Mark field as sensitive.' },
+    { flags: '--no-sensitive', description: 'Mark field as non-sensitive.' },
+    ...fieldWriteOptions,
+    secretBackendOption,
+    backendPassphraseStdinOption,
+  ],
+  execute: async (context, arguments_, options) => {
+    await executeFieldUpdate('update', context, arguments_, options);
   },
 });
 
@@ -4123,6 +4258,8 @@ export const CLI_COMMAND_CATALOG: readonly CliCommandDescriptor[] = Object.freez
   copyCommand,
   revealCommand,
   getCommand,
+  setCommand,
+  updateCommand,
   runCommand,
   syncCommand,
   backupCommand,
@@ -4492,6 +4629,8 @@ export const PUBLIC_CLI_COMMAND_CATALOG: readonly CliCommandDescriptor[] =
     copyCommand,
     revealCommand,
     getCommand,
+    setCommand,
+    updateCommand,
     runCommand,
     syncCommand,
     publicBackupCommand(),

@@ -245,8 +245,11 @@ describe('production CLI mutation adapters', () => {
         credentialQuery: 'AWS Production Root',
         fieldKey: 'password',
         value: secretBytes,
+        create: true,
       });
       expect(setFieldResult.credentialId).toBe(credResult.credentialId);
+      expect(setFieldResult.created).toBe(true);
+      expect(setFieldResult.revision).toBe(setFieldResult.previousRevision + 1);
       expect(secretBytes.every((b) => b === 0)).toBe(true);
 
       // 4. Add Field
@@ -341,6 +344,9 @@ describe('production CLI mutation adapters', () => {
         'password',
       );
       expect(getRedacted.value).toBe('[REDACTED]');
+      // A caller reading JSON must be able to tell a withheld secret from a
+      // stored value that happens to spell the placeholder.
+      expect(getRedacted.redacted).toBe(true);
 
       const getRevealed = await executeProductionGet(
         {
@@ -354,6 +360,8 @@ describe('production CLI mutation adapters', () => {
         { reveal: true },
       );
       expect(getRevealed.value).toBe('super-secret-password-123');
+      expect(getRevealed.redacted).toBe(false);
+      expect(getRevealed.revision).toBeGreaterThan(0);
 
       // 9. Add Note
       const noteAddResult = await executeProductionAddNote(mutationOptions, {

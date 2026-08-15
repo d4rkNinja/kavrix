@@ -20,6 +20,10 @@ export type CredentialGetResult = Readonly<{
   fieldKey: string;
   fieldType: string;
   sensitive: boolean;
+  /** True when the value was withheld, so `value` is a placeholder. */
+  redacted: boolean;
+  /** Record revision the value was read at, for an optimistic write. */
+  revision: number;
   value: string;
 }>;
 
@@ -76,13 +80,10 @@ export async function executeProductionGet(
 
     const scalar = selectScalarValue(resolved.value, getOptions.index);
     const isSensitive = resolved.definition.sensitive || scalar.kind === 'secret';
-    let valueStr: string;
-
-    if (isSensitive && getOptions.reveal !== true) {
-      valueStr = REDACTED;
-    } else {
-      valueStr = scalarText(scalar);
-    }
+    // A caller reading JSON cannot tell a withheld secret from a stored value
+    // that happens to spell the placeholder, so report the decision itself.
+    const redacted = isSensitive && getOptions.reveal !== true;
+    const valueStr = redacted ? REDACTED : scalarText(scalar);
 
     return {
       groupName: aggregate.group.name,
@@ -91,6 +92,8 @@ export async function executeProductionGet(
       fieldKey: resolved.definition.stableKey,
       fieldType: resolved.definition.type,
       sensitive: isSensitive,
+      redacted,
+      revision: item.revision,
       value: valueStr,
     };
   } finally {

@@ -43,6 +43,10 @@ import type {
   CliTemplateMigrationStatusResult,
   CliTemplateSummary,
 } from './contracts.js';
+import type {
+  CliFieldMutationResult,
+  CliFieldReadResult,
+} from './mutation-contracts.js';
 import { safeJson, sanitizeTerminalOutput, sanitizeTerminalText } from './terminal.js';
 
 type SafeInvite = Readonly<{
@@ -1110,4 +1114,50 @@ export function renderRunResult(result: CliRunResult, json: boolean): string {
     ...runStream('stderr', result.stderr),
   ];
   return lines.join('\n').concat('\n');
+}
+
+/**
+ * Renders a field write receipt. The receipt names the resolved target and the
+ * revisions around the write, and never carries the written value.
+ */
+export function renderFieldMutation(
+  action: 'set' | 'updated',
+  result: CliFieldMutationResult,
+  json: boolean,
+): string {
+  if (json) {
+    return safeJson({ action: action === 'set' ? 'set' : 'update', ...result });
+  }
+  const lines = [
+    `Field "${sanitizeTerminalText(result.fieldKey)}" ${action} for credential "${sanitizeTerminalText(
+      result.title,
+    )}".`,
+    `  Label: ${sanitizeTerminalText(result.fieldLabel)}`,
+    `  Type: ${sanitizeTerminalText(result.fieldType)}`,
+    `  Sensitive: ${result.sensitive ? 'yes' : 'no'}`,
+    `  Created: ${result.created ? 'yes' : 'no'}`,
+    `  Revision: ${String(result.previousRevision)} -> ${String(result.revision)}`,
+  ];
+  return lines.join('\n').concat('\n');
+}
+
+/**
+ * Renders a single field read. Text output stays value-only so a script can
+ * consume it directly, while JSON reports whether the value was withheld.
+ */
+export function renderFieldRead(result: CliFieldReadResult, json: boolean): string {
+  if (json) {
+    return safeJson({
+      group: result.groupName,
+      credential: result.credentialTitle,
+      field: result.fieldLabel,
+      key: result.fieldKey,
+      type: result.fieldType,
+      sensitive: result.sensitive,
+      redacted: result.redacted,
+      revision: result.revision,
+      value: result.value,
+    });
+  }
+  return `${sanitizeTerminalText(result.value)}\n`;
 }

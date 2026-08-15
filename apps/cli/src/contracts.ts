@@ -53,6 +53,8 @@ import type {
   CliDeleteAttachmentRequest,
   CliDiffHistoryRequest,
   CliDownloadAttachmentRequest,
+  CliFieldMutationResult,
+  CliFieldReadResult,
   CliGroupMutationResult,
   CliListAuditEventsRequest,
   CliNoteMutationResult,
@@ -602,8 +604,8 @@ export interface CliUseCasePorts {
   renameCredential?(groupQuery: string, query: string, newTitle: string): Promise<void>;
   deleteCredential?(groupQuery: string, query: string): Promise<void>;
   addField?(request: CliAddFieldRequest): Promise<CliCredentialMutationResult>;
-  setField?(request: CliSetFieldRequest): Promise<CliCredentialMutationResult>;
-  updateField?(request: CliUpdateFieldRequest): Promise<CliCredentialMutationResult>;
+  setField?(request: CliSetFieldRequest): Promise<CliFieldMutationResult>;
+  updateField?(request: CliUpdateFieldRequest): Promise<CliFieldMutationResult>;
   archiveField?(request: CliArchiveFieldRequest): Promise<void>;
   restoreField?(request: CliRestoreFieldRequest): Promise<void>;
   removeField?(request: CliRemoveFieldRequest): Promise<void>;
@@ -646,15 +648,7 @@ export interface CliUseCasePorts {
     credentialQuery: string,
     fieldQuery: string,
     options?: { index?: number; reveal?: boolean },
-  ): Promise<{
-    groupName: string;
-    credentialTitle: string;
-    fieldLabel: string;
-    fieldKey: string;
-    fieldType: string;
-    sensitive: boolean;
-    value: string;
-  }>;
+  ): Promise<CliFieldReadResult>;
   sync?(): Promise<CliStatus>;
   listConflicts?(): Promise<readonly CliConflict[]>;
   resolveConflict?(

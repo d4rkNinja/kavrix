@@ -90,6 +90,8 @@ export type CliFeature =
   | 'run'
   | 'reveal'
   | 'get'
+  | 'set'
+  | 'update'
   | 'sync'
   | 'sync conflicts list'
   | 'sync conflicts resolve'

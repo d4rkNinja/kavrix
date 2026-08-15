@@ -117,12 +117,17 @@ export const cliAddFieldRequestSchema = z
   })
   .strict();
 
+/** One-based revision an optimistic write expects the record to be at. */
+const expectedRevisionSchema = z.number().int().positive();
+
 export const cliSetFieldRequestSchema = z
   .object({
     groupQuery: cleanNameSchema,
     credentialQuery: cleanNameSchema,
     fieldKey: cleanNameSchema,
     value: ownedUint8ArraySchema,
+    create: z.boolean().optional(),
+    ifRevision: expectedRevisionSchema.optional(),
   })
   .strict();
 
@@ -134,8 +139,16 @@ export const cliUpdateFieldRequestSchema = z
     label: cleanNameSchema.optional(),
     fieldType: fieldTypeSchema.optional(),
     sensitive: z.boolean().optional(),
+    ifRevision: expectedRevisionSchema.optional(),
   })
-  .strict();
+  .strict()
+  .refine(
+    (request) =>
+      request.label !== undefined ||
+      request.fieldType !== undefined ||
+      request.sensitive !== undefined,
+    { message: 'Provide at least one definition change' },
+  );
 
 export const cliArchiveFieldRequestSchema = z
   .object({
@@ -189,6 +202,46 @@ export const cliCredentialMutationResultSchema = z
     groupId: groupIdSchema,
     credentialId: itemIdSchema,
     title: cleanNameSchema,
+  })
+  .strict();
+
+/**
+ * Machine-readable receipt for a field write.
+ *
+ * The receipt names the resolved target and the revisions on either side of
+ * the write so a caller can chain the next optimistic write, and it never
+ * carries the written value.
+ */
+export const cliFieldMutationResultSchema = cliCredentialMutationResultSchema
+  .extend({
+    fieldKey: cleanNameSchema,
+    fieldLabel: cleanNameSchema,
+    fieldType: fieldTypeSchema,
+    sensitive: z.boolean(),
+    created: z.boolean(),
+    previousRevision: expectedRevisionSchema,
+    revision: expectedRevisionSchema,
+  })
+  .strict();
+
+/**
+ * Machine-readable result for a single field read.
+ *
+ * `redacted` distinguishes a withheld secret from a stored value that happens
+ * to look like the redaction placeholder, and `revision` lets a caller feed
+ * the read straight into an `--if-revision` write.
+ */
+export const cliFieldReadResultSchema = z
+  .object({
+    groupName: cleanNameSchema,
+    credentialTitle: cleanNameSchema,
+    fieldLabel: cleanNameSchema,
+    fieldKey: cleanNameSchema,
+    fieldType: z.string().min(1).max(64),
+    sensitive: z.boolean(),
+    redacted: z.boolean(),
+    revision: expectedRevisionSchema,
+    value: z.string(),
   })
   .strict();
 
@@ -282,6 +335,8 @@ export type CliCredentialMutationResult = z.infer<
   typeof cliCredentialMutationResultSchema
 >;
 export type CliNoteMutationResult = z.infer<typeof cliNoteMutationResultSchema>;
+export type CliFieldMutationResult = z.infer<typeof cliFieldMutationResultSchema>;
+export type CliFieldReadResult = z.infer<typeof cliFieldReadResultSchema>;
 
 export const cliUploadAttachmentRequestSchema = z
   .object({
