@@ -49,6 +49,8 @@ import type {
   CliCreateGroupRequest,
   CliCreateTemplateRequest,
   CliCredentialMutationResult,
+  CliDeleteAttachmentRequest,
+  CliDownloadAttachmentRequest,
   CliGroupMutationResult,
   CliNoteMutationResult,
   CliPlanTemplateMigrationRequest,
@@ -61,6 +63,7 @@ import type {
   CliUpdateFieldRequest,
   CliUpdateNoteRequest,
   CliUpdateTemplateRequest,
+  CliUploadAttachmentRequest,
 } from './mutation-contracts.js';
 
 export const cliStatusSchema = z
@@ -296,6 +299,40 @@ export interface CliTemplateMigrationApplyResult {
   readonly affectedSteps: number;
 }
 
+export interface CliAttachmentSummary {
+  readonly id: string;
+  readonly groupId: string;
+  readonly itemId: string;
+  readonly chunkCount: number;
+  readonly totalPlaintextBytes?: number | undefined;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+  readonly tombstonedAt?: string | undefined;
+}
+
+export interface CliAttachmentUploadResult {
+  readonly attachmentId: string;
+  readonly groupId: string;
+  readonly itemId: string;
+  readonly chunkCount: number;
+  readonly totalPlaintextBytes: number;
+  readonly plaintextSha256: string;
+}
+
+export interface CliAttachmentDownloadResult {
+  readonly attachmentId: string;
+  readonly destinationPath: string;
+  readonly totalPlaintextBytes: number;
+  readonly plaintextSha256: string;
+}
+
+export interface CliAttachmentDeleteResult {
+  readonly attachmentId: string;
+  readonly groupId: string;
+  readonly itemId: string;
+  readonly deleted: boolean;
+}
+
 export const cliPortableKeyRotationListingSchema = z
   .object({
     operationId: lifecycleOperationIdSchema,
@@ -457,6 +494,19 @@ export interface CliUseCasePorts {
   archiveNote?(request: CliArchiveNoteRequest): Promise<void>;
   restoreNote?(request: CliRestoreNoteRequest): Promise<void>;
   removeNote?(request: CliRemoveNoteRequest): Promise<void>;
+  listAttachments?(
+    groupQuery: string,
+    credentialQuery: string,
+  ): Promise<readonly CliAttachmentSummary[]>;
+  uploadAttachment?(
+    request: CliUploadAttachmentRequest,
+  ): Promise<CliAttachmentUploadResult>;
+  downloadAttachment?(
+    request: CliDownloadAttachmentRequest,
+  ): Promise<CliAttachmentDownloadResult>;
+  deleteAttachment?(
+    request: CliDeleteAttachmentRequest,
+  ): Promise<CliAttachmentDeleteResult>;
   reveal?(
     groupQuery: string,
     credentialQuery: string,

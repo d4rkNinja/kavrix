@@ -24,6 +24,10 @@ import {
   cliKeySlotResultSchema,
   cliPortableKeyRotationResultSchema,
   parseRecoverRequest,
+  type CliAttachmentDeleteResult,
+  type CliAttachmentDownloadResult,
+  type CliAttachmentSummary,
+  type CliAttachmentUploadResult,
   type CliRecoverResult,
   type CliStatus,
   type CliTemplateMigrationApplyResult,
@@ -2786,6 +2790,229 @@ const noteCommand: CliCommandDescriptor = Object.freeze({
   ],
 });
 
+const attachmentCommand: CliCommandDescriptor = Object.freeze({
+  name: 'attachment',
+  description: 'Manage encrypted attachments for credential items.',
+  options: [secretBackendOption, backendPassphraseStdinOption],
+  children: [
+    {
+      name: 'list',
+      description: 'List encrypted attachments for a credential item.',
+      arguments: [
+        { syntax: '<group>', description: 'Group ID, unique name, or alias.' },
+        {
+          syntax: '<credential>',
+          description: 'Credential ID, unique name, or alias within the group.',
+        },
+      ],
+      options: [jsonOption, secretBackendOption, backendPassphraseStdinOption],
+      execute: async (context, arguments_, options) => {
+        const groupQuery = requiredArgument(arguments_[0], 'group query');
+        const credentialQuery = requiredArgument(arguments_[1], 'credential query');
+        const json = optionBoolean(options, 'json');
+
+        let summaries: readonly CliAttachmentSummary[];
+        if (context.ports?.listAttachments !== undefined) {
+          summaries = await context.ports.listAttachments(groupQuery, credentialQuery);
+        } else {
+          const { executeProductionListAttachments } =
+            await import('./production/mutations.js');
+          summaries = await withUnlockedVault(
+            context,
+            'attachment list',
+            options,
+            async (unlocked, store, rootKey) =>
+              executeProductionListAttachments(
+                {
+                  source: store,
+                  vaultId: unlocked.profile.vaultId,
+                  rootKey,
+                },
+                groupQuery,
+                credentialQuery,
+              ),
+          );
+        }
+        const { renderAttachmentList } = await import('./render.js');
+        context.stdout.write(renderAttachmentList(summaries, json));
+      },
+    },
+    {
+      name: 'upload',
+      description:
+        'Upload a local file as an encrypted attachment to a credential item.',
+      arguments: [
+        { syntax: '<group>', description: 'Group ID, unique name, or alias.' },
+        {
+          syntax: '<credential>',
+          description: 'Credential ID, unique name, or alias within the group.',
+        },
+        { syntax: '<file-path>', description: 'Path to the local file to upload.' },
+      ],
+      options: [jsonOption, secretBackendOption, backendPassphraseStdinOption],
+      execute: async (context, arguments_, options) => {
+        const groupQuery = requiredArgument(arguments_[0], 'group query');
+        const credentialQuery = requiredArgument(arguments_[1], 'credential query');
+        const filePath = requiredArgument(arguments_[2], 'file path');
+        const json = optionBoolean(options, 'json');
+
+        const { cliUploadAttachmentRequestSchema } =
+          await import('./mutation-contracts.js');
+        const request = cliUploadAttachmentRequestSchema.parse({
+          groupQuery,
+          credentialQuery,
+          filePath,
+        });
+
+        let result: CliAttachmentUploadResult;
+        if (context.ports?.uploadAttachment !== undefined) {
+          result = await context.ports.uploadAttachment(request);
+        } else {
+          const { executeProductionUploadAttachment } =
+            await import('./production/mutations.js');
+          result = await withUnlockedVault(
+            context,
+            'attachment upload',
+            options,
+            async (unlocked, store, rootKey) =>
+              executeProductionUploadAttachment(
+                {
+                  source: store,
+                  queue: store,
+                  vaultId: unlocked.profile.vaultId,
+                  rootKey,
+                },
+                request,
+              ),
+          );
+        }
+        const { renderAttachmentUpload } = await import('./render.js');
+        context.stdout.write(renderAttachmentUpload(result, json));
+      },
+    },
+    {
+      name: 'download',
+      description: 'Download and decrypt an attachment to a local file.',
+      arguments: [
+        { syntax: '<group>', description: 'Group ID, unique name, or alias.' },
+        {
+          syntax: '<credential>',
+          description: 'Credential ID, unique name, or alias within the group.',
+        },
+        { syntax: '<attachment-id>', description: 'Attachment ID.' },
+        { syntax: '<destination-path>', description: 'Local destination file path.' },
+      ],
+      options: [
+        { flags: '--force', description: 'Confirm overwrite of existing file.' },
+        jsonOption,
+        secretBackendOption,
+        backendPassphraseStdinOption,
+      ],
+      execute: async (context, arguments_, options) => {
+        const groupQuery = requiredArgument(arguments_[0], 'group query');
+        const credentialQuery = requiredArgument(arguments_[1], 'credential query');
+        const attachmentId = requiredArgument(arguments_[2], 'attachment ID');
+        const destinationPath = requiredArgument(arguments_[3], 'destination path');
+        const force = optionBoolean(options, 'force');
+        const json = optionBoolean(options, 'json');
+
+        const { cliDownloadAttachmentRequestSchema } =
+          await import('./mutation-contracts.js');
+        const request = cliDownloadAttachmentRequestSchema.parse({
+          groupQuery,
+          credentialQuery,
+          attachmentId,
+          destinationPath,
+          ...(force ? { force } : {}),
+        });
+
+        let result: CliAttachmentDownloadResult;
+        if (context.ports?.downloadAttachment !== undefined) {
+          result = await context.ports.downloadAttachment(request);
+        } else {
+          const { executeProductionDownloadAttachment } =
+            await import('./production/mutations.js');
+          result = await withUnlockedVault(
+            context,
+            'attachment download',
+            options,
+            async (unlocked, store, rootKey) =>
+              executeProductionDownloadAttachment(
+                {
+                  source: store,
+                  vaultId: unlocked.profile.vaultId,
+                  rootKey,
+                },
+                request,
+              ),
+          );
+        }
+        const { renderAttachmentDownload } = await import('./render.js');
+        context.stdout.write(renderAttachmentDownload(result, json));
+      },
+    },
+    {
+      name: 'delete',
+      description: 'Delete an encrypted attachment with explicit --force.',
+      arguments: [
+        { syntax: '<group>', description: 'Group ID, unique name, or alias.' },
+        {
+          syntax: '<credential>',
+          description: 'Credential ID, unique name, or alias within the group.',
+        },
+        { syntax: '<attachment-id>', description: 'Attachment ID.' },
+      ],
+      options: [
+        { flags: '--force', description: 'Confirm permanent deletion.' },
+        jsonOption,
+        secretBackendOption,
+        backendPassphraseStdinOption,
+      ],
+      execute: async (context, arguments_, options) => {
+        const groupQuery = requiredArgument(arguments_[0], 'group query');
+        const credentialQuery = requiredArgument(arguments_[1], 'credential query');
+        const attachmentId = requiredArgument(arguments_[2], 'attachment ID');
+        const force = optionBoolean(options, 'force');
+        const json = optionBoolean(options, 'json');
+
+        const { cliDeleteAttachmentRequestSchema } =
+          await import('./mutation-contracts.js');
+        const request = cliDeleteAttachmentRequestSchema.parse({
+          groupQuery,
+          credentialQuery,
+          attachmentId,
+          ...(force ? { force } : {}),
+        });
+
+        let result: CliAttachmentDeleteResult;
+        if (context.ports?.deleteAttachment !== undefined) {
+          result = await context.ports.deleteAttachment(request);
+        } else {
+          const { executeProductionDeleteAttachment } =
+            await import('./production/mutations.js');
+          result = await withUnlockedVault(
+            context,
+            'attachment delete',
+            options,
+            async (unlocked, store, rootKey) =>
+              executeProductionDeleteAttachment(
+                {
+                  source: store,
+                  queue: store,
+                  vaultId: unlocked.profile.vaultId,
+                  rootKey,
+                },
+                request,
+              ),
+          );
+        }
+        const { renderAttachmentDelete } = await import('./render.js');
+        context.stdout.write(renderAttachmentDelete(result, json));
+      },
+    },
+  ],
+});
+
 const showCommand: CliCommandDescriptor = Object.freeze({
   name: 'show',
   description: 'Show a schema-driven item with secret fields redacted.',
@@ -3403,6 +3630,7 @@ export const CLI_COMMAND_CATALOG: readonly CliCommandDescriptor[] = Object.freez
   credentialCommand,
   fieldCommand,
   noteCommand,
+  attachmentCommand,
   showCommand,
   copyCommand,
   revealCommand,
@@ -3768,6 +3996,7 @@ export const PUBLIC_CLI_COMMAND_CATALOG: readonly CliCommandDescriptor[] =
     credentialCommand,
     fieldCommand,
     noteCommand,
+    attachmentCommand,
     showCommand,
     copyCommand,
     revealCommand,

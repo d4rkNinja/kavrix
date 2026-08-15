@@ -14,6 +14,10 @@ import {
 } from '@kavrix/schemas';
 
 import type {
+  CliAttachmentDeleteResult,
+  CliAttachmentDownloadResult,
+  CliAttachmentSummary,
+  CliAttachmentUploadResult,
   CliConnectResult,
   CliBackupCreateResult,
   CliBackupRestoreResult,
@@ -794,4 +798,77 @@ export function renderTemplateMigrationStatus(
     `Field Count: ${String(status.fieldCount)}`,
   ];
   return lines.join('\n').concat('\n');
+}
+
+export function renderAttachmentList(
+  attachments: readonly CliAttachmentSummary[],
+  json: boolean,
+): string {
+  if (json) {
+    return safeJson(attachments);
+  }
+  if (attachments.length === 0) {
+    return 'No attachments found for this credential item.\n';
+  }
+  const lines = [
+    `Attachments (${String(attachments.length)}):`,
+    ...attachments.map((att) => {
+      const parts = [
+        sanitizeTerminalText(att.id),
+        `Chunks: ${String(att.chunkCount)}`,
+        ...(att.totalPlaintextBytes !== undefined
+          ? [`${String(att.totalPlaintextBytes)} bytes`]
+          : []),
+        ...(att.tombstonedAt !== undefined ? ['[deleted]'] : []),
+      ];
+      return `  - ${parts.join(' | ')}`;
+    }),
+  ];
+  return lines.join('\n').concat('\n');
+}
+
+export function renderAttachmentUpload(
+  result: CliAttachmentUploadResult,
+  json: boolean,
+): string {
+  if (json) {
+    return safeJson(result);
+  }
+  const lines = [
+    'Attachment uploaded successfully.',
+    `Attachment ID: ${sanitizeTerminalText(result.attachmentId)}`,
+    `Group ID: ${sanitizeTerminalText(result.groupId)}`,
+    `Item ID: ${sanitizeTerminalText(result.itemId)}`,
+    `Chunks: ${String(result.chunkCount)}`,
+    `Size: ${String(result.totalPlaintextBytes)} bytes`,
+    `Plaintext SHA-256: ${sanitizeTerminalText(result.plaintextSha256)}`,
+  ];
+  return lines.join('\n').concat('\n');
+}
+
+export function renderAttachmentDownload(
+  result: CliAttachmentDownloadResult,
+  json: boolean,
+): string {
+  if (json) {
+    return safeJson(result);
+  }
+  const lines = [
+    'Attachment downloaded successfully.',
+    `Attachment ID: ${sanitizeTerminalText(result.attachmentId)}`,
+    `Destination: ${sanitizeTerminalText(result.destinationPath)}`,
+    `Size: ${String(result.totalPlaintextBytes)} bytes`,
+    `Plaintext SHA-256: ${sanitizeTerminalText(result.plaintextSha256)}`,
+  ];
+  return lines.join('\n').concat('\n');
+}
+
+export function renderAttachmentDelete(
+  result: CliAttachmentDeleteResult,
+  json: boolean,
+): string {
+  if (json) {
+    return safeJson(result);
+  }
+  return `Attachment "${sanitizeTerminalText(result.attachmentId)}" deleted.\n`;
 }
