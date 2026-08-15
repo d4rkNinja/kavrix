@@ -300,31 +300,106 @@ export class VaultInteractionService {
     item: ItemPayload,
     definition: FieldDefinition,
   ): Promise<void> {
-    const reasons: CopyAuthorizationReason[] = [];
-    if (definition.copyPolicy === 'confirm') reasons.push('copy-policy-confirm');
-    if (item.productionSensitive) reasons.push('production-sensitive');
-    if (definition.reauthenticationPolicy === 'always') {
-      reasons.push('reauthentication-always');
-    }
-    if (reasons.length === 0) return;
-    if (this.#authorization === undefined) {
-      throw new CredentialCopyError('authorization-required');
-    }
-    let authorized: boolean;
-    try {
-      authorized = await this.#authorization.authorizeCopy({
-        vaultId: item.vaultId,
-        groupId: item.groupId,
-        itemId: item.id,
-        fieldId: definition.id,
-        fieldLabel: safeLabel(definition.label),
-        reasons,
-      });
-    } catch {
-      throw new CredentialCopyError('authorization-failed');
-    }
-    if (!authorized) throw new CredentialCopyError('authorization-denied');
+    await authorizeFieldRelease(item, definition, this.#authorization);
   }
+}
+
+/** One field to release to an approved non-clipboard sink. */
+export type CredentialFieldRequest = Readonly<{
+  groupQuery: string;
+  credentialQuery: string;
+  fieldQuery: string;
+  index?: number;
+}>;
+
+/**
+ * One resolved plaintext scalar. `secret` reports whether the value must be
+ * treated as secret material by the sink, so a caller can redact it without
+ * re-deriving field classification rules.
+ */
+export type ResolvedCredentialField = Readonly<{
+  label: string;
+  secret: boolean;
+  value: FieldScalarValue;
+}>;
+
+export type VaultFieldAccessOptions = Readonly<{
+  authorization?: CopyAuthorizationPort;
+}>;
+
+/**
+ * Resolves single field values for callers that hand plaintext to an approved
+ * sink other than the clipboard, such as a child process environment.
+ *
+ * The release rules are deliberately identical to `copy`: an injected value
+ * leaves the vault exactly as a copied one does, and a process can disclose it
+ * further, so a field that may not be copied may not be injected either.
+ */
+export class VaultFieldAccessService {
+  readonly #session: VaultReadSession;
+  readonly #authorization: CopyAuthorizationPort | undefined;
+
+  constructor(session: VaultReadSession, options: VaultFieldAccessOptions = {}) {
+    this.#session = session;
+    this.#authorization = options.authorization;
+  }
+
+  async resolve(request: CredentialFieldRequest): Promise<ResolvedCredentialField> {
+    const aggregate = await this.#session.show(
+      request.groupQuery,
+      request.credentialQuery,
+    );
+    const field = resolveField(aggregate, request.fieldQuery);
+    if (field.archived) throw new CredentialCopyError('orphaned');
+    if (!field.definition.copyable || field.definition.copyPolicy === 'never') {
+      throw new CredentialCopyError('not-copyable');
+    }
+    const value = selectScalar(field.value, request.index);
+    if (value.kind === 'attachment-reference' || value.kind === 'item-reference') {
+      throw new CredentialCopyError('not-copyable');
+    }
+    await authorizeFieldRelease(aggregate.item, field.definition, this.#authorization);
+    return Object.freeze({
+      label: safeLabel(field.definition.label),
+      secret: field.definition.sensitive || isSecretScalar(value),
+      value,
+    });
+  }
+}
+
+/**
+ * Requires explicit authorization before plaintext leaves the vault. Shared by
+ * every release path so a new sink cannot accidentally skip the gate.
+ */
+async function authorizeFieldRelease(
+  item: ItemPayload,
+  definition: FieldDefinition,
+  authorization: CopyAuthorizationPort | undefined,
+): Promise<void> {
+  const reasons: CopyAuthorizationReason[] = [];
+  if (definition.copyPolicy === 'confirm') reasons.push('copy-policy-confirm');
+  if (item.productionSensitive) reasons.push('production-sensitive');
+  if (definition.reauthenticationPolicy === 'always') {
+    reasons.push('reauthentication-always');
+  }
+  if (reasons.length === 0) return;
+  if (authorization === undefined) {
+    throw new CredentialCopyError('authorization-required');
+  }
+  let authorized: boolean;
+  try {
+    authorized = await authorization.authorizeCopy({
+      vaultId: item.vaultId,
+      groupId: item.groupId,
+      itemId: item.id,
+      fieldId: definition.id,
+      fieldLabel: safeLabel(definition.label),
+      reasons,
+    });
+  } catch {
+    throw new CredentialCopyError('authorization-failed');
+  }
+  if (!authorized) throw new CredentialCopyError('authorization-denied');
 }
 
 export function projectCredentialShow(

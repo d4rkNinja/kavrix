@@ -611,7 +611,7 @@ describe('injectable initialization commands', () => {
 
     const publicCompletion = await executePublic(['completion', 'bash']);
     expect(publicCompletion.stdout).toContain(
-      "'version generate totp key init connect recover unlock lock status template group credential field note attachment history audit show copy reveal get sync backup device completion'",
+      "'version generate totp key init connect recover unlock lock status template group credential field note attachment history audit show copy reveal get run sync backup device completion'",
     );
     expect(publicCompletion.stdout).not.toContain(PORTABLE);
 

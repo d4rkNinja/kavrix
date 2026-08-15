@@ -87,6 +87,7 @@ export type CliFeature =
   | 'audit'
   | 'audit list'
   | 'audit show'
+  | 'run'
   | 'reveal'
   | 'get'
   | 'sync'
@@ -119,6 +120,26 @@ export class CliUnavailableError extends Error {
     );
     this.name = 'CliUnavailableError';
     this.feature = feature;
+  }
+}
+
+/**
+ * Raised after a guarded child process ends in any state other than a clean
+ * exit code zero. The rendered result already reports the child's own exit
+ * code, signal, and termination reason; this error only keeps the CLI from
+ * presenting a failed child as a successful command.
+ */
+export class CliRunFailedError extends Error {
+  readonly code = 'RUN_CHILD_FAILED' as const;
+  readonly safe = true;
+
+  constructor(termination: string, exitCode: number | null) {
+    super(
+      exitCode === null
+        ? `The command did not complete normally (${termination}).`
+        : `The command exited with code ${String(exitCode)}.`,
+    );
+    this.name = 'CliRunFailedError';
   }
 }
 
@@ -186,6 +207,13 @@ export function presentCliError(error: unknown): CliErrorPresentation {
   if (error instanceof CliUnavailableError) {
     return {
       exitCode: CLI_EXIT_CODES.unavailable,
+      code: error.code,
+      message: error.message,
+    };
+  }
+  if (error instanceof CliRunFailedError) {
+    return {
+      exitCode: CLI_EXIT_CODES.failure,
       code: error.code,
       message: error.message,
     };

@@ -63,6 +63,7 @@ import type {
   CliRestoreFieldRequest,
   CliRestoreHistoryRequest,
   CliRestoreNoteRequest,
+  CliRunRequest,
   CliSetFieldRequest,
   CliShowAuditEventRequest,
   CliShowHistoryRequest,
@@ -419,6 +420,37 @@ export interface CliAuditEventDetail {
   readonly event: CliAuditEventSummary;
 }
 
+/**
+ * One planned guarded execution. Carries destination names and addresses only:
+ * a plan is printed before any field is resolved, so it can never hold a value.
+ */
+export interface CliRunPlan {
+  readonly executable: string;
+  readonly argumentCount: number;
+  readonly environmentNames: readonly string[];
+  readonly inherited: readonly string[];
+  readonly cwd: string;
+  readonly timeoutMs: number | null;
+  readonly maxOutputBytes: number;
+}
+
+/**
+ * One completed guarded execution. `stdout`/`stderr` are already bounded and
+ * secret-redacted by the runner; `secretNames` reports which destinations were
+ * classified as secret so the caller can state what was protected.
+ */
+export interface CliRunResult {
+  readonly executable: string;
+  readonly exitCode: number | null;
+  readonly signal: string | null;
+  readonly termination: 'exit' | 'signal' | 'timeout' | 'aborted' | 'output-limit';
+  readonly outputTruncated: boolean;
+  readonly environmentNames: readonly string[];
+  readonly secretNames: readonly string[];
+  readonly stdout: string;
+  readonly stderr: string;
+}
+
 export const cliPortableKeyRotationListingSchema = z
   .object({
     operationId: lifecycleOperationIdSchema,
@@ -602,6 +634,7 @@ export interface CliUseCasePorts {
   restoreHistory?(request: CliRestoreHistoryRequest): Promise<CliHistoryRestoreResult>;
   listAuditEvents?(request: CliListAuditEventsRequest): Promise<CliAuditEventPage>;
   showAuditEvent?(request: CliShowAuditEventRequest): Promise<CliAuditEventDetail>;
+  run?(request: CliRunRequest): Promise<CliRunResult>;
   reveal?(
     groupQuery: string,
     credentialQuery: string,

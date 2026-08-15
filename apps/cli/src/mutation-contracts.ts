@@ -1,4 +1,11 @@
 import {
+  ENVIRONMENT_NAME_PATTERN,
+  INHERITABLE_ENVIRONMENT_NAMES,
+  RUNNER_LIMITS,
+  isReservedEnvironmentName,
+  type InheritableEnvironmentName,
+} from '@kavrix/runner';
+import {
   auditEventClassSchema,
   auditEventIdentifierSchema,
   fieldTypeSchema,
@@ -395,3 +402,170 @@ export const cliListAuditEventsQuerySchema = z
     ...(query.limit === undefined ? {} : { limit: query.limit }),
     ...(query.cursor === undefined ? {} : { cursor: query.cursor }),
   }));
+
+/**
+ * Narrows one requested parent variable against the runner's inheritance
+ * allow-list. The allow-list itself stays owned by the runner, so this only
+ * decides membership; it never extends what may be inherited.
+ */
+function isInheritableEnvironmentName(
+  name: string,
+): name is InheritableEnvironmentName {
+  return INHERITABLE_ENVIRONMENT_NAMES.some((allowed) => allowed === name);
+}
+
+/**
+ * One `--env` mapping. The destination name is validated against the runner's
+ * published contract so a rejected name fails as usage before any vault is
+ * unlocked, and so `--dry-run` cannot approve a mapping a real run would refuse.
+ */
+export const cliRunEnvironmentMappingSchema = z
+  .object({
+    name: z
+      .string()
+      .regex(ENVIRONMENT_NAME_PATTERN, {
+        message: 'Destination names accept only [A-Za-z_][A-Za-z0-9_]*',
+      })
+      .refine((name) => !isReservedEnvironmentName(name), {
+        message: 'The destination name is reserved by the runner.',
+      }),
+    groupQuery: cleanNameSchema,
+    credentialQuery: cleanNameSchema,
+    fieldQuery: cleanNameSchema,
+    index: z.number().int().positive().max(10_000).optional(),
+  })
+  .strict();
+
+export const cliRunRequestSchema = z
+  .object({
+    executable: z
+      .string()
+      .min(1)
+      .max(4_096)
+      .refine((value) => !value.includes('\0'), {
+        message: 'The executable path must not contain a NUL byte.',
+      }),
+    arguments: z
+      .array(
+        z
+          .string()
+          .max(RUNNER_LIMITS.maxArgumentBytes)
+          .refine((value) => !value.includes('\0'), {
+            message: 'Arguments must not contain a NUL byte.',
+          }),
+      )
+      .max(RUNNER_LIMITS.maxArguments),
+    environment: z
+      .array(cliRunEnvironmentMappingSchema)
+      .max(RUNNER_LIMITS.maxEnvironmentEntries),
+    inherit: z
+      .array(z.enum(INHERITABLE_ENVIRONMENT_NAMES))
+      .max(INHERITABLE_ENVIRONMENT_NAMES.length),
+    cwd: z.string().min(1).max(4_096).optional(),
+    timeoutMs: z.number().int().positive().max(RUNNER_LIMITS.maxTimeoutMs).optional(),
+    maxOutputBytes: z
+      .number()
+      .int()
+      .positive()
+      .max(RUNNER_LIMITS.maxCaptureBytes)
+      .optional(),
+    dryRun: z.boolean().optional(),
+  })
+  .strict()
+  .superRefine((request, context) => {
+    const seen = new Set<string>();
+    for (const mapping of request.environment) {
+      // Windows compares names case-insensitively, so a collision that only
+      // differs by case must be refused here rather than silently overwritten.
+      const canonical = mapping.name.toUpperCase();
+      if (seen.has(canonical)) {
+        context.addIssue({
+          code: 'custom',
+          message: 'Each destination name may be mapped at most once.',
+          path: ['environment'],
+        });
+        return;
+      }
+      seen.add(canonical);
+    }
+  });
+
+export type CliRunEnvironmentMapping = z.infer<typeof cliRunEnvironmentMappingSchema>;
+export type CliRunRequest = z.infer<typeof cliRunRequestSchema>;
+
+/** Matches `NAME=group/credential/field` with an optional `#index` suffix. */
+const RUN_MAPPING = /^([^=]+)=([^/]+)\/([^/]+)\/([^/#]+)(?:#([1-9][0-9]*))?$/u;
+
+/**
+ * Normalizes the raw repeated `--env` strings and bounded option strings into
+ * the run request. Bounds live in the pipes so an out-of-range value fails as a
+ * usage error instead of reaching the executor.
+ */
+export const cliRunQuerySchema = z
+  .object({
+    env: z.array(z.string().min(1).max(2_048)),
+    inherit: z.string().max(512).optional(),
+    cwd: z.string().min(1).max(4_096).optional(),
+    timeout: z
+      .string()
+      .regex(/^[1-9][0-9]*$/u)
+      .transform(Number)
+      .pipe(z.number().int().positive().max(RUNNER_LIMITS.maxTimeoutMs))
+      .optional(),
+    maxOutput: z
+      .string()
+      .regex(/^[1-9][0-9]*$/u)
+      .transform(Number)
+      .pipe(z.number().int().positive().max(RUNNER_LIMITS.maxCaptureBytes))
+      .optional(),
+    dryRun: z.boolean().optional(),
+    executable: z.string().min(1).max(4_096),
+    arguments: z.array(z.string()),
+  })
+  .strict()
+  .transform((query, context): z.input<typeof cliRunRequestSchema> => {
+    const environment: CliRunEnvironmentMapping[] = [];
+    for (const raw of query.env) {
+      const matched = RUN_MAPPING.exec(raw);
+      if (matched === null) {
+        context.addIssue({
+          code: 'custom',
+          message: 'Each mapping must read NAME=group/credential/field[#index].',
+          path: ['env'],
+        });
+        return z.NEVER;
+      }
+      const [, name, groupQuery, credentialQuery, fieldQuery, index] = matched;
+      environment.push({
+        name: name ?? '',
+        groupQuery: groupQuery ?? '',
+        credentialQuery: credentialQuery ?? '',
+        fieldQuery: fieldQuery ?? '',
+        ...(index === undefined ? {} : { index: Number(index) }),
+      });
+    }
+    const inheritRequested =
+      query.inherit === undefined || query.inherit.length === 0
+        ? []
+        : query.inherit.split(',').map((name) => name.trim());
+    const inherit = inheritRequested.filter(isInheritableEnvironmentName);
+    if (inherit.length !== inheritRequested.length) {
+      context.addIssue({
+        code: 'custom',
+        message: `Inheritable names are limited to: ${INHERITABLE_ENVIRONMENT_NAMES.join(', ')}.`,
+        path: ['inherit'],
+      });
+      return z.NEVER;
+    }
+    return {
+      executable: query.executable,
+      arguments: query.arguments,
+      environment,
+      inherit,
+      ...(query.cwd === undefined ? {} : { cwd: query.cwd }),
+      ...(query.timeout === undefined ? {} : { timeoutMs: query.timeout }),
+      ...(query.maxOutput === undefined ? {} : { maxOutputBytes: query.maxOutput }),
+      ...(query.dryRun === undefined ? {} : { dryRun: query.dryRun }),
+    };
+  })
+  .pipe(cliRunRequestSchema);

@@ -134,6 +134,9 @@ importers:
       '@kavrix/local-store':
         specifier: workspace:*
         version: link:../../packages/local-store
+      '@kavrix/runner':
+        specifier: workspace:*
+        version: link:../../packages/runner
       '@kavrix/schemas':
         specifier: workspace:*
         version: link:../../packages/schemas

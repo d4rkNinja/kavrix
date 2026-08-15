@@ -2,64 +2,19 @@ import { fieldScalarValueSchema, type FieldScalarValue } from '@kavrix/schemas';
 
 import { RunnerError } from './errors.js';
 import {
+  ENVIRONMENT_NAME_PATTERN,
   INHERITABLE_ENVIRONMENT_NAMES,
+  RUNNER_LIMITS,
+  isReservedEnvironmentName,
   type EnvironmentMapping,
   type InheritableEnvironmentName,
 } from './types.js';
 
-const ENVIRONMENT_NAME = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/u;
-const MAX_ENVIRONMENT_ENTRIES = 256;
-const MAX_ENVIRONMENT_VALUE_BYTES = 16 * 1_024;
-const MAX_ENVIRONMENT_TOTAL_BYTES = 32 * 1_024;
-
-/** Variables with runtime loader, language-runtime, or shell startup effects. */
-const RESERVED_MAPPING_NAMES = new Set([
-  'BASH_ENV',
-  'BUNDLE_GEMFILE',
-  'CDPATH',
-  'CLASSPATH',
-  'COMSPEC',
-  'DYLD_FRAMEWORK_PATH',
-  'DYLD_INSERT_LIBRARIES',
-  'DYLD_LIBRARY_PATH',
-  'ENV',
-  'GLOBIGNORE',
-  'GIT_ASKPASS',
-  'GIT_CONFIG_COUNT',
-  'GIT_CONFIG_GLOBAL',
-  'GIT_CONFIG_SYSTEM',
-  'HOME',
-  'IFS',
-  'JAVA_TOOL_OPTIONS',
-  'LANG',
-  'LC_ALL',
-  'LC_CTYPE',
-  'LD_AUDIT',
-  'LD_LIBRARY_PATH',
-  'LD_PRELOAD',
-  'NODE_OPTIONS',
-  'NODE_PATH',
-  'NPM_CONFIG_USERCONFIG',
-  'PATH',
-  'PATHEXT',
-  'PERL5OPT',
-  'PROMPT_COMMAND',
-  'PS4',
-  'PYTHONHOME',
-  'PYTHONINSPECT',
-  'PYTHONPATH',
-  'PYTHONSTARTUP',
-  'RUBYLIB',
-  'RUBYOPT',
-  'SHELLOPTS',
-  'SYSTEMROOT',
-  'TEMP',
-  'TMP',
-  'TZ',
-  'USERPROFILE',
-  'WINDIR',
-  '_JAVA_OPTIONS',
-]);
+const {
+  maxEnvironmentEntries: MAX_ENVIRONMENT_ENTRIES,
+  maxEnvironmentValueBytes: MAX_ENVIRONMENT_VALUE_BYTES,
+  maxEnvironmentTotalBytes: MAX_ENVIRONMENT_TOTAL_BYTES,
+} = RUNNER_LIMITS;
 
 const inheritableNames = new Set<string>(
   INHERITABLE_ENVIRONMENT_NAMES.map((name) => canonicalEnvironmentName(name)),
@@ -199,8 +154,8 @@ export function prepareEnvironment(
       const [name, scalar] = mapping;
       if (
         typeof name !== 'string' ||
-        !ENVIRONMENT_NAME.test(name) ||
-        RESERVED_MAPPING_NAMES.has(canonicalEnvironmentName(name))
+        !ENVIRONMENT_NAME_PATTERN.test(name) ||
+        isReservedEnvironmentName(name)
       ) {
         throw new RunnerError('RUNNER_ENVIRONMENT_REJECTED');
       }
