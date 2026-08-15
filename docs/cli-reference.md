@@ -374,6 +374,46 @@ Lower-level implementations exist for several of these concerns, but no
 uncomposed operation is advertised as a working command. The factual feature
 ledger is [Implementation Status](./implementation-status.md).
 
+## Session lifetime
+
+Every unlocked invocation runs inside one bounded session
+([`InvocationSession`](../apps/cli/src/session.ts)). The session owns the
+deadlines, the abort signal that cancellable work is threaded onto, and the
+ordered release stack. Release steps run exactly once in reverse acquisition
+order for every ending — normal completion, thrown error, deadline, inactivity,
+or signal — so a decrypted root key never outlives the command that unwrapped
+it.
+
+- Expiry is measured on a monotonic clock, never wall-clock time, so changing the
+  system clock cannot extend a session. A backward reading fails closed.
+- An unlocked command is cancelled on `SIGINT`, `SIGTERM`, and `SIGHUP`; the
+  environment, SQLite stores, protected backend, and clipboard are released
+  before the process leaves.
+- Work that has stopped making progress is abandoned rather than waited on, so a
+  command blocked on a socket, pipe, or prompt cannot hold a session open past
+  its deadline.
+- A result produced after a deadline lapsed is never reported as success.
+- Nothing about an unlocked session is written down: there is no daemon or agent,
+  and a later process cannot resume it.
+
+Deadlines default to a 15-minute invocation limit, a 2-minute inactivity limit,
+and a 2-minute reauthentication window. Operators may override them; each value
+is milliseconds as a plain unsigned decimal, must fall between `1000` and
+`86400000`, and neither the inactivity limit nor the reauthentication window may
+exceed the invocation limit.
+
+| Variable                        | Bounds the                                     |
+| ------------------------------- | ---------------------------------------------- |
+| `CREDS_SESSION_TIMEOUT_MS`      | Total lifetime of one unlocked invocation.     |
+| `CREDS_SESSION_IDLE_TIMEOUT_MS` | Time allowed between recorded progress.        |
+| `CREDS_REAUTH_WINDOW_MS`        | Reuse window after a proven unlock credential. |
+
+These are operator policy, not secrets; no passphrase, key, or token is ever
+read from the environment. An unset or blank variable keeps the shipped default.
+A malformed, out-of-bounds, or internally inconsistent value fails closed with a
+usage error before any vault is opened, and the rejected value is not echoed
+back.
+
 ## Exit codes and errors
 
 The CLI runtime defines stable numeric categories in
@@ -405,6 +445,18 @@ Ambiguity errors do not print candidate IDs, and invalid usage does not reflect
 hostile arguments. ANSI/OSC/C1 controls, terminal string commands, bidi controls,
 and embedded line controls are neutralized by the terminal boundary. Errors are
 text even when a command has `--json`.
+
+A session that ends before its command finishes exits `1` and names the reason,
+so an interrupted run is distinguishable from a failed one without adding a new
+numeric category:
+
+| Code                     | The session was locked because                      |
+| ------------------------ | --------------------------------------------------- |
+| `SESSION_TIMEOUT`        | The invocation limit was reached.                   |
+| `SESSION_IDLE_TIMEOUT`   | The inactivity limit was reached.                   |
+| `SESSION_INTERRUPTED`    | The invocation was cancelled (`SIGINT`).            |
+| `SESSION_TERMINATED`     | The invocation was terminated (`SIGTERM`/`SIGHUP`). |
+| `SESSION_CLOCK_UNUSABLE` | The monotonic clock moved backward.                 |
 
 ## Secret input
 

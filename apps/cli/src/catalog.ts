@@ -943,6 +943,11 @@ async function unwrapVaultRootKeyFromContext(
  * Opens the unlocked production store, derives the vault root key, runs the
  * bounded operation, and always zeroizes the derived root key on exit. The
  * operation must not retain the root key or store beyond its promise.
+ *
+ * Zeroization is registered on the session as well as run in the local `finally`,
+ * so the key is wiped even when the invocation ends on a deadline or a signal
+ * while the operation is still pending. Wiping twice is harmless; not wiping once
+ * is not.
  */
 async function withUnlockedVault<Output>(
   context: CliCommandContext,
@@ -969,10 +974,17 @@ async function withUnlockedVault<Output>(
     async (unlocked) => {
       const store = await unlocked.environment.openSyncStore(unlocked.profile);
       const rootKey = await unwrapVaultRootKeyFromContext(unlocked);
+      unlocked.session.register('vault root key', () => {
+        zeroize(rootKey);
+      });
+      // A proven device-key unwrap is the credential proof that opens the
+      // reauthentication window; it closes again the moment the key is gone.
+      unlocked.session.authorize();
       try {
         return await operation(unlocked, store, rootKey);
       } finally {
         zeroize(rootKey);
+        unlocked.session.revokeAuthorization();
       }
     },
   );
@@ -3567,6 +3579,7 @@ const copyCommand: CliCommandDescriptor = Object.freeze({
               vaultId: unlocked.profile.vaultId,
               rootKey,
               clipboard: unlocked.environment.clipboard,
+              signal: unlocked.session.signal,
             },
             groupQuery,
             credentialQuery,
@@ -3939,7 +3952,13 @@ const runCommand: CliCommandDescriptor = Object.freeze({
             async (unlocked, store, rootKey) => {
               const { executeProductionRun } = await import('./production/run.js');
               return executeProductionRun(
-                { source: store, vaultId: unlocked.profile.vaultId, rootKey, cwd },
+                {
+                  source: store,
+                  vaultId: unlocked.profile.vaultId,
+                  rootKey,
+                  cwd,
+                  signal: unlocked.session.signal,
+                },
                 invocation,
               );
             },

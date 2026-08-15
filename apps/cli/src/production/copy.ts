@@ -17,6 +17,12 @@ export type ProductionCopyOptions = Readonly<{
   rootKey: VaultRootKey;
   clipboard: SecureClipboard;
   clearAfterMs?: number;
+  /**
+   * Cancels the copy when the invocation ends. The clipboard checks this before
+   * writing and while verifying, so an interrupted command cannot leave a secret
+   * on the clipboard that nothing is left alive to clear.
+   */
+  signal?: AbortSignal;
 }>;
 
 export async function executeProductionCopy(
@@ -32,7 +38,10 @@ export async function executeProductionCopy(
     const service = new VaultInteractionService(readSession, options.clipboard, {
       clearAfterMs: options.clearAfterMs ?? CLIPBOARD_CLEAR_MS,
     });
-    return await service.copy(groupQuery, credentialQuery, fieldQuery, copyOptions);
+    return await service.copy(groupQuery, credentialQuery, fieldQuery, {
+      ...copyOptions,
+      ...(options.signal === undefined ? {} : { signal: options.signal }),
+    });
   } finally {
     readSession.lock();
   }

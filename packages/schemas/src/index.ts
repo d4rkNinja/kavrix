@@ -12,6 +12,7 @@ export * from './notes.js';
 export * from './payloads.js';
 export * from './primitives.js';
 export * from './rotation.js';
+export * from './session-lifetime.js';
 export * from './sync.js';
 export * from './templates.js';
 export * from './transfer.js';
