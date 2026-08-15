@@ -1,6 +1,7 @@
 import { DomainError } from '@kavrix/core';
 
 import type { BackupErrorCode } from '@kavrix/import-export';
+import type { SessionExpiryReason } from '@kavrix/schemas';
 import { CliUnsupportedRuntimeError } from './runtime-preflight.js';
 
 export const CLI_EXIT_CODES = Object.freeze({
@@ -147,6 +148,50 @@ export class CliRunFailedError extends Error {
   }
 }
 
+/**
+ * Raised when an unlocked session stopped before the command could report a
+ * result. Every reason is terminal, so the message tells the operator to unlock
+ * again rather than implying the command can be resumed. The code distinguishes
+ * the reasons for scripting without revealing anything about the vault: which
+ * deadline fired, or which signal arrived, is not secret.
+ */
+export class CliSessionEndedError extends Error {
+  readonly code: CliSessionEndedCode;
+  readonly safe = true;
+  readonly reason: SessionExpiryReason;
+
+  constructor(reason: SessionExpiryReason) {
+    super(SESSION_ENDED_MESSAGES[reason]);
+    this.name = 'CliSessionEndedError';
+    this.reason = reason;
+    this.code = SESSION_ENDED_CODES[reason];
+  }
+}
+
+const SESSION_ENDED_CODES = Object.freeze({
+  'invocation-timeout': 'SESSION_TIMEOUT',
+  'idle-timeout': 'SESSION_IDLE_TIMEOUT',
+  interrupted: 'SESSION_INTERRUPTED',
+  terminated: 'SESSION_TERMINATED',
+  hangup: 'SESSION_TERMINATED',
+  'clock-regression': 'SESSION_CLOCK_UNUSABLE',
+} as const satisfies Readonly<Record<SessionExpiryReason, string>>);
+
+const SESSION_ENDED_MESSAGES = Object.freeze({
+  'invocation-timeout':
+    'The vault session reached its time limit and was locked. Unlock again to retry.',
+  'idle-timeout':
+    'The vault session was locked after the inactivity limit. Unlock again to retry.',
+  interrupted: 'The vault session was cancelled and locked.',
+  terminated: 'The vault session was terminated and locked.',
+  hangup: 'The vault session was terminated and locked.',
+  'clock-regression':
+    'The vault session was locked because the monotonic clock moved backward.',
+} as const satisfies Readonly<Record<SessionExpiryReason, string>>);
+
+export type CliSessionEndedCode =
+  (typeof SESSION_ENDED_CODES)[keyof typeof SESSION_ENDED_CODES];
+
 export class CliKeyFileCreationError extends Error {
   readonly code = 'KEY_FILE_CREATE_FAILED' as const;
 
@@ -251,6 +296,13 @@ export function presentCliError(error: unknown): CliErrorPresentation {
     };
   }
   if (error instanceof CliRunFailedError) {
+    return {
+      exitCode: CLI_EXIT_CODES.failure,
+      code: error.code,
+      message: error.message,
+    };
+  }
+  if (error instanceof CliSessionEndedError) {
     return {
       exitCode: CLI_EXIT_CODES.failure,
       code: error.code,
