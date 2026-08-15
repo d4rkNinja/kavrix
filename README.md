@@ -51,7 +51,7 @@ version`, static Bash/Zsh/Fish/PowerShell completion, password and passphrase
 generation, TOTP generation, create-only portable key-file creation, crash-safe
 local initialization with resume/cancel, guarded unlock/lock, a locked local
 `creds status` diagnostic for one already-enrolled data home, encrypted
-local group and credential CRUD, dynamic field operations, encrypted note CRUD, redacted credential inspection (`creds show`), guarded clipboard copy (`creds copy`), guarded credential reveal (`creds reveal`), scriptable field retrieval (`creds get`), and vault synchronization (`creds sync`).
+local group and credential CRUD, dynamic field operations, encrypted note CRUD, redacted credential inspection (`creds show`), guarded clipboard copy (`creds copy`), guarded credential reveal (`creds reveal`), scriptable field retrieval (`creds get`), vault synchronization (`creds sync`), and guarded vault-to-vault transfer under a separate confirmed passphrase (`creds transfer`).
 Status reads only the canonical profile, opaque pending-mutation count, and
 protected rollback timestamp. With `sealed-file`, it authenticates and unseals
 only that local protected rollback metadata; it never obtains vault
@@ -87,7 +87,18 @@ creds get "Engineering" "Database Admin" "username"
 creds set "Engineering" "Database Admin" "password" --value-stdin --if-revision 7
 creds update "Engineering" "Database Admin" "password" --label "DB password"
 creds note add "Engineering" "Database Admin" --title "Rotation SOP" --content-stdin
+creds transfer export --file engineering.cvtx --group "Engineering"
+creds transfer import --file engineering.cvtx --on-collision rename
 ```
+
+A transfer is not a backup. It is protected by its own passphrase — confirmed
+twice on export, never the vault's unlock material — so a transfer file that
+leaks cannot be opened with vault credentials. Export applies field export
+policy: a value whose field declares `exportPolicy: never` is omitted rather
+than carried, and every omission is declared in a manifest holding only a stable
+key, a scope, and a reason. Import authenticates the whole file and plans the
+whole application before creating the first group, so a malformed, oversized,
+tampered, or colliding transfer leaves the destination vault untouched.
 
 A field value is never accepted as an argument: `set` reads it from
 `--value-stdin` or a masked prompt. `set` resolves the field the same way `get`

@@ -12,6 +12,7 @@ import {
   type ItemPayload,
   type KeySlotId,
   type TemplateMigrationPlan,
+  transferCollisionStrategySchema,
   vaultIdSchema,
 } from '@kavrix/schemas';
 import { z } from 'zod';
@@ -4235,6 +4236,208 @@ const backupCommand: CliCommandDescriptor = Object.freeze({
   ],
 });
 
+const transferPassphraseStdinOption: CliOptionDescriptor = Object.freeze({
+  flags: '--transfer-passphrase-stdin',
+  description:
+    'Read the transfer passphrase from standard input instead of a masked prompt.',
+});
+
+/**
+ * Acquire the passphrase that protects a transfer file.
+ *
+ * A transfer passphrase is never the vault passphrase: it protects one portable
+ * file and nothing else. Export confirms it twice because a mistyped passphrase
+ * would produce a file nobody can ever open.
+ */
+async function readTransferPassphrase(
+  context: CliCommandContext,
+  feature: Extract<CliFeature, 'transfer export' | 'transfer import'>,
+  fromStdin: boolean,
+): Promise<Uint8Array> {
+  const secrets = secretInput(context, feature);
+  if (feature === 'transfer import') {
+    return Buffer.from(await secrets.read({ kind: 'passphrase', fromStdin }), 'utf8');
+  }
+  const values = await secrets.readBatch({
+    kinds: ['passphrase', 'passphrase'],
+    fromStdin,
+    requireEnd: fromStdin,
+  });
+  const first = values[0];
+  const second = values[1];
+  if (first === undefined || second === undefined) {
+    throw new CliUsageError('Transfer passphrase confirmation is incomplete.');
+  }
+  await assertMatchingPassphrases(first, second);
+  return Buffer.from(first, 'utf8');
+}
+
+const transferCommand: CliCommandDescriptor = Object.freeze({
+  name: 'transfer',
+  description:
+    'Move groups between vaults through a guarded, separately encrypted transfer file.',
+  children: [
+    {
+      name: 'export',
+      description:
+        'Write one policy-filtered encrypted transfer without replacing a file.',
+      options: [
+        {
+          flags: '--file <path>',
+          description: 'New transfer path; existing files and links are refused.',
+        },
+        {
+          flags: '--group <group>',
+          description: 'Export one group only, by ID, unique name, or alias.',
+        },
+        vaultOption,
+        jsonOption,
+        secretBackendOption,
+        backendPassphraseStdinOption,
+        transferPassphraseStdinOption,
+      ],
+      execute: async (context, _arguments, options) => {
+        const { parseTransferExportRequest, parseTransferExportResult } =
+          await import('./contracts.js');
+        const request = parseTransferExportRequest({
+          destination: requiredOption(options, 'file', 'transfer destination'),
+          ...(options['group'] === undefined
+            ? {}
+            : { groupQuery: requiredOption(options, 'group', 'group query') }),
+          ...(options['vault'] === undefined
+            ? {}
+            : {
+                vaultId: parseInputString(options, 'vault', (value) =>
+                  vaultIdSchema.parse(value),
+                ),
+              }),
+        });
+        let raw: unknown;
+        if (context.ports?.exportTransfer !== undefined) {
+          raw = await context.ports.exportTransfer(request);
+        } else {
+          const passphrase = await readTransferPassphrase(
+            context,
+            'transfer export',
+            optionBoolean(options, 'transferPassphraseStdin'),
+          );
+          try {
+            const { executeProductionTransferExport } =
+              await import('./production/transfers.js');
+            raw = await withUnlockedVault(
+              context,
+              'transfer export',
+              options,
+              async (unlocked, store, rootKey) =>
+                executeProductionTransferExport(
+                  { source: store, vaultId: unlocked.profile.vaultId, rootKey },
+                  {
+                    destination: request.destination,
+                    passphrase,
+                    ...(request.groupQuery === undefined
+                      ? {}
+                      : { groupQuery: request.groupQuery }),
+                  },
+                ),
+            );
+          } finally {
+            zeroizeBytes(passphrase);
+          }
+        }
+        const { renderTransferExport } = await import('./render.js');
+        context.stdout.write(
+          renderTransferExport(
+            parseTransferExportResult(raw),
+            optionBoolean(options, 'json'),
+          ),
+        );
+      },
+    },
+    {
+      name: 'import',
+      description:
+        'Apply one authenticated encrypted transfer after it verifies completely.',
+      options: [
+        {
+          flags: '--file <path>',
+          description: 'Existing transfer path; it is opened read-only.',
+        },
+        {
+          flags: '--on-collision <strategy>',
+          description:
+            'How to treat a group name that already exists: fail, skip, or rename.',
+        },
+        vaultOption,
+        jsonOption,
+        secretBackendOption,
+        backendPassphraseStdinOption,
+        transferPassphraseStdinOption,
+      ],
+      execute: async (context, _arguments, options) => {
+        const { parseTransferImportRequest, parseTransferImportResult } =
+          await import('./contracts.js');
+        const request = parseTransferImportRequest({
+          source: requiredOption(options, 'file', 'transfer archive'),
+          onCollision: parseInput(
+            transferCollisionStrategySchema,
+            options['onCollision'] ?? 'fail',
+            'collision strategy',
+          ),
+          ...(options['vault'] === undefined
+            ? {}
+            : {
+                vaultId: parseInputString(options, 'vault', (value) =>
+                  vaultIdSchema.parse(value),
+                ),
+              }),
+        });
+        let raw: unknown;
+        if (context.ports?.importTransfer !== undefined) {
+          raw = await context.ports.importTransfer(request);
+        } else {
+          const passphrase = await readTransferPassphrase(
+            context,
+            'transfer import',
+            optionBoolean(options, 'transferPassphraseStdin'),
+          );
+          try {
+            const { executeProductionTransferImport } =
+              await import('./production/transfers.js');
+            raw = await withUnlockedVault(
+              context,
+              'transfer import',
+              options,
+              async (unlocked, store, rootKey) =>
+                executeProductionTransferImport(
+                  {
+                    source: store,
+                    queue: store,
+                    vaultId: unlocked.profile.vaultId,
+                    rootKey,
+                  },
+                  {
+                    source: request.source,
+                    passphrase,
+                    onCollision: request.onCollision,
+                  },
+                ),
+            );
+          } finally {
+            zeroizeBytes(passphrase);
+          }
+        }
+        const { renderTransferImport } = await import('./render.js');
+        context.stdout.write(
+          renderTransferImport(
+            parseTransferImportResult(raw),
+            optionBoolean(options, 'json'),
+          ),
+        );
+      },
+    },
+  ],
+});
+
 export const CLI_COMMAND_CATALOG: readonly CliCommandDescriptor[] = Object.freeze([
   versionCommand,
   generationCommand,
@@ -4263,6 +4466,7 @@ export const CLI_COMMAND_CATALOG: readonly CliCommandDescriptor[] = Object.freez
   runCommand,
   syncCommand,
   backupCommand,
+  transferCommand,
   {
     name: 'device',
     description: 'Manage this device and zero-knowledge enrollment.',
@@ -4634,6 +4838,7 @@ export const PUBLIC_CLI_COMMAND_CATALOG: readonly CliCommandDescriptor[] =
     runCommand,
     syncCommand,
     publicBackupCommand(),
+    transferCommand,
     publicDeviceCommand(),
     completionCommand(() => PUBLIC_CLI_COMMAND_CATALOG),
   ]);

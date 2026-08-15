@@ -2,6 +2,7 @@ export * from './built-in-templates.js';
 export * from './errors.js';
 export * from './policies/field-values.js';
 export * from './policies/attachment-staging.js';
+export * from './policies/export-policy.js';
 export * from './policies/key-slots.js';
 export * from './policies/name-resolution.js';
 export * from './policies/notes.js';
