@@ -42,6 +42,8 @@ import type {
   CliTemplateMigrationApplyResult,
   CliTemplateMigrationStatusResult,
   CliTemplateSummary,
+  CliTransferExportResult,
+  CliTransferImportResult,
 } from './contracts.js';
 import type {
   CliFieldMutationResult,
@@ -186,6 +188,40 @@ export function renderBackupRestore(
   if (json) return safeJson(safe);
   const verb = result.action === 'restored' ? 'restored' : 'was already restored';
   return `Encrypted backup ${verb} for vault ${safe.vaultId} (${String(safe.recordCount)} records, ${String(safe.bytes)} bytes).\n`;
+}
+
+export function renderTransferExport(
+  result: CliTransferExportResult,
+  json: boolean,
+): string {
+  const safe = {
+    action: result.action,
+    vaultId: sanitizeTerminalText(result.vaultId),
+    groupCount: result.groupCount,
+    itemCount: result.itemCount,
+    withheldValues: result.withheldValues,
+    bytes: result.bytes,
+  };
+  if (json) return safeJson(safe);
+  return `Encrypted transfer exported from vault ${safe.vaultId} (${String(safe.groupCount)} groups, ${String(safe.itemCount)} credentials, ${String(safe.withheldValues)} withheld values, ${String(safe.bytes)} bytes).\n`;
+}
+
+export function renderTransferImport(
+  result: CliTransferImportResult,
+  json: boolean,
+): string {
+  const safe = {
+    action: result.action,
+    vaultId: sanitizeTerminalText(result.vaultId),
+    createdAt: result.createdAt,
+    groupsCreated: result.groupsCreated,
+    groupsSkipped: result.groupsSkipped,
+    itemsCreated: result.itemsCreated,
+    withheldValues: result.withheldValues,
+    referencesDropped: result.referencesDropped,
+  };
+  if (json) return safeJson(safe);
+  return `Encrypted transfer imported into vault ${safe.vaultId} (${String(safe.groupsCreated)} groups created, ${String(safe.groupsSkipped)} skipped, ${String(safe.itemsCreated)} credentials created, ${String(safe.withheldValues)} withheld values, ${String(safe.referencesDropped)} references dropped).\n`;
 }
 
 export function renderDeviceJoin(result: CliRecoverResult, json: boolean): string {

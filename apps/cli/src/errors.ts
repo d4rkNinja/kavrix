@@ -99,7 +99,9 @@ export type CliFeature =
   | 'recover'
   | 'backup create'
   | 'backup verify'
-  | 'backup restore';
+  | 'backup restore'
+  | 'transfer export'
+  | 'transfer import';
 
 export class CliUsageError extends Error {
   readonly code = 'CLI_USAGE' as const;
@@ -189,6 +191,41 @@ export class CliBackupRestoreError extends Error {
   }
 }
 
+/**
+ * Raised when a guarded encrypted transfer cannot be produced. The message
+ * stays deliberately uniform so it never reveals which document, field, or
+ * policy stopped the export.
+ */
+export class CliTransferExportError extends Error {
+  readonly code = 'TRANSFER_EXPORT_FAILED' as const;
+  readonly safe = true;
+
+  constructor() {
+    super('The encrypted transfer could not be exported.');
+    this.name = 'CliTransferExportError';
+  }
+}
+
+/**
+ * Raised when a guarded encrypted transfer cannot be applied. The transfer is
+ * authenticated in full before anything is created, so this error means nothing
+ * was imported unless the message says the outcome is uncertain.
+ */
+export class CliTransferImportError extends Error {
+  readonly code: BackupErrorCode;
+  readonly safe = true;
+
+  constructor(code: BackupErrorCode = 'BACKUP_AUTHENTICATION_FAILED') {
+    super(
+      code === 'BACKUP_COMMIT_UNCERTAIN'
+        ? 'The encrypted transfer outcome is uncertain. Review the vault before retrying the same file.'
+        : 'The encrypted transfer could not be imported.',
+    );
+    this.name = 'CliTransferImportError';
+    this.code = code;
+  }
+}
+
 export type CliErrorPresentation = Readonly<{
   exitCode: number;
   code: string;
@@ -242,6 +279,20 @@ export function presentCliError(error: unknown): CliErrorPresentation {
     };
   }
   if (error instanceof CliBackupRestoreError) {
+    return {
+      exitCode: CLI_EXIT_CODES.failure,
+      code: error.code,
+      message: error.message,
+    };
+  }
+  if (error instanceof CliTransferExportError) {
+    return {
+      exitCode: CLI_EXIT_CODES.failure,
+      code: error.code,
+      message: error.message,
+    };
+  }
+  if (error instanceof CliTransferImportError) {
     return {
       exitCode: CLI_EXIT_CODES.failure,
       code: error.code,

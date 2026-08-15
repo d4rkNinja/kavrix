@@ -19,6 +19,7 @@ import {
   sha256DigestSchema,
   schemaVersionSchema,
   timestampSchema,
+  transferCollisionStrategySchema,
   vaultIdSchema,
   type ControlListPageOptions,
   type DeviceId,
@@ -96,6 +97,11 @@ export const cliStatusSchema = z
   });
 
 const cliConflictIdSchema = z.string().min(16).max(256);
+/**
+ * A guarded transfer is a curated hand-off rather than a whole-vault archive,
+ * so the CLI caps it well below the format's own ceiling.
+ */
+export const MAX_CLI_TRANSFER_DOCUMENTS = 20_000;
 const cliBackupPathSchema = z
   .string()
   .min(1)
@@ -185,6 +191,60 @@ export const cliBackupRestoreRequestSchema = z
     source: cliBackupPathSchema,
     vaultId: vaultIdSchema.optional(),
     slotId: keySlotIdSchema.optional(),
+  })
+  .strict();
+
+/**
+ * A guarded transfer names an optional single group so an operator can hand off
+ * one group without exporting the whole vault. Omitting it exports every active
+ * group, which is still a policy-filtered projection rather than an archive.
+ */
+export const cliTransferExportRequestSchema = z
+  .object({
+    destination: cliBackupPathSchema,
+    groupQuery: z.string().min(1).max(512).optional(),
+    vaultId: vaultIdSchema.optional(),
+  })
+  .strict();
+
+export const cliTransferImportRequestSchema = z
+  .object({
+    source: cliBackupPathSchema,
+    onCollision: transferCollisionStrategySchema,
+    vaultId: vaultIdSchema.optional(),
+  })
+  .strict();
+
+export const cliTransferExportResultSchema = z
+  .object({
+    action: z.literal('exported'),
+    vaultId: vaultIdSchema,
+    groupCount: z.number().int().nonnegative().max(MAX_CLI_TRANSFER_DOCUMENTS),
+    itemCount: z.number().int().nonnegative().max(MAX_CLI_TRANSFER_DOCUMENTS),
+    withheldValues: z.number().int().nonnegative().max(10_000_000),
+    bytes: z
+      .number()
+      .int()
+      .positive()
+      .max(128 * 1024 * 1024),
+  })
+  .strict();
+
+export const cliTransferImportResultSchema = z
+  .object({
+    action: z.literal('imported'),
+    vaultId: vaultIdSchema,
+    createdAt: timestampSchema,
+    groupsCreated: z.number().int().nonnegative().max(MAX_CLI_TRANSFER_DOCUMENTS),
+    groupsSkipped: z.number().int().nonnegative().max(MAX_CLI_TRANSFER_DOCUMENTS),
+    itemsCreated: z.number().int().nonnegative().max(MAX_CLI_TRANSFER_DOCUMENTS),
+    /** Values the writer declared it could not carry, summed across items. */
+    withheldValues: z.number().int().nonnegative().max(10_000_000),
+    /**
+     * Item-to-item references dropped because the reader minted new identities.
+     * Reported rather than silently discarded.
+     */
+    referencesDropped: z.number().int().nonnegative().max(10_000_000),
   })
   .strict();
 
@@ -525,6 +585,10 @@ export type CliBackupVerifyRequest = z.infer<typeof cliBackupVerifyRequestSchema
 export type CliBackupVerifyResult = z.infer<typeof cliBackupVerifyResultSchema>;
 export type CliBackupRestoreRequest = z.infer<typeof cliBackupRestoreRequestSchema>;
 export type CliBackupRestoreResult = z.infer<typeof cliBackupRestoreResultSchema>;
+export type CliTransferExportRequest = z.infer<typeof cliTransferExportRequestSchema>;
+export type CliTransferExportResult = z.infer<typeof cliTransferExportResultSchema>;
+export type CliTransferImportRequest = z.infer<typeof cliTransferImportRequestSchema>;
+export type CliTransferImportResult = z.infer<typeof cliTransferImportResultSchema>;
 export type CliKeySlot = z.infer<typeof cliKeySlotSchema>;
 export type CliKeySlotResult = z.infer<typeof cliKeySlotResultSchema>;
 export type CliPortableKeyRotationListing = z.infer<
@@ -663,6 +727,8 @@ export interface CliUseCasePorts {
   createBackup?(request: CliBackupCreateRequest): Promise<CliBackupCreateResult>;
   verifyBackup?(request: CliBackupVerifyRequest): Promise<CliBackupVerifyResult>;
   restoreBackup?(request: CliBackupRestoreRequest): Promise<CliBackupRestoreResult>;
+  exportTransfer?(request: CliTransferExportRequest): Promise<CliTransferExportResult>;
+  importTransfer?(request: CliTransferImportRequest): Promise<CliTransferImportResult>;
   listKeySlots?(): Promise<readonly CliKeySlot[]>;
   createKeySlot?(request: unknown): Promise<CliKeySlotResult>;
   disableKeySlot?(slotId: string): Promise<CliKeySlotResult>;
@@ -727,6 +793,22 @@ export function parseBackupRestoreRequest(value: unknown): CliBackupRestoreReque
 
 export function parseBackupRestoreResult(value: unknown): CliBackupRestoreResult {
   return cliBackupRestoreResultSchema.parse(value);
+}
+
+export function parseTransferExportRequest(value: unknown): CliTransferExportRequest {
+  return cliTransferExportRequestSchema.parse(value);
+}
+
+export function parseTransferExportResult(value: unknown): CliTransferExportResult {
+  return cliTransferExportResultSchema.parse(value);
+}
+
+export function parseTransferImportRequest(value: unknown): CliTransferImportRequest {
+  return cliTransferImportRequestSchema.parse(value);
+}
+
+export function parseTransferImportResult(value: unknown): CliTransferImportResult {
+  return cliTransferImportResultSchema.parse(value);
 }
 
 export function parseShowResult(value: unknown): CliShowResult {
