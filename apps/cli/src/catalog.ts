@@ -41,7 +41,12 @@ import {
   type CliTemplateSummary,
   type CliUseCasePorts,
 } from './contracts.js';
-import { CliUnavailableError, CliUsageError, type CliFeature } from './errors.js';
+import {
+  CliRunFailedError,
+  CliUnavailableError,
+  CliUsageError,
+  type CliFeature,
+} from './errors.js';
 import type {
   CliInitializationDependencies,
   CliInitializationStartOptions,
@@ -120,6 +125,8 @@ type CliOptionDescriptor = Readonly<{
   flags: string;
   description: string;
   defaultValue?: string | boolean;
+  /** Collect every occurrence instead of keeping only the last one. */
+  repeatable?: boolean;
 }>;
 
 export type CliCommandDescriptor = Readonly<{
@@ -127,6 +134,12 @@ export type CliCommandDescriptor = Readonly<{
   description: string;
   arguments?: readonly CliArgumentDescriptor[];
   options?: readonly CliOptionDescriptor[];
+  /**
+   * Relay every argument from the first operand onward to this command's own
+   * handler. Required by commands that hand arguments to another program, where
+   * a flag claimed by this CLI would silently never reach that program.
+   */
+  passThrough?: boolean;
   children?: readonly CliCommandDescriptor[];
   execute?: (
     context: CliCommandContext,
@@ -3675,6 +3688,138 @@ const getCommand: CliCommandDescriptor = Object.freeze({
   },
 });
 
+const runCommand: CliCommandDescriptor = Object.freeze({
+  name: 'run',
+  description: 'Run a command with credential fields released into its environment.',
+  arguments: [
+    {
+      syntax: '<executable>',
+      description: 'Program to run. Resolved by the operating system without a shell.',
+    },
+    {
+      syntax: '[args...]',
+      description:
+        'Arguments relayed verbatim to the program. Every flag after <executable> belongs to the program, so the options of this command must be given first.',
+    },
+  ],
+  passThrough: true,
+  options: [
+    {
+      flags: '--env <NAME=group/credential/field>',
+      description:
+        'Release one field into NAME. Repeatable. Append #index for a repeatable field.',
+      repeatable: true,
+    },
+    {
+      flags: '--inherit <names>',
+      description:
+        'Comma-separated allow-list of parent variables the child may inherit.',
+    },
+    {
+      flags: '--cwd <path>',
+      description:
+        'Working directory for the child. Defaults to the current directory.',
+    },
+    {
+      flags: '--timeout <milliseconds>',
+      description: 'Terminate the child after this many milliseconds.',
+    },
+    {
+      flags: '--max-output <bytes>',
+      description: 'Capture limit per stream. Output beyond the limit is truncated.',
+    },
+    {
+      flags: '--dry-run',
+      description:
+        'Validate and print the plan without unlocking the vault or starting the command.',
+    },
+    jsonOption,
+    secretBackendOption,
+    backendPassphraseStdinOption,
+  ],
+  execute: async (context, arguments_, options) => {
+    const { cliRunQuerySchema } = await import('./mutation-contracts.js');
+    const rawEnvironment = options['env'];
+    // Passthrough relays every operand untouched, so a separator written out of
+    // habit would otherwise reach the program as a real argument. Only one
+    // leading separator is consumed; a later `--` is the program's own argument.
+    const relayed = arguments_.slice(1);
+    const childArguments = relayed[0] === '--' ? relayed.slice(1) : relayed;
+    const request = parseInput(
+      cliRunQuerySchema,
+      {
+        executable: arguments_[0] ?? '',
+        arguments: childArguments,
+        // The repeatable collector always leaves an array behind, so an omitted
+        // flag arrives as an empty list rather than as undefined.
+        env: Array.isArray(rawEnvironment) ? rawEnvironment : [],
+        inherit: options['inherit'],
+        cwd: options['cwd'],
+        timeout: options['timeout'],
+        maxOutput: options['maxOutput'],
+        dryRun: optionBoolean(options, 'dryRun'),
+      },
+      'run request',
+    );
+
+    const nodePath = await import('node:path');
+    const { RUNNER_LIMITS } = await import('@kavrix/runner');
+    // The executor requires an absolute working directory, so the relative form
+    // is resolved here and reported in both the plan and the injected request.
+    const cwd = nodePath.resolve(request.cwd ?? process.cwd());
+    const maxOutputBytes = request.maxOutputBytes ?? RUNNER_LIMITS.defaultCaptureBytes;
+    const json = optionBoolean(options, 'json');
+
+    if (request.dryRun === true) {
+      // Built from the parsed request alone. No vault is opened and no field is
+      // read, so a dry run cannot decrypt anything. It therefore confirms the
+      // shape of the invocation, not that every address resolves.
+      const { renderRunPlan } = await import('./render.js');
+      context.stdout.write(
+        renderRunPlan(
+          {
+            executable: request.executable,
+            argumentCount: request.arguments.length,
+            environmentNames: request.environment.map((mapping) => mapping.name),
+            inherited: request.inherit,
+            cwd,
+            timeoutMs: request.timeoutMs ?? null,
+            maxOutputBytes,
+          },
+          json,
+        ),
+      );
+      return;
+    }
+
+    const invocation = { ...request, cwd, maxOutputBytes };
+    const result =
+      context.ports?.run !== undefined
+        ? await context.ports.run(invocation)
+        : await withUnlockedVault(
+            context,
+            'run',
+            options,
+            async (unlocked, store, rootKey) => {
+              const { executeProductionRun } = await import('./production/run.js');
+              return executeProductionRun(
+                { source: store, vaultId: unlocked.profile.vaultId, rootKey, cwd },
+                invocation,
+              );
+            },
+          );
+
+    const { renderRunResult } = await import('./render.js');
+    context.stdout.write(renderRunResult(result, json));
+    if (result.termination !== 'exit' || result.exitCode !== 0) {
+      // The child's own exit code, signal, and termination reason are already
+      // rendered above. Failing here keeps the CLI from presenting a failed
+      // child as a successful command.
+      throw new CliRunFailedError(result.termination, result.exitCode);
+    }
+  },
+});
+
 const syncConflictsCommand: CliCommandDescriptor = Object.freeze({
   name: 'conflicts',
   description: 'List and resolve explicit synchronization conflicts.',
@@ -3978,6 +4123,7 @@ export const CLI_COMMAND_CATALOG: readonly CliCommandDescriptor[] = Object.freez
   copyCommand,
   revealCommand,
   getCommand,
+  runCommand,
   syncCommand,
   backupCommand,
   {
@@ -4346,6 +4492,7 @@ export const PUBLIC_CLI_COMMAND_CATALOG: readonly CliCommandDescriptor[] =
     copyCommand,
     revealCommand,
     getCommand,
+    runCommand,
     syncCommand,
     publicBackupCommand(),
     publicDeviceCommand(),
@@ -4434,7 +4581,28 @@ export function registerCommandCatalog(
       command.argument(argument.syntax, argument.description);
     }
     for (const option of descriptor.options ?? []) {
+      if (option.repeatable === true) {
+        // Commander keeps only the final occurrence of a repeated flag. A
+        // collector is required so every occurrence survives instead of the
+        // earlier ones being silently dropped.
+        command.option(
+          option.flags,
+          option.description,
+          (value: string, previous: readonly string[]) => [...previous, value],
+          [] as readonly string[],
+        );
+        continue;
+      }
       command.option(option.flags, option.description, option.defaultValue);
+    }
+    if (descriptor.passThrough === true) {
+      // Commander resolves an unrecognized flag against ancestor commands, so
+      // without this a relayed --version or --json is claimed by this CLI and
+      // never reaches the program being run. Positional options on the parent
+      // are Commander's documented precondition for passing options through,
+      // and they only require this CLI's own flags to precede the operands.
+      program.enablePositionalOptions();
+      command.passThroughOptions();
     }
     if (descriptor.children !== undefined) {
       registerCommandCatalog(command, descriptor.children, context);
@@ -4446,9 +4614,16 @@ export function registerCommandCatalog(
         if (!(invokedCommand instanceof Command)) {
           throw new Error('Commander did not supply the invoked command context');
         }
-        const positionals = actionArguments
-          .slice(0, argumentCount)
-          .map((value) => (typeof value === 'string' ? value : ''));
+        // A variadic argument arrives as an array. Spreading it keeps the flat
+        // string list that every execute handler already expects, so a trailing
+        // variadic simply extends the positional list.
+        const positionals = actionArguments.slice(0, argumentCount).flatMap((value) => {
+          if (typeof value === 'string') return [value];
+          if (Array.isArray(value)) {
+            return value.filter((entry): entry is string => typeof entry === 'string');
+          }
+          return [''];
+        });
         await descriptor.execute?.(
           context,
           positionals,

@@ -62,6 +62,7 @@
     "@kavrix/key-files": "workspace:*",
     "@kavrix/keychain": "workspace:*",
     "@kavrix/local-store": "workspace:*",
+    "@kavrix/runner": "workspace:*",
     "@kavrix/schemas": "workspace:*",
     "@kavrix/sync": "workspace:*",
     "commander": "catalog:",

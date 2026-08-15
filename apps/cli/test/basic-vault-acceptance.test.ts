@@ -637,6 +637,60 @@ describe('basic command-only vault acceptance', () => {
     expect(maskedRead.stdout).toBe('[REDACTED]\n');
     assertCanaryAbsent('masked get stdout', maskedRead.stdout, SECRET_VALUE);
 
+    // A real guarded execution against this Node runtime. The child reports a
+    // digest of what it received instead of the value, so the acceptance run can
+    // prove the exact bytes arrived without ever writing them to an observable
+    // surface.
+    const childProbe = [
+      "const secret = process.env.ACCEPTANCE_SECRET ?? '';",
+      "const digest = require('node:crypto').createHash('sha256').update(secret, 'utf8').digest('hex');",
+      'process.stdout.write(`digest=${digest}\\n`);',
+      'process.stdout.write(`argv-carries-secret=${String(process.argv.some((entry) => entry.includes(secret)))}\\n`);',
+      "process.stdout.write(`leaked-marker=${String('ACCEPTANCE_LEAK_MARKER' in process.env)}\\n`);",
+      'process.stdout.write(`echo=${secret}\\n`);',
+    ].join('\n');
+    // Set on the parent but neither mapped nor allow-listed, so a child that can
+    // see it would prove the parent environment leaks through.
+    process.env['ACCEPTANCE_LEAK_MARKER'] = 'must-not-reach-the-child';
+    let guarded: Readonly<{ stdout: string; stderr: string }>;
+    try {
+      guarded = await execute([
+        'run',
+        '--env',
+        'ACCEPTANCE_SECRET=Personal/Updated/password',
+        '--cwd',
+        home,
+        '--timeout',
+        '60000',
+        '--secret-backend',
+        'native',
+        process.execPath,
+        '-e',
+        childProbe,
+      ]);
+    } finally {
+      delete process.env['ACCEPTANCE_LEAK_MARKER'];
+    }
+    expect(guarded.stdout).toContain('Exit Code: 0');
+    expect(guarded.stdout).toContain('Termination: exit');
+    expect(guarded.stdout).toContain(
+      'Environment Destinations: ACCEPTANCE_SECRET (secret)',
+    );
+    expect(guarded.stdout).toContain('Output Truncated: no');
+    // The released value reached the child intact.
+    expect(guarded.stdout).toContain(
+      `digest=${createHash('sha256').update(SECRET_VALUE, 'utf8').digest('hex')}`,
+    );
+    // The child's own command line never carried the value.
+    expect(guarded.stdout).toContain('argv-carries-secret=false');
+    // No parent variable reached the child, because none was allow-listed.
+    expect(guarded.stdout).toContain('leaked-marker=false');
+    // The child echoed the value back, so the capture proves output redaction.
+    expect(guarded.stdout).toContain(
+      `echo=${'*'.repeat(Buffer.byteLength(SECRET_VALUE, 'utf8'))}`,
+    );
+    assertCanaryAbsent('guarded run stdout', guarded.stdout, SECRET_VALUE);
+
     const finalSync = await execute(['sync', '--json', '--secret-backend', 'native']);
     expect(JSON.parse(finalSync.stdout)).toMatchObject({
       syncState: 'idle',

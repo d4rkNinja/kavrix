@@ -4,19 +4,23 @@ import { spawn, type ChildProcess } from 'node:child_process';
 
 import { RunnerError } from './errors.js';
 import { prepareEnvironment, type PreparedEnvironment } from './environment.js';
-import type {
-  RunTermination,
-  RunnerOutputPolicy,
-  SecureRunRequest,
-  SecureRunResult,
+import {
+  RUNNER_LIMITS,
+  type RunTermination,
+  type RunnerOutputPolicy,
+  type SecureRunRequest,
+  type SecureRunResult,
 } from './types.js';
 
-const DEFAULT_CAPTURE_BYTES = 64 * 1_024;
-const MAX_CAPTURE_BYTES = 16 * 1_024 * 1_024;
-const DEFAULT_TERMINATION_GRACE_MS = 1_000;
-const MAX_TIMEOUT_MS = 24 * 60 * 60 * 1_000;
-const MAX_ARGUMENTS = 1_024;
-const MAX_ARGUMENT_BYTES = 128 * 1_024;
+const {
+  defaultCaptureBytes: DEFAULT_CAPTURE_BYTES,
+  maxCaptureBytes: MAX_CAPTURE_BYTES,
+  defaultTerminationGraceMs: DEFAULT_TERMINATION_GRACE_MS,
+  maxTerminationGraceMs: MAX_TERMINATION_GRACE_MS,
+  maxTimeoutMs: MAX_TIMEOUT_MS,
+  maxArguments: MAX_ARGUMENTS,
+  maxArgumentBytes: MAX_ARGUMENT_BYTES,
+} = RUNNER_LIMITS;
 
 interface CaptureState {
   readonly chunks: Buffer[];
@@ -62,7 +66,7 @@ function assertRequest(request: SecureRunRequest): readonly string[] {
     request.terminationGraceMs !== undefined &&
     (!Number.isSafeInteger(request.terminationGraceMs) ||
       request.terminationGraceMs < 0 ||
-      request.terminationGraceMs > 60_000)
+      request.terminationGraceMs > MAX_TERMINATION_GRACE_MS)
   ) {
     throw new RunnerError('RUNNER_INVALID_REQUEST');
   }
@@ -204,6 +208,14 @@ function spawnChild(
  * Runs one executable directly with a minimal environment and bounded output.
  * This is process hygiene, not a sandbox: the selected executable can read its
  * injected environment and intentionally disclose it or pass it to descendants.
+ *
+ * Two limits are imposed by the platform rather than by this module. Windows
+ * copies a fixed set of shell variables (including PATH, SYSTEMROOT, TEMP, and
+ * the USER* family) into every child regardless of the environment supplied
+ * here, so a child there always observes more names than were mapped or
+ * inherited; none of them carry a released value. Termination also reaches only
+ * the spawned process, so a child that has already forked keeps its descendants
+ * running past a timeout, an abort, or an output-limit kill.
  */
 export async function runSecureCommand(
   request: SecureRunRequest,

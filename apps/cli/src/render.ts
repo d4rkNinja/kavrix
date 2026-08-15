@@ -35,13 +35,15 @@ import type {
   CliKeySlotResult,
   CliPortableKeyRotationResult,
   CliRecoverResult,
+  CliRunPlan,
+  CliRunResult,
   CliShowResult,
   CliStatus,
   CliTemplateMigrationApplyResult,
   CliTemplateMigrationStatusResult,
   CliTemplateSummary,
 } from './contracts.js';
-import { safeJson, sanitizeTerminalText } from './terminal.js';
+import { safeJson, sanitizeTerminalOutput, sanitizeTerminalText } from './terminal.js';
 
 type SafeInvite = Readonly<{
   id: string;
@@ -1045,5 +1047,67 @@ export function renderAuditEventDetail(
   if (event.recordRevision !== undefined) {
     lines.push(`  Record Revision: ${String(event.recordRevision)}`);
   }
+  return lines.join('\n').concat('\n');
+}
+
+/** Joins destination names, marking which ones carry vault-classified secrets. */
+function runDestinations(
+  names: readonly string[],
+  secretNames: readonly string[] = [],
+): string {
+  if (names.length === 0) return '(none)';
+  const secret = new Set(secretNames);
+  return names
+    .map(
+      (name) => `${sanitizeTerminalText(name)}${secret.has(name) ? ' (secret)' : ''}`,
+    )
+    .join(', ');
+}
+
+/**
+ * Renders a planned guarded execution. A plan carries destination names only, so
+ * this output can never contain a released value.
+ */
+export function renderRunPlan(plan: CliRunPlan, json: boolean): string {
+  if (json) {
+    return safeJson(plan);
+  }
+  const lines = [
+    'Planned guarded execution (no command was started):',
+    `  Executable: ${sanitizeTerminalText(plan.executable)}`,
+    `  Arguments: ${String(plan.argumentCount)}`,
+    `  Working Directory: ${sanitizeTerminalText(plan.cwd)}`,
+    `  Environment Destinations: ${runDestinations(plan.environmentNames)}`,
+    `  Inherited Variables: ${runDestinations(plan.inherited)}`,
+    `  Timeout: ${plan.timeoutMs === null ? 'none' : `${String(plan.timeoutMs)} ms`}`,
+    `  Output Limit: ${String(plan.maxOutputBytes)} bytes per stream`,
+    '  No field was read, so no value was decrypted for this plan.',
+  ];
+  return lines.join('\n').concat('\n');
+}
+
+/** Renders one captured stream, which the runner already bounded and redacted. */
+function runStream(name: string, text: string): readonly string[] {
+  if (text.length === 0) return [`  ${name}: (empty)`];
+  return [`  ${name}:`, sanitizeTerminalOutput(text)];
+}
+
+export function renderRunResult(result: CliRunResult, json: boolean): string {
+  if (json) {
+    return safeJson(result);
+  }
+  const lines = [
+    `Command: ${sanitizeTerminalText(result.executable)}`,
+    `  Exit Code: ${result.exitCode === null ? 'none' : String(result.exitCode)}`,
+    `  Signal: ${result.signal === null ? 'none' : sanitizeTerminalText(result.signal)}`,
+    `  Termination: ${sanitizeTerminalText(result.termination)}`,
+    `  Environment Destinations: ${runDestinations(
+      result.environmentNames,
+      result.secretNames,
+    )}`,
+    `  Output Truncated: ${result.outputTruncated ? 'yes' : 'no'}`,
+    ...runStream('stdout', result.stdout),
+    ...runStream('stderr', result.stderr),
+  ];
   return lines.join('\n').concat('\n');
 }

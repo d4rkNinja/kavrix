@@ -106,6 +106,7 @@ encrypted mutation against the unlocked local store. Its current surface is:
 | `creds copy <group> <credential> <field> [--index <n>]`                           | Available in the built package | Copies an authorized field value to the guarded clipboard with auto-clear.                                                                                                                                                                                                          |
 | `creds reveal <group> <credential> <field> [--stdout]`                            | Available in the built package | Reveals an authorized field value, denying non-interactive redirection unless `--stdout` is passed.                                                                                                                                                                                 |
 | `creds get <group> <credential> <field> [--reveal]`                               | Available in the built package | Gets one field value with redacted default, optional `--reveal` and structured `--json` mode.                                                                                                                                                                                       |
+| `creds run [options] <executable> [args...]`                                      | Available in the built package | Releases authorized field values into one directly spawned child's environment, never into its argv, then reports its bounded, secret-redacted output.                                                                                                                              |
 | `creds sync [--json]`                                                             | Available in the built package | Synchronizes vault data with server and prints updated status.                                                                                                                                                                                                                      |
 | `creds backup create --file <path> [--vault <vault-id>] [--json]`                 | Available in the built package | Creates one bounded authenticated archive from the enrolled local opaque cache; destination validation occurs before unlock, existing files/links are refused, and the receipt contains only vault ID, record count, and byte count. Unsupported local record families fail closed. |
 | `creds backup verify --file <path> [--vault <vault-id>] [--json]`                 | Available in the built package | Opens an existing protected archive read-only, authenticates its complete bounded framing and graph with the active remembered device slot, and emits only a safe verification summary. It never stages or publishes.                                                               |
@@ -221,6 +222,56 @@ archive/restore operate on opaque tombstones. Permanent deletion requires the
 explicit `--force` flag. Ambiguous or missing names fail closed, and list output
 renders only sanitized titles and opaque IDs.
 
+`run` releases authorized field values into one child process and never into a
+command line. Each `--env NAME=group/credential/field` mapping names one
+destination variable and one field address; append `#index` to select an entry of
+a repeatable field. The flag is repeatable, every destination name must be unique
+after upper-casing, and names the runner reserves for itself (including `PATH`,
+`LD_PRELOAD`, and `NODE_OPTIONS`) are refused. Values are resolved through the
+same authorization gate as `copy`, so a field whose policy requires confirmation
+or reauthentication fails closed rather than being released silently.
+
+The child is started with `spawn` and an argument array, never through a shell.
+Its environment contains only the mapped destinations plus the parent variables
+explicitly named by `--inherit`, which accepts a comma-separated subset of
+`PATH`, `PATHEXT`, `SystemRoot`, `WINDIR`, `COMSPEC`, `TEMP`, `TMP`, `HOME`,
+`USERPROFILE`, `LANG`, `LC_ALL`, `LC_CTYPE`, and `TZ`. `--cwd` selects the
+working directory and defaults to the current one; it is resolved to an absolute
+path before the child starts. `--timeout <milliseconds>` bounds wall-clock time
+up to 24 hours, and `--max-output <bytes>` bounds each captured stream, defaulting
+to 65536 bytes and accepting at most 16 MiB. Captured output is redacted before it
+is rendered: every released value is replaced byte-for-byte with `*`, including a
+value cut in half by the capture limit. The command refuses to start at all if a
+released value appears in the executable path or any argument.
+
+Every argument after `<executable>` is relayed to the program verbatim, so this
+command's own options must be written before it: `creds run --env
+API_TOKEN=Infra/Vendor/token deploy release --wait` sends `release --wait` to
+`deploy`, while `creds run deploy --env ...` sends `--env ...` to `deploy`. A
+single leading `--` is accepted and consumed, so `creds run node -- --version`
+and `creds run node --version` are equivalent; any later `--` belongs to the
+program. `--dry-run` validates the whole invocation, prints the planned
+executable, argument count, destination names, inherited names, working
+directory, timeout, and capture limit, and returns without unlocking the vault or
+reading a field. It therefore confirms the shape of the invocation, not that
+every address resolves or that every field is releasable.
+
+The rendered result reports the executable, the child's exit code, its signal,
+the termination reason (`exit`, `signal`, `timeout`, `aborted`, or
+`output-limit`), which destinations carried a secret, whether output was
+truncated, and the two redacted streams. A child that does not finish normally
+exits the CLI with `RUN_CHILD_FAILED` and code `1` after that report, so a failed
+child is never presented as a successful command. Two limits belong to the
+operating system rather than to this command and are documented rather than
+claimed away: Windows copies a fixed set of shell variables (including `PATH`,
+`SYSTEMROOT`, `TEMP`, and the `USER*` family) into every child regardless of the
+environment supplied here, so a child there observes more names than were mapped
+or inherited, none of which carry a released value; and termination reaches only
+the spawned process, so a child that has already forked keeps its descendants
+running past a timeout, an abort, or an output-limit kill. This command is process
+hygiene, not a sandbox — the program selected can read its own environment and
+disclose it deliberately.
+
 The deterministic package build emits one ESM executable entry and
 content-hashed lazy chunks. Version, completion, public help, `status --help`,
 and invalid commands do not evaluate the production-status chunk; version and
@@ -287,7 +338,7 @@ lower-level use case exists:
 - device-token lifecycle and remember/forget beyond the composed invite, join,
   `key slot`, and `key rotate` commands;
 - backup restore;
-- `set`, `update`, `run`, and the TUI entrypoint.
+- `set`, `update`, and the TUI entrypoint.
 
 Lower-level implementations exist for several of these concerns, but no
 uncomposed operation is advertised as a working command. The factual feature
@@ -416,8 +467,12 @@ Parser, renderer, terminal sanitizer, masked/stdin input, local generators, RFC
 TOTP behavior, key-file creation/ACLs, static completion, package contents, lazy
 chunk loading, and packed-bin behavior have automated tests. The Scenario A
 acceptance test exercises initialization, unlock, encrypted mutations, sync,
-redacted reads, guarded copy, lock, and reopen through source-level production
-composition with real SQLite/client adapters and an opaque HTTPS fixture. A
+redacted reads, guarded copy, guarded run, lock, and reopen through source-level
+production composition with real SQLite/client adapters and an opaque HTTPS
+fixture. Its guarded-run step spawns this Node runtime as a real child and proves
+from the child's own report that the released bytes arrived intact, that the
+child's argv did not carry them, that an unmapped parent variable did not reach
+it, and that the value it echoed came back fully redacted. A
 Windows packed fixture installs the npm archive, invokes the generated shim, and
 reads real canonical SQLite/sealed status state; it does not prove native-keychain
 behavior or the full online journey through the installed child. Interruption,

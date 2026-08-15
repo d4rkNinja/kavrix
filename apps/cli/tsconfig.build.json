@@ -21,6 +21,7 @@
     { "path": "../../packages/clipboard/tsconfig.build.json" },
     { "path": "../../packages/keychain/tsconfig.build.json" },
     { "path": "../../packages/local-store/tsconfig.build.json" },
+    { "path": "../../packages/runner/tsconfig.build.json" },
     { "path": "../../packages/sync/tsconfig.build.json" }
   ]
 }
