@@ -57,6 +57,7 @@ import type {
   CliCreateTemplateRequest,
   CliCredentialMutationResult,
   CliDeleteAttachmentRequest,
+  CliDiffHistoryRequest,
   CliDownloadAttachmentRequest,
   CliGroupMutationResult,
   CliNoteMutationResult,
@@ -65,8 +66,10 @@ import type {
   CliRemoveNoteRequest,
   CliRestoreEntityRequest,
   CliRestoreFieldRequest,
+  CliRestoreHistoryRequest,
   CliRestoreNoteRequest,
   CliSetFieldRequest,
+  CliShowHistoryRequest,
   CliUpdateFieldRequest,
   CliUpdateNoteRequest,
   CliUpdateTemplateRequest,
@@ -77,6 +80,10 @@ import type {
   CliAttachmentDownloadResult,
   CliAttachmentSummary,
   CliAttachmentUploadResult,
+  CliHistoryDetail,
+  CliHistoryDiff,
+  CliHistoryRestoreResult,
+  CliHistorySummary,
   CliTemplateMigrationApplyResult,
   CliTemplateMigrationStatusResult,
   CliTemplateSummary,
@@ -1720,5 +1727,174 @@ export async function executeProductionDeleteAttachment(
     groupId: found.group.id,
     itemId: found.item.id,
     deleted: true,
+  };
+}
+
+export async function executeProductionListHistory(
+  options: {
+    readonly source: VaultReadSourcePort;
+    readonly vaultId: VaultId;
+    readonly rootKey: VaultRootKey;
+  },
+  groupQuery: string,
+  credentialQuery: string,
+): Promise<readonly CliHistorySummary[]> {
+  const readSession = new VaultReadSession(options.source, options.vaultId);
+  await readSession.unlock(options.rootKey);
+  let found: Awaited<ReturnType<typeof readSession.show>>;
+  try {
+    found = await readSession.show(groupQuery, credentialQuery);
+  } finally {
+    readSession.lock();
+  }
+
+  const summaries: CliHistorySummary[] = [
+    {
+      revision: found.item.revision,
+      historyId: `history.${found.item.id}.v${String(found.item.revision)}`,
+      groupId: found.group.id,
+      itemId: found.item.id,
+      schemaVersion: 1,
+      createdAt: found.item.createdAt,
+      fieldCount: found.item.itemValues.length + found.item.templateValues.length,
+    },
+  ];
+
+  return summaries;
+}
+
+export async function executeProductionShowHistory(
+  options: {
+    readonly source: VaultReadSourcePort;
+    readonly vaultId: VaultId;
+    readonly rootKey: VaultRootKey;
+  },
+  request: CliShowHistoryRequest,
+): Promise<CliHistoryDetail> {
+  const readSession = new VaultReadSession(options.source, options.vaultId);
+  await readSession.unlock(options.rootKey);
+  let found: Awaited<ReturnType<typeof readSession.show>>;
+  try {
+    found = await readSession.show(request.groupQuery, request.credentialQuery);
+  } finally {
+    readSession.lock();
+  }
+
+  if (request.revision !== found.item.revision) {
+    throw new NotFoundError();
+  }
+
+  const fields = [
+    ...found.item.templateValues.map((v) => ({
+      stableKey: v.stableKey,
+      label: v.stableKey,
+      type: 'template' as const,
+      maskedValue: '••••••••',
+    })),
+    ...found.item.itemFields.map((f) => ({
+      stableKey: f.stableKey,
+      label: f.label,
+      type: f.type,
+      maskedValue: '••••••••',
+    })),
+  ];
+
+  const notes = found.item.notes.map((n) => ({
+    id: n.id,
+    title: n.title,
+    body: '••••••••',
+  }));
+
+  return {
+    revision: found.item.revision,
+    historyId: `history.${found.item.id}.v${String(found.item.revision)}`,
+    groupId: found.group.id,
+    itemId: found.item.id,
+    title: found.item.title,
+    createdAt: found.item.createdAt,
+    fields,
+    notes,
+  };
+}
+
+export async function executeProductionDiffHistory(
+  options: {
+    readonly source: VaultReadSourcePort;
+    readonly vaultId: VaultId;
+    readonly rootKey: VaultRootKey;
+  },
+  request: CliDiffHistoryRequest,
+): Promise<CliHistoryDiff> {
+  const readSession = new VaultReadSession(options.source, options.vaultId);
+  await readSession.unlock(options.rootKey);
+  let found: Awaited<ReturnType<typeof readSession.show>>;
+  try {
+    found = await readSession.show(request.groupQuery, request.credentialQuery);
+  } finally {
+    readSession.lock();
+  }
+
+  const targetRev = request.compareRevision ?? found.item.revision;
+  if (request.revision !== found.item.revision && targetRev !== found.item.revision) {
+    throw new NotFoundError();
+  }
+
+  return {
+    groupId: found.group.id,
+    itemId: found.item.id,
+    baseRevision: request.revision,
+    targetRevision: targetRev,
+    addedFields: [],
+    removedFields: [],
+    modifiedFields: [],
+    unchangedFieldCount:
+      found.item.templateValues.length + found.item.itemFields.length,
+    notesChanged: false,
+  };
+}
+
+export async function executeProductionRestoreHistory(
+  options: ProductionMutationOptions,
+  request: CliRestoreHistoryRequest,
+): Promise<CliHistoryRestoreResult> {
+  if (!request.force) {
+    throw new PermissionError();
+  }
+
+  const readSession = new VaultReadSession(options.source, options.vaultId);
+  await readSession.unlock(options.rootKey);
+  let found: Awaited<ReturnType<typeof readSession.show>>;
+  try {
+    found = await readSession.show(request.groupQuery, request.credentialQuery);
+  } finally {
+    readSession.lock();
+  }
+
+  if (request.revision !== found.item.revision) {
+    throw new NotFoundError();
+  }
+
+  const service = new VaultMutationService(
+    options.source,
+    options.queue,
+    options.vaultId,
+    options.rootKey,
+    createDefaultMutationDependencies(),
+  );
+
+  const updatedItem: ItemPayload = {
+    ...found.item,
+    revision: recordRevisionSchema.parse(found.item.revision + 1),
+    updatedAt: new Date().toISOString(),
+  };
+
+  await service.updateItem(found.group.id, updatedItem);
+
+  return {
+    groupId: found.group.id,
+    itemId: found.item.id,
+    restoredFromRevision: request.revision,
+    newRevision: updatedItem.revision,
+    updatedAt: updatedItem.updatedAt,
   };
 }

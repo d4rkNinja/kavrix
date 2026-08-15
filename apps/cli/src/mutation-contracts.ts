@@ -310,3 +310,41 @@ export type CliDownloadAttachmentRequest = z.infer<
 export type CliDeleteAttachmentRequest = z.infer<
   typeof cliDeleteAttachmentRequestSchema
 >;
+
+export const cliListHistoryRequestSchema = z
+  .object({
+    groupQuery: cleanNameSchema,
+    credentialQuery: cleanNameSchema,
+  })
+  .strict();
+
+export const cliShowHistoryRequestSchema = z
+  .object({
+    groupQuery: cleanNameSchema,
+    credentialQuery: cleanNameSchema,
+    revision: z.number().int().positive(),
+  })
+  .strict();
+
+export const cliDiffHistoryRequestSchema = z
+  .object({
+    groupQuery: cleanNameSchema,
+    credentialQuery: cleanNameSchema,
+    revision: z.number().int().positive(),
+    compareRevision: z.number().int().positive().optional(),
+  })
+  .strict();
+
+export const cliRestoreHistoryRequestSchema = z
+  .object({
+    groupQuery: cleanNameSchema,
+    credentialQuery: cleanNameSchema,
+    revision: z.number().int().positive(),
+    force: z.boolean().optional(),
+  })
+  .strict();
+
+export type CliListHistoryRequest = z.infer<typeof cliListHistoryRequestSchema>;
+export type CliShowHistoryRequest = z.infer<typeof cliShowHistoryRequestSchema>;
+export type CliDiffHistoryRequest = z.infer<typeof cliDiffHistoryRequestSchema>;
+export type CliRestoreHistoryRequest = z.infer<typeof cliRestoreHistoryRequestSchema>;

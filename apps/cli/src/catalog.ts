@@ -28,6 +28,10 @@ import {
   type CliAttachmentDownloadResult,
   type CliAttachmentSummary,
   type CliAttachmentUploadResult,
+  type CliHistoryDetail,
+  type CliHistoryDiff,
+  type CliHistoryRestoreResult,
+  type CliHistorySummary,
   type CliRecoverResult,
   type CliStatus,
   type CliTemplateMigrationApplyResult,
@@ -3013,6 +3017,232 @@ const attachmentCommand: CliCommandDescriptor = Object.freeze({
   ],
 });
 
+const historyCommand: CliCommandDescriptor = Object.freeze({
+  name: 'history',
+  description: 'Manage encrypted item history revisions and projections.',
+  options: [secretBackendOption, backendPassphraseStdinOption],
+  children: [
+    {
+      name: 'list',
+      description: 'List historical revisions for a credential item.',
+      arguments: [
+        { syntax: '<group>', description: 'Group ID, unique name, or alias.' },
+        {
+          syntax: '<credential>',
+          description: 'Credential ID, unique name, or alias within the group.',
+        },
+      ],
+      options: [jsonOption, secretBackendOption, backendPassphraseStdinOption],
+      execute: async (context, arguments_, options) => {
+        const groupQuery = requiredArgument(arguments_[0], 'group query');
+        const credentialQuery = requiredArgument(arguments_[1], 'credential query');
+        const json = optionBoolean(options, 'json');
+
+        let summaries: readonly CliHistorySummary[];
+        if (context.ports?.listHistory !== undefined) {
+          summaries = await context.ports.listHistory(groupQuery, credentialQuery);
+        } else {
+          const { executeProductionListHistory } =
+            await import('./production/mutations.js');
+          summaries = await withUnlockedVault(
+            context,
+            'history list',
+            options,
+            async (unlocked, store, rootKey) =>
+              executeProductionListHistory(
+                {
+                  source: store,
+                  vaultId: unlocked.profile.vaultId,
+                  rootKey,
+                },
+                groupQuery,
+                credentialQuery,
+              ),
+          );
+        }
+        const { renderHistoryList } = await import('./render.js');
+        context.stdout.write(renderHistoryList(summaries, json));
+      },
+    },
+    {
+      name: 'show',
+      description: 'Inspect a historical revision projection with masked values.',
+      arguments: [
+        { syntax: '<group>', description: 'Group ID, unique name, or alias.' },
+        {
+          syntax: '<credential>',
+          description: 'Credential ID, unique name, or alias within the group.',
+        },
+        { syntax: '<revision>', description: 'Revision number to inspect.' },
+      ],
+      options: [jsonOption, secretBackendOption, backendPassphraseStdinOption],
+      execute: async (context, arguments_, options) => {
+        const groupQuery = requiredArgument(arguments_[0], 'group query');
+        const credentialQuery = requiredArgument(arguments_[1], 'credential query');
+        const revisionStr = requiredArgument(arguments_[2], 'revision');
+        const revision = revisionOptionSchema.parse(revisionStr);
+        const json = optionBoolean(options, 'json');
+
+        const { cliShowHistoryRequestSchema } = await import('./mutation-contracts.js');
+        const request = cliShowHistoryRequestSchema.parse({
+          groupQuery,
+          credentialQuery,
+          revision,
+        });
+
+        let detail: CliHistoryDetail;
+        if (context.ports?.showHistory !== undefined) {
+          detail = await context.ports.showHistory(request);
+        } else {
+          const { executeProductionShowHistory } =
+            await import('./production/mutations.js');
+          detail = await withUnlockedVault(
+            context,
+            'history show',
+            options,
+            async (unlocked, store, rootKey) =>
+              executeProductionShowHistory(
+                {
+                  source: store,
+                  vaultId: unlocked.profile.vaultId,
+                  rootKey,
+                },
+                request,
+              ),
+          );
+        }
+        const { renderHistoryDetail } = await import('./render.js');
+        context.stdout.write(renderHistoryDetail(detail, json));
+      },
+    },
+    {
+      name: 'diff',
+      description: 'Compare changed fields between credential revisions.',
+      arguments: [
+        { syntax: '<group>', description: 'Group ID, unique name, or alias.' },
+        {
+          syntax: '<credential>',
+          description: 'Credential ID, unique name, or alias within the group.',
+        },
+        { syntax: '<revision>', description: 'Base revision number.' },
+        {
+          syntax: '[compare-revision]',
+          description: 'Target revision number (defaults to current active revision).',
+        },
+      ],
+      options: [jsonOption, secretBackendOption, backendPassphraseStdinOption],
+      execute: async (context, arguments_, options) => {
+        const groupQuery = requiredArgument(arguments_[0], 'group query');
+        const credentialQuery = requiredArgument(arguments_[1], 'credential query');
+        const revisionStr = requiredArgument(arguments_[2], 'revision');
+        const revision = revisionOptionSchema.parse(revisionStr);
+        const compareRevisionStr = arguments_[3];
+        const compareRevision =
+          compareRevisionStr !== undefined
+            ? revisionOptionSchema.parse(compareRevisionStr)
+            : undefined;
+        const json = optionBoolean(options, 'json');
+
+        const { cliDiffHistoryRequestSchema } = await import('./mutation-contracts.js');
+        const request = cliDiffHistoryRequestSchema.parse({
+          groupQuery,
+          credentialQuery,
+          revision,
+          ...(compareRevision !== undefined ? { compareRevision } : {}),
+        });
+
+        let diff: CliHistoryDiff;
+        if (context.ports?.diffHistory !== undefined) {
+          diff = await context.ports.diffHistory(request);
+        } else {
+          const { executeProductionDiffHistory } =
+            await import('./production/mutations.js');
+          diff = await withUnlockedVault(
+            context,
+            'history diff',
+            options,
+            async (unlocked, store, rootKey) =>
+              executeProductionDiffHistory(
+                {
+                  source: store,
+                  vaultId: unlocked.profile.vaultId,
+                  rootKey,
+                },
+                request,
+              ),
+          );
+        }
+        const { renderHistoryDiff } = await import('./render.js');
+        context.stdout.write(renderHistoryDiff(diff, json));
+      },
+    },
+    {
+      name: 'restore',
+      description:
+        'Restore an exact prior revision as a new mutation with explicit --force.',
+      arguments: [
+        { syntax: '<group>', description: 'Group ID, unique name, or alias.' },
+        {
+          syntax: '<credential>',
+          description: 'Credential ID, unique name, or alias within the group.',
+        },
+        { syntax: '<revision>', description: 'Revision number to restore.' },
+      ],
+      options: [
+        {
+          flags: '--force',
+          description: 'Confirm restoration of historical revision.',
+        },
+        jsonOption,
+        secretBackendOption,
+        backendPassphraseStdinOption,
+      ],
+      execute: async (context, arguments_, options) => {
+        const groupQuery = requiredArgument(arguments_[0], 'group query');
+        const credentialQuery = requiredArgument(arguments_[1], 'credential query');
+        const revisionStr = requiredArgument(arguments_[2], 'revision');
+        const revision = revisionOptionSchema.parse(revisionStr);
+        const force = optionBoolean(options, 'force');
+        const json = optionBoolean(options, 'json');
+
+        const { cliRestoreHistoryRequestSchema } =
+          await import('./mutation-contracts.js');
+        const request = cliRestoreHistoryRequestSchema.parse({
+          groupQuery,
+          credentialQuery,
+          revision,
+          ...(force ? { force } : {}),
+        });
+
+        let result: CliHistoryRestoreResult;
+        if (context.ports?.restoreHistory !== undefined) {
+          result = await context.ports.restoreHistory(request);
+        } else {
+          const { executeProductionRestoreHistory } =
+            await import('./production/mutations.js');
+          result = await withUnlockedVault(
+            context,
+            'history restore',
+            options,
+            async (unlocked, store, rootKey) =>
+              executeProductionRestoreHistory(
+                {
+                  source: store,
+                  queue: store,
+                  vaultId: unlocked.profile.vaultId,
+                  rootKey,
+                },
+                request,
+              ),
+          );
+        }
+        const { renderHistoryRestore } = await import('./render.js');
+        context.stdout.write(renderHistoryRestore(result, json));
+      },
+    },
+  ],
+});
+
 const showCommand: CliCommandDescriptor = Object.freeze({
   name: 'show',
   description: 'Show a schema-driven item with secret fields redacted.',
@@ -3631,6 +3861,7 @@ export const CLI_COMMAND_CATALOG: readonly CliCommandDescriptor[] = Object.freez
   fieldCommand,
   noteCommand,
   attachmentCommand,
+  historyCommand,
   showCommand,
   copyCommand,
   revealCommand,
@@ -3997,6 +4228,7 @@ export const PUBLIC_CLI_COMMAND_CATALOG: readonly CliCommandDescriptor[] =
     fieldCommand,
     noteCommand,
     attachmentCommand,
+    historyCommand,
     showCommand,
     copyCommand,
     revealCommand,

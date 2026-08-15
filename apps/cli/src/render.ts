@@ -24,6 +24,10 @@ import type {
   CliBackupVerifyResult,
   CliConflict,
   CliConflictResolutionResult,
+  CliHistoryDetail,
+  CliHistoryDiff,
+  CliHistoryRestoreResult,
+  CliHistorySummary,
   CliKeySlot,
   CliKeySlotResult,
   CliPortableKeyRotationResult,
@@ -871,4 +875,110 @@ export function renderAttachmentDelete(
     return safeJson(result);
   }
   return `Attachment "${sanitizeTerminalText(result.attachmentId)}" deleted.\n`;
+}
+
+export function renderHistoryList(
+  summaries: readonly CliHistorySummary[],
+  json: boolean,
+): string {
+  if (json) {
+    return safeJson(summaries);
+  }
+  if (summaries.length === 0) {
+    return 'No history revisions found for this credential item.\n';
+  }
+  const lines = [
+    `Credential History (${String(summaries.length)} revision(s)):`,
+    ...summaries.map((summary) => {
+      const parts = [
+        `Revision ${String(summary.revision)}`,
+        sanitizeTerminalText(summary.historyId),
+        `Fields: ${String(summary.fieldCount)}`,
+        `Created: ${sanitizeTerminalText(summary.createdAt)}`,
+      ];
+      return `  - ${parts.join(' | ')}`;
+    }),
+  ];
+  return lines.join('\n').concat('\n');
+}
+
+export function renderHistoryDetail(detail: CliHistoryDetail, json: boolean): string {
+  if (json) {
+    return safeJson(detail);
+  }
+  const lines = [
+    `Credential History Revision ${String(detail.revision)}:`,
+    `  Title: ${sanitizeTerminalText(detail.title)}`,
+    `  History ID: ${sanitizeTerminalText(detail.historyId)}`,
+    `  Group ID: ${sanitizeTerminalText(detail.groupId)}`,
+    `  Item ID: ${sanitizeTerminalText(detail.itemId)}`,
+    `  Created At: ${sanitizeTerminalText(detail.createdAt)}`,
+    `  Fields (${String(detail.fields.length)}):`,
+    ...detail.fields.map(
+      (field) =>
+        `    - ${sanitizeTerminalText(field.label)} (${sanitizeTerminalText(field.type)}): ${sanitizeTerminalText(field.maskedValue)}`,
+    ),
+  ];
+  if (detail.notes.length > 0) {
+    lines.push(
+      `  Notes (${String(detail.notes.length)}):`,
+      ...detail.notes.map(
+        (note) =>
+          `    - ${sanitizeTerminalText(note.title)}: ${sanitizeTerminalText(note.body)}`,
+      ),
+    );
+  }
+  return lines.join('\n').concat('\n');
+}
+
+export function renderHistoryDiff(diff: CliHistoryDiff, json: boolean): string {
+  if (json) {
+    return safeJson(diff);
+  }
+  const lines = [
+    `History Diff (Revision ${String(diff.baseRevision)} -> Revision ${String(diff.targetRevision)}):`,
+    `  Group ID: ${sanitizeTerminalText(diff.groupId)}`,
+    `  Item ID: ${sanitizeTerminalText(diff.itemId)}`,
+    `  Added fields (${String(diff.addedFields.length)}):`,
+    ...(diff.addedFields.length === 0
+      ? ['    (none)']
+      : diff.addedFields.map(
+          (f) =>
+            `    + ${sanitizeTerminalText(f.label)} [${sanitizeTerminalText(f.stableKey)}] (${sanitizeTerminalText(f.type)})`,
+        )),
+    `  Removed fields (${String(diff.removedFields.length)}):`,
+    ...(diff.removedFields.length === 0
+      ? ['    (none)']
+      : diff.removedFields.map(
+          (f) =>
+            `    - ${sanitizeTerminalText(f.label)} [${sanitizeTerminalText(f.stableKey)}] (${sanitizeTerminalText(f.type)})`,
+        )),
+    `  Modified fields (${String(diff.modifiedFields.length)}):`,
+    ...(diff.modifiedFields.length === 0
+      ? ['    (none)']
+      : diff.modifiedFields.map(
+          (f) =>
+            `    ~ ${sanitizeTerminalText(f.label)} [${sanitizeTerminalText(f.stableKey)}] (${sanitizeTerminalText(f.type)})`,
+        )),
+    `  Unchanged fields: ${String(diff.unchangedFieldCount)}`,
+    `  Notes changed: ${diff.notesChanged ? 'yes' : 'no'}`,
+  ];
+  return lines.join('\n').concat('\n');
+}
+
+export function renderHistoryRestore(
+  result: CliHistoryRestoreResult,
+  json: boolean,
+): string {
+  if (json) {
+    return safeJson(result);
+  }
+  const lines = [
+    `Credential restored from revision ${String(result.restoredFromRevision)}.`,
+    `New Revision: ${String(result.newRevision)}`,
+    `Group ID: ${sanitizeTerminalText(result.groupId)}`,
+    `Item ID: ${sanitizeTerminalText(result.itemId)}`,
+    `Updated At: ${sanitizeTerminalText(result.updatedAt)}`,
+  ];
+  return lines.join('\n').concat('\n');
 }

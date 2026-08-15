@@ -50,6 +50,7 @@ import type {
   CliCreateTemplateRequest,
   CliCredentialMutationResult,
   CliDeleteAttachmentRequest,
+  CliDiffHistoryRequest,
   CliDownloadAttachmentRequest,
   CliGroupMutationResult,
   CliNoteMutationResult,
@@ -58,8 +59,10 @@ import type {
   CliRemoveNoteRequest,
   CliRestoreEntityRequest,
   CliRestoreFieldRequest,
+  CliRestoreHistoryRequest,
   CliRestoreNoteRequest,
   CliSetFieldRequest,
+  CliShowHistoryRequest,
   CliUpdateFieldRequest,
   CliUpdateNoteRequest,
   CliUpdateTemplateRequest,
@@ -333,6 +336,68 @@ export interface CliAttachmentDeleteResult {
   readonly deleted: boolean;
 }
 
+export interface CliHistorySummary {
+  readonly revision: number;
+  readonly historyId: string;
+  readonly groupId: string;
+  readonly itemId: string;
+  readonly schemaVersion: number;
+  readonly createdAt: string;
+  readonly fieldCount: number;
+}
+
+export interface CliHistoryDetail {
+  readonly revision: number;
+  readonly historyId: string;
+  readonly groupId: string;
+  readonly itemId: string;
+  readonly title: string;
+  readonly createdAt: string;
+  readonly fields: readonly {
+    readonly stableKey: string;
+    readonly label: string;
+    readonly type: string;
+    readonly maskedValue: string;
+  }[];
+  readonly notes: readonly {
+    readonly id: string;
+    readonly title: string;
+    readonly body: string;
+  }[];
+}
+
+export interface CliHistoryDiff {
+  readonly groupId: string;
+  readonly itemId: string;
+  readonly baseRevision: number;
+  readonly targetRevision: number;
+  readonly addedFields: readonly {
+    readonly stableKey: string;
+    readonly label: string;
+    readonly type: string;
+  }[];
+  readonly removedFields: readonly {
+    readonly stableKey: string;
+    readonly label: string;
+    readonly type: string;
+  }[];
+  readonly modifiedFields: readonly {
+    readonly stableKey: string;
+    readonly label: string;
+    readonly type: string;
+  }[];
+  readonly unchangedFieldCount: number;
+  readonly notesChanged: boolean;
+}
+
+export interface CliHistoryRestoreResult {
+  readonly groupId: string;
+  readonly itemId: string;
+  readonly restoredFromRevision: number;
+  readonly newRevision: number;
+  readonly updatedAt: string;
+}
+
 export const cliPortableKeyRotationListingSchema = z
   .object({
     operationId: lifecycleOperationIdSchema,
@@ -507,6 +572,13 @@ export interface CliUseCasePorts {
   deleteAttachment?(
     request: CliDeleteAttachmentRequest,
   ): Promise<CliAttachmentDeleteResult>;
+  listHistory?(
+    groupQuery: string,
+    credentialQuery: string,
+  ): Promise<readonly CliHistorySummary[]>;
+  showHistory?(request: CliShowHistoryRequest): Promise<CliHistoryDetail>;
+  diffHistory?(request: CliDiffHistoryRequest): Promise<CliHistoryDiff>;
+  restoreHistory?(request: CliRestoreHistoryRequest): Promise<CliHistoryRestoreResult>;
   reveal?(
     groupQuery: string,
     credentialQuery: string,
