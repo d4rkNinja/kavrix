@@ -273,3 +273,40 @@ export type CliCredentialMutationResult = z.infer<
   typeof cliCredentialMutationResultSchema
 >;
 export type CliNoteMutationResult = z.infer<typeof cliNoteMutationResultSchema>;
+
+export const cliUploadAttachmentRequestSchema = z
+  .object({
+    groupQuery: cleanNameSchema,
+    credentialQuery: cleanNameSchema,
+    filePath: z.string().trim().min(1).max(4096),
+  })
+  .strict();
+
+export const cliDownloadAttachmentRequestSchema = z
+  .object({
+    groupQuery: cleanNameSchema,
+    credentialQuery: cleanNameSchema,
+    attachmentId: cleanNameSchema,
+    destinationPath: z.string().trim().min(1).max(4096),
+    force: z.boolean().optional(),
+  })
+  .strict();
+
+export const cliDeleteAttachmentRequestSchema = z
+  .object({
+    groupQuery: cleanNameSchema,
+    credentialQuery: cleanNameSchema,
+    attachmentId: cleanNameSchema,
+    force: z.boolean().optional(),
+  })
+  .strict();
+
+export type CliUploadAttachmentRequest = z.infer<
+  typeof cliUploadAttachmentRequestSchema
+>;
+export type CliDownloadAttachmentRequest = z.infer<
+  typeof cliDownloadAttachmentRequestSchema
+>;
+export type CliDeleteAttachmentRequest = z.infer<
+  typeof cliDeleteAttachmentRequestSchema
+>;

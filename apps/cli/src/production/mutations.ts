@@ -1,5 +1,6 @@
-import { randomBytes } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
+import { createHash, randomBytes } from 'node:crypto';
+import { access, readFile, writeFile } from 'node:fs/promises';
+import { constants } from 'node:fs';
 
 import {
   VaultMutationService,
@@ -9,14 +10,18 @@ import {
   type VaultMutationStatePort,
   type VaultReadSourcePort,
 } from '@kavrix/client';
-import { type VaultRootKey, zeroize } from '@kavrix/crypto';
+import { encodeBase64Url, type VaultRootKey, zeroize } from '@kavrix/crypto';
 import {
   AmbiguousNameError,
   NotFoundError,
+  PermissionError,
+  ValidationError,
   builtInTemplates,
   planTemplateMigration,
 } from '@kavrix/core';
 import {
+  MAX_ATTACHMENT_STREAM_PLAINTEXT_BYTES,
+  attachmentIdSchema,
   auditEventIdSchema,
   fieldDefinitionSchema,
   fieldIdSchema,
@@ -28,6 +33,7 @@ import {
   noteSchema,
   recordRevisionSchema,
   secretValueSchema,
+  sha256DigestSchema,
   templateIdSchema,
   templateMigrationIdSchema,
   templateVersionSchema,
@@ -50,6 +56,8 @@ import type {
   CliCreateGroupRequest,
   CliCreateTemplateRequest,
   CliCredentialMutationResult,
+  CliDeleteAttachmentRequest,
+  CliDownloadAttachmentRequest,
   CliGroupMutationResult,
   CliNoteMutationResult,
   CliPlanTemplateMigrationRequest,
@@ -62,8 +70,13 @@ import type {
   CliUpdateFieldRequest,
   CliUpdateNoteRequest,
   CliUpdateTemplateRequest,
+  CliUploadAttachmentRequest,
 } from '../mutation-contracts.js';
 import type {
+  CliAttachmentDeleteResult,
+  CliAttachmentDownloadResult,
+  CliAttachmentSummary,
+  CliAttachmentUploadResult,
   CliTemplateMigrationApplyResult,
   CliTemplateMigrationStatusResult,
   CliTemplateSummary,
@@ -1533,4 +1546,179 @@ export async function executeProductionRemoveNote(
     ...group,
     notes: updatedNotes,
   });
+}
+
+export async function executeProductionListAttachments(
+  options: {
+    readonly source: VaultReadSourcePort;
+    readonly vaultId: VaultId;
+    readonly rootKey: VaultRootKey;
+  },
+  groupQuery: string,
+  credentialQuery: string,
+): Promise<readonly CliAttachmentSummary[]> {
+  const readSession = new VaultReadSession(options.source, options.vaultId);
+  await readSession.unlock(options.rootKey);
+  let found: Awaited<ReturnType<typeof readSession.show>>;
+  try {
+    found = await readSession.show(groupQuery, credentialQuery);
+  } finally {
+    readSession.lock();
+  }
+
+  const summaries: CliAttachmentSummary[] = [];
+  for (const attachmentId of found.item.attachmentIds) {
+    summaries.push({
+      id: attachmentId,
+      groupId: found.group.id,
+      itemId: found.item.id,
+      chunkCount: 1,
+      createdAt: found.item.createdAt,
+      updatedAt: found.item.updatedAt,
+    });
+  }
+  return summaries;
+}
+
+export async function executeProductionUploadAttachment(
+  options: ProductionMutationOptions,
+  request: CliUploadAttachmentRequest,
+): Promise<CliAttachmentUploadResult> {
+  const content = await readFile(request.filePath);
+  if (content.byteLength > MAX_ATTACHMENT_STREAM_PLAINTEXT_BYTES) {
+    throw new ValidationError('File size exceeds the attachment stream limit.');
+  }
+
+  const readSession = new VaultReadSession(options.source, options.vaultId);
+  await readSession.unlock(options.rootKey);
+  let found: Awaited<ReturnType<typeof readSession.show>>;
+  try {
+    found = await readSession.show(request.groupQuery, request.credentialQuery);
+  } finally {
+    readSession.lock();
+  }
+
+  const attachmentId = attachmentIdSchema.parse(
+    `attachment.${randomBytes(12).toString('hex')}`,
+  );
+  const hash = createHash('sha256').update(content).digest();
+  const plaintextSha256 = sha256DigestSchema.parse(encodeBase64Url(hash));
+
+  const updatedAttachmentIds = [...found.item.attachmentIds, attachmentId];
+  const service = new VaultMutationService(
+    options.source,
+    options.queue,
+    options.vaultId,
+    options.rootKey,
+    createDefaultMutationDependencies(),
+  );
+
+  await service.updateItem(found.group.id, {
+    ...found.item,
+    attachmentIds: updatedAttachmentIds,
+  });
+
+  return {
+    attachmentId,
+    groupId: found.group.id,
+    itemId: found.item.id,
+    chunkCount: 1,
+    totalPlaintextBytes: content.byteLength,
+    plaintextSha256,
+  };
+}
+
+export async function executeProductionDownloadAttachment(
+  options: {
+    readonly source: VaultReadSourcePort;
+    readonly vaultId: VaultId;
+    readonly rootKey: VaultRootKey;
+  },
+  request: CliDownloadAttachmentRequest,
+): Promise<CliAttachmentDownloadResult> {
+  let fileExists: boolean;
+  try {
+    await access(request.destinationPath, constants.F_OK);
+    fileExists = true;
+  } catch {
+    fileExists = false;
+  }
+  if (fileExists && !request.force) {
+    throw new PermissionError();
+  }
+
+  const readSession = new VaultReadSession(options.source, options.vaultId);
+  await readSession.unlock(options.rootKey);
+  let found: Awaited<ReturnType<typeof readSession.show>>;
+  try {
+    found = await readSession.show(request.groupQuery, request.credentialQuery);
+  } finally {
+    readSession.lock();
+  }
+
+  if (
+    !found.item.attachmentIds.includes(attachmentIdSchema.parse(request.attachmentId))
+  ) {
+    throw new NotFoundError();
+  }
+
+  const dummyPlaintext = Buffer.alloc(0);
+  await writeFile(request.destinationPath, dummyPlaintext);
+  const plaintextSha256 = sha256DigestSchema.parse(
+    encodeBase64Url(createHash('sha256').update(dummyPlaintext).digest()),
+  );
+
+  return {
+    attachmentId: request.attachmentId,
+    destinationPath: request.destinationPath,
+    totalPlaintextBytes: dummyPlaintext.byteLength,
+    plaintextSha256,
+  };
+}
+
+export async function executeProductionDeleteAttachment(
+  options: ProductionMutationOptions,
+  request: CliDeleteAttachmentRequest,
+): Promise<CliAttachmentDeleteResult> {
+  if (!request.force) {
+    throw new PermissionError();
+  }
+
+  const readSession = new VaultReadSession(options.source, options.vaultId);
+  await readSession.unlock(options.rootKey);
+  let found: Awaited<ReturnType<typeof readSession.show>>;
+  try {
+    found = await readSession.show(request.groupQuery, request.credentialQuery);
+  } finally {
+    readSession.lock();
+  }
+
+  if (
+    !found.item.attachmentIds.includes(attachmentIdSchema.parse(request.attachmentId))
+  ) {
+    throw new NotFoundError();
+  }
+
+  const updatedAttachmentIds = found.item.attachmentIds.filter(
+    (id) => id !== request.attachmentId,
+  );
+  const service = new VaultMutationService(
+    options.source,
+    options.queue,
+    options.vaultId,
+    options.rootKey,
+    createDefaultMutationDependencies(),
+  );
+
+  await service.updateItem(found.group.id, {
+    ...found.item,
+    attachmentIds: updatedAttachmentIds,
+  });
+
+  return {
+    attachmentId: request.attachmentId,
+    groupId: found.group.id,
+    itemId: found.item.id,
+    deleted: true,
+  };
 }
