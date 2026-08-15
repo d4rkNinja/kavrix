@@ -17,10 +17,12 @@ import {
 } from '@kavrix/client';
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { setWindowsUserOnlyAcl } from '../../../packages/key-files/src/windows-acl.js';
 import {
   openSqlitePortableKeyRotationJournal,
   type SqlitePortableKeyRotationJournal,
 } from '../src/index.js';
+import { digest } from './fixtures.js';
 
 const VAULT_ID = vaultIdSchema.parse('vault.portable.rotation.sqlite');
 const DEVICE_ID = deviceIdSchema.parse('device.portable.rotation.sqlite');
@@ -44,6 +46,7 @@ describe('SqlitePortableKeyRotationJournal', () => {
   it('persists exact checkpoint transitions and reopens completed operations', async () => {
     const root = await mkdtemp(join(tmpdir(), 'kavrix-portable-rotation-journal-'));
     roots.push(root);
+    if (process.platform === 'win32') await setWindowsUserOnlyAcl(root);
     const journal = await openJournal(join(root, 'rotation.sqlite'));
     const record = rotationRecord();
 
@@ -150,10 +153,10 @@ function checkpoint(
       sourceRevision: vaultRevisionSchema.parse(0),
       remoteRevision: vaultRevisionSchema.parse(remoteRevision),
       sourceSlotDigest: 'A'.repeat(43),
-      replacementSlotDigest: 'B'.repeat(43),
-      transcriptDigest: 'C'.repeat(43),
+      replacementSlotDigest: digest,
+      transcriptDigest: digest,
       state,
     },
-    authenticationTag: 'D'.repeat(43),
+    authenticationTag: digest,
   });
 }

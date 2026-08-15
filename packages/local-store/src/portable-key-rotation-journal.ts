@@ -128,7 +128,9 @@ export class SqlitePortableKeyRotationJournal
       const operationId = portableKeyRotationOperationId(operationIdInput);
       const row = this.readRow(operationId);
       return Promise.resolve(
-        row === null ? null : parsePortableKeyRotationJournalRecord(row.recordJson),
+        row === null
+          ? null
+          : parsePortableKeyRotationJournalRecord(parseJson(row.recordJson)),
       );
     });
   }
@@ -185,7 +187,9 @@ export class SqlitePortableKeyRotationJournal
     return this.exclusive(async () => {
       const operationId = portableKeyRotationOperationId(operationIdInput);
       const current = required(this.readRow(operationId));
-      const record = parsePortableKeyRotationJournalRecord(current.recordJson);
+      const record = parsePortableKeyRotationJournalRecord(
+        parseJson(current.recordJson),
+      );
       if (record.state === targetState) {
         const expected = nextRecord(record, targetState, updatedAt, checkpoint);
         if (
