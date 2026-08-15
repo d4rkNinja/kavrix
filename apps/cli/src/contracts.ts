@@ -31,6 +31,7 @@ import {
   type InviteId,
   type InviteListPageResponse,
   type ItemPayload,
+  type LocalAuditEvent,
   type TemplateId,
   type TemplateMigrationId,
   type TemplateMigrationPlan,
@@ -53,6 +54,7 @@ import type {
   CliDiffHistoryRequest,
   CliDownloadAttachmentRequest,
   CliGroupMutationResult,
+  CliListAuditEventsRequest,
   CliNoteMutationResult,
   CliPlanTemplateMigrationRequest,
   CliRemoveFieldRequest,
@@ -62,6 +64,7 @@ import type {
   CliRestoreHistoryRequest,
   CliRestoreNoteRequest,
   CliSetFieldRequest,
+  CliShowAuditEventRequest,
   CliShowHistoryRequest,
   CliUpdateFieldRequest,
   CliUpdateNoteRequest,
@@ -398,6 +401,24 @@ export interface CliHistoryRestoreResult {
   readonly updatedAt: string;
 }
 
+/** One projected audit event. Carries opaque metadata only. */
+export type CliAuditEventSummary = LocalAuditEvent;
+
+/**
+ * One bounded audit page. `nextCursor` is the last returned event identifier
+ * when more events remain, and `null` when the projection is exhausted.
+ */
+export interface CliAuditEventPage {
+  readonly events: readonly CliAuditEventSummary[];
+  readonly nextCursor: string | null;
+  readonly totalCount: number;
+}
+
+export interface CliAuditEventDetail {
+  readonly vaultId: VaultId;
+  readonly event: CliAuditEventSummary;
+}
+
 export const cliPortableKeyRotationListingSchema = z
   .object({
     operationId: lifecycleOperationIdSchema,
@@ -579,6 +600,8 @@ export interface CliUseCasePorts {
   showHistory?(request: CliShowHistoryRequest): Promise<CliHistoryDetail>;
   diffHistory?(request: CliDiffHistoryRequest): Promise<CliHistoryDiff>;
   restoreHistory?(request: CliRestoreHistoryRequest): Promise<CliHistoryRestoreResult>;
+  listAuditEvents?(request: CliListAuditEventsRequest): Promise<CliAuditEventPage>;
+  showAuditEvent?(request: CliShowAuditEventRequest): Promise<CliAuditEventDetail>;
   reveal?(
     groupQuery: string,
     credentialQuery: string,

@@ -28,6 +28,8 @@ import {
   type CliAttachmentDownloadResult,
   type CliAttachmentSummary,
   type CliAttachmentUploadResult,
+  type CliAuditEventDetail,
+  type CliAuditEventPage,
   type CliHistoryDetail,
   type CliHistoryDiff,
   type CliHistoryRestoreResult,
@@ -3243,6 +3245,115 @@ const historyCommand: CliCommandDescriptor = Object.freeze({
   ],
 });
 
+const auditCommand: CliCommandDescriptor = Object.freeze({
+  name: 'audit',
+  description: 'Inspect locally derived, authorized audit events.',
+  options: [secretBackendOption, backendPassphraseStdinOption],
+  children: [
+    {
+      name: 'list',
+      description: 'List authorized audit events newest first with bounded pagination.',
+      options: [
+        {
+          flags: '--class <device|slot|mutation|backup|recovery>',
+          description: 'Restrict the feed to one coarse audit event class.',
+        },
+        {
+          flags: '--limit <1..200>',
+          description: 'Maximum number of audit events to return.',
+        },
+        {
+          flags: '--cursor <event-id>',
+          description: 'Continue after a previously returned audit event identifier.',
+        },
+        jsonOption,
+        secretBackendOption,
+        backendPassphraseStdinOption,
+      ],
+      execute: async (context, _arguments, options) => {
+        const json = optionBoolean(options, 'json');
+        const { cliListAuditEventsQuerySchema } =
+          await import('./mutation-contracts.js');
+        const request = parseInput(
+          cliListAuditEventsQuerySchema,
+          {
+            ...(options['class'] === undefined ? {} : { class: options['class'] }),
+            ...(options['limit'] === undefined ? {} : { limit: options['limit'] }),
+            ...(options['cursor'] === undefined ? {} : { cursor: options['cursor'] }),
+          },
+          'audit list request',
+        );
+
+        let page: CliAuditEventPage;
+        if (context.ports?.listAuditEvents !== undefined) {
+          page = await context.ports.listAuditEvents(request);
+        } else {
+          const { executeProductionListAuditEvents } =
+            await import('./production/audit.js');
+          page = await withUnlockedVault(
+            context,
+            'audit list',
+            options,
+            async (unlocked, store) =>
+              executeProductionListAuditEvents(
+                { source: store, vaultId: unlocked.profile.vaultId },
+                request,
+              ),
+          );
+        }
+        const { renderAuditEventList } = await import('./render.js');
+        context.stdout.write(renderAuditEventList(page, json));
+      },
+    },
+    {
+      name: 'show',
+      description: 'Inspect one authorized audit event by its opaque identifier.',
+      arguments: [
+        {
+          syntax: '<event-id>',
+          description: 'Audit event identifier from audit list.',
+        },
+      ],
+      options: [jsonOption, secretBackendOption, backendPassphraseStdinOption],
+      execute: async (context, arguments_, options) => {
+        const eventIdArgument = requiredArgument(
+          arguments_[0],
+          'audit event identifier',
+        );
+        const json = optionBoolean(options, 'json');
+
+        const { cliShowAuditEventRequestSchema } =
+          await import('./mutation-contracts.js');
+        const request = parseInput(
+          cliShowAuditEventRequestSchema,
+          { eventId: eventIdArgument },
+          'audit event identifier',
+        );
+
+        let detail: CliAuditEventDetail;
+        if (context.ports?.showAuditEvent !== undefined) {
+          detail = await context.ports.showAuditEvent(request);
+        } else {
+          const { executeProductionShowAuditEvent } =
+            await import('./production/audit.js');
+          detail = await withUnlockedVault(
+            context,
+            'audit show',
+            options,
+            async (unlocked, store) =>
+              executeProductionShowAuditEvent(
+                { source: store, vaultId: unlocked.profile.vaultId },
+                request,
+              ),
+          );
+        }
+        const { renderAuditEventDetail } = await import('./render.js');
+        context.stdout.write(renderAuditEventDetail(detail, json));
+      },
+    },
+  ],
+});
+
 const showCommand: CliCommandDescriptor = Object.freeze({
   name: 'show',
   description: 'Show a schema-driven item with secret fields redacted.',
@@ -3862,6 +3973,7 @@ export const CLI_COMMAND_CATALOG: readonly CliCommandDescriptor[] = Object.freez
   noteCommand,
   attachmentCommand,
   historyCommand,
+  auditCommand,
   showCommand,
   copyCommand,
   revealCommand,
@@ -4229,6 +4341,7 @@ export const PUBLIC_CLI_COMMAND_CATALOG: readonly CliCommandDescriptor[] =
     noteCommand,
     attachmentCommand,
     historyCommand,
+    auditCommand,
     showCommand,
     copyCommand,
     revealCommand,

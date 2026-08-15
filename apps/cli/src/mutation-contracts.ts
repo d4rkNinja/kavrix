@@ -1,4 +1,6 @@
 import {
+  auditEventClassSchema,
+  auditEventIdentifierSchema,
   fieldTypeSchema,
   groupIdSchema,
   itemIdSchema,
@@ -348,3 +350,48 @@ export type CliListHistoryRequest = z.infer<typeof cliListHistoryRequestSchema>;
 export type CliShowHistoryRequest = z.infer<typeof cliShowHistoryRequestSchema>;
 export type CliDiffHistoryRequest = z.infer<typeof cliDiffHistoryRequestSchema>;
 export type CliRestoreHistoryRequest = z.infer<typeof cliRestoreHistoryRequestSchema>;
+
+/** Inclusive upper bound on one audit page. Keeps local reads bounded. */
+export const MAX_AUDIT_EVENT_PAGE_SIZE = 200;
+/** Page size used when the caller does not request one. */
+export const DEFAULT_AUDIT_EVENT_PAGE_SIZE = 50;
+
+export const cliListAuditEventsRequestSchema = z
+  .object({
+    eventClass: auditEventClassSchema.optional(),
+    limit: z.number().int().min(1).max(MAX_AUDIT_EVENT_PAGE_SIZE).optional(),
+    cursor: auditEventIdentifierSchema.optional(),
+  })
+  .strict();
+
+export const cliShowAuditEventRequestSchema = z
+  .object({
+    eventId: auditEventIdentifierSchema,
+  })
+  .strict();
+
+export type CliListAuditEventsRequest = z.infer<typeof cliListAuditEventsRequestSchema>;
+export type CliShowAuditEventRequest = z.infer<typeof cliShowAuditEventRequestSchema>;
+
+/**
+ * Accepts the raw `audit list` option strings and normalizes them into the
+ * request contract. Bounds live in the pipe rather than a nested parse so an
+ * out-of-range page size fails as a usage error instead of escaping validation.
+ */
+export const cliListAuditEventsQuerySchema = z
+  .object({
+    class: auditEventClassSchema.optional(),
+    limit: z
+      .string()
+      .regex(/^(?:0|[1-9][0-9]*)$/u)
+      .transform(Number)
+      .pipe(z.number().int().min(1).max(MAX_AUDIT_EVENT_PAGE_SIZE))
+      .optional(),
+    cursor: auditEventIdentifierSchema.optional(),
+  })
+  .strict()
+  .transform((query): CliListAuditEventsRequest => ({
+    ...(query.class === undefined ? {} : { eventClass: query.class }),
+    ...(query.limit === undefined ? {} : { limit: query.limit }),
+    ...(query.cursor === undefined ? {} : { cursor: query.cursor }),
+  }));
