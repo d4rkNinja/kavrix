@@ -18,6 +18,9 @@ import type {
   CliAttachmentDownloadResult,
   CliAttachmentSummary,
   CliAttachmentUploadResult,
+  CliAuditEventDetail,
+  CliAuditEventPage,
+  CliAuditEventSummary,
   CliConnectResult,
   CliBackupCreateResult,
   CliBackupRestoreResult,
@@ -980,5 +983,67 @@ export function renderHistoryRestore(
     `Item ID: ${sanitizeTerminalText(result.itemId)}`,
     `Updated At: ${sanitizeTerminalText(result.updatedAt)}`,
   ];
+  return lines.join('\n').concat('\n');
+}
+
+/** Renders one audit event as a single sanitized summary line. */
+function auditEventLine(event: CliAuditEventSummary): string {
+  const parts = [
+    sanitizeTerminalText(event.occurredAt),
+    `${sanitizeTerminalText(event.eventClass)}/${sanitizeTerminalText(event.action)}`,
+    `Subject: ${sanitizeTerminalText(event.subject)}`,
+    `Event: ${sanitizeTerminalText(event.eventId)}`,
+  ];
+  if (event.state !== undefined) {
+    parts.push(`State: ${sanitizeTerminalText(event.state)}`);
+  }
+  return `  - ${parts.join(' | ')}`;
+}
+
+export function renderAuditEventList(page: CliAuditEventPage, json: boolean): string {
+  if (json) {
+    return safeJson(page);
+  }
+  if (page.events.length === 0) {
+    return 'No audit events found for this vault.\n';
+  }
+  const lines = [
+    `Audit Events (${String(page.events.length)} of ${String(page.totalCount)}):`,
+    ...page.events.map((event) => auditEventLine(event)),
+  ];
+  if (page.nextCursor !== null) {
+    lines.push(`Next cursor: ${sanitizeTerminalText(page.nextCursor)}`);
+  }
+  return lines.join('\n').concat('\n');
+}
+
+export function renderAuditEventDetail(
+  detail: CliAuditEventDetail,
+  json: boolean,
+): string {
+  if (json) {
+    return safeJson(detail);
+  }
+  const { event } = detail;
+  const lines = [
+    `Audit Event ${sanitizeTerminalText(event.eventId)}:`,
+    `  Vault ID: ${sanitizeTerminalText(detail.vaultId)}`,
+    `  Class: ${sanitizeTerminalText(event.eventClass)}`,
+    `  Action: ${sanitizeTerminalText(event.action)}`,
+    `  Subject: ${sanitizeTerminalText(event.subject)}`,
+    `  Occurred At: ${sanitizeTerminalText(event.occurredAt)}`,
+  ];
+  if (event.state !== undefined) {
+    lines.push(`  State: ${sanitizeTerminalText(event.state)}`);
+  }
+  if (event.keyVersion !== undefined) {
+    lines.push(`  Key Version: ${String(event.keyVersion)}`);
+  }
+  if (event.deviceId !== undefined) {
+    lines.push(`  Device ID: ${sanitizeTerminalText(event.deviceId)}`);
+  }
+  if (event.recordRevision !== undefined) {
+    lines.push(`  Record Revision: ${String(event.recordRevision)}`);
+  }
   return lines.join('\n').concat('\n');
 }

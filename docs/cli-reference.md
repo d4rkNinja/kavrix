@@ -100,6 +100,8 @@ encrypted mutation against the unlocked local store. Its current surface is:
 | `creds history show <group> <credential> <revision> [--json]`                     | Available in the built package | Inspects an authorized historical revision projection with masked secret values.                                                                                                                                                                                                    |
 | `creds history diff <group> <credential> <revision> [compare-rev] [--json]`       | Available in the built package | Compares field differences between historical revisions locally.                                                                                                                                                                                                                    |
 | `creds history restore <group> <credential> <revision> --force [--json]`          | Available in the built package | Restores an exact historical revision as a new mutation with explicit `--force`.                                                                                                                                                                                                    |
+| `creds audit list [--class <c>] [--limit <1..200>] [--cursor <id>] [--json]`      | Available in the built package | Lists locally derived audit events newest first with bounded keyset pagination. Events are projected from unlock-slot lifecycle timestamps and queued mutations; the `backup` class has no local source yet and returns nothing.                                                    |
+| `creds audit show <event-id> [--json]`                                            | Available in the built package | Inspects one locally derived audit event by the opaque identifier reported by `creds audit list`.                                                                                                                                                                                   |
 | `creds show <group> <credential> [--json]`                                        | Available in the built package | Inspects a credential with secret fields and sensitive note content redacted.                                                                                                                                                                                                       |
 | `creds copy <group> <credential> <field> [--index <n>]`                           | Available in the built package | Copies an authorized field value to the guarded clipboard with auto-clear.                                                                                                                                                                                                          |
 | `creds reveal <group> <credential> <field> [--stdout]`                            | Available in the built package | Reveals an authorized field value, denying non-interactive redirection unless `--stdout` is passed.                                                                                                                                                                                 |
@@ -423,3 +425,13 @@ fresh-home recovery/device-B, backup/restore, and whole-system canary coverage
 remain later acceptance gates. Cross-platform shell completion packaging is
 prepared, but a published package and final target-platform release evidence do
 not exist.
+
+`creds audit` reports a local projection, not a server-authenticated audit log.
+The API and MongoDB hold audit sidecars as opaque ciphertext and expose no audit
+read route, so the authorized device derives the feed from state it already
+holds: unlock-slot lifecycle timestamps and queued opaque mutations. Two limits
+follow and are covered by tests rather than hidden. The `backup` class has no
+locally persisted source, so it is accepted as a filter and yields no events.
+The creation event of a slot that was later superseded or revoked carries no
+`state`, because the state at creation time is not retained locally and is never
+inferred from the slot's current state.
