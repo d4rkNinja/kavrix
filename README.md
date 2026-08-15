@@ -84,9 +84,18 @@ creds show "Engineering" "Database Admin"
 creds copy "Engineering" "Database Admin" "password"
 creds reveal "Engineering" "Database Admin" "password" --stdout
 creds get "Engineering" "Database Admin" "username"
-creds field set "Engineering" "Database Admin" "password" --value-stdin
+creds set "Engineering" "Database Admin" "password" --value-stdin --if-revision 7
+creds update "Engineering" "Database Admin" "password" --label "DB password"
 creds note add "Engineering" "Database Admin" --title "Rotation SOP" --content-stdin
 ```
+
+A field value is never accepted as an argument: `set` reads it from
+`--value-stdin` or a masked prompt. `set` resolves the field the same way `get`
+does, so a mistyped name fails closed instead of defining a new field; pass
+`--create` to define one deliberately. `--if-revision` takes the `revision`
+reported by `creds get --json` and refuses the write when the record has moved
+on, and a repeatable or collection field refuses a whole-value write rather than
+discarding its elements.
 
 Generated values and TOTP codes require an interactive output stream unless
 `--stdout` is explicit. TOTP seeds, protected-file passphrases, and sealed

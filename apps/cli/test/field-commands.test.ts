@@ -3,6 +3,7 @@ import { Readable, Writable } from 'node:stream';
 
 import {
   CLI_EXIT_CODES,
+  CliUsageError,
   runCli,
   type CliDependencies,
   type CliUseCasePorts,
@@ -10,6 +11,26 @@ import {
 import { groupIdSchema, itemIdSchema, vaultIdSchema } from '@kavrix/schemas';
 
 type MemoryWritable = Readonly<{ stream: Writable; value: () => string }>;
+
+type SetFieldPort = NonNullable<CliUseCasePorts['setField']>;
+type UpdateFieldPort = NonNullable<CliUseCasePorts['updateField']>;
+
+/** A field write receipt every set/update assertion can start from. */
+function mutationReceipt(): Awaited<ReturnType<SetFieldPort>> {
+  return {
+    vaultId: vaultIdSchema.parse('vault.1'),
+    groupId: groupIdSchema.parse('group.1'),
+    credentialId: itemIdSchema.parse('item.101'),
+    title: 'Primary DB',
+    fieldKey: 'hostname',
+    fieldLabel: 'Hostname',
+    fieldType: 'text',
+    sensitive: false,
+    created: false,
+    previousRevision: 4,
+    revision: 5,
+  };
+}
 
 function writable(): MemoryWritable {
   let content = '';
@@ -53,8 +74,14 @@ async function execute(
     ports: useCases(portsOverrides),
     secrets: {
       read: ({ fromStdin }) => {
-        if (!fromStdin || stdinInput.length === 0) {
-          return Promise.reject(new Error('secrets unneeded'));
+        // A script has no terminal, so the production port fails closed exactly
+        // this way when a command is given no explicit standard-input flag.
+        if (!fromStdin) {
+          return Promise.reject(
+            new CliUsageError(
+              'A masked field value prompt requires a terminal; use --value-stdin explicitly.',
+            ),
+          );
         }
         const val = stdinInput.shift();
         if (val === undefined) {
@@ -118,50 +145,126 @@ describe('CLI field commands', () => {
     expect(result.stdout).toBe('Field "api_key" added to credential "Primary DB".\n');
   });
 
-  it('executes field set with positional value or stdin', async () => {
-    const setField = vi.fn(() =>
-      Promise.resolve({
-        vaultId: vaultIdSchema.parse('vault.1'),
-        groupId: groupIdSchema.parse('group.1'),
-        credentialId: itemIdSchema.parse('item.101'),
-        title: 'Primary DB',
-      }),
+  it('executes field set from standard input and reports the written revision', async () => {
+    const setField = vi.fn<SetFieldPort>(() => Promise.resolve(mutationReceipt()));
+
+    const result = await execute(
+      [
+        'field',
+        'set',
+        'Engineering',
+        'Primary DB',
+        'hostname',
+        '--value-stdin',
+        '--if-revision',
+        '4',
+      ],
+      { setField },
+      ['db.internal.invalid'],
     );
 
-    const resultPositional = await execute(
-      ['field', 'set', 'Engineering', 'Primary DB', 'hostname', 'db.internal.net'],
-      { setField },
-    );
-    expect(resultPositional.exitCode).toBe(CLI_EXIT_CODES.success);
+    expect(result.exitCode).toBe(CLI_EXIT_CODES.success);
     expect(setField).toHaveBeenCalledWith({
       groupQuery: 'Engineering',
       credentialQuery: 'Primary DB',
       fieldKey: 'hostname',
       value: expect.any(Uint8Array) as unknown,
+      ifRevision: 4,
     });
-    expect(resultPositional.stdout).toBe(
-      'Field "hostname" set for credential "Primary DB".\n',
-    );
-
-    const resultStdin = await execute(
-      ['field', 'set', 'Engineering', 'Primary DB', 'password', '--value-stdin'],
-      { setField },
-      ['super-secret-pass'],
-    );
-    expect(resultStdin.exitCode).toBe(CLI_EXIT_CODES.success);
-    expect(resultStdin.stdout).toBe(
-      'Field "password" set for credential "Primary DB".\n',
+    expect(result.stdout).toBe(
+      [
+        'Field "hostname" set for credential "Primary DB".',
+        '  Label: Hostname',
+        '  Type: text',
+        '  Sensitive: no',
+        '  Created: no',
+        '  Revision: 4 -> 5',
+        '',
+      ].join('\n'),
     );
   });
 
+  it('rejects a positional field value so a secret never reaches process arguments', async () => {
+    const setField = vi.fn<SetFieldPort>(() => Promise.resolve(mutationReceipt()));
+
+    const result = await execute(
+      ['field', 'set', 'Engineering', 'Primary DB', 'hostname', 'db.internal.invalid'],
+      { setField },
+    );
+
+    expect(result.exitCode).toBe(CLI_EXIT_CODES.usage);
+    expect(result.stderr).toContain('Invalid command usage');
+    expect(setField).not.toHaveBeenCalled();
+  });
+
+  it('forwards --create so a typo cannot silently define a new field', async () => {
+    const setField = vi.fn<SetFieldPort>(() =>
+      Promise.resolve({ ...mutationReceipt(), created: true }),
+    );
+
+    const withoutCreate = await execute(
+      ['field', 'set', 'Engineering', 'Primary DB', 'hostname', '--value-stdin'],
+      { setField },
+      ['db.internal.invalid'],
+    );
+    expect(withoutCreate.exitCode).toBe(CLI_EXIT_CODES.success);
+    expect(setField).toHaveBeenLastCalledWith({
+      groupQuery: 'Engineering',
+      credentialQuery: 'Primary DB',
+      fieldKey: 'hostname',
+      value: expect.any(Uint8Array) as unknown,
+    });
+
+    const withCreate = await execute(
+      [
+        'field',
+        'set',
+        'Engineering',
+        'Primary DB',
+        'hostname',
+        '--value-stdin',
+        '--create',
+      ],
+      { setField },
+      ['db.internal.invalid'],
+    );
+    expect(withCreate.exitCode).toBe(CLI_EXIT_CODES.success);
+    expect(setField).toHaveBeenLastCalledWith({
+      groupQuery: 'Engineering',
+      credentialQuery: 'Primary DB',
+      fieldKey: 'hostname',
+      value: expect.any(Uint8Array) as unknown,
+      create: true,
+    });
+    expect(withCreate.stdout).toContain('  Created: yes');
+  });
+
+  it('rejects an --if-revision value that cannot identify a stored record', async () => {
+    const setField = vi.fn<SetFieldPort>(() => Promise.resolve(mutationReceipt()));
+
+    const result = await execute(
+      [
+        'field',
+        'set',
+        'Engineering',
+        'Primary DB',
+        'hostname',
+        '--value-stdin',
+        '--if-revision',
+        '0',
+      ],
+      { setField },
+      ['db.internal.invalid'],
+    );
+
+    expect(result.exitCode).toBe(CLI_EXIT_CODES.usage);
+    expect(result.stderr).toContain('The expected revision is invalid.');
+    expect(setField).not.toHaveBeenCalled();
+  });
+
   it('executes field update to modify field label, type, or sensitivity', async () => {
-    const updateField = vi.fn(() =>
-      Promise.resolve({
-        vaultId: vaultIdSchema.parse('vault.1'),
-        groupId: groupIdSchema.parse('group.1'),
-        credentialId: itemIdSchema.parse('item.101'),
-        title: 'Primary DB',
-      }),
+    const updateField = vi.fn<UpdateFieldPort>(() =>
+      Promise.resolve({ ...mutationReceipt(), fieldLabel: 'Database Hostname' }),
     );
 
     const result = await execute(
@@ -185,8 +288,72 @@ describe('CLI field commands', () => {
       label: 'Database Hostname',
     });
     expect(result.stdout).toBe(
-      'Field "hostname" updated for credential "Primary DB".\n',
+      [
+        'Field "hostname" updated for credential "Primary DB".',
+        '  Label: Database Hostname',
+        '  Type: text',
+        '  Sensitive: no',
+        '  Created: no',
+        '  Revision: 4 -> 5',
+        '',
+      ].join('\n'),
     );
+  });
+
+  it('rejects a field update that changes nothing', async () => {
+    const updateField = vi.fn<UpdateFieldPort>(() =>
+      Promise.resolve(mutationReceipt()),
+    );
+
+    const result = await execute(
+      ['field', 'update', 'Engineering', 'Primary DB', 'hostname'],
+      { updateField },
+    );
+
+    expect(result.exitCode).toBe(CLI_EXIT_CODES.usage);
+    expect(result.stderr).toContain(
+      'Provide at least one of --label, --type, --sensitive, or --no-sensitive.',
+    );
+    expect(updateField).not.toHaveBeenCalled();
+  });
+
+  it('shares one handler between the field family and the top-level commands', async () => {
+    const setField = vi.fn<SetFieldPort>(() => Promise.resolve(mutationReceipt()));
+    const updateField = vi.fn<UpdateFieldPort>(() =>
+      Promise.resolve(mutationReceipt()),
+    );
+
+    const setResult = await execute(
+      ['set', 'Engineering', 'Primary DB', 'hostname', '--value-stdin', '--json'],
+      { setField },
+      ['db.internal.invalid'],
+    );
+    expect(setResult.exitCode).toBe(CLI_EXIT_CODES.success);
+    expect(setField).toHaveBeenCalledWith({
+      groupQuery: 'Engineering',
+      credentialQuery: 'Primary DB',
+      fieldKey: 'hostname',
+      value: expect.any(Uint8Array) as unknown,
+    });
+    expect(JSON.parse(setResult.stdout)).toMatchObject({
+      action: 'set',
+      fieldKey: 'hostname',
+      previousRevision: 4,
+      revision: 5,
+    });
+
+    const updateResult = await execute(
+      ['update', 'Engineering', 'Primary DB', 'hostname', '--no-sensitive', '--json'],
+      { updateField },
+    );
+    expect(updateResult.exitCode).toBe(CLI_EXIT_CODES.success);
+    expect(updateField).toHaveBeenCalledWith({
+      groupQuery: 'Engineering',
+      credentialQuery: 'Primary DB',
+      fieldKey: 'hostname',
+      sensitive: false,
+    });
+    expect(JSON.parse(updateResult.stdout)).toMatchObject({ action: 'update' });
   });
 
   it('executes field archive and field restore', async () => {
@@ -256,17 +423,16 @@ describe('CLI field commands', () => {
     expect(result.stderr).toContain('Invalid command usage');
   });
 
-  it('fails closed when field set is missing both positional value and --value-stdin', async () => {
-    const result = await execute([
-      'field',
-      'set',
-      'Engineering',
-      'Primary DB',
-      'secret_key',
-    ]);
-    expect(result.exitCode).toBe(CLI_EXIT_CODES.usage);
-    expect(result.stderr).toContain(
-      'Provide a value argument or use --value-stdin to supply secret input.',
+  it('fails closed when field set has no value source at all', async () => {
+    const setField = vi.fn<SetFieldPort>(() => Promise.resolve(mutationReceipt()));
+
+    const result = await execute(
+      ['field', 'set', 'Engineering', 'Primary DB', 'secret_key'],
+      { setField },
     );
+
+    expect(result.exitCode).toBe(CLI_EXIT_CODES.usage);
+    expect(result.stderr).toContain('requires a terminal; use --value-stdin');
+    expect(setField).not.toHaveBeenCalled();
   });
 });

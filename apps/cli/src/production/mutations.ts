@@ -15,9 +15,12 @@ import {
   AmbiguousNameError,
   NotFoundError,
   PermissionError,
+  SyncConflictError,
   ValidationError,
+  assertSingleValueWriteTarget,
   builtInTemplates,
   planTemplateMigration,
+  resolveNamedEntity,
 } from '@kavrix/core';
 import {
   MAX_ATTACHMENT_STREAM_PLAINTEXT_BYTES,
@@ -34,9 +37,12 @@ import {
   recordRevisionSchema,
   secretValueSchema,
   sha256DigestSchema,
+  stableFieldKeySchema,
   templateIdSchema,
   templateMigrationIdSchema,
   templateVersionSchema,
+  type FieldDefinition,
+  type FieldValue,
   type GroupPayload,
   type GroupTemplate,
   type ItemPayload,
@@ -59,6 +65,7 @@ import type {
   CliDeleteAttachmentRequest,
   CliDiffHistoryRequest,
   CliDownloadAttachmentRequest,
+  CliFieldMutationResult,
   CliGroupMutationResult,
   CliNoteMutationResult,
   CliPlanTemplateMigrationRequest,
@@ -654,10 +661,84 @@ export async function executeProductionAddField(
   }
 }
 
+/** A field a write can target, resolved by ID, stable key, label, or prefix. */
+type ResolvableField = Readonly<{
+  id: string;
+  name: string;
+  slug: string;
+  aliases: readonly string[];
+  definition: FieldDefinition;
+  scope: 'item' | 'template';
+}>;
+
+function resolvableFields(
+  found: Readonly<{ item: ItemPayload; template: GroupTemplate }>,
+): readonly ResolvableField[] {
+  const describe = (
+    definition: FieldDefinition,
+    scope: 'item' | 'template',
+  ): ResolvableField => ({
+    id: definition.id,
+    name: definition.label,
+    slug: definition.stableKey,
+    aliases: [],
+    definition,
+    scope,
+  });
+  return [
+    ...found.item.itemFields.map((definition) => describe(definition, 'item')),
+    ...found.template.fields
+      .filter(
+        (definition) =>
+          !found.item.itemFields.some((field) => field.id === definition.id),
+      )
+      .map((definition) => describe(definition, 'template')),
+  ];
+}
+
+/**
+ * Resolve the field a write targets without guessing.
+ *
+ * Automation must be able to tell "no such field" from "several fields match",
+ * so resolution failures surface as the canonical name-resolution errors
+ * instead of silently creating a field the caller mistyped.
+ */
+function resolveWritableField(
+  found: Readonly<{ item: ItemPayload; template: GroupTemplate }>,
+  fieldQuery: string,
+): ResolvableField | undefined {
+  const candidates = resolvableFields(found);
+  if (candidates.length === 0) return undefined;
+  try {
+    return resolveNamedEntity(fieldQuery, candidates);
+  } catch (error) {
+    if (error instanceof NotFoundError) return undefined;
+    throw error;
+  }
+}
+
+/** Fail closed when the record moved on since the caller read its revision. */
+function assertExpectedItemRevision(
+  item: ItemPayload,
+  expected: number | undefined,
+): void {
+  if (expected !== undefined && expected !== item.revision) {
+    throw new SyncConflictError();
+  }
+}
+
+function storedFieldValue(
+  item: ItemPayload,
+  field: ResolvableField,
+): FieldValue | undefined {
+  const source = field.scope === 'template' ? item.templateValues : item.itemValues;
+  return source.find((value) => value.fieldId === field.definition.id)?.value;
+}
+
 export async function executeProductionSetField(
   options: ProductionMutationOptions,
   request: CliSetFieldRequest,
-): Promise<CliCredentialMutationResult> {
+): Promise<CliFieldMutationResult> {
   let ownedValue: Uint8Array | undefined;
   try {
     ownedValue = Uint8Array.from(request.value);
@@ -673,29 +754,29 @@ export async function executeProductionSetField(
 
     const state = await options.source.getCurrentItem(options.vaultId, found.item.id);
     if (state?.state !== 'active') {
-      throw new Error('Credential item is not active or found');
+      throw new NotFoundError();
     }
+    assertExpectedItemRevision(found.item, request.ifRevision);
 
     const stringValue = new TextDecoder().decode(ownedValue);
     const timestamp = new Date().toISOString();
 
-    const itemField = found.item.itemFields.find(
-      (f) => f.stableKey === request.fieldKey,
-    );
-    const templateField = found.template.fields.find(
-      (f) => f.stableKey === request.fieldKey,
-    );
-    let fieldDef = itemField ?? templateField;
-
+    const resolved = resolveWritableField(found, request.fieldKey);
     let updatedItemFields = found.item.itemFields;
+    let fieldDef: FieldDefinition;
+    let scope: 'item' | 'template';
 
-    if (fieldDef === undefined) {
+    if (resolved === undefined) {
+      if (request.create !== true) {
+        throw new NotFoundError();
+      }
+      const stableKey = stableFieldKeySchema.parse(request.fieldKey);
       const fieldId = fieldIdSchema.parse(`field.${randomBytes(12).toString('hex')}`);
       fieldDef = fieldDefinitionSchema.parse({
         id: fieldId,
-        stableKey: request.fieldKey,
+        stableKey,
         type: 'secret',
-        label: defaultFieldLabel(request.fieldKey),
+        label: defaultFieldLabel(stableKey),
         required: false,
         sensitive: true,
         repeatable: false,
@@ -711,20 +792,27 @@ export async function executeProductionSetField(
         updatedAt: timestamp,
       });
       updatedItemFields = [...updatedItemFields, fieldDef];
+      scope = 'item';
+    } else {
+      fieldDef = resolved.definition;
+      scope = resolved.scope;
+      // Writing one scalar replaces the whole value, so refuse a target whose
+      // stored value holds elements rather than silently discarding them.
+      assertSingleValueWriteTarget(fieldDef, storedFieldValue(found.item, resolved));
     }
 
-    const isTemplateField = itemField === undefined && templateField !== undefined;
+    const isTemplateField = scope === 'template';
     const existingTemplateValues = found.item.templateValues.filter(
-      (v) => v.stableKey !== request.fieldKey,
+      (v) => v.fieldId !== fieldDef.id,
     );
     const existingItemValues = found.item.itemValues.filter(
-      (v) => v.stableKey !== request.fieldKey,
+      (v) => v.fieldId !== fieldDef.id,
     );
 
     const isSensitive = fieldDef.sensitive || isSensitiveFieldType(fieldDef.type);
     const newStoredValue = {
       fieldId: fieldDef.id,
-      stableKey: request.fieldKey,
+      stableKey: fieldDef.stableKey,
       value: {
         version: 1 as const,
         state: 'present' as const,
@@ -762,6 +850,13 @@ export async function executeProductionSetField(
       groupId: found.group.id,
       credentialId: found.item.id,
       title: found.item.title,
+      fieldKey: fieldDef.stableKey,
+      fieldLabel: fieldDef.label,
+      fieldType: fieldDef.type,
+      sensitive: isSensitive,
+      created: resolved === undefined,
+      previousRevision: found.item.revision,
+      revision: recordRevisionSchema.parse(found.item.revision + 1),
     };
   } finally {
     if (ownedValue !== undefined) zeroize(ownedValue);
@@ -772,7 +867,7 @@ export async function executeProductionSetField(
 export async function executeProductionUpdateField(
   options: ProductionMutationOptions,
   request: CliUpdateFieldRequest,
-): Promise<CliCredentialMutationResult> {
+): Promise<CliFieldMutationResult> {
   const readSession = new VaultReadSession(options.source, options.vaultId);
   await readSession.unlock(options.rootKey);
 
@@ -785,20 +880,26 @@ export async function executeProductionUpdateField(
 
   const state = await options.source.getCurrentItem(options.vaultId, found.item.id);
   if (state?.state !== 'active') {
-    throw new Error('Credential item is not active or found');
+    throw new NotFoundError();
+  }
+  assertExpectedItemRevision(found.item, request.ifRevision);
+
+  const resolved = resolveWritableField(found, request.fieldKey);
+  if (resolved === undefined) {
+    throw new NotFoundError();
+  }
+  // A template field belongs to every credential in the group, so redefining it
+  // for one credential would silently diverge from the shared template.
+  if (resolved.scope !== 'item') {
+    throw new ValidationError(
+      'This field comes from the group template; change the template instead.',
+    );
   }
 
   const existingFieldIndex = found.item.itemFields.findIndex(
-    (f) => f.stableKey === request.fieldKey,
+    (f) => f.id === resolved.definition.id,
   );
-  if (existingFieldIndex < 0) {
-    throw new Error(`Item-specific field "${request.fieldKey}" not found`);
-  }
-
-  const existingField = found.item.itemFields[existingFieldIndex];
-  if (existingField === undefined) {
-    throw new Error(`Item-specific field "${request.fieldKey}" not found`);
-  }
+  const existingField = resolved.definition;
 
   const sensitive =
     request.sensitive ??
@@ -821,7 +922,7 @@ export async function executeProductionUpdateField(
   updatedFields[existingFieldIndex] = updatedFieldDef;
 
   const updatedValues = found.item.itemValues.map((v) => {
-    if (v.stableKey !== request.fieldKey) return v;
+    if (v.fieldId !== existingField.id) return v;
     if (v.value.state !== 'present' || v.value.content.cardinality !== 'single') {
       return v;
     }
@@ -875,6 +976,13 @@ export async function executeProductionUpdateField(
     groupId: found.group.id,
     credentialId: found.item.id,
     title: found.item.title,
+    fieldKey: updatedFieldDef.stableKey,
+    fieldLabel: updatedFieldDef.label,
+    fieldType: updatedFieldDef.type,
+    sensitive: updatedFieldDef.sensitive,
+    created: false,
+    previousRevision: found.item.revision,
+    revision: recordRevisionSchema.parse(found.item.revision + 1),
   };
 }
 

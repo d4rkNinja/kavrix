@@ -260,6 +260,7 @@ describe('offline mutation queue and restart durability', () => {
         credentialQuery: 'OfflineCred',
         fieldKey: 'password',
         value: secretBytes,
+        create: true,
       });
       expect(setFieldResult.credentialId).toBe(credResult.credentialId);
       // The byte array must be zeroized after use – security invariant

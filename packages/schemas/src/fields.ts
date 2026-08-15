@@ -459,6 +459,16 @@ const collectionFieldTypes = new Set<FieldType>([
   'environment-map',
 ]);
 
+/**
+ * Report whether a definition stores its value as repeatable elements.
+ *
+ * Both an explicitly repeatable field and a collection field type hold
+ * elements, so callers that write a single scalar must consult this first.
+ */
+export function fieldExpectsMultipleValues(field: FieldDefinition): boolean {
+  return field.repeatable || collectionFieldTypes.has(field.type);
+}
+
 export function fieldValueMatchesDefinition(
   field: FieldDefinition,
   value: FieldValue,
@@ -466,7 +476,7 @@ export function fieldValueMatchesDefinition(
   if (value.state === 'orphaned') return false;
   if (value.state !== 'present') return !field.required;
 
-  const expectsMultiple = field.repeatable || collectionFieldTypes.has(field.type);
+  const expectsMultiple = fieldExpectsMultipleValues(field);
   if (expectsMultiple !== (value.content.cardinality === 'multiple')) return false;
   const elements =
     value.content.cardinality === 'multiple' ? value.content.elements : undefined;

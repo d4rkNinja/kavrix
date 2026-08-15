@@ -34,6 +34,7 @@ import {
   updateNote,
   validateItemAgainstTemplate,
   validateFieldValue,
+  assertSingleValueWriteTarget,
   type AttachmentStreamStagingSession,
   type VaultStoragePort,
 } from '../src/index.js';
@@ -262,6 +263,91 @@ describe('contextual field validation', () => {
       ),
       { numRuns: 200 },
     );
+  });
+
+  it('refuses a single value write that would discard repeatable elements', () => {
+    const repeatable = fieldDefinitionSchema.parse({
+      id: 'field.recovery_codes',
+      stableKey: 'recovery_codes',
+      label: 'Recovery codes',
+      type: 'secret',
+      required: false,
+      sensitive: true,
+      repeatable: true,
+      copyable: true,
+      searchableLocally: false,
+      showInPreview: false,
+      copyPolicy: 'allowed',
+      revealPolicy: 'timed',
+      reauthenticationPolicy: 'after-lock',
+      exportPolicy: 'guarded',
+      sortOrder: 0,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    });
+    const single = fieldDefinitionSchema.parse({
+      ...repeatable,
+      id: 'field.token',
+      stableKey: 'token',
+      label: 'Token',
+      repeatable: false,
+    });
+    const collection = fieldDefinitionSchema.parse({
+      ...single,
+      id: 'field.tags',
+      stableKey: 'tags',
+      label: 'Tags',
+      type: 'tags',
+      sensitive: false,
+      revealPolicy: 'never',
+      reauthenticationPolicy: 'never',
+      exportPolicy: 'encrypted-only',
+    });
+    const stored = fieldValueSchema.parse({
+      version: 1,
+      state: 'present',
+      content: {
+        cardinality: 'multiple',
+        elements: [
+          {
+            id: 'element.0',
+            value: { kind: 'secret', value: secretValueSchema.parse('first') },
+            lifecycle: { version: 1, status: 'available' },
+          },
+        ],
+      },
+    });
+
+    // A repeatable definition or a collection type is refused on its own,
+    // because either would lose every element the write does not name.
+    expect(() => {
+      assertSingleValueWriteTarget(repeatable, undefined);
+    }).toThrow(ValidationError);
+    expect(() => {
+      assertSingleValueWriteTarget(collection, undefined);
+    }).toThrow(ValidationError);
+
+    // A single-value definition is refused only when the stored value already
+    // holds elements, including one orphaned by a template change.
+    expect(() => {
+      assertSingleValueWriteTarget(single, undefined);
+    }).not.toThrow();
+    expect(() => {
+      assertSingleValueWriteTarget(single, textValue('current'));
+    }).not.toThrow();
+    expect(() => {
+      assertSingleValueWriteTarget(single, stored);
+    }).toThrow(ValidationError);
+    expect(() => {
+      assertSingleValueWriteTarget(
+        single,
+        fieldValueSchema.parse({
+          version: 1,
+          state: 'orphaned',
+          originalValue: stored,
+        }),
+      );
+    }).toThrow(ValidationError);
   });
 
   it('binds item template identity, version, definitions, and required values', () => {
