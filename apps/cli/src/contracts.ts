@@ -24,6 +24,7 @@ import {
   type DeviceId,
   type DeviceListPageResponse,
   type GroupPayload,
+  type GroupTemplate,
   type InviteIssueRequest,
   type InviteIssueResponse,
   type InviteId,
@@ -41,6 +42,7 @@ import type {
   CliArchiveNoteRequest,
   CliCreateCredentialRequest,
   CliCreateGroupRequest,
+  CliCreateTemplateRequest,
   CliCredentialMutationResult,
   CliGroupMutationResult,
   CliNoteMutationResult,
@@ -52,6 +54,7 @@ import type {
   CliSetFieldRequest,
   CliUpdateFieldRequest,
   CliUpdateNoteRequest,
+  CliUpdateTemplateRequest,
 } from './mutation-contracts.js';
 
 export const cliStatusSchema = z
@@ -256,6 +259,17 @@ export const cliKeySlotResultSchema = z
   })
   .strict();
 
+export interface CliTemplateSummary {
+  readonly id: string;
+  readonly name: string;
+  readonly description?: string | undefined;
+  readonly builtInKey?: string | undefined;
+  readonly version: number;
+  readonly fieldCount: number;
+  readonly groupName?: string | undefined;
+  readonly groupId?: string | undefined;
+}
+
 export const cliPortableKeyRotationListingSchema = z
   .object({
     operationId: lifecycleOperationIdSchema,
@@ -384,6 +398,13 @@ export interface CliUseCasePorts {
   archiveEntity?(request: CliArchiveEntityRequest): Promise<void>;
   restoreEntity?(request: CliRestoreEntityRequest): Promise<void>;
   deleteGroup?(query: string): Promise<void>;
+  listTemplates?(): Promise<readonly CliTemplateSummary[]>;
+  inspectTemplate?(query: string): Promise<GroupTemplate>;
+  createTemplate?(request: CliCreateTemplateRequest): Promise<CliGroupMutationResult>;
+  updateTemplate?(request: CliUpdateTemplateRequest): Promise<void>;
+  archiveTemplate?(request: CliArchiveEntityRequest): Promise<void>;
+  restoreTemplate?(request: CliRestoreEntityRequest): Promise<void>;
+  deleteTemplate?(query: string): Promise<void>;
   createCredential?(
     request: CliCreateCredentialRequest,
   ): Promise<CliCredentialMutationResult>;

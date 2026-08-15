@@ -7,6 +7,7 @@ import {
   inviteIssueRequestSchema,
   keySlotIdSchema,
   type GroupPayload,
+  type GroupTemplate,
   type InviteIssueRequest,
   type ItemPayload,
   type KeySlotId,
@@ -24,6 +25,7 @@ import {
   parseRecoverRequest,
   type CliRecoverResult,
   type CliStatus,
+  type CliTemplateSummary,
   type CliUseCasePorts,
 } from './contracts.js';
 import { CliUnavailableError, CliUsageError, type CliFeature } from './errors.js';
@@ -934,6 +936,336 @@ async function withUnlockedVault<Output>(
   );
 }
 
+const templateCommand: CliCommandDescriptor = Object.freeze({
+  name: 'template',
+  description: 'Manage reusable schema templates.',
+  options: [secretBackendOption, backendPassphraseStdinOption],
+  children: [
+    {
+      name: 'list',
+      description: 'List available built-in and group templates.',
+      options: [jsonOption, secretBackendOption, backendPassphraseStdinOption],
+      execute: async (context, _arguments, options) => {
+        let templates: readonly CliTemplateSummary[];
+        if (context.ports?.listTemplates !== undefined) {
+          templates = await context.ports.listTemplates();
+        } else {
+          const { executeProductionListTemplates } =
+            await import('./production/mutations.js');
+          templates = await withUnlockedVault(
+            context,
+            'template list',
+            options,
+            async (unlocked, store, rootKey) =>
+              executeProductionListTemplates({
+                source: store,
+                vaultId: unlocked.profile.vaultId,
+                rootKey,
+              }),
+          );
+        }
+        const { renderTemplateList } = await import('./render.js');
+        context.stdout.write(
+          renderTemplateList(templates, optionBoolean(options, 'json')),
+        );
+      },
+    },
+    {
+      name: 'inspect',
+      description: 'Inspect a template schema definition.',
+      arguments: [
+        {
+          syntax: '<query>',
+          description: 'Template key, name, ID, or group name.',
+        },
+      ],
+      options: [jsonOption, secretBackendOption, backendPassphraseStdinOption],
+      execute: async (context, arguments_, options) => {
+        const query = requiredArgument(arguments_[0], 'template query');
+        let template: GroupTemplate;
+        if (context.ports?.inspectTemplate !== undefined) {
+          template = await context.ports.inspectTemplate(query);
+        } else {
+          const { executeProductionInspectTemplate } =
+            await import('./production/mutations.js');
+          template = await withUnlockedVault(
+            context,
+            'template inspect',
+            options,
+            async (unlocked, store, rootKey) =>
+              executeProductionInspectTemplate(
+                {
+                  source: store,
+                  vaultId: unlocked.profile.vaultId,
+                  rootKey,
+                },
+                query,
+              ),
+          );
+        }
+        const { renderTemplateInspect } = await import('./render.js');
+        context.stdout.write(
+          renderTemplateInspect(template, optionBoolean(options, 'json')),
+        );
+      },
+    },
+    {
+      name: 'show',
+      description: 'Alias for template inspect.',
+      arguments: [
+        {
+          syntax: '<query>',
+          description: 'Template key, name, ID, or group name.',
+        },
+      ],
+      options: [jsonOption, secretBackendOption, backendPassphraseStdinOption],
+      execute: async (context, arguments_, options) => {
+        const query = requiredArgument(arguments_[0], 'template query');
+        let template: GroupTemplate;
+        if (context.ports?.inspectTemplate !== undefined) {
+          template = await context.ports.inspectTemplate(query);
+        } else {
+          const { executeProductionInspectTemplate } =
+            await import('./production/mutations.js');
+          template = await withUnlockedVault(
+            context,
+            'template inspect',
+            options,
+            async (unlocked, store, rootKey) =>
+              executeProductionInspectTemplate(
+                {
+                  source: store,
+                  vaultId: unlocked.profile.vaultId,
+                  rootKey,
+                },
+                query,
+              ),
+          );
+        }
+        const { renderTemplateInspect } = await import('./render.js');
+        context.stdout.write(
+          renderTemplateInspect(template, optionBoolean(options, 'json')),
+        );
+      },
+    },
+    {
+      name: 'create',
+      description: 'Create a reusable template container.',
+      arguments: [{ syntax: '<name>', description: 'Template / group name.' }],
+      options: [
+        { flags: '--description <text>', description: 'Optional description.' },
+        {
+          flags: '--from <template>',
+          description: 'Built-in template key or existing group template.',
+        },
+        secretBackendOption,
+        backendPassphraseStdinOption,
+      ],
+      execute: async (context, arguments_, options) => {
+        const name = requiredArgument(arguments_[0], 'template name');
+        const description = optionString(options, 'description');
+        const fromTemplate = optionString(options, 'from');
+        const { cliCreateTemplateRequestSchema } =
+          await import('./mutation-contracts.js');
+        const request = cliCreateTemplateRequestSchema.parse({
+          name,
+          ...(description ? { description } : {}),
+          ...(fromTemplate ? { fromTemplate } : {}),
+        });
+
+        if (context.ports?.createTemplate !== undefined) {
+          await context.ports.createTemplate(request);
+        } else {
+          const { executeProductionCreateTemplate } =
+            await import('./production/mutations.js');
+          await withUnlockedVault(
+            context,
+            'template create',
+            options,
+            async (unlocked, store, rootKey) => {
+              await executeProductionCreateTemplate(
+                {
+                  source: store,
+                  queue: store,
+                  vaultId: unlocked.profile.vaultId,
+                  rootKey,
+                },
+                request,
+              );
+            },
+          );
+        }
+        context.stdout.write(`Template "${request.name}" created.\n`);
+      },
+    },
+    {
+      name: 'edit',
+      description: 'Edit a template name or description.',
+      arguments: [{ syntax: '<query>', description: 'Group name or ID.' }],
+      options: [
+        { flags: '--name <text>', description: 'Updated template name.' },
+        { flags: '--description <text>', description: 'Updated description.' },
+        secretBackendOption,
+        backendPassphraseStdinOption,
+      ],
+      execute: async (context, arguments_, options) => {
+        const groupQuery = requiredArgument(arguments_[0], 'group query');
+        const name = optionString(options, 'name');
+        const description = optionString(options, 'description');
+        const { cliUpdateTemplateRequestSchema } =
+          await import('./mutation-contracts.js');
+        const request = cliUpdateTemplateRequestSchema.parse({
+          groupQuery,
+          ...(name ? { name } : {}),
+          ...(description ? { description } : {}),
+        });
+
+        if (context.ports?.updateTemplate !== undefined) {
+          await context.ports.updateTemplate(request);
+        } else {
+          const { executeProductionUpdateTemplate } =
+            await import('./production/mutations.js');
+          await withUnlockedVault(
+            context,
+            'template edit',
+            options,
+            async (unlocked, store, rootKey) => {
+              await executeProductionUpdateTemplate(
+                {
+                  source: store,
+                  queue: store,
+                  vaultId: unlocked.profile.vaultId,
+                  rootKey,
+                },
+                request,
+              );
+            },
+          );
+        }
+        context.stdout.write(`Template for "${groupQuery}" updated.\n`);
+      },
+    },
+    {
+      name: 'archive',
+      description: 'Archive a group template container.',
+      arguments: [{ syntax: '<query>', description: 'Group name or ID.' }],
+      options: [secretBackendOption, backendPassphraseStdinOption],
+      execute: async (context, arguments_, options) => {
+        const query = requiredArgument(arguments_[0], 'group query');
+        const { cliArchiveEntityRequestSchema } =
+          await import('./mutation-contracts.js');
+        const request = cliArchiveEntityRequestSchema.parse({ groupQuery: query });
+
+        if (context.ports?.archiveTemplate !== undefined) {
+          await context.ports.archiveTemplate(request);
+        } else if (context.ports?.archiveEntity !== undefined) {
+          await context.ports.archiveEntity(request);
+        } else {
+          const { executeProductionArchiveEntity } =
+            await import('./production/mutations.js');
+          await withUnlockedVault(
+            context,
+            'template archive',
+            options,
+            async (unlocked, store, rootKey) =>
+              executeProductionArchiveEntity(
+                {
+                  source: store,
+                  queue: store,
+                  vaultId: unlocked.profile.vaultId,
+                  rootKey,
+                },
+                request,
+              ),
+          );
+        }
+        context.stdout.write(`Template for "${query}" archived.\n`);
+      },
+    },
+    {
+      name: 'restore',
+      description: 'Restore an archived group template container.',
+      arguments: [{ syntax: '<query>', description: 'Group name or ID.' }],
+      options: [secretBackendOption, backendPassphraseStdinOption],
+      execute: async (context, arguments_, options) => {
+        const query = requiredArgument(arguments_[0], 'group query');
+        const { cliRestoreEntityRequestSchema } =
+          await import('./mutation-contracts.js');
+        const request = cliRestoreEntityRequestSchema.parse({ groupQuery: query });
+
+        if (context.ports?.restoreTemplate !== undefined) {
+          await context.ports.restoreTemplate(request);
+        } else if (context.ports?.restoreEntity !== undefined) {
+          await context.ports.restoreEntity(request);
+        } else {
+          const { executeProductionRestoreEntity } =
+            await import('./production/mutations.js');
+          await withUnlockedVault(
+            context,
+            'template restore',
+            options,
+            async (unlocked, store, rootKey) =>
+              executeProductionRestoreEntity(
+                {
+                  source: store,
+                  queue: store,
+                  vaultId: unlocked.profile.vaultId,
+                  rootKey,
+                },
+                request,
+              ),
+          );
+        }
+        context.stdout.write(`Template for "${query}" restored.\n`);
+      },
+    },
+    {
+      name: 'delete',
+      description: 'Permanently delete a group template container.',
+      arguments: [{ syntax: '<query>', description: 'Group name or ID.' }],
+      options: [
+        { flags: '--force', description: 'Confirm permanent deletion.' },
+        secretBackendOption,
+        backendPassphraseStdinOption,
+      ],
+      execute: async (context, arguments_, options) => {
+        const query = requiredArgument(arguments_[0], 'group query');
+        const force = optionBoolean(options, 'force');
+        if (!force) {
+          throw new CliUsageError(
+            'The --force flag is required for permanent deletion.',
+          );
+        }
+
+        if (context.ports?.deleteTemplate !== undefined) {
+          await context.ports.deleteTemplate(query);
+        } else if (context.ports?.deleteGroup !== undefined) {
+          await context.ports.deleteGroup(query);
+        } else {
+          const { executeProductionDeleteGroup } =
+            await import('./production/mutations.js');
+          await withUnlockedVault(
+            context,
+            'template delete',
+            options,
+            async (unlocked, store, rootKey) =>
+              executeProductionDeleteGroup(
+                {
+                  source: store,
+                  queue: store,
+                  vaultId: unlocked.profile.vaultId,
+                  rootKey,
+                },
+                query,
+              ),
+          );
+        }
+        context.stdout.write(`Template for "${query}" deleted.\n`);
+      },
+    },
+  ],
+});
+
 const groupCommand: CliCommandDescriptor = Object.freeze({
   name: 'group',
   description: 'Manage group containers.',
@@ -945,16 +1277,23 @@ const groupCommand: CliCommandDescriptor = Object.freeze({
       arguments: [{ syntax: '<name>', description: 'Group name.' }],
       options: [
         { flags: '--description <text>', description: 'Optional group description.' },
+        {
+          flags: '--template <query>',
+          description:
+            'Initialize group with a built-in template key or existing group template.',
+        },
         secretBackendOption,
         backendPassphraseStdinOption,
       ],
       execute: async (context, arguments_, options) => {
         const name = requiredArgument(arguments_[0], 'group name');
         const description = optionString(options, 'description');
+        const template = optionString(options, 'template');
         const { cliCreateGroupRequestSchema } = await import('./mutation-contracts.js');
         const request = cliCreateGroupRequestSchema.parse({
           name,
           ...(description ? { description } : {}),
+          ...(template ? { template } : {}),
         });
 
         if (context.ports?.createGroup !== undefined) {
@@ -2882,6 +3221,7 @@ export const CLI_COMMAND_CATALOG: readonly CliCommandDescriptor[] = Object.freez
   unlockCommand,
   lockCommand,
   statusCommand,
+  templateCommand,
   groupCommand,
   credentialCommand,
   fieldCommand,
@@ -3246,6 +3586,7 @@ export const PUBLIC_CLI_COMMAND_CATALOG: readonly CliCommandDescriptor[] =
     unlockCommand,
     lockCommand,
     statusCommand,
+    templateCommand,
     groupCommand,
     credentialCommand,
     fieldCommand,

@@ -9,7 +9,7 @@ import {
   type VaultReadSourcePort,
 } from '@kavrix/client';
 import { type VaultRootKey, zeroize } from '@kavrix/crypto';
-import { AmbiguousNameError, NotFoundError } from '@kavrix/core';
+import { AmbiguousNameError, NotFoundError, builtInTemplates } from '@kavrix/core';
 import {
   auditEventIdSchema,
   fieldDefinitionSchema,
@@ -24,6 +24,7 @@ import {
   templateIdSchema,
   templateMigrationIdSchema,
   templateVersionSchema,
+  type GroupPayload,
   type GroupTemplate,
   type Note,
   type VaultId,
@@ -37,6 +38,7 @@ import type {
   CliArchiveNoteRequest,
   CliCreateCredentialRequest,
   CliCreateGroupRequest,
+  CliCreateTemplateRequest,
   CliCredentialMutationResult,
   CliGroupMutationResult,
   CliNoteMutationResult,
@@ -48,7 +50,9 @@ import type {
   CliSetFieldRequest,
   CliUpdateFieldRequest,
   CliUpdateNoteRequest,
+  CliUpdateTemplateRequest,
 } from '../mutation-contracts.js';
+import type { CliTemplateSummary } from '../contracts.js';
 import { productionClock, randomIdempotencyKeys } from './runtime-adapters.js';
 
 export interface ProductionMutationOptions {
@@ -107,12 +111,47 @@ export async function executeProductionCreateGroup(
     createDefaultMutationDependencies(),
   );
 
+  let template: GroupTemplate = DEFAULT_GROUP_TEMPLATE;
+  if (request.template !== undefined && request.template.trim().length > 0) {
+    const requested = request.template.trim();
+    const builtIn = builtInTemplates.find(
+      (t) =>
+        t.builtInKey === requested ||
+        t.id === requested ||
+        t.name.toLowerCase() === requested.toLowerCase(),
+    );
+    if (builtIn !== undefined) {
+      const now = productionClock().now().toISOString();
+      template = {
+        ...builtIn,
+        id: templateIdSchema.parse(`template.${randomBytes(12).toString('hex')}`),
+        createdAt: now,
+        updatedAt: now,
+      };
+    } else {
+      const readSession = new VaultReadSession(options.source, options.vaultId);
+      await readSession.unlock(options.rootKey);
+      try {
+        const existingGroup = await readSession.showGroup(requested);
+        const now = productionClock().now().toISOString();
+        template = {
+          ...existingGroup.template,
+          id: templateIdSchema.parse(`template.${randomBytes(12).toString('hex')}`),
+          createdAt: now,
+          updatedAt: now,
+        };
+      } finally {
+        readSession.lock();
+      }
+    }
+  }
+
   const groupId = await service.createGroup({
     name: request.name,
     aliases: [],
     tags: [],
     notes: [],
-    template: DEFAULT_GROUP_TEMPLATE,
+    template,
     sortOrder: 0,
     ...(request.description ? { description: request.description } : {}),
   });
@@ -122,6 +161,145 @@ export async function executeProductionCreateGroup(
     groupId,
     name: request.name,
   };
+}
+
+export async function executeProductionCreateTemplate(
+  options: ProductionMutationOptions,
+  request: CliCreateTemplateRequest,
+): Promise<CliGroupMutationResult> {
+  return executeProductionCreateGroup(options, {
+    name: request.name,
+    ...(request.description ? { description: request.description } : {}),
+    ...(request.fromTemplate ? { template: request.fromTemplate } : {}),
+  });
+}
+
+export async function executeProductionUpdateTemplate(
+  options: ProductionMutationOptions,
+  request: CliUpdateTemplateRequest,
+): Promise<void> {
+  const readSession = new VaultReadSession(options.source, options.vaultId);
+  await readSession.unlock(options.rootKey);
+  let group: GroupPayload;
+  try {
+    group = await readSession.showGroup(request.groupQuery);
+  } finally {
+    readSession.lock();
+  }
+
+  const now = productionClock().now().toISOString();
+  const updatedTemplate: GroupTemplate = {
+    ...group.template,
+    ...(request.name ? { name: request.name } : {}),
+    ...(request.description !== undefined ? { description: request.description } : {}),
+    updatedAt: now,
+  };
+
+  const service = new VaultMutationService(
+    options.source,
+    options.queue,
+    options.vaultId,
+    options.rootKey,
+    createDefaultMutationDependencies(),
+  );
+
+  await service.updateGroup({
+    ...group,
+    template: updatedTemplate,
+    updatedAt: now,
+  });
+}
+
+export async function executeProductionDeleteGroup(
+  options: ProductionMutationOptions,
+  query: string,
+): Promise<void> {
+  const readSession = new VaultReadSession(options.source, options.vaultId);
+  let group: GroupPayload;
+  await readSession.unlock(options.rootKey);
+  try {
+    group = await readSession.showGroup(query);
+  } finally {
+    readSession.lock();
+  }
+  const state = await options.source.getCurrentGroup(options.vaultId, group.id);
+  if (state?.state !== 'active') {
+    throw new Error('Group is not active or found');
+  }
+  const service = new VaultMutationService(
+    options.source,
+    options.queue,
+    options.vaultId,
+    options.rootKey,
+    createDefaultMutationDependencies(),
+  );
+  await service.deleteGroup(group.id, state.record.recordRevision);
+}
+
+export async function executeProductionListTemplates(options: {
+  readonly source: VaultReadSourcePort;
+  readonly vaultId: VaultId;
+  readonly rootKey: VaultRootKey;
+}): Promise<readonly CliTemplateSummary[]> {
+  const readSession = new VaultReadSession(options.source, options.vaultId);
+  await readSession.unlock(options.rootKey);
+  let groups: readonly GroupPayload[];
+  try {
+    groups = await readSession.listGroups();
+  } finally {
+    readSession.lock();
+  }
+
+  const builtInSummaries: CliTemplateSummary[] = builtInTemplates.map((t) => ({
+    id: t.id,
+    name: t.name,
+    ...(t.description ? { description: t.description } : {}),
+    ...(t.builtInKey ? { builtInKey: t.builtInKey } : {}),
+    version: t.version,
+    fieldCount: t.fields.length,
+  }));
+
+  const groupSummaries: CliTemplateSummary[] = groups.map((g) => ({
+    id: g.template.id,
+    name: g.template.name,
+    ...(g.template.description ? { description: g.template.description } : {}),
+    ...(g.template.builtInKey ? { builtInKey: g.template.builtInKey } : {}),
+    version: g.template.version,
+    fieldCount: g.template.fields.length,
+    groupName: g.name,
+    groupId: g.id,
+  }));
+
+  return [...builtInSummaries, ...groupSummaries];
+}
+
+export async function executeProductionInspectTemplate(
+  options: {
+    readonly source: VaultReadSourcePort;
+    readonly vaultId: VaultId;
+    readonly rootKey: VaultRootKey;
+  },
+  query: string,
+): Promise<GroupTemplate> {
+  const trimmed = query.trim();
+  const builtIn = builtInTemplates.find(
+    (t) =>
+      t.builtInKey === trimmed ||
+      t.id === trimmed ||
+      t.name.toLowerCase() === trimmed.toLowerCase(),
+  );
+  if (builtIn !== undefined) {
+    return builtIn;
+  }
+
+  const readSession = new VaultReadSession(options.source, options.vaultId);
+  await readSession.unlock(options.rootKey);
+  try {
+    const group = await readSession.showGroup(trimmed);
+    return group.template;
+  } finally {
+    readSession.lock();
+  }
 }
 
 export async function executeProductionCreateCredential(
