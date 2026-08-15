@@ -6,6 +6,7 @@ import type {
 import {
   isSensitiveFieldType,
   type DeviceListPageResponse,
+  type GroupTemplate,
   type InviteIssueResponse,
   type InviteListPageResponse,
   type PublicInviteRecord,
@@ -24,6 +25,7 @@ import type {
   CliRecoverResult,
   CliShowResult,
   CliStatus,
+  CliTemplateSummary,
 } from './contracts.js';
 import { safeJson, sanitizeTerminalText } from './terminal.js';
 
@@ -600,6 +602,105 @@ export function renderCredentialList(
       (item) =>
         `  - ${item.title} (${item.id})${item.subtitle ? `: ${item.subtitle}` : ''}`,
     ),
+  ];
+  return lines.join('\n').concat('\n');
+}
+
+export function renderTemplateList(
+  templates: readonly CliTemplateSummary[],
+  json: boolean,
+): string {
+  const safe = templates.map((t) => ({
+    id: sanitizeTerminalText(t.id),
+    name: sanitizeTerminalText(t.name),
+    ...(t.description === undefined
+      ? {}
+      : { description: sanitizeTerminalText(t.description) }),
+    ...(t.builtInKey === undefined
+      ? {}
+      : { builtInKey: sanitizeTerminalText(t.builtInKey) }),
+    version: t.version,
+    fieldCount: t.fieldCount,
+    ...(t.groupName === undefined
+      ? {}
+      : { groupName: sanitizeTerminalText(t.groupName) }),
+    ...(t.groupId === undefined ? {} : { groupId: sanitizeTerminalText(t.groupId) }),
+  }));
+  if (json) return safeJson(safe);
+  if (safe.length === 0) return 'No templates found.\n';
+  const lines = [
+    `Templates (${String(safe.length)}):`,
+    ...safe.map((t) => {
+      const typeLabel = t.builtInKey
+        ? ` [builtin: ${t.builtInKey}]`
+        : t.groupName
+          ? ` [group: ${t.groupName}]`
+          : '';
+      const desc = t.description ? `: ${t.description}` : '';
+      return `  - ${t.name} (${t.id})${typeLabel} [v${String(t.version)}, ${String(t.fieldCount)} fields]${desc}`;
+    }),
+  ];
+  return lines.join('\n').concat('\n');
+}
+
+export function renderTemplateInspect(template: GroupTemplate, json: boolean): string {
+  if (json) {
+    return safeJson({
+      id: sanitizeTerminalText(template.id),
+      name: sanitizeTerminalText(template.name),
+      ...(template.description === undefined
+        ? {}
+        : { description: sanitizeTerminalText(template.description) }),
+      ...(template.builtInKey === undefined
+        ? {}
+        : { builtInKey: sanitizeTerminalText(template.builtInKey) }),
+      version: template.version,
+      createdAt: sanitizeTerminalText(template.createdAt),
+      updatedAt: sanitizeTerminalText(template.updatedAt),
+      fields: template.fields.map((f) => ({
+        id: sanitizeTerminalText(f.id),
+        stableKey: sanitizeTerminalText(f.stableKey),
+        label: sanitizeTerminalText(f.label),
+        type: f.type,
+        required: f.required,
+        sensitive: f.sensitive,
+        repeatable: f.repeatable,
+        copyable: f.copyable,
+        sortOrder: f.sortOrder,
+        copyPolicy: f.copyPolicy,
+        revealPolicy: f.revealPolicy,
+        reauthenticationPolicy: f.reauthenticationPolicy,
+        exportPolicy: f.exportPolicy,
+        ...(f.selectOptions === undefined
+          ? {}
+          : {
+              selectOptions: f.selectOptions.map((opt) => ({
+                value: sanitizeTerminalText(opt.value),
+                label: sanitizeTerminalText(opt.label),
+              })),
+            }),
+      })),
+    });
+  }
+  const lines = [
+    `Template: ${sanitizeTerminalText(template.name)} (${sanitizeTerminalText(template.id)})`,
+    `Version: ${String(template.version)}`,
+    ...(template.builtInKey
+      ? [`Built-in key: ${sanitizeTerminalText(template.builtInKey)}`]
+      : []),
+    ...(template.description
+      ? [`Description: ${sanitizeTerminalText(template.description)}`]
+      : []),
+    `Fields (${String(template.fields.length)}):`,
+    ...template.fields.map((f) => {
+      const flags = [
+        f.type,
+        ...(f.required ? ['required'] : []),
+        ...(f.sensitive ? ['sensitive'] : []),
+        ...(f.repeatable ? ['repeatable'] : []),
+      ];
+      return `  - [${String(f.sortOrder)}] ${sanitizeTerminalText(f.label)} (${sanitizeTerminalText(f.stableKey)}): ${flags.join(', ')}`;
+    }),
   ];
   return lines.join('\n').concat('\n');
 }

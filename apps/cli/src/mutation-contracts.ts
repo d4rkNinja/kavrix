@@ -42,6 +42,23 @@ export const cliCreateGroupRequestSchema = z
   .object({
     name: cleanNameSchema,
     description: cleanDescriptionSchema.optional(),
+    template: cleanNameSchema.optional(),
+  })
+  .strict();
+
+export const cliCreateTemplateRequestSchema = z
+  .object({
+    name: cleanNameSchema,
+    description: cleanDescriptionSchema.optional(),
+    fromTemplate: cleanNameSchema.optional(),
+  })
+  .strict();
+
+export const cliUpdateTemplateRequestSchema = z
+  .object({
+    groupQuery: cleanNameSchema,
+    name: cleanNameSchema.optional(),
+    description: cleanDescriptionSchema.optional(),
   })
   .strict();
 
@@ -199,6 +216,8 @@ export const cliNoteMutationResultSchema = z
   .strict();
 
 export type CliCreateGroupRequest = z.infer<typeof cliCreateGroupRequestSchema>;
+export type CliCreateTemplateRequest = z.infer<typeof cliCreateTemplateRequestSchema>;
+export type CliUpdateTemplateRequest = z.infer<typeof cliUpdateTemplateRequestSchema>;
 export type CliCreateCredentialRequest = z.infer<
   typeof cliCreateCredentialRequestSchema
 >;
