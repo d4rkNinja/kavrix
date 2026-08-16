@@ -66,6 +66,7 @@ export type CliFeature =
   | 'credential delete'
   | 'field add'
   | 'field set'
+  | 'field generate'
   | 'field update'
   | 'field archive'
   | 'field restore'

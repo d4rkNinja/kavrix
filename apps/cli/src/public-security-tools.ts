@@ -28,13 +28,156 @@ const PASSWORD_ALPHABETS = Object.freeze({
   symbols: '!@#$%^&*()-_=+[]{}:,.?',
 });
 
+type ParsedPasswordOptions = Readonly<{
+  length: number;
+  lowercaseMin: number;
+  uppercaseMin: number;
+  digitsMin: number;
+  symbolsMin: number;
+  exclude: string | undefined;
+}>;
+
+type ParsedPassphraseOptions = Readonly<{
+  words: number;
+  separator: SafePassphraseSeparator;
+  capitalize: boolean;
+  digit: boolean;
+  excludeWord: readonly string[];
+}>;
+
+/** Non-secret description of what was generated, safe to render in a receipt. */
+export type GeneratedSecretSummary =
+  | Readonly<{ kind: 'password'; length: number }>
+  | Readonly<{ kind: 'passphrase'; words: number }>;
+
+/** One generated secret together with its non-secret shape summary. */
+export type GeneratedSecret = Readonly<{
+  value: string;
+  summary: GeneratedSecretSummary;
+}>;
+
+/** Password policy options, in the camel-cased form Commander produces. */
+const PASSWORD_POLICY_OPTION_KEYS = Object.freeze([
+  'length',
+  'lowercaseMin',
+  'uppercaseMin',
+  'digitsMin',
+  'symbolsMin',
+  'exclude',
+] as const);
+
+/** Passphrase policy options, in the camel-cased form Commander produces. */
+const PASSPHRASE_POLICY_OPTION_KEYS = Object.freeze([
+  'words',
+  'separator',
+  'capitalize',
+  'digit',
+  'excludeWord',
+] as const);
+
+/**
+ * Defaults the printing commands declare through Commander.
+ *
+ * A command that generates into a vault cannot declare Commander defaults for
+ * these, because a declared default is indistinguishable from a value the caller
+ * typed, and that ambiguity is what makes mixing password and passphrase flags
+ * detectable. The defaults therefore live here and are applied only after the
+ * requested generator is known.
+ */
+const DEFAULT_PASSWORD_POLICY_OPTIONS: Readonly<Record<string, string>> = Object.freeze(
+  {
+    length: '24',
+    lowercaseMin: '1',
+    uppercaseMin: '1',
+    digitsMin: '1',
+    symbolsMin: '1',
+  },
+);
+
+const DEFAULT_PASSPHRASE_POLICY_OPTIONS: Readonly<Record<string, string>> =
+  Object.freeze({ words: '8', separator: '-' });
+
 export async function executePasswordGeneration(
   boundary: SecretOutputBoundary,
   options: Readonly<Record<string, unknown>>,
 ): Promise<void> {
   requireSecretOutputAuthorization(boundary, options);
   const core = await import('@kavrix/core');
-  const parsed = parsePasswordOptions(options, core);
+  boundary.stdout.write(
+    `${generatePasswordValue(parsePasswordOptions(options, core), core)}\n`,
+  );
+}
+
+export async function executePassphraseGeneration(
+  boundary: SecretOutputBoundary,
+  options: Readonly<Record<string, unknown>>,
+): Promise<void> {
+  requireSecretOutputAuthorization(boundary, options);
+  const core = await import('@kavrix/core');
+  boundary.stdout.write(
+    `${generatePassphraseValue(parsePassphraseOptions(options, core), core)}\n`,
+  );
+}
+
+/**
+ * Generates one secret for storage under the same bounded policy the printing
+ * generators enforce.
+ *
+ * The storing command carries write, egress, and backend options too, so only the
+ * policy keys are handed to the strict parsers. Every bound is therefore defined
+ * once: a value this rejects is rejected identically by `generate password` and
+ * `generate passphrase`, and a value they accept produces the same secret here.
+ */
+export async function generateSecretForStorage(
+  options: Readonly<Record<string, unknown>>,
+): Promise<GeneratedSecret> {
+  const core = await import('@kavrix/core');
+  const passphrase = options['passphrase'] === true;
+  const requested = passphrase
+    ? PASSPHRASE_POLICY_OPTION_KEYS
+    : PASSWORD_POLICY_OPTION_KEYS;
+  const foreign = passphrase
+    ? PASSWORD_POLICY_OPTION_KEYS
+    : PASSPHRASE_POLICY_OPTION_KEYS;
+  // An option belonging to the other generator is ambiguous rather than harmless:
+  // ignoring it would silently store a secret with a shape the caller did not
+  // ask for, so the request fails closed instead.
+  if (foreign.some((key) => options[key] !== undefined)) {
+    throw new CliUsageError(policyRejection(passphrase));
+  }
+  const policyOptions: Record<string, unknown> = {
+    ...(passphrase
+      ? DEFAULT_PASSPHRASE_POLICY_OPTIONS
+      : DEFAULT_PASSWORD_POLICY_OPTIONS),
+  };
+  for (const key of requested) {
+    const value = options[key];
+    if (value !== undefined) policyOptions[key] = value;
+  }
+  if (passphrase) {
+    const parsed = parsePassphraseOptions(policyOptions, core);
+    return {
+      value: generatePassphraseValue(parsed, core),
+      summary: { kind: 'passphrase', words: parsed.words },
+    };
+  }
+  const parsed = parsePasswordOptions(policyOptions, core);
+  return {
+    value: generatePasswordValue(parsed, core),
+    summary: { kind: 'password', length: parsed.length },
+  };
+}
+
+function policyRejection(passphrase: boolean): string {
+  return passphrase
+    ? 'The passphrase generation policy is invalid.'
+    : 'The password generation policy is invalid.';
+}
+
+function generatePasswordValue(
+  parsed: ParsedPasswordOptions,
+  core: CoreSecurityTools,
+): string {
   const classes = (
     [
       ['lowercase', PASSWORD_ALPHABETS.lowercase, parsed.lowercaseMin],
@@ -51,22 +194,19 @@ export async function executePasswordGeneration(
     ...(parsed.exclude === undefined ? {} : { excludedCharacters: parsed.exclude }),
   };
   try {
-    boundary.stdout.write(`${core.generatePassword(policy)}\n`);
+    return core.generatePassword(policy);
   } catch (error) {
     if (error instanceof core.ValidationError) {
-      throw new CliUsageError('The password generation policy is invalid.');
+      throw new CliUsageError(policyRejection(false));
     }
     throw error;
   }
 }
 
-export async function executePassphraseGeneration(
-  boundary: SecretOutputBoundary,
-  options: Readonly<Record<string, unknown>>,
-): Promise<void> {
-  requireSecretOutputAuthorization(boundary, options);
-  const core = await import('@kavrix/core');
-  const parsed = parsePassphraseOptions(options, core);
+function generatePassphraseValue(
+  parsed: ParsedPassphraseOptions,
+  core: CoreSecurityTools,
+): string {
   const policy: PassphraseGeneratorPolicy = {
     wordCount: parsed.words,
     separator: parsed.separator,
@@ -75,10 +215,10 @@ export async function executePassphraseGeneration(
     excludedWords: parsed.excludeWord,
   };
   try {
-    boundary.stdout.write(`${core.generatePassphrase(policy)}\n`);
+    return core.generatePassphrase(policy);
   } catch (error) {
     if (error instanceof core.ValidationError) {
-      throw new CliUsageError('The passphrase generation policy is invalid.');
+      throw new CliUsageError(policyRejection(true));
     }
     throw error;
   }
@@ -133,14 +273,7 @@ function requireSecretOutputAuthorization(
 function parsePasswordOptions(
   options: Readonly<Record<string, unknown>>,
   core: CoreSecurityTools,
-): Readonly<{
-  length: number;
-  lowercaseMin: number;
-  uppercaseMin: number;
-  digitsMin: number;
-  symbolsMin: number;
-  exclude: string | undefined;
-}> {
+): ParsedPasswordOptions {
   const count = boundedIntegerString(0, core.MAX_GENERATED_PASSWORD_LENGTH);
   const parsed = z
     .object({
@@ -163,7 +296,7 @@ function parsePasswordOptions(
     .strict()
     .safeParse(options);
   if (!parsed.success) {
-    throw new CliUsageError('The password generation policy is invalid.');
+    throw new CliUsageError(policyRejection(false));
   }
   return {
     length: parsed.data.length,
@@ -178,13 +311,7 @@ function parsePasswordOptions(
 function parsePassphraseOptions(
   options: Readonly<Record<string, unknown>>,
   core: CoreSecurityTools,
-): Readonly<{
-  words: number;
-  separator: SafePassphraseSeparator;
-  capitalize: boolean;
-  digit: boolean;
-  excludeWord: readonly string[];
-}> {
+): ParsedPassphraseOptions {
   const parsed = z
     .object({
       words: boundedIntegerString(
@@ -200,7 +327,7 @@ function parsePassphraseOptions(
     .strict()
     .safeParse(options);
   if (!parsed.success) {
-    throw new CliUsageError('The passphrase generation policy is invalid.');
+    throw new CliUsageError(policyRejection(true));
   }
   return parsed.data;
 }
