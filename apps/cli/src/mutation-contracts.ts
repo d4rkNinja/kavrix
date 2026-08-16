@@ -1,3 +1,4 @@
+import { MAX_ROTATED_ITEM_KEYS } from '@kavrix/client';
 import { MAX_VAULT_SEARCH_RESULTS, MAX_VAULT_SEARCH_TERM_LENGTH } from '@kavrix/core';
 import {
   ENVIRONMENT_NAME_PATTERN,
@@ -538,6 +539,46 @@ export const cliVaultSearchQuerySchema = z
     includeSecretValues: query.includeSecretValues,
   }))
   .pipe(cliVaultSearchRequestSchema);
+
+/**
+ * One item-key rotation request.
+ *
+ * A rotation batch is published as a single queue transaction, so the selection
+ * shares the queue's atomic bound: `MAX_ROTATED_ITEM_KEYS` credentials at most.
+ * Omitting `credentialQueries` rotates every active credential in the group,
+ * which is the whole-group form the bound then applies to as well.
+ */
+export const cliItemKeyRotationRequestSchema = z
+  .object({
+    groupQuery: cleanNameSchema,
+    credentialQueries: z
+      .array(cleanNameSchema)
+      .min(1)
+      .max(MAX_ROTATED_ITEM_KEYS)
+      .optional(),
+  })
+  .strict();
+
+export type CliItemKeyRotationRequest = z.infer<typeof cliItemKeyRotationRequestSchema>;
+
+/**
+ * Accepts the raw `key rekey` option values and normalizes them.
+ *
+ * The repeatable collector always leaves an array behind, so an omitted
+ * `--credential` arrives as an empty list and has to be mapped back to "every
+ * active credential" rather than to an empty selection the client would refuse.
+ */
+export const cliItemKeyRotationQuerySchema = z
+  .object({
+    group: cleanNameSchema,
+    credential: z.array(cleanNameSchema).max(MAX_ROTATED_ITEM_KEYS),
+  })
+  .strict()
+  .transform((query): CliItemKeyRotationRequest => ({
+    groupQuery: query.group,
+    ...(query.credential.length === 0 ? {} : { credentialQueries: query.credential }),
+  }))
+  .pipe(cliItemKeyRotationRequestSchema);
 
 export const cliListAuditEventsRequestSchema = z
   .object({
