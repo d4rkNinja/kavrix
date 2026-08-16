@@ -350,10 +350,48 @@ A new random item key re-encrypts that item's payload and history as required.
 It does not affect other items. Attachment keys rotate independently; attachment
 rewrites must stream and verify every chunk.
 
+`VaultMutationService.rotateItemKeys`, exposed as `creds key rekey`, implements
+this for whole groups or an explicit credential selection. The wrapped item key
+and the payload it protects live in the same record, so each rotated item is one
+self-contained revision-bound mutation: the group key, the vault root key, the
+key version, and the associated data of every envelope are unchanged, and only
+the wrapped item key and the payload ciphertext are replaced. An interruption
+therefore leaves every record readable under whichever key it currently holds,
+and re-running the command rotates the remainder.
+
+Two categories are refused rather than rotated, and are reported as skips:
+
+- **Attachment-bearing items.** Attachment keys are wrapped under the item key,
+  and republishing them requires restreaming every chunk through
+  `beginAttachmentStream`/`writeChunk`/`finalize`, which no single mutation batch
+  can carry. Rotating the item key alone would strand the attachment keys.
+- **Deleted items.** A tombstone holds no live item key.
+
+Remaining limitations, recorded so they are not mistaken for implemented
+behavior:
+
+- **Group-key rotation is not exposed.** `mongo-vault-storage` rejects any
+  `wrappedGroupKey` or `wrappedItemKey` change on a group mutation and requires
+  `templateVersion` to increase, so the only atomic group-plus-items channel
+  cannot carry a rekey.
+- **Vault-root-key rotation is not exposed.** Re-wrapping the VRK needs every
+  active slot's secret at once, and advancing `currentKeyVersion` would break
+  audit-record verification, which binds the recorded key version.
+- **Attachment-content rotation is not exposed.** `RotationKind` has no
+  `attachment` member; attachment records can only be republished through the
+  streaming attachment port.
+- **Checkpointed resume is not composed here.** `createRotationCheckpoint`
+  requires `toKeyVersion > fromKeyVersion`, which contradicts keeping the key
+  version exact. Its validation was deliberately left unchanged; item-key
+  rotation is instead idempotent by re-running.
+
 Old keys are not a general history mechanism. Encrypted history retains the
 envelopes necessary under an explicit retention design, while obsolete
 migration keys are securely discarded after commit. A key-version registry and
-rotation state make mixed-version reads explicit.
+rotation state make mixed-version reads explicit. No history write path exists
+today, so item-key rotation cannot strand a history envelope; any future change
+that begins publishing history records must extend item-key rotation before it
+ships.
 
 ## Portable key files
 

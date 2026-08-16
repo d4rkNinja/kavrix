@@ -31,6 +31,7 @@ import type {
   CliHistoryDiff,
   CliHistoryRestoreResult,
   CliHistorySummary,
+  CliItemKeyRotationResult,
   CliKeySlot,
   CliKeySlotResult,
   CliPortableKeyRotationResult,
@@ -348,6 +349,62 @@ export function renderPortableKeyRotation(
   }
   return `Portable-key rotation ${safe.action} (${safe.operationId}).\n`;
 }
+
+/**
+ * Renders one item-key rotation.
+ *
+ * Titles come from payloads the caller already decrypted locally, so they are
+ * sanitized like every other name the CLI prints. Skips are always listed with
+ * their reason: an operator who asked to rotate a group has to be able to see
+ * that an attachment-bearing credential still holds its previous item key, and a
+ * count of rotated credentials alone would hide that.
+ */
+export function renderItemKeyRotation(
+  result: CliItemKeyRotationResult,
+  json: boolean,
+): string {
+  const safe = {
+    vaultId: sanitizeTerminalText(result.vaultId),
+    groupId: sanitizeTerminalText(result.groupId),
+    groupName: sanitizeTerminalText(result.groupName),
+    rotated: result.rotated.map((credential) => ({
+      credentialId: sanitizeTerminalText(credential.credentialId),
+      title: sanitizeTerminalText(credential.title),
+    })),
+    skipped: result.skipped.map((credential) => ({
+      credentialId: sanitizeTerminalText(credential.credentialId),
+      title: sanitizeTerminalText(credential.title),
+      reason: credential.reason,
+    })),
+  };
+  if (json) return safeJson(safe);
+  const lines = [
+    `Rotated ${String(safe.rotated.length)} item key(s) in ${safe.groupName} (${safe.groupId}).`,
+    ...safe.rotated.map(
+      (credential) => `  ${credential.title} (${credential.credentialId})`,
+    ),
+  ];
+  if (safe.skipped.length > 0) {
+    lines.push(`Skipped ${String(safe.skipped.length)} credential(s):`);
+    for (const credential of safe.skipped) {
+      lines.push(
+        `  ${credential.title} (${credential.credentialId}): ${ITEM_KEY_ROTATION_SKIP_REASONS[credential.reason]}`,
+      );
+    }
+  }
+  lines.push(
+    'Group and vault keys, key versions, and associated data are unchanged; only item keys were replaced.',
+  );
+  return lines.join('\n').concat('\n');
+}
+
+const ITEM_KEY_ROTATION_SKIP_REASONS = Object.freeze({
+  'attachments-present':
+    'attachment keys are wrapped under this item key, so rotating it would strand them',
+  deleted: 'the record is deleted and holds no live item key',
+} as const satisfies Readonly<
+  Record<CliItemKeyRotationResult['skipped'][number]['reason'], string>
+>);
 
 export function renderShow(result: CliShowResult, json: boolean): string {
   const safe = safeShow(result);

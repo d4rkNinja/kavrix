@@ -18,10 +18,12 @@ import {
   generateItemKey,
   requireByteLength,
   zeroize,
+  type ItemKey,
   type VaultRootKey,
 } from '@kavrix/crypto';
 import {
   auditEventIdSchema,
+  canonicalJson,
   groupIdSchema,
   groupPayloadSchema,
   groupTemplateSchema,
@@ -141,6 +143,32 @@ export type CreateItemInput = Omit<
   | 'updatedAt'
   | 'deletedAt'
 >;
+
+/** One rotation batch is one queue transaction, so it shares the atomic bound. */
+export const MAX_ROTATED_ITEM_KEYS = 99;
+
+export type ItemKeyRotationRequest = Readonly<{
+  groupId: GroupId;
+  /** Every active item in the group when omitted. */
+  itemIds?: readonly ItemId[];
+}>;
+
+/**
+ * `attachments-present` protects attachment keys, which are wrapped under the
+ * item key and can only be republished through the streaming attachment port.
+ */
+export type ItemKeyRotationSkipReason = 'attachments-present' | 'deleted';
+
+export type ItemKeyRotationSkip = Readonly<{
+  itemId: ItemId;
+  reason: ItemKeyRotationSkipReason;
+}>;
+
+export type ItemKeyRotationReport = Readonly<{
+  groupId: GroupId;
+  rotated: readonly ItemId[];
+  skipped: readonly ItemKeyRotationSkip[];
+}>;
 
 export type VaultMutationServiceDependencies = Readonly<{
   clock: ClockPort;
@@ -327,6 +355,109 @@ export class VaultMutationService {
           zeroize(item.key);
         }
       } finally {
+        zeroize(group.key);
+      }
+    });
+  }
+
+  /**
+   * Replaces the key of every selected item in one group while every associated
+   * data value and key version stays byte-identical.
+   *
+   * Each replacement re-encrypts that item's payload under fresh key material
+   * and wraps the new key under the unchanged group key, so the vault root key,
+   * the group key, and every unlock slot are untouched and last-valid-slot
+   * protection cannot be affected. Items that own attachments are reported
+   * instead of rotated: attachment keys are wrapped under the item key and
+   * attachment content can only be republished by restreaming every chunk, so
+   * rotating those items here would strand their attachments.
+   *
+   * The batch is durable before any replacement key is released, and each item
+   * mutation carries its own expected revision, so an interrupted rotation
+   * leaves every record readable under whichever key it currently holds and a
+   * repeated call rotates only what remains.
+   */
+  async rotateItemKeys(
+    request: ItemKeyRotationRequest,
+  ): Promise<ItemKeyRotationReport> {
+    return this.#mutate(async (rootKey, epoch) => {
+      const groupId = groupIdSchema.safeParse(request.groupId);
+      if (!groupId.success) throw new ValidationError();
+      const selection = parseItemKeyRotationSelection(request.itemIds);
+      const vault = await this.#loadVault(rootKey, epoch);
+      const group = await this.#loadGroup(groupId.data, vault, rootKey, epoch, false);
+      const opened: OpenItem[] = [];
+      try {
+        const skipped: ItemKeyRotationSkip[] = [];
+        const seen = new Set<string>();
+        for await (const candidate of this.#source.listCurrentItems(
+          this.#vaultId,
+          groupId.data,
+        )) {
+          const stored =
+            candidate.state === 'active' ? candidate.record : candidate.predecessor;
+          if (selection !== undefined && !selection.has(stored.id)) continue;
+          if (seen.has(stored.id)) throw new CryptoAuthenticationError();
+          seen.add(stored.id);
+          if (candidate.state === 'deleted') {
+            skipped.push({ itemId: stored.id, reason: 'deleted' });
+            continue;
+          }
+          if (opened.length >= MAX_ROTATED_ITEM_KEYS) {
+            throw new ValidationError(
+              'One item-key rotation supports at most 99 active items.',
+            );
+          }
+          opened.push(await openItemRecord(candidate.record, group, vault));
+          this.#assertActive(epoch);
+        }
+        if (selection !== undefined && seen.size !== selection.size) {
+          throw new NotFoundError();
+        }
+        const timestamp = this.#timestamp();
+        const mutations: OpaqueMutation[] = [];
+        const rotated: ItemId[] = [];
+        const replacements: ItemKey[] = [];
+        try {
+          for (const item of opened) {
+            if (item.payload.attachmentIds.length > 0) {
+              skipped.push({
+                itemId: item.payload.id,
+                reason: 'attachments-present',
+              });
+              continue;
+            }
+            const replacement = generateItemKey();
+            replacements.push(replacement);
+            const record = await encryptItemRecord(
+              parseItemInput({
+                ...item.payload,
+                revision: nextRevision(item.record.recordRevision),
+                updatedAt: timestamp,
+              }),
+              replacement,
+              group.key,
+              vault,
+            );
+            assertRotatedItemRecord(record, item.record);
+            mutations.push(this.#itemMutation(item.record.recordRevision, record));
+            rotated.push(item.payload.id);
+            this.#assertActive(epoch);
+          }
+          if (mutations.length > 0) {
+            mutations.sort(compareMutationEntityId);
+            await this.#enqueue(mutations, epoch);
+          }
+        } finally {
+          for (const replacement of replacements) zeroize(replacement);
+        }
+        return Object.freeze({
+          groupId: groupId.data,
+          rotated: Object.freeze([...rotated]),
+          skipped: Object.freeze([...skipped]),
+        });
+      } finally {
+        for (const item of opened) zeroize(item.key);
         zeroize(group.key);
       }
     });
@@ -730,6 +861,50 @@ function assertExpectedRevision(
   actual: RecordRevision,
 ): void {
   if (expected !== actual) throw new SyncConflictError();
+}
+
+/** Rejects a selection that cannot map onto exactly one bounded rotation batch. */
+function parseItemKeyRotationSelection(
+  itemIds: readonly ItemId[] | undefined,
+): ReadonlySet<string> | undefined {
+  if (itemIds === undefined) return undefined;
+  if (itemIds.length === 0 || itemIds.length > MAX_ROTATED_ITEM_KEYS) {
+    throw new ValidationError('An item-key rotation selects 1 to 99 items.');
+  }
+  const selection = new Set<string>();
+  for (const candidate of itemIds) {
+    const itemId = itemIdSchema.safeParse(candidate);
+    if (!itemId.success) throw new ValidationError();
+    if (selection.has(itemId.data)) {
+      throw new ValidationError('An item-key rotation cannot repeat an item.');
+    }
+    selection.add(itemId.data);
+  }
+  return selection;
+}
+
+/**
+ * Proves the replacement rotated real key material without moving the record's
+ * authenticated context: identical associated data and key versions, a new
+ * wrapped key, and a new payload ciphertext.
+ */
+function assertRotatedItemRecord(
+  replacement: EncryptedItemRecord,
+  previous: EncryptedItemRecord,
+): void {
+  if (
+    canonicalJson(replacement.wrappedItemKey.aad) !==
+      canonicalJson(previous.wrappedItemKey.aad) ||
+    replacement.wrappedItemKey.keyVersion !== previous.wrappedItemKey.keyVersion ||
+    canonicalJson(replacement.encryptedPayload.aad) !==
+      canonicalJson(previous.encryptedPayload.aad) ||
+    replacement.encryptedPayload.keyVersion !== previous.encryptedPayload.keyVersion ||
+    replacement.schemaVersion !== previous.schemaVersion ||
+    replacement.wrappedItemKey.ciphertext === previous.wrappedItemKey.ciphertext ||
+    replacement.encryptedPayload.ciphertext === previous.encryptedPayload.ciphertext
+  ) {
+    throw new CryptoAuthenticationError();
+  }
 }
 
 function nextRevision(revision: RecordRevision): RecordRevision {

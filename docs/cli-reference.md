@@ -40,6 +40,7 @@ encrypted mutation against the unlocked local store. Its current surface is:
 | `creds key rotate [options]`                                                                                                          | Available in the built package | Generates or imports a portable replacement file, durably publishes pending then active slot envelopes, confirms the replacement locally, and revokes the old slot only after confirmation.                                                                                                                                                                                                                    |
 | `creds key rotate resume <operation-id> [options]`                                                                                    | Available in the built package | Replays the exact authenticated local checkpoint against the fetched vault and resumes only an identical pending rotation.                                                                                                                                                                                                                                                                                     |
 | `creds key rotate list [--json]`                                                                                                      | Available in the built package | Lists only operation IDs, public lifecycle states, slot IDs, and timestamps; replacement keys and wrapped-root data are excluded.                                                                                                                                                                                                                                                                              |
+| `creds key rekey --group <query> [options]`                                                                                           | Available in the built package | Replaces the item keys of one group's credentials in place, keeping group keys, the vault root key, key versions, and every envelope's associated data exact. Attachment-bearing and deleted credentials are reported as skips instead of being rotated. Up to 99 credentials per invocation, published as one queue transaction.                                                                              |
 | `creds init [options]`                                                                                                                | Available in the built package | Creates one vault/profile/device/session with durable recovery material and a global writer lease; `--key-file` accepts a guarded unprotected or passphrase-protected unbound v1 file.                                                                                                                                                                                                                         |
 | `creds init resume <operation-id>`                                                                                                    | Available in the built package | Resumes one durable initialization journal operation.                                                                                                                                                                                                                                                                                                                                                          |
 | `creds init cancel <operation-id>`                                                                                                    | Available in the built package | Cancels one safely cancellable prepared initialization operation.                                                                                                                                                                                                                                                                                                                                              |
@@ -223,6 +224,19 @@ invocation. `key rotate resume` requires the same replacement file so its
 possession can be confirmed again. The local journal stores only public slot
 snapshots, revisions, and an HMAC-authenticated checkpoint. The vault key
 version and encrypted payload bytes do not change.
+
+`key rekey --group <query>` replaces the wrapped item key and re-encrypts the
+payload of every active credential in one group; repeating `--credential <query>`
+limits the rotation to the named credentials. Each rotated credential is one
+revision-bound mutation whose associated data, key version, and schema version
+stay byte-for-byte identical, so an interrupted run leaves every record readable
+and re-running rotates only what is left. Attachment-bearing credentials are
+skipped because their attachment keys are wrapped under the item key, and deleted
+records are skipped because a tombstone holds no live key; both are listed with
+their reason rather than folded into a count. One invocation is one queue
+transaction, so at most 99 credentials rotate at a time. Group keys, the vault
+root key, and `currentKeyVersion` are not touched, and no plaintext value or key
+byte reaches the output.
 
 `status` accepts `--json`, `--secret-backend <native|sealed-file>`, and
 `--backend-passphrase-stdin`. The backend defaults to `native`; a missing native

@@ -6,6 +6,7 @@ import {
   type CredentialCopyReceipt,
   type CredentialShowProjection,
 } from '@kavrix/client/cli-contracts';
+import type { ItemKeyRotationSkipReason } from '@kavrix/client';
 import type {
   TotpConfiguration,
   VaultSearchHit,
@@ -62,6 +63,7 @@ import type {
   CliFieldMutationResult,
   CliFieldReadResult,
   CliGroupMutationResult,
+  CliItemKeyRotationRequest,
   CliListAuditEventsRequest,
   CliListRecoveryCodesRequest,
   CliNoteMutationResult,
@@ -592,6 +594,39 @@ export type CliVaultSearchResult = VaultSearchResult;
  */
 export type CliVaultSearchHit = VaultSearchHit;
 
+/** One credential whose item key was replaced, named for local reporting only. */
+export interface CliRekeyedCredential {
+  readonly credentialId: string;
+  readonly title: string;
+}
+
+/**
+ * One credential the rotation deliberately left alone.
+ *
+ * The reason is the client's own skip reason, so the CLI cannot invent a category
+ * the rotation does not actually implement: `attachments-present` means the item
+ * key still wraps attachment keys that only the streaming attachment port can
+ * republish, and `deleted` means the record is a tombstone with no live key.
+ */
+export interface CliSkippedRekeyCredential extends CliRekeyedCredential {
+  readonly reason: ItemKeyRotationSkipReason;
+}
+
+/**
+ * One completed item-key rotation.
+ *
+ * Names are resolved locally from already-decrypted payloads so the operator can
+ * read the report; nothing here is derived from server-visible data, and no key
+ * material or field value is carried.
+ */
+export interface CliItemKeyRotationResult {
+  readonly vaultId: VaultId;
+  readonly groupId: GroupId;
+  readonly groupName: string;
+  readonly rotated: readonly CliRekeyedCredential[];
+  readonly skipped: readonly CliSkippedRekeyCredential[];
+}
+
 /**
  * One planned guarded execution. Carries destination names and addresses only:
  * a plan is printed before any field is resolved, so it can never hold a value.
@@ -810,6 +845,7 @@ export interface CliUseCasePorts {
   restoreHistory?(request: CliRestoreHistoryRequest): Promise<CliHistoryRestoreResult>;
   listAuditEvents?(request: CliListAuditEventsRequest): Promise<CliAuditEventPage>;
   search?(request: CliVaultSearchRequest): Promise<CliVaultSearchResult>;
+  rekeyItems?(request: CliItemKeyRotationRequest): Promise<CliItemKeyRotationResult>;
   showAuditEvent?(request: CliShowAuditEventRequest): Promise<CliAuditEventDetail>;
   listRecoveryCodes?(
     request: CliListRecoveryCodesRequest,

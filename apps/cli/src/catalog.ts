@@ -35,6 +35,7 @@ import {
   type CliHistoryDiff,
   type CliHistoryRestoreResult,
   type CliHistorySummary,
+  type CliItemKeyRotationResult,
   type CliRecoverResult,
   type CliRecoveryCodeListResult,
   type CliRecoveryCodeRevealResult,
@@ -656,6 +657,67 @@ const keyCommand: CliCommandDescriptor = Object.freeze({
           },
         },
       ],
+    },
+    {
+      name: 'rekey',
+      description: "Replace the item keys of one group's credentials in place.",
+      options: [
+        {
+          flags: '--group <query>',
+          description: 'Group ID, unique name, or alias whose item keys are replaced.',
+        },
+        {
+          flags: '--credential <query>',
+          description:
+            'Limit the rotation to one credential. Repeatable; every active credential when omitted.',
+          repeatable: true,
+        },
+        jsonOption,
+        secretBackendOption,
+        backendPassphraseStdinOption,
+      ],
+      execute: async (context, _arguments, options) => {
+        const json = optionBoolean(options, 'json');
+        const { cliItemKeyRotationQuerySchema } =
+          await import('./mutation-contracts.js');
+        const rawCredentials = options['credential'];
+        const request = parseInput(
+          cliItemKeyRotationQuerySchema,
+          {
+            group: requiredOption(options, 'group', 'group query'),
+            // The repeatable collector always leaves an array behind, so an
+            // omitted flag arrives as an empty list rather than as undefined.
+            credential: Array.isArray(rawCredentials) ? rawCredentials : [],
+          },
+          'item key rotation request',
+        );
+
+        let result: CliItemKeyRotationResult;
+        if (context.ports?.rekeyItems !== undefined) {
+          result = await context.ports.rekeyItems(request);
+        } else {
+          const { executeProductionItemKeyRotation } =
+            await import('./production/item-key-rotation.js');
+          result = await withUnlockedVault(
+            context,
+            'key rekey',
+            options,
+            async (unlocked, store, rootKey) =>
+              executeProductionItemKeyRotation(
+                {
+                  source: store,
+                  queue: store,
+                  vaultId: unlocked.profile.vaultId,
+                  rootKey,
+                },
+                request,
+              ),
+          );
+        }
+
+        const { renderItemKeyRotation } = await import('./render.js');
+        context.stdout.write(renderItemKeyRotation(result, json));
+      },
     },
   ],
 });

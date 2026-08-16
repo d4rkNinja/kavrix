@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   CryptoAuthenticationError,
+  NotFoundError,
   SchemaMigrationError,
   SyncConflictError,
   ValidationError,
@@ -21,7 +22,9 @@ import {
 import {
   activeFieldValueSchema,
   associatedDataSchema,
+  attachmentIdSchema,
   auditEventIdSchema,
+  canonicalJson,
   contentHashForRecord,
   fieldDefinitionSchema,
   groupIdSchema,
@@ -691,7 +694,181 @@ describe('VaultMutationService', () => {
     await expect(pending).rejects.toBeInstanceOf(VaultLockedError);
     expect(queue.batches).toHaveLength(0);
   });
+
+  it('rotates item keys without moving associated data, key versions, or payload content', async () => {
+    const fixture = await mutationFixture({
+      itemTitles: ['Primary', 'Secondary', 'Tertiary'],
+      plaintextCanary: secretCanary,
+    });
+    const state = new MutationState(fixture);
+    const queue = new DurableMutationQueue(state);
+    const service = mutationService(state, queue, fixture.rootKey, fixture.vaultId);
+    const groupId = required(fixture.groupPayloads[0]).id;
+    const before = new Map(
+      fixture.itemPayloads.map((payload) => [
+        payload.id,
+        activeRecord(required(state.items.get(payload.id))),
+      ]),
+    );
+
+    const report = await service.rotateItemKeys({ groupId });
+
+    expect(report.groupId).toBe(groupId);
+    expect(report.skipped).toEqual([]);
+    expect([...report.rotated]).toEqual([...before.keys()]);
+    expect(queue.batches).toHaveLength(1);
+    const mutations = required(queue.batches[0]).map((mutation) => {
+      if (mutation.entityType !== 'item') throw new Error('expected an item mutation');
+      return mutation;
+    });
+    expect(mutations.map((mutation) => mutation.record.id)).toEqual(
+      [...before.keys()].sort(),
+    );
+    for (const mutation of mutations) {
+      expect(mutation.expectedRecordRevision).toBe(
+        required(before.get(mutation.record.id)).recordRevision,
+      );
+    }
+
+    for (const [itemId, previous] of before) {
+      const rotated = activeRecord(required(state.items.get(itemId)));
+      // Fresh key material has to reach both envelopes of the record.
+      expect(rotated.wrappedItemKey.ciphertext).not.toBe(
+        previous.wrappedItemKey.ciphertext,
+      );
+      expect(rotated.encryptedPayload.ciphertext).not.toBe(
+        previous.encryptedPayload.ciphertext,
+      );
+      // The authenticated context has to stay exactly as it was.
+      expect(canonicalJson(rotated.wrappedItemKey.aad)).toBe(
+        canonicalJson(previous.wrappedItemKey.aad),
+      );
+      expect(rotated.wrappedItemKey.keyVersion).toBe(
+        previous.wrappedItemKey.keyVersion,
+      );
+      expect(canonicalJson(rotated.encryptedPayload.aad)).toBe(
+        canonicalJson(previous.encryptedPayload.aad),
+      );
+      expect(rotated.encryptedPayload.keyVersion).toBe(
+        previous.encryptedPayload.keyVersion,
+      );
+      expect(rotated.schemaVersion).toBe(previous.schemaVersion);
+      expect(rotated.recordRevision).toBe(previous.recordRevision + 1);
+
+      const original = required(
+        fixture.itemPayloads.find((payload) => payload.id === itemId),
+      );
+      const reopened = await show(state, fixture, groupId, itemId);
+      expect(reopened.item).toEqual({
+        ...original,
+        revision: original.revision + 1,
+        updatedAt: mutationTime,
+      });
+    }
+    expect(JSON.stringify(queue.batches)).not.toContain(secretCanary);
+    expect(JSON.stringify([...state.items.values()])).not.toContain(secretCanary);
+  });
+
+  it('refuses to strand attachments or tombstones and bounds every selection', async () => {
+    const fixture = await mutationFixture({
+      itemTitles: ['Primary', 'WithAttachment', 'Removed'],
+      transformItem: (item) =>
+        item.title === 'WithAttachment'
+          ? itemPayloadSchema.parse({
+              ...item,
+              attachmentIds: [attachmentIdSchema.parse('attachment.rotation.1')],
+            })
+          : item,
+    });
+    const state = new MutationState(fixture);
+    const queue = new DurableMutationQueue(state);
+    const service = mutationService(state, queue, fixture.rootKey, fixture.vaultId);
+    const groupId = required(fixture.groupPayloads[0]).id;
+    const ids = new Map(
+      fixture.itemPayloads.map((payload) => [payload.title, payload.id]),
+    );
+    const rotatable = required(ids.get('Primary'));
+    const attached = required(ids.get('WithAttachment'));
+    const removed = required(ids.get('Removed'));
+    await service.deleteItem(groupId, removed, revision(1));
+    const attachedBefore = activeRecord(required(state.items.get(attached)));
+
+    const report = await service.rotateItemKeys({ groupId });
+
+    expect([...report.rotated]).toEqual([rotatable]);
+    expect([...report.skipped]).toEqual([
+      { itemId: removed, reason: 'deleted' },
+      { itemId: attached, reason: 'attachments-present' },
+    ]);
+    // A skipped item keeps the exact key material its attachments depend on.
+    expect(activeRecord(required(state.items.get(attached)))).toEqual(attachedBefore);
+
+    await expect(
+      service.rotateItemKeys({ groupId, itemIds: [] }),
+    ).rejects.toBeInstanceOf(ValidationError);
+    await expect(
+      service.rotateItemKeys({ groupId, itemIds: [rotatable, rotatable] }),
+    ).rejects.toBeInstanceOf(ValidationError);
+    await expect(
+      service.rotateItemKeys({
+        groupId,
+        itemIds: Array.from({ length: 100 }, (_value, index) =>
+          itemIdSchema.parse(`item.bulk.${String(index)}`),
+        ),
+      }),
+    ).rejects.toBeInstanceOf(ValidationError);
+    await expect(
+      service.rotateItemKeys({ groupId, itemIds: [itemIdSchema.parse('item.absent')] }),
+    ).rejects.toBeInstanceOf(NotFoundError);
+    await expect(
+      service.rotateItemKeys({ groupId: groupIdSchema.parse('group.absent') }),
+    ).rejects.toBeInstanceOf(NotFoundError);
+    expect(queue.batches).toHaveLength(2);
+  });
+
+  it('keeps an interrupted rotation replayable and refuses to rotate after a lock', async () => {
+    const fixture = await mutationFixture({ itemTitles: ['Primary', 'Secondary'] });
+    const state = new MutationState(fixture);
+    const queue = new DurableMutationQueue(state);
+    const service = mutationService(state, queue, fixture.rootKey, fixture.vaultId);
+    const groupId = required(fixture.groupPayloads[0]).id;
+    const first = required(fixture.itemPayloads[0]).id;
+    const second = required(fixture.itemPayloads[1]).id;
+
+    queue.failBeforeDurable = true;
+    await expect(service.rotateItemKeys({ groupId })).rejects.toThrow(
+      'test queue unavailable',
+    );
+    expect(activeRecord(required(state.items.get(first))).recordRevision).toBe(1);
+    expect(queue.batches).toHaveLength(0);
+
+    // A rotation that lost its acknowledgement has to replay the identical batch.
+    queue.failBeforeDurable = false;
+    queue.failAfterDurableOnce = true;
+    await service.rotateItemKeys({ groupId, itemIds: [first] });
+    expect(queue.calls).toBe(3);
+    expect(queue.batches).toHaveLength(1);
+    expect(activeRecord(required(state.items.get(first))).recordRevision).toBe(2);
+    expect(activeRecord(required(state.items.get(second))).recordRevision).toBe(1);
+
+    // Rotating the remainder afterwards finishes the interrupted sweep.
+    const resumed = await service.rotateItemKeys({ groupId, itemIds: [second] });
+    expect([...resumed.rotated]).toEqual([second]);
+    expect(activeRecord(required(state.items.get(second))).recordRevision).toBe(2);
+
+    service.lock();
+    await expect(service.rotateItemKeys({ groupId })).rejects.toBeInstanceOf(
+      VaultLockedError,
+    );
+    expect(queue.batches).toHaveLength(2);
+  });
 });
+
+/** The active encrypted record behind one mutation state, for exact comparisons. */
+function activeRecord(state: ItemMutationState): EncryptedItemRecord {
+  if (state.state !== 'active') throw new Error('expected an active test item');
+  return state.record;
+}
 
 function mutationService(
   state: MutationState,
