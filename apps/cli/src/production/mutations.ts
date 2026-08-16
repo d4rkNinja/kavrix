@@ -677,7 +677,7 @@ export async function executeProductionAddField(
 }
 
 /** A field a write can target, resolved by ID, stable key, label, or prefix. */
-type ResolvableField = Readonly<{
+export type ResolvableField = Readonly<{
   id: string;
   name: string;
   slug: string;
@@ -718,7 +718,7 @@ function resolvableFields(
  * so resolution failures surface as the canonical name-resolution errors
  * instead of silently creating a field the caller mistyped.
  */
-function resolveWritableField(
+export function resolveWritableField(
   found: Readonly<{ item: ItemPayload; template: GroupTemplate }>,
   fieldQuery: string,
 ): ResolvableField | undefined {
@@ -733,7 +733,7 @@ function resolveWritableField(
 }
 
 /** Fail closed when the record moved on since the caller read its revision. */
-function assertExpectedItemRevision(
+export function assertExpectedItemRevision(
   item: ItemPayload,
   expected: number | undefined,
 ): void {
@@ -742,7 +742,7 @@ function assertExpectedItemRevision(
   }
 }
 
-function storedFieldValue(
+export function storedFieldValue(
   item: ItemPayload,
   field: ResolvableField,
 ): FieldValue | undefined {

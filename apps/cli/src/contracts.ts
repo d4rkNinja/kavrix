@@ -8,6 +8,7 @@ import {
 } from '@kavrix/client/cli-contracts';
 import type { ItemKeyRotationSkipReason } from '@kavrix/client';
 import type {
+  ReferenceGraphResult,
   TotpConfiguration,
   VaultSearchHit,
   VaultSearchResult,
@@ -68,6 +69,9 @@ import type {
   CliListRecoveryCodesRequest,
   CliNoteMutationResult,
   CliPlanTemplateMigrationRequest,
+  CliReferenceListRequest,
+  CliReferenceRemoveRequest,
+  CliReferenceWriteRequest,
   CliRemoveFieldRequest,
   CliRemoveNoteRequest,
   CliRestoreEntityRequest,
@@ -628,6 +632,72 @@ export interface CliItemKeyRotationResult {
 }
 
 /**
+ * One reference walk outward from a credential.
+ *
+ * The graph is the core policy's own result, unchanged. It already carries opaque
+ * target IDs with locally decrypted titles, marks every repeat and every cycle
+ * instead of pruning it, and holds no field value, so re-shaping it here could
+ * only widen what the renderer is able to print. `requestedDepth` is kept beside
+ * it because "no further references" and "the walk stopped here" are different
+ * statements and the operator has to be able to tell them apart.
+ */
+export interface CliReferenceListResult {
+  readonly vaultId: VaultId;
+  readonly requestedDepth: number;
+  readonly graph: ReferenceGraphResult;
+}
+
+/**
+ * One completed reference write.
+ *
+ * Both endpoints are named, because a reference the operator cannot read back is
+ * indistinguishable from one written to the wrong credential. `cyclePath` is
+ * present only when the write closed a loop the operator explicitly allowed, so
+ * the acknowledgement is recorded in the output rather than only in the argv.
+ */
+export interface CliReferenceWriteResult {
+  readonly vaultId: VaultId;
+  readonly groupId: GroupId;
+  readonly credentialId: string;
+  readonly title: string;
+  readonly fieldKey: string;
+  readonly fieldLabel: string;
+  readonly targetId: string;
+  readonly targetTitle: string;
+  readonly targetGroupId: GroupId;
+  readonly targetGroupName: string;
+  /** The field already pointed at this target, so the write changed nothing. */
+  readonly alreadyPresent: boolean;
+  /** The path the new edge closes, present only for an allowed cycle. */
+  readonly cyclePath?: readonly string[];
+  readonly previousRevision: number;
+  readonly revision: number;
+}
+
+/**
+ * One completed reference removal.
+ *
+ * `targetTitle` is absent when the target no longer resolves: a relation can
+ * outlive the credential it named, and inventing a title for a record that is
+ * gone would misreport what was removed. `relationRemoved` distinguishes dropping
+ * the last binding — which also retires the relation — from dropping one of
+ * several, which leaves the relation in place.
+ */
+export interface CliReferenceRemoveResult {
+  readonly vaultId: VaultId;
+  readonly groupId: GroupId;
+  readonly credentialId: string;
+  readonly title: string;
+  readonly fieldKey: string;
+  readonly fieldLabel: string;
+  readonly targetId: string;
+  readonly targetTitle?: string;
+  readonly relationRemoved: boolean;
+  readonly previousRevision: number;
+  readonly revision: number;
+}
+
+/**
  * One planned guarded execution. Carries destination names and addresses only:
  * a plan is printed before any field is resolved, so it can never hold a value.
  */
@@ -846,6 +916,11 @@ export interface CliUseCasePorts {
   listAuditEvents?(request: CliListAuditEventsRequest): Promise<CliAuditEventPage>;
   search?(request: CliVaultSearchRequest): Promise<CliVaultSearchResult>;
   rekeyItems?(request: CliItemKeyRotationRequest): Promise<CliItemKeyRotationResult>;
+  listReferences?(request: CliReferenceListRequest): Promise<CliReferenceListResult>;
+  addReference?(request: CliReferenceWriteRequest): Promise<CliReferenceWriteResult>;
+  removeReference?(
+    request: CliReferenceRemoveRequest,
+  ): Promise<CliReferenceRemoveResult>;
   showAuditEvent?(request: CliShowAuditEventRequest): Promise<CliAuditEventDetail>;
   listRecoveryCodes?(
     request: CliListRecoveryCodesRequest,

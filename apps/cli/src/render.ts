@@ -38,6 +38,9 @@ import type {
   CliRecoverResult,
   CliRecoveryCodeListResult,
   CliRecoveryCodeUseResult,
+  CliReferenceListResult,
+  CliReferenceRemoveResult,
+  CliReferenceWriteResult,
   CliRunPlan,
   CliRunResult,
   CliShowResult,
@@ -405,6 +408,184 @@ const ITEM_KEY_ROTATION_SKIP_REASONS = Object.freeze({
 } as const satisfies Readonly<
   Record<CliItemKeyRotationResult['skipped'][number]['reason'], string>
 >);
+
+/**
+ * Renders one reference walk as an indented tree.
+ *
+ * Every node the policy reported is printed, including repeats and cycles: the
+ * point of the walk is to show the shape of the relation set, and a tree that
+ * quietly dropped the second arrival at a credential would present a loop as a
+ * chain. Missing and archived targets are labelled rather than filtered, because
+ * a relation that outlived its target is exactly what an operator opens this
+ * command to find.
+ */
+export function renderReferenceList(
+  result: CliReferenceListResult,
+  json: boolean,
+): string {
+  const safe = {
+    vaultId: sanitizeTerminalText(result.vaultId),
+    requestedDepth: result.requestedDepth,
+    graph: {
+      rootId: sanitizeTerminalText(result.graph.rootId),
+      cycleCount: result.graph.cycleCount,
+      missingCount: result.graph.missingCount,
+      truncated: result.graph.truncated,
+      reachedDepth: result.graph.reachedDepth,
+      nodes: result.graph.nodes.map((node) => ({
+        depth: node.depth,
+        credentialId: sanitizeTerminalText(node.credentialId),
+        state: node.state,
+        ...(node.groupId === undefined
+          ? {}
+          : { groupId: sanitizeTerminalText(node.groupId) }),
+        ...(node.groupName === undefined
+          ? {}
+          : { groupName: sanitizeTerminalText(node.groupName) }),
+        ...(node.title === undefined
+          ? {}
+          : { title: sanitizeTerminalText(node.title) }),
+        ...(node.parentId === undefined
+          ? {}
+          : { parentId: sanitizeTerminalText(node.parentId) }),
+        bindings: node.bindings.map((binding) => ({
+          fieldKey: sanitizeTerminalText(binding.fieldKey),
+          fieldLabel: sanitizeTerminalText(binding.fieldLabel),
+          scope: binding.scope,
+          ...(binding.elementId === undefined
+            ? {}
+            : { elementId: sanitizeTerminalText(binding.elementId) }),
+        })),
+        revisit: node.revisit,
+        cycle: node.cycle,
+      })),
+    },
+  };
+  if (json) return safeJson(safe);
+
+  const [root, ...referenced] = safe.graph.nodes;
+  if (root === undefined) return 'No credential was resolved.\n';
+  const lines = [
+    `References of ${root.title ?? root.credentialId} (${root.credentialId}) to depth ${String(
+      safe.requestedDepth,
+    )}:`,
+  ];
+  if (referenced.length === 0) {
+    lines.push('  (none)');
+  }
+  for (const node of referenced) {
+    const markers = [
+      ...(node.state === 'active' ? [] : [node.state]),
+      ...(node.cycle ? ['cycle'] : []),
+      ...(node.revisit && !node.cycle ? ['already listed'] : []),
+    ];
+    lines.push(
+      `${'  '.repeat(node.depth)}- ${node.title ?? '(unresolved)'} (${node.credentialId})${
+        markers.length === 0 ? '' : ` [${markers.join(', ')}]`
+      }`,
+    );
+    if (node.groupName !== undefined) {
+      lines.push(`${'  '.repeat(node.depth)}    Group: ${node.groupName}`);
+    }
+    for (const binding of node.bindings) {
+      lines.push(
+        `${'  '.repeat(node.depth)}    Field: ${binding.fieldLabel} (${binding.fieldKey}, ${binding.scope}${
+          binding.elementId === undefined ? '' : `, element ${binding.elementId}`
+        })`,
+      );
+    }
+    if (node.bindings.length === 0) {
+      lines.push(
+        `${'  '.repeat(node.depth)}    Field: (none; the relation is declared without a field binding it)`,
+      );
+    }
+  }
+  lines.push(
+    `Walked ${String(safe.graph.reachedDepth)} level(s): ${String(referenced.length)} reference(s), ${String(
+      safe.graph.cycleCount,
+    )} cycle(s), ${String(safe.graph.missingCount)} missing target(s).`,
+  );
+  if (safe.graph.truncated) {
+    lines.push(
+      'The walk stopped at the node ceiling, so the reference set is larger than shown.',
+    );
+  }
+  return lines.join('\n').concat('\n');
+}
+
+/** Renders one written reference, naming both endpoints and any allowed cycle. */
+export function renderReferenceWrite(
+  result: CliReferenceWriteResult,
+  json: boolean,
+): string {
+  const safe = {
+    vaultId: sanitizeTerminalText(result.vaultId),
+    groupId: sanitizeTerminalText(result.groupId),
+    credentialId: sanitizeTerminalText(result.credentialId),
+    title: sanitizeTerminalText(result.title),
+    fieldKey: sanitizeTerminalText(result.fieldKey),
+    fieldLabel: sanitizeTerminalText(result.fieldLabel),
+    targetId: sanitizeTerminalText(result.targetId),
+    targetTitle: sanitizeTerminalText(result.targetTitle),
+    targetGroupId: sanitizeTerminalText(result.targetGroupId),
+    targetGroupName: sanitizeTerminalText(result.targetGroupName),
+    alreadyPresent: result.alreadyPresent,
+    ...(result.cyclePath === undefined
+      ? {}
+      : { cyclePath: result.cyclePath.map((step) => sanitizeTerminalText(step)) }),
+    previousRevision: result.previousRevision,
+    revision: result.revision,
+  };
+  if (json) return safeJson(safe);
+  const lines = [
+    safe.alreadyPresent
+      ? `${safe.fieldLabel} (${safe.fieldKey}) of ${safe.title} already references ${safe.targetTitle} (${safe.targetId}).`
+      : `${safe.fieldLabel} (${safe.fieldKey}) of ${safe.title} now references ${safe.targetTitle} (${safe.targetId}) in ${safe.targetGroupName}.`,
+    safe.alreadyPresent
+      ? `Revision ${String(safe.revision)} is unchanged.`
+      : `Revision ${String(safe.previousRevision)} -> ${String(safe.revision)}.`,
+  ];
+  if (safe.cyclePath !== undefined) {
+    lines.push(
+      `Allowed cycle: ${safe.cyclePath.join(' -> ')} -> ${safe.credentialId}.`,
+    );
+  }
+  return lines.join('\n').concat('\n');
+}
+
+/** Renders one removed reference, stating whether the relation itself was retired. */
+export function renderReferenceRemove(
+  result: CliReferenceRemoveResult,
+  json: boolean,
+): string {
+  const safe = {
+    vaultId: sanitizeTerminalText(result.vaultId),
+    groupId: sanitizeTerminalText(result.groupId),
+    credentialId: sanitizeTerminalText(result.credentialId),
+    title: sanitizeTerminalText(result.title),
+    fieldKey: sanitizeTerminalText(result.fieldKey),
+    fieldLabel: sanitizeTerminalText(result.fieldLabel),
+    targetId: sanitizeTerminalText(result.targetId),
+    ...(result.targetTitle === undefined
+      ? {}
+      : { targetTitle: sanitizeTerminalText(result.targetTitle) }),
+    relationRemoved: result.relationRemoved,
+    previousRevision: result.previousRevision,
+    revision: result.revision,
+  };
+  if (json) return safeJson(safe);
+  return [
+    `${safe.fieldLabel} (${safe.fieldKey}) of ${safe.title} no longer references ${
+      safe.targetTitle ?? '(unresolved)'
+    } (${safe.targetId}).`,
+    safe.relationRemoved
+      ? 'The relation was removed because no other field bound this target.'
+      : 'The relation is kept because another field still binds this target.',
+    `Revision ${String(safe.previousRevision)} -> ${String(safe.revision)}.`,
+  ]
+    .join('\n')
+    .concat('\n');
+}
 
 export function renderShow(result: CliShowResult, json: boolean): string {
   const safe = safeShow(result);
