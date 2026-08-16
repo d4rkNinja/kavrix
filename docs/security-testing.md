@@ -276,6 +276,14 @@ The canary test is a release gate, not a grep of source fixtures alone.
   unrelated newer clipboard content, and document failure as best effort. Cover
   repeatable selection, recovery-code used state, sequences, and `--no-clear`/
   headless policy.
+- Recovery-code lifecycle selects an element by stable identifier or unambiguous
+  prefix and never by position; an ambiguous prefix is refused rather than
+  resolved. One use marks exactly one element, leaves every other element's
+  identifier and lifecycle unchanged, and is bound to the read revision. A repeat
+  of the same use is refused without restamping `usedAt`. The used state is
+  written inside the encrypted record, so scan the stored record and the pending
+  opaque mutation for code material. A field declared `revealPolicy: never` is
+  refused before any code is spent, and copy never consumes.
 - Update/set obtains secret values only from a masked prompt or explicit stdin.
   No secret appears in argv, shell completion, errors, history, or logs.
 - Portable key and invite work through masked prompt, protected file, and

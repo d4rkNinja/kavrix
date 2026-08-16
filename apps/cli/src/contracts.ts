@@ -58,6 +58,7 @@ import type {
   CliFieldReadResult,
   CliGroupMutationResult,
   CliListAuditEventsRequest,
+  CliListRecoveryCodesRequest,
   CliNoteMutationResult,
   CliPlanTemplateMigrationRequest,
   CliRemoveFieldRequest,
@@ -66,6 +67,7 @@ import type {
   CliRestoreFieldRequest,
   CliRestoreHistoryRequest,
   CliRestoreNoteRequest,
+  CliRevealRecoveryCodeRequest,
   CliRunRequest,
   CliSetFieldRequest,
   CliShowAuditEventRequest,
@@ -74,6 +76,7 @@ import type {
   CliUpdateNoteRequest,
   CliUpdateTemplateRequest,
   CliUploadAttachmentRequest,
+  CliUseRecoveryCodeRequest,
 } from './mutation-contracts.js';
 
 export const cliStatusSchema = z
@@ -464,6 +467,56 @@ export interface CliHistoryRestoreResult {
   readonly updatedAt: string;
 }
 
+/**
+ * One recovery code as it may be shown. The code value is deliberately absent
+ * rather than truncated: a partial code is still code material, and the stable
+ * element identifier is what a caller needs in order to act on one entry.
+ */
+export interface CliRecoveryCodeEntry {
+  readonly id: string;
+  readonly status: 'available' | 'used';
+  readonly usedAt: string | null;
+}
+
+export interface CliRecoveryCodeInventory {
+  readonly total: number;
+  readonly available: number;
+  readonly used: number;
+}
+
+export interface CliRecoveryCodeListResult {
+  readonly groupName: string;
+  readonly credentialTitle: string;
+  readonly fieldLabel: string;
+  readonly inventory: CliRecoveryCodeInventory;
+  readonly codes: readonly CliRecoveryCodeEntry[];
+}
+
+/**
+ * Receipt for one consumed code. Names the element that moved to `used` and the
+ * revisions on either side of the durable write, and never carries the code.
+ */
+export interface CliRecoveryCodeUseResult {
+  readonly groupId: string;
+  readonly credentialId: string;
+  readonly fieldLabel: string;
+  readonly codeId: string;
+  readonly usedAt: string;
+  readonly previousRevision: number;
+  readonly revision: number;
+  readonly inventory: CliRecoveryCodeInventory;
+}
+
+/**
+ * One authorized reveal. `receipt` is present only when the reveal also
+ * consumed the code, which happens before the value is returned.
+ */
+export interface CliRecoveryCodeRevealResult {
+  readonly codeId: string;
+  readonly value: string;
+  readonly receipt: CliRecoveryCodeUseResult | null;
+}
+
 /** One projected audit event. Carries opaque metadata only. */
 export type CliAuditEventSummary = LocalAuditEvent;
 
@@ -700,6 +753,15 @@ export interface CliUseCasePorts {
   restoreHistory?(request: CliRestoreHistoryRequest): Promise<CliHistoryRestoreResult>;
   listAuditEvents?(request: CliListAuditEventsRequest): Promise<CliAuditEventPage>;
   showAuditEvent?(request: CliShowAuditEventRequest): Promise<CliAuditEventDetail>;
+  listRecoveryCodes?(
+    request: CliListRecoveryCodesRequest,
+  ): Promise<CliRecoveryCodeListResult>;
+  useRecoveryCode?(
+    request: CliUseRecoveryCodeRequest,
+  ): Promise<CliRecoveryCodeUseResult>;
+  revealRecoveryCode?(
+    request: CliRevealRecoveryCodeRequest,
+  ): Promise<CliRecoveryCodeRevealResult>;
   run?(request: CliRunRequest): Promise<CliRunResult>;
   reveal?(
     groupQuery: string,

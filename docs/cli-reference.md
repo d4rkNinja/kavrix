@@ -100,6 +100,10 @@ encrypted mutation against the unlocked local store. Its current surface is:
 | `creds history show <group> <credential> <revision> [--json]`                                                                         | Available in the built package | Inspects an authorized historical revision projection with masked secret values.                                                                                                                                                                                                    |
 | `creds history diff <group> <credential> <revision> [compare-rev] [--json]`                                                           | Available in the built package | Compares field differences between historical revisions locally.                                                                                                                                                                                                                    |
 | `creds history restore <group> <credential> <revision> --force [--json]`                                                              | Available in the built package | Restores an exact historical revision as a new mutation with explicit `--force`.                                                                                                                                                                                                    |
+| `creds recovery list <group> <credential> <field> [--json]`                                                                           | Available in the built package | Lists recovery-code entries by stable identifier with lifecycle state and an available/used inventory. Code values are never printed in either output mode.                                                                                                                         |
+| `creds recovery use <group> <credential> <field> --code <id> [--if-revision <n>] [--json]`                                            | Available in the built package | Marks exactly one recovery code used, selected by stable identifier or an unambiguous prefix and never by position. Refuses an already-used code, accepts `--if-revision <n>`, and prints only a masked receipt.                                                                    |
+| `creds recovery reveal <group> <credential> <field> --code <id> [--use] [--if-revision <n>] [--stdout]`                               | Available in the built package | Releases one unused code value, denying non-interactive redirection unless `--stdout` is passed. `--use` marks the code used before printing it and writes the receipt to stderr so command substitution captures only the code. A field whose reveal policy is `never` is refused. |
+| `creds recovery copy <group> <credential> <field> --code <id>`                                                                        | Available in the built package | Copies one unused recovery code to the guarded clipboard by stable identifier with auto-clear. It never marks the code used, because a clipboard write can fail after the value leaves the vault.                                                                                   |
 | `creds audit list [--class <c>] [--limit <1..200>] [--cursor <id>] [--json]`                                                          | Available in the built package | Lists locally derived audit events newest first with bounded keyset pagination. Events are projected from unlock-slot lifecycle timestamps and queued mutations; the `backup` class has no local source yet and returns nothing.                                                    |
 | `creds audit show <event-id> [--json]`                                                                                                | Available in the built package | Inspects one locally derived audit event by the opaque identifier reported by `creds audit list`.                                                                                                                                                                                   |
 | `creds show <group> <credential> [--json]`                                                                                            | Available in the built package | Inspects a credential with secret fields and sensitive note content redacted.                                                                                                                                                                                                       |
@@ -506,11 +510,14 @@ two-space indentation and one trailing newline. They are not plaintext export:
 - show masks sensitive fields, secret scalar variants, secret environment
   entries, and every note body;
 - invite list contains only the public invite schema;
-- invite join returns only vault and device IDs.
+- invite join returns only vault and device IDs;
+- recovery list contains element identifiers, lifecycle state, and inventory
+  counts, and never a code value.
 
-There is no current flag that emits secret JSON or bypasses redaction. JSON
-schemas are command-specific, and stderr remains the sanitized text error
-channel.
+One flag deliberately opts out: `creds get --reveal --json` reports the field
+value with `"redacted": false`, because the same invocation already prints that
+value in text mode. Every other `--json` projection is redacted, JSON schemas are
+command-specific, and stderr remains the sanitized text error channel.
 
 Password/passphrase generation and TOTP are deliberate non-JSON secret-output
 commands. They emit exactly one generated value or code plus a newline, only to
@@ -572,3 +579,20 @@ locally persisted source, so it is accepted as a filter and yields no events.
 The creation event of a slot that was later superseded or revoked carries no
 `state`, because the state at creation time is not retained locally and is never
 inferred from the slot's current state.
+
+`creds recovery` operates on recovery-code lists that already exist in the
+encrypted record. The CLI has no command that mints one: multi-element field
+values reach a vault through `creds transfer import`, sync, or a restore path the
+packed executable does not yet expose, and `creds field add` only defines
+single-value fields. The lifecycle commands are covered by unit tests over the
+selection policy and by a production-composition test that seeds a list the way
+those paths do, then proves the durable `available` to `used` transition, its
+revision receipt, refusal of a second use, and the absence of code material in
+both the stored record and the pending opaque mutation.
+
+There is also no per-element archive. The canonical element lifecycle is closed
+at `available` and `used`, so archiving one code is not representable without
+changing the stored data model for every existing vault. Retiring a whole
+recovery-code list uses the field-level `creds field archive` and
+`creds field restore` commands, which move the entire value into and out of
+`archivedFieldValues`.

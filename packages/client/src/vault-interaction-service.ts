@@ -198,6 +198,15 @@ export interface CopyAuthorizationPort {
 
 export type CredentialCopyOptions = Readonly<{
   index?: number;
+  /**
+   * Selects one element of a repeatable field by its stable identifier.
+   *
+   * Preferred over `index` wherever the caller has an identifier: an index is
+   * positional, so adding, consuming, or merging elements can make the same
+   * index name a different element, while the identifier names the same element
+   * on every replica. The two selectors are mutually exclusive.
+   */
+  elementId?: string;
   signal?: AbortSignal;
 }>;
 
@@ -271,7 +280,7 @@ export class VaultInteractionService {
     if (!field.definition.copyable || field.definition.copyPolicy === 'never') {
       throw new CredentialCopyError('not-copyable');
     }
-    const scalar = selectScalar(field.value, options.index);
+    const scalar = selectScalar(field.value, options.index, options.elementId);
     await this.#authorizeIfRequired(aggregate.item, field.definition);
 
     const encoded = new TextEncoder().encode(copyScalarText(scalar));
@@ -590,7 +599,11 @@ function resolveField(result: CredentialShowResult, query: string): ResolvedFiel
 function selectScalar(
   value: ActiveFieldValue | undefined,
   index: number | undefined,
+  elementId?: string,
 ): FieldScalarValue {
+  if (index !== undefined && elementId !== undefined) {
+    throw new CredentialCopyError('selector-conflict');
+  }
   if (value === undefined || value.state === 'missing') {
     throw new CredentialCopyError('missing');
   }
@@ -600,8 +613,18 @@ function selectScalar(
   }
   if (value.state === 'unreadable') throw new CredentialCopyError('unreadable');
   if (value.content.cardinality === 'single') {
-    if (index !== undefined) throw new CredentialCopyError('index-inapplicable');
+    if (index !== undefined || elementId !== undefined) {
+      throw new CredentialCopyError('index-inapplicable');
+    }
     return value.content.value;
+  }
+  if (elementId !== undefined) {
+    // Matched exactly: a prefix is resolved to a full identifier before it
+    // reaches here, so this lookup can never pick a neighbouring element.
+    const named = value.content.elements.find(({ id }) => id === elementId);
+    if (named === undefined) throw new CredentialCopyError('element-not-found');
+    if (named.lifecycle.status === 'used') throw new CredentialCopyError('used');
+    return named.value;
   }
   if (index === undefined) throw new CredentialCopyError('index-required');
   if (!Number.isSafeInteger(index) || index < 1) {

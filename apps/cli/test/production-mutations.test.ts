@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 import { vaultProfileSchema } from '@kavrix/client';
+import { AmbiguousNameError, PermissionError, SyncConflictError } from '@kavrix/core';
 import {
   encryptPayload,
   generateVaultRootKey,
@@ -31,14 +32,17 @@ import {
   executeProductionArchiveNote,
   executeProductionCreateCredential,
   executeProductionCreateGroup,
+  executeProductionListRecoveryCodes,
   executeProductionRemoveField,
   executeProductionRemoveNote,
   executeProductionRestoreEntity,
   executeProductionRestoreField,
   executeProductionRestoreNote,
+  executeProductionRevealRecoveryCode,
   executeProductionSetField,
   executeProductionUpdateField,
   executeProductionUpdateNote,
+  executeProductionUseRecoveryCode,
 } from '../src/production/mutations.js';
 import { executeProductionShow } from '../src/production/show.js';
 import { executeProductionCopy } from '../src/production/copy.js';
@@ -546,4 +550,349 @@ describe('production CLI mutation adapters', () => {
       await backend.close();
     }
   });
+
+  it('consumes exactly one recovery code by stable identifier and keeps the used state durable', async () => {
+    const rootKey = generateVaultRootKey();
+    const vaultId = vaultIdSchema.parse('vault.test000000000000000001');
+
+    const mockSecretsInput = {
+      read: () => Promise.reject(new Error('secrets unneeded')),
+      readBatch: () => Promise.reject(new Error('secrets unneeded')),
+      clear: () => Promise.resolve(),
+    };
+
+    const paths = resolveCliDataPaths({ CREDS_HOME: tempHome });
+    const backend = await createSecretBackend(paths, mockSecretsInput, {
+      kind: 'native',
+    });
+    const environment = await openProductionEnvironment(paths, backend);
+    const profile = vaultProfileSchema.parse({
+      version: 1,
+      serverUrl: 'https://vault.example/',
+      vaultId,
+      deviceId: deviceIdSchema.parse('device.test00000000000000001'),
+      deviceLocator: {
+        version: 1,
+        vaultId,
+        deviceId: deviceIdSchema.parse('device.test00000000000000001'),
+        keySlotId: 'slot.device.001',
+      },
+      sessionLocator: {
+        version: 1,
+        vaultId,
+        deviceId: deviceIdSchema.parse('device.test00000000000000001'),
+        purpose: 'api-session',
+      },
+    });
+    const store = await environment.openSyncStore(profile);
+
+    await seedVaultRecordInStore(store, vaultId, rootKey);
+
+    const mutationOptions = { source: store, queue: store, vaultId, rootKey };
+    const readOptions = { source: store, vaultId, rootKey };
+
+    const { VaultMutationService, VaultReadSession } = await import('@kavrix/client');
+    const { createDefaultMutationDependencies } =
+      await import('../src/production/mutations.js');
+    const { fieldDefinitionSchema, itemPayloadSchema } =
+      await import('@kavrix/schemas');
+
+    try {
+      await executeProductionCreateGroup(mutationOptions, { name: 'Identity' });
+      const credential = await executeProductionCreateCredential(mutationOptions, {
+        groupQuery: 'Identity',
+        title: 'Break Glass Account',
+      });
+
+      // Recovery codes are minted by import, restore, or sync rather than by the
+      // CLI, so the fixture seeds the element list the way those paths do: one
+      // whole-item write carrying an item-scope definition and its stored value.
+      const seedSession = new VaultReadSession(store, vaultId);
+      await seedSession.unlock(rootKey);
+      let seeded: Awaited<ReturnType<typeof seedSession.show>>;
+      try {
+        seeded = await seedSession.show('Identity', 'Break Glass Account');
+      } finally {
+        seedSession.lock();
+      }
+
+      const definition = fieldDefinitionSchema.parse({
+        id: 'field.recovery.codes',
+        stableKey: 'recovery-codes',
+        label: 'Recovery codes',
+        type: 'recovery-code-list',
+        required: false,
+        sensitive: true,
+        repeatable: true,
+        copyable: true,
+        searchableLocally: false,
+        showInPreview: false,
+        copyPolicy: 'allowed',
+        revealPolicy: 'timed',
+        reauthenticationPolicy: 'after-lock',
+        exportPolicy: 'guarded',
+        sortOrder: 0,
+        createdAt: '2026-08-10T00:00:00.000Z',
+        updatedAt: '2026-08-10T00:00:00.000Z',
+      });
+      const sealedDefinition = fieldDefinitionSchema.parse({
+        ...definition,
+        id: 'field.recovery.sealed',
+        stableKey: 'recovery-sealed',
+        label: 'Sealed recovery codes',
+        revealPolicy: 'never',
+        sortOrder: 1,
+      });
+
+      const element = (
+        id: string,
+        value: string,
+        usedAt?: string,
+      ): Readonly<Record<string, unknown>> => ({
+        id,
+        value: { kind: 'secret', value },
+        lifecycle:
+          usedAt === undefined
+            ? { version: 1, status: 'available' }
+            : { version: 1, status: 'used', usedAt },
+      });
+      const listValue = (
+        elements: readonly Readonly<Record<string, unknown>>[],
+      ): Readonly<Record<string, unknown>> => ({
+        version: 1,
+        state: 'present',
+        content: { cardinality: 'multiple', elements },
+      });
+
+      const service = new VaultMutationService(
+        store,
+        store,
+        vaultId,
+        rootKey,
+        createDefaultMutationDependencies(),
+      );
+      await service.updateItem(
+        seeded.group.id,
+        itemPayloadSchema.parse({
+          ...seeded.item,
+          itemFields: [definition, sealedDefinition],
+          itemValues: [
+            {
+              fieldId: definition.id,
+              stableKey: definition.stableKey,
+              value: listValue([
+                element('code.alpha', CODE_CANARY_ALPHA),
+                element('code.beta', CODE_CANARY_BETA),
+                element('code.spent', CODE_CANARY_SPENT, '2026-08-01T00:00:00.000Z'),
+              ]),
+              updatedAt: '2026-08-10T00:00:00.000Z',
+            },
+            {
+              fieldId: sealedDefinition.id,
+              stableKey: sealedDefinition.stableKey,
+              value: listValue([element('sealed.one', CODE_CANARY_SEALED)]),
+              updatedAt: '2026-08-10T00:00:00.000Z',
+            },
+          ],
+        }),
+      );
+
+      const listRequest = {
+        groupQuery: 'Identity',
+        credentialQuery: 'Break Glass Account',
+        fieldQuery: 'recovery-codes',
+      };
+
+      // 1. Listing reports identity and lifecycle only. No projection may carry
+      //    code material, in either the masked entries or the inventory.
+      const listed = await executeProductionListRecoveryCodes(readOptions, listRequest);
+      expect(listed.fieldLabel).toBe('Recovery codes');
+      expect(listed.inventory).toStrictEqual({ total: 3, available: 2, used: 1 });
+      expect(listed.codes).toStrictEqual([
+        { id: 'code.alpha', status: 'available', usedAt: null },
+        { id: 'code.beta', status: 'available', usedAt: null },
+        { id: 'code.spent', status: 'used', usedAt: '2026-08-01T00:00:00.000Z' },
+      ]);
+      expectNoCodeMaterial(listed);
+
+      // 2. An ambiguous identifier prefix is refused rather than resolved to the
+      //    first match, because guessing here would consume the wrong code.
+      await expect(
+        executeProductionUseRecoveryCode(mutationOptions, {
+          ...listRequest,
+          code: 'code.',
+        }),
+      ).rejects.toBeInstanceOf(AmbiguousNameError);
+
+      // 3. A stale revision expectation fails closed before any write lands.
+      await expect(
+        executeProductionUseRecoveryCode(mutationOptions, {
+          ...listRequest,
+          code: 'code.alpha',
+          ifRevision: 99,
+        }),
+      ).rejects.toBeInstanceOf(SyncConflictError);
+      const unchanged = await executeProductionListRecoveryCodes(
+        readOptions,
+        listRequest,
+      );
+      expect(unchanged.inventory.available).toBe(2);
+
+      // 4. The consuming write marks exactly the named code used.
+      const beforeUse = await store.getCurrentItem(vaultId, credential.credentialId);
+      const baseRevision =
+        beforeUse?.state === 'active' ? beforeUse.record.recordRevision : 0;
+      const receipt = await executeProductionUseRecoveryCode(mutationOptions, {
+        ...listRequest,
+        code: 'code.alpha',
+        ifRevision: baseRevision,
+      });
+      expect(receipt.codeId).toBe('code.alpha');
+      expect(receipt.previousRevision).toBe(baseRevision);
+      expect(receipt.revision).toBe(baseRevision + 1);
+      expect(receipt.inventory).toStrictEqual({ total: 3, available: 1, used: 2 });
+      expectNoCodeMaterial(receipt);
+
+      // 5. The transition is durable and every other code keeps its identity and
+      //    its own lifecycle, which is what a concurrent replica merges on.
+      const afterUse = await executeProductionListRecoveryCodes(
+        readOptions,
+        listRequest,
+      );
+      expect(afterUse.codes).toStrictEqual([
+        { id: 'code.alpha', status: 'used', usedAt: receipt.usedAt },
+        { id: 'code.beta', status: 'available', usedAt: null },
+        { id: 'code.spent', status: 'used', usedAt: '2026-08-01T00:00:00.000Z' },
+      ]);
+
+      // 6. Retrying the committed write is refused instead of restamping usedAt,
+      //    so an interrupted caller that cannot tell whether its write landed can
+      //    safely repeat it.
+      await expect(
+        executeProductionUseRecoveryCode(mutationOptions, {
+          ...listRequest,
+          code: 'code.alpha',
+        }),
+      ).rejects.toThrow(/already been used/u);
+      const afterRetry = await executeProductionListRecoveryCodes(
+        readOptions,
+        listRequest,
+      );
+      expect(afterRetry.codes[0]?.usedAt).toBe(receipt.usedAt);
+
+      // 7. A non-consuming reveal releases the value and writes nothing.
+      const revealed = await executeProductionRevealRecoveryCode(mutationOptions, {
+        ...listRequest,
+        code: 'code.beta',
+      });
+      expect(revealed).toStrictEqual({
+        codeId: 'code.beta',
+        value: CODE_CANARY_BETA,
+        receipt: null,
+      });
+      const afterReveal = await executeProductionListRecoveryCodes(
+        readOptions,
+        listRequest,
+      );
+      expect(afterReveal.inventory).toStrictEqual({ total: 3, available: 1, used: 2 });
+
+      // 8. Revealing a spent code adds exposure and no use, so it is refused.
+      await expect(
+        executeProductionRevealRecoveryCode(mutationOptions, {
+          ...listRequest,
+          code: 'code.spent',
+        }),
+      ).rejects.toThrow(/already been used/u);
+
+      // 9. A field whose definition forbids reveal is refused, and the refusal
+      //    happens before the write so no code is spent by a denied reveal.
+      const sealedRequest = { ...listRequest, fieldQuery: 'recovery-sealed' };
+      await expect(
+        executeProductionRevealRecoveryCode(mutationOptions, {
+          ...sealedRequest,
+          code: 'sealed.one',
+          use: true,
+        }),
+      ).rejects.toBeInstanceOf(PermissionError);
+      const sealedAfterDenial = await executeProductionListRecoveryCodes(
+        readOptions,
+        sealedRequest,
+      );
+      expect(sealedAfterDenial.inventory).toStrictEqual({
+        total: 1,
+        available: 1,
+        used: 0,
+      });
+
+      // 10. A consuming reveal commits the transition before releasing the value,
+      //     so an interruption cannot leave a displayed code still available.
+      const consumed = await executeProductionRevealRecoveryCode(mutationOptions, {
+        ...listRequest,
+        code: 'code.beta',
+        use: true,
+      });
+      expect(consumed.value).toBe(CODE_CANARY_BETA);
+      expect(consumed.receipt?.codeId).toBe('code.beta');
+      expectNoCodeMaterial(consumed.receipt);
+      const exhausted = await executeProductionListRecoveryCodes(
+        readOptions,
+        listRequest,
+      );
+      expect(exhausted.inventory).toStrictEqual({ total: 3, available: 0, used: 3 });
+
+      // 11. A field that cannot legally carry a `used` lifecycle is refused, so
+      //     the transition can never be written onto an ordinary field.
+      await executeProductionAddField(mutationOptions, {
+        groupQuery: 'Identity',
+        credentialQuery: 'Break Glass Account',
+        fieldKey: 'console-url',
+        fieldType: 'url',
+        label: 'Console URL',
+        sensitive: false,
+      });
+      await expect(
+        executeProductionUseRecoveryCode(mutationOptions, {
+          ...listRequest,
+          fieldQuery: 'console-url',
+          code: 'code.alpha',
+        }),
+      ).rejects.toThrow(/does not hold recovery codes/u);
+
+      // 12. The used state lives inside the encrypted item record rather than in
+      //     any plaintext column the store keeps for sync or for the queue.
+      const stored = await store.getCurrentItem(vaultId, credential.credentialId);
+      expect(stored?.state).toBe('active');
+      expectNoCodeMaterial(stored);
+      const pending = await store.listPendingMutations(vaultId);
+      expect(pending.length).toBeGreaterThan(0);
+      expectNoCodeMaterial(pending);
+    } finally {
+      zeroize(rootKey);
+      await environment.close();
+      await backend.close();
+    }
+  });
 });
+
+const CODE_CANARY_ALPHA = 'recovery-canary-alpha';
+const CODE_CANARY_BETA = 'recovery-canary-beta';
+const CODE_CANARY_SPENT = 'recovery-canary-spent';
+const CODE_CANARY_SEALED = 'recovery-canary-sealed';
+
+/**
+ * Assert that no recovery code value appears anywhere in a projection.
+ *
+ * Every canary is checked against every projection, so a receipt or a stored
+ * record that leaks a code other than the one under test still fails.
+ */
+function expectNoCodeMaterial(value: unknown): void {
+  const serialized = JSON.stringify(value ?? null);
+  for (const canary of [
+    CODE_CANARY_ALPHA,
+    CODE_CANARY_BETA,
+    CODE_CANARY_SPENT,
+    CODE_CANARY_SEALED,
+  ]) {
+    expect(serialized).not.toContain(canary);
+  }
+}
