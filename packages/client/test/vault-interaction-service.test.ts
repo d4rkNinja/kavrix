@@ -206,6 +206,53 @@ describe('VaultInteractionService', () => {
     expect(clipboard.copyCalls).toBe(0);
   });
 
+  it('selects a repeatable element by stable identifier instead of position', async () => {
+    const fixture = await interactionFixture();
+    const clipboard = new RecordingClipboard();
+    const service = await unlockedService(
+      new MemoryReadSource(fixture),
+      fixture.rootKey,
+      clipboard,
+    );
+
+    await service.copy('group.1', 'item.1.1', 'recovery_codes', {
+      elementId: 'element.two',
+    });
+    expect(clipboard.text()).toBe('recovery-two');
+
+    // Identifiers are not ordinals: a positional-looking query never resolves.
+    await expectKind(
+      service.copy('group.1', 'item.1.1', 'recovery_codes', { elementId: '2' }),
+      'element-not-found',
+    );
+    await expectKind(
+      service.copy('group.1', 'item.1.1', 'recovery_codes', {
+        elementId: 'element.missing',
+      }),
+      'element-not-found',
+    );
+    // A used code is refused by identifier exactly as it is by index.
+    await expectKind(
+      service.copy('group.1', 'item.1.1', 'recovery_codes', {
+        elementId: 'element.used',
+      }),
+      'used',
+    );
+    // Two selectors for one element is a caller defect, not a precedence puzzle.
+    await expectKind(
+      service.copy('group.1', 'item.1.1', 'recovery_codes', {
+        elementId: 'element.one',
+        index: 1,
+      }),
+      'selector-conflict',
+    );
+    // Identifier selection stays inapplicable to a single-cardinality field.
+    await expectKind(
+      service.copy('group.1', 'item.1.1', 'username', { elementId: 'element.one' }),
+      'index-inapplicable',
+    );
+  });
+
   it('requires explicit authorization for confirm and production-sensitive copies', async () => {
     const fixture = await interactionFixture();
     const withoutAuthorization = await unlockedService(

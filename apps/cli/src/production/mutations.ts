@@ -19,8 +19,13 @@ import {
   ValidationError,
   assertSingleValueWriteTarget,
   builtInTemplates,
+  listRecoveryCodes,
+  planRecoveryCodeUse,
+  readRecoveryCodeElements,
   planTemplateMigration,
   resolveNamedEntity,
+  selectRecoveryCode,
+  summarizeRecoveryCodes,
 } from '@kavrix/core';
 import {
   MAX_ATTACHMENT_STREAM_PLAINTEXT_BYTES,
@@ -41,13 +46,17 @@ import {
   templateIdSchema,
   templateMigrationIdSchema,
   templateVersionSchema,
+  timestampSchema,
   type FieldDefinition,
   type FieldValue,
+  type FieldValueElement,
   type GroupPayload,
   type GroupTemplate,
   type ItemPayload,
   type Note,
+  type StoredFieldValue,
   type TemplateMigrationPlan,
+  type Timestamp,
   type VaultId,
 } from '@kavrix/schemas';
 
@@ -67,6 +76,7 @@ import type {
   CliDownloadAttachmentRequest,
   CliFieldMutationResult,
   CliGroupMutationResult,
+  CliListRecoveryCodesRequest,
   CliNoteMutationResult,
   CliPlanTemplateMigrationRequest,
   CliRemoveFieldRequest,
@@ -75,12 +85,14 @@ import type {
   CliRestoreFieldRequest,
   CliRestoreHistoryRequest,
   CliRestoreNoteRequest,
+  CliRevealRecoveryCodeRequest,
   CliSetFieldRequest,
   CliShowHistoryRequest,
   CliUpdateFieldRequest,
   CliUpdateNoteRequest,
   CliUpdateTemplateRequest,
   CliUploadAttachmentRequest,
+  CliUseRecoveryCodeRequest,
 } from '../mutation-contracts.js';
 import type {
   CliAttachmentDeleteResult,
@@ -91,6 +103,9 @@ import type {
   CliHistoryDiff,
   CliHistoryRestoreResult,
   CliHistorySummary,
+  CliRecoveryCodeListResult,
+  CliRecoveryCodeRevealResult,
+  CliRecoveryCodeUseResult,
   CliTemplateMigrationApplyResult,
   CliTemplateMigrationStatusResult,
   CliTemplateSummary,
@@ -2005,4 +2020,230 @@ export async function executeProductionRestoreHistory(
     newRevision: updatedItem.revision,
     updatedAt: updatedItem.updatedAt,
   };
+}
+
+/** Read-only options shared by the recovery-code read paths. */
+type ProductionReadOptions = Readonly<{
+  source: VaultReadSourcePort;
+  vaultId: VaultId;
+  rootKey: VaultRootKey;
+}>;
+
+type ShownCredential = Awaited<ReturnType<VaultReadSession['show']>>;
+
+interface ResolvedRecoveryCodeField {
+  readonly found: ShownCredential;
+  readonly field: ResolvableField;
+  readonly elements: readonly FieldValueElement[];
+}
+
+/**
+ * Resolve one recovery-code field and read its stored element list.
+ *
+ * Every recovery-code command starts here, so the field-type guard runs before
+ * any code is selected: a field that cannot legally hold a `used` lifecycle is
+ * refused rather than partially acted on.
+ */
+async function resolveRecoveryCodeField(
+  options: ProductionReadOptions,
+  request: CliListRecoveryCodesRequest,
+): Promise<ResolvedRecoveryCodeField> {
+  const readSession = new VaultReadSession(options.source, options.vaultId);
+  await readSession.unlock(options.rootKey);
+  let found: ShownCredential;
+  try {
+    found = await readSession.show(request.groupQuery, request.credentialQuery);
+  } finally {
+    readSession.lock();
+  }
+
+  const field = resolveWritableField(found, request.fieldQuery);
+  if (field === undefined) {
+    throw new NotFoundError();
+  }
+  return {
+    found,
+    field,
+    elements: readRecoveryCodeElements(
+      field.definition,
+      storedFieldValue(found.item, field),
+    ),
+  };
+}
+
+/**
+ * Swap one stored field value for its replacement in place.
+ *
+ * The entry is replaced rather than filtered and appended so its position in the
+ * stored list is preserved, and the count is asserted so a value that is missing
+ * or duplicated fails closed instead of producing a write that silently leaves
+ * the consumed code available.
+ */
+function replaceStoredFieldValue(
+  values: readonly StoredFieldValue[],
+  fieldId: string,
+  value: StoredFieldValue['value'],
+  updatedAt: Timestamp,
+): StoredFieldValue[] {
+  let replacements = 0;
+  const next = values.map((stored) => {
+    if (stored.fieldId !== fieldId) return stored;
+    replacements += 1;
+    return { ...stored, value, updatedAt };
+  });
+  if (replacements !== 1) {
+    throw new ValidationError(
+      'The stored recovery code list could not be located exactly once.',
+    );
+  }
+  return next;
+}
+
+/**
+ * Apply the `available` to `used` transition durably and report what changed.
+ *
+ * The consuming write goes through the same durable, crash-resumable mutation
+ * queue as every other item write, and the queue binds it to the revision the
+ * caller read. A retry after a committed write therefore finds the code already
+ * used and is refused by the plan, rather than restamping the original `usedAt`.
+ */
+async function consumeRecoveryCode(
+  options: ProductionMutationOptions,
+  request: CliUseRecoveryCodeRequest,
+  assertPermitted?: (field: ResolvableField) => void,
+): Promise<{
+  readonly receipt: CliRecoveryCodeUseResult;
+  readonly element: FieldValueElement;
+}> {
+  const { found, field } = await resolveRecoveryCodeField(options, request);
+  assertPermitted?.(field);
+
+  const state = await options.source.getCurrentItem(options.vaultId, found.item.id);
+  if (state?.state !== 'active') {
+    throw new NotFoundError();
+  }
+  assertExpectedItemRevision(found.item, request.ifRevision);
+
+  const usedAt = timestampSchema.parse(new Date().toISOString());
+  const plan = planRecoveryCodeUse(
+    field.definition,
+    storedFieldValue(found.item, field),
+    request.code,
+    usedAt,
+  );
+
+  const isTemplateField = field.scope === 'template';
+  const replaced = replaceStoredFieldValue(
+    isTemplateField ? found.item.templateValues : found.item.itemValues,
+    field.definition.id,
+    plan.value,
+    usedAt,
+  );
+
+  const service = new VaultMutationService(
+    options.source,
+    options.queue,
+    options.vaultId,
+    options.rootKey,
+    createDefaultMutationDependencies(),
+  );
+
+  await service.updateItem(found.group.id, {
+    ...found.item,
+    templateValues: isTemplateField ? replaced : found.item.templateValues,
+    itemValues: isTemplateField ? found.item.itemValues : replaced,
+  });
+
+  return {
+    element: plan.element,
+    receipt: {
+      groupId: found.group.id,
+      credentialId: found.item.id,
+      fieldLabel: field.definition.label,
+      codeId: plan.element.id,
+      usedAt,
+      previousRevision: found.item.revision,
+      revision: recordRevisionSchema.parse(found.item.revision + 1),
+      inventory: plan.inventory,
+    },
+  };
+}
+
+/**
+ * Narrow a stored element to its readable code text.
+ *
+ * Only the two scalar kinds a recovery code may legally hold are accepted, so a
+ * reference or structured element is refused instead of being coerced into
+ * something printable.
+ */
+function recoveryCodeText(element: FieldValueElement): string {
+  const scalar = element.value;
+  if (scalar.kind === 'secret' || scalar.kind === 'text') {
+    return scalar.value;
+  }
+  throw new ValidationError('That recovery code holds no readable code value.');
+}
+
+export async function executeProductionListRecoveryCodes(
+  options: ProductionReadOptions,
+  request: CliListRecoveryCodesRequest,
+): Promise<CliRecoveryCodeListResult> {
+  const { found, field, elements } = await resolveRecoveryCodeField(options, request);
+  return {
+    groupName: found.group.name,
+    credentialTitle: found.item.title,
+    fieldLabel: field.definition.label,
+    inventory: summarizeRecoveryCodes(elements),
+    codes: listRecoveryCodes(elements).map((entry) => ({
+      id: entry.id,
+      status: entry.status,
+      usedAt: entry.usedAt ?? null,
+    })),
+  };
+}
+
+export async function executeProductionUseRecoveryCode(
+  options: ProductionMutationOptions,
+  request: CliUseRecoveryCodeRequest,
+): Promise<CliRecoveryCodeUseResult> {
+  const { receipt } = await consumeRecoveryCode(options, request);
+  return receipt;
+}
+
+/**
+ * Reveal one code, optionally consuming it first.
+ *
+ * When `use` is requested the durable write happens before the value is
+ * returned, so an interruption can never leave a code that reached a terminal
+ * still marked available. The reveal-policy gate runs before that write, so a
+ * field that forbids reveal never spends a code; a code that is already spent is
+ * refused as well, since revealing spent material adds exposure and no use.
+ */
+export async function executeProductionRevealRecoveryCode(
+  options: ProductionMutationOptions,
+  request: CliRevealRecoveryCodeRequest,
+): Promise<CliRecoveryCodeRevealResult> {
+  if (request.use === true) {
+    const { receipt, element } = await consumeRecoveryCode(
+      options,
+      request,
+      assertRevealPermitted,
+    );
+    return { codeId: receipt.codeId, value: recoveryCodeText(element), receipt };
+  }
+
+  const { field, elements } = await resolveRecoveryCodeField(options, request);
+  assertRevealPermitted(field);
+  const element = selectRecoveryCode(elements, request.code);
+  if (element.lifecycle.status === 'used') {
+    throw new ValidationError('That recovery code has already been used.');
+  }
+  return { codeId: element.id, value: recoveryCodeText(element), receipt: null };
+}
+
+/** Refuse to print a field its own definition says must never be revealed. */
+function assertRevealPermitted(field: ResolvableField): void {
+  if (field.definition.revealPolicy === 'never') {
+    throw new PermissionError();
+  }
 }

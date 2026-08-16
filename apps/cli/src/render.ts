@@ -35,6 +35,8 @@ import type {
   CliKeySlotResult,
   CliPortableKeyRotationResult,
   CliRecoverResult,
+  CliRecoveryCodeListResult,
+  CliRecoveryCodeUseResult,
   CliRunPlan,
   CliRunResult,
   CliShowResult,
@@ -1196,4 +1198,57 @@ export function renderFieldRead(result: CliFieldReadResult, json: boolean): stri
     });
   }
   return `${sanitizeTerminalText(result.value)}\n`;
+}
+
+/**
+ * Renders the recovery-code inventory. Codes are listed by stable identifier and
+ * lifecycle only: this projection carries no code material in either output
+ * mode, so it stays safe to redirect or log.
+ */
+export function renderRecoveryCodeList(
+  result: CliRecoveryCodeListResult,
+  json: boolean,
+): string {
+  if (json) {
+    return safeJson(result);
+  }
+  const lines = [
+    `Recovery codes for "${sanitizeTerminalText(result.credentialTitle)}" in group "${sanitizeTerminalText(
+      result.groupName,
+    )}":`,
+    `  Field: ${sanitizeTerminalText(result.fieldLabel)}`,
+    `  Available: ${String(result.inventory.available)} of ${String(result.inventory.total)} (used: ${String(
+      result.inventory.used,
+    )})`,
+    ...result.codes.map((code) => {
+      const status =
+        code.usedAt === null
+          ? sanitizeTerminalText(code.status)
+          : `${sanitizeTerminalText(code.status)} at ${sanitizeTerminalText(code.usedAt)}`;
+      return `  - ${sanitizeTerminalText(code.id)}: ${status}`;
+    }),
+    '  Values stay masked. Use "recovery reveal" or "recovery copy" to release one.',
+  ];
+  return lines.join('\n').concat('\n');
+}
+
+/**
+ * Renders a consumed-code receipt. The receipt names the element that moved to
+ * `used` and the revisions around the durable write, never the code itself.
+ */
+export function renderRecoveryCodeUse(
+  result: CliRecoveryCodeUseResult,
+  json: boolean,
+): string {
+  if (json) {
+    return safeJson(result);
+  }
+  const lines = [
+    `Recovery code "${sanitizeTerminalText(result.codeId)}" marked used.`,
+    `  Field: ${sanitizeTerminalText(result.fieldLabel)}`,
+    `  Used At: ${sanitizeTerminalText(result.usedAt)}`,
+    `  Remaining: ${String(result.inventory.available)} of ${String(result.inventory.total)}`,
+    `  Revision: ${String(result.previousRevision)} -> ${String(result.revision)}`,
+  ];
+  return lines.join('\n').concat('\n');
 }

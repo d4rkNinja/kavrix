@@ -1,22 +1,21 @@
 # Direct access CLI
 
-The product requirement is a fast direct path to one credential. The repository
-currently implements and tests a redacted `show` command contract, name
-resolution, local decryption, and lower-level TUI/clipboard policies. The packed
-`creds` executable does not compose them. Direct `copy` and command-line
-`reveal` do not yet exist in the CLI catalog.
+The product requirement is a fast direct path to one credential. The packed
+`creds` executable now composes that path: `show`, `copy`, `reveal`, `get`, and
+the `recovery` lifecycle commands are all registered in
+`PUBLIC_CLI_COMMAND_CATALOG`. The sections below state what each released
+contract does and does not guarantee.
 
 ## Capability status
 
-| Requested surface                           | Live implementation                                                                               | Executable status                       |
-| ------------------------------------------- | ------------------------------------------------------------------------------------------------- | --------------------------------------- |
-| `creds show <group> <credential>`           | Parser, use-case contract, local read session, schema validation, and redacted text/JSON renderer | Not registered in the packed executable |
-| `creds copy <group> <credential> <field>`   | Native secure-clipboard adapter and TUI item-ID/field-ID intent boundary                          | No CLI descriptor or composed use case  |
-| `creds reveal <group> <credential> <field>` | TUI field-policy authorization intent and timed reveal state                                      | No CLI descriptor or composed use case  |
+| Requested surface                           | Live implementation                                                                               | Executable status                   |
+| ------------------------------------------- | ------------------------------------------------------------------------------------------------- | ----------------------------------- |
+| `creds show <group> <credential>`           | Parser, use-case contract, local read session, schema validation, and redacted text/JSON renderer | Registered in the packed executable |
+| `creds copy <group> <credential> <field>`   | Native secure-clipboard adapter, composed copy use case, and TUI item-ID/field-ID intent boundary | Registered in the packed executable |
+| `creds reveal <group> <credential> <field>` | Composed reveal use case with a non-interactive redirection guard                                 | Registered in the packed executable |
+| `creds recovery list / use / reveal / copy` | Core recovery-code selection policy plus composed lifecycle executors                             | Registered in the packed executable |
 
-The commands below are therefore contracts or planned canonical forms, not a
-quick-start claiming usable production behavior. See [CLI Reference](./cli-reference.md)
-for the only current public commands.
+See [CLI Reference](./cli-reference.md) for the full public command list.
 
 ## Show contract
 
@@ -87,19 +86,20 @@ secret fields visible.
 
 ## Copy target
 
-The planned canonical form remains:
+The canonical form is:
 
 ```text
 creds copy <group-query> <credential-query> <field>
 ```
 
-No CLI parser or `CliUseCasePorts.copy` method exists yet, so exact field-query
-resolution is not a released contract. The data model establishes a stable field
-key for automation and copy sequences; display labels are mutable and must not be
-silently treated as stable automation identifiers. A production implementation
-must resolve group and credential with the order above, resolve one exact field
-identity without guessing, and fail on missing, archived, repeatable, or
-otherwise ambiguous selection unless an explicit selector is defined and tested.
+It exists in the built package. The `copy` port takes the group, credential, and
+field queries plus optional copy options, and the field query accepts a field ID,
+stable key, exact label, or unique prefix. The data model establishes a stable
+field key for automation and copy sequences; display labels are mutable and must
+not be silently treated as stable automation identifiers. Group and credential
+resolve with the order above, one exact field identity is resolved without
+guessing, and missing, archived, or otherwise ambiguous selection fails rather
+than picking a candidate.
 
 The existing lower-level behavior provides these constraints:
 
@@ -120,33 +120,44 @@ remote-desktop software, other processes, and malware can retain plaintext. The
 native command APIs cannot provide a portable atomic compare-and-clear. See the
 [TUI Guide](./tui-guide.md) for the implemented interactive intent boundary.
 
-There is no current `--sequence`, repeatable-value selector, recovery-code
-consume action, `--stdout`, or JSON secret-copy mode.
+A repeatable value is selectable two ways. `creds copy` and `creds get` keep
+their one-based `--index <n>`, and `creds recovery copy`, `creds recovery use`,
+and `creds recovery reveal` select an element with `--code <id>`, which accepts an
+exact identifier or an unambiguous prefix and never an ordinal. Identifier
+selection is the safer form, because the same index names a different element once
+a list gains or loses one. `creds recovery reveal --use` is the only consume
+action, and it marks the code used before printing it. There is still no
+`--sequence` and no JSON secret-copy mode.
 
 ## Reveal target
 
-The planned canonical form is:
+The canonical form is:
 
 ```text
 creds reveal <group-query> <credential-query> <field>
 ```
 
-It is not a CLI command today. The TUI state machine permits reveal only for a
-sensitive field whose `revealPolicy` is not `never`, requests confirmation when
-the policy is `confirm`, delegates authorization/reauthentication to a use case,
-and grants a 15-second reveal state after authorization. Lock, group/item
-changes, and expiry clear reveal state.
+It exists in the built package and denies non-interactive redirection unless
+`--stdout` is passed explicitly. `creds recovery reveal` prints one recovery code
+under the same guard, and adds `--use` to mark that code used before it is
+printed.
 
-A future noninteractive reveal command must not be inferred from that TUI
-contract. In particular, the tree does not currently define a safe stdout guard,
-reauthentication UX, redirected-output policy, repeatable-field selection, or
-stable secret JSON schema. Until those behaviors are implemented and tested,
-there is no supported way to print a secret through `creds`.
+Only the recovery path consults the field's `revealPolicy`: it refuses a field
+declared `never`. `creds reveal` and `creds get --reveal` do not, so the timed and
+`confirm` reveal ceremony remains TUI-only. The TUI state machine permits reveal
+only for a sensitive field whose `revealPolicy` is not `never`, requests
+confirmation when the policy is `confirm`, delegates
+authorization/reauthentication to a use case, and grants a 15-second reveal state
+after authorization. Lock, group/item changes, and expiry clear reveal state.
+
+That TUI contract is not the CLI contract, and neither one may be inferred from
+the other. The CLI has no reauthentication prompt on reveal and no timed
+expiry of a printed value, because a value written to a terminal or a pipe cannot
+be recalled.
 
 ## Quoting direct targets
 
-These examples show how the intended positional syntax must be quoted after the
-command is composed; they are not runnable with the current packed executable.
+These examples show how the positional syntax must be quoted in each shell.
 
 ```text
 # Bash, Zsh, or Fish
@@ -161,8 +172,8 @@ creds copy 'Email Accounts' 'Gmail Work' 'password'
 Single quotes prevent whitespace splitting and most shell expansion. PowerShell
 represents an apostrophe inside a single-quoted name by doubling it. Bash and Zsh
 can close the literal, insert `\'`, and reopen it. For difficult punctuation or
-names beginning with `-`, prefer an opaque ID and the option terminator `--`
-once operational parsing is available. Names and stable keys are not secret;
+names beginning with `-`, prefer an opaque ID and the option terminator `--`.
+Names and stable keys are not secret;
 portable keys, passphrases, recovery keys, tokens, and field values must never be
 passed this way.
 

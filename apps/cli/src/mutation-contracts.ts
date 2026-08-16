@@ -413,6 +413,58 @@ export type CliShowHistoryRequest = z.infer<typeof cliShowHistoryRequestSchema>;
 export type CliDiffHistoryRequest = z.infer<typeof cliDiffHistoryRequestSchema>;
 export type CliRestoreHistoryRequest = z.infer<typeof cliRestoreHistoryRequestSchema>;
 
+/**
+ * A stable recovery-code element identifier, or an unambiguous prefix of one.
+ *
+ * Bounded and character-restricted to the opaque element identifier shape so a
+ * malformed selector fails as usage before any vault is unlocked. Selection is
+ * never positional, so a bare number is a legal query only in the sense that it
+ * is a legal identifier: it resolves against identifiers, never against
+ * ordinals.
+ */
+export const recoveryCodeSelectorSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(128)
+  .regex(/^[A-Za-z0-9][A-Za-z0-9._~-]*$/u, {
+    message: 'A recovery code identifier accepts only [A-Za-z0-9._~-].',
+  });
+
+export const cliListRecoveryCodesRequestSchema = z
+  .object({
+    groupQuery: cleanNameSchema,
+    credentialQuery: cleanNameSchema,
+    fieldQuery: cleanNameSchema,
+  })
+  .strict();
+
+export const cliUseRecoveryCodeRequestSchema = cliListRecoveryCodesRequestSchema
+  .extend({
+    code: recoveryCodeSelectorSchema,
+    ifRevision: expectedRevisionSchema.optional(),
+  })
+  .strict();
+
+/**
+ * A reveal request. `use` asks for the same consuming write `recovery use`
+ * performs, ordered before the value reaches the terminal so an interrupted
+ * reveal can never leave a displayed code marked available.
+ */
+export const cliRevealRecoveryCodeRequestSchema = cliUseRecoveryCodeRequestSchema
+  .extend({
+    use: z.boolean().optional(),
+  })
+  .strict();
+
+export type CliListRecoveryCodesRequest = z.infer<
+  typeof cliListRecoveryCodesRequestSchema
+>;
+export type CliUseRecoveryCodeRequest = z.infer<typeof cliUseRecoveryCodeRequestSchema>;
+export type CliRevealRecoveryCodeRequest = z.infer<
+  typeof cliRevealRecoveryCodeRequestSchema
+>;
+
 /** Inclusive upper bound on one audit page. Keeps local reads bounded. */
 export const MAX_AUDIT_EVENT_PAGE_SIZE = 200;
 /** Page size used when the caller does not request one. */

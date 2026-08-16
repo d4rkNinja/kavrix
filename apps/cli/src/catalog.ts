@@ -36,6 +36,9 @@ import {
   type CliHistoryRestoreResult,
   type CliHistorySummary,
   type CliRecoverResult,
+  type CliRecoveryCodeListResult,
+  type CliRecoveryCodeRevealResult,
+  type CliRecoveryCodeUseResult,
   type CliStatus,
   type CliTemplateMigrationApplyResult,
   type CliTemplateMigrationStatusResult,
@@ -2106,6 +2109,21 @@ function expectedRevision(
     : parseInput(expectedRevisionOptionSchema, raw, 'expected revision');
 }
 
+/**
+ * Reads the `--code` selector and validates its shape as a usage error.
+ *
+ * Validating here as well as in the request schema keeps a malformed identifier a
+ * usage failure raised before any vault is unlocked, rather than a vault-level
+ * failure that implies the vault was consulted.
+ */
+async function recoveryCodeSelector(
+  options: Readonly<Record<string, unknown>>,
+): Promise<string> {
+  const raw = requiredOption(options, 'code', 'recovery code');
+  const { recoveryCodeSelectorSchema } = await import('./mutation-contracts.js');
+  return parseInput(recoveryCodeSelectorSchema, raw, 'recovery code');
+}
+
 /** Shared body of `field set` and the top-level `set`. */
 async function executeFieldSet(
   feature: Extract<CliFeature, 'field set' | 'set'>,
@@ -3361,6 +3379,304 @@ const historyCommand: CliCommandDescriptor = Object.freeze({
   ],
 });
 
+/**
+ * Options every recovery-code command shares.
+ *
+ * `--code` is the only selector: recovery codes are addressed by their stable
+ * element identifier, never by position, so a list that shifts underneath a
+ * script can never cause the wrong code to be consumed.
+ */
+const recoveryCodeOption: CliOptionDescriptor = Object.freeze({
+  flags: '--code <id>',
+  description: 'Stable recovery code identifier, or an unambiguous prefix of one.',
+});
+
+const recoveryCommand: CliCommandDescriptor = Object.freeze({
+  name: 'recovery',
+  description: 'List and consume encrypted recovery codes without index ambiguity.',
+  options: [secretBackendOption, backendPassphraseStdinOption],
+  children: [
+    {
+      name: 'list',
+      description:
+        'List recovery codes by identifier and lifecycle with values masked.',
+      arguments: [
+        { syntax: '<group>', description: 'Group ID, unique name, or alias.' },
+        {
+          syntax: '<credential>',
+          description: 'Credential ID, unique name, or alias within the group.',
+        },
+        {
+          syntax: '<field>',
+          description: 'Recovery-code field ID, stable key, exact label, or prefix.',
+        },
+      ],
+      options: [jsonOption, secretBackendOption, backendPassphraseStdinOption],
+      execute: async (context, arguments_, options) => {
+        const groupQuery = requiredArgument(arguments_[0], 'group query');
+        const credentialQuery = requiredArgument(arguments_[1], 'credential query');
+        const fieldQuery = requiredArgument(arguments_[2], 'field query');
+        const json = optionBoolean(options, 'json');
+
+        const { cliListRecoveryCodesRequestSchema } =
+          await import('./mutation-contracts.js');
+        const request = cliListRecoveryCodesRequestSchema.parse({
+          groupQuery,
+          credentialQuery,
+          fieldQuery,
+        });
+
+        let result: CliRecoveryCodeListResult;
+        if (context.ports?.listRecoveryCodes !== undefined) {
+          result = await context.ports.listRecoveryCodes(request);
+        } else {
+          const { executeProductionListRecoveryCodes } =
+            await import('./production/mutations.js');
+          result = await withUnlockedVault(
+            context,
+            'recovery list',
+            options,
+            async (unlocked, store, rootKey) =>
+              executeProductionListRecoveryCodes(
+                {
+                  source: store,
+                  vaultId: unlocked.profile.vaultId,
+                  rootKey,
+                },
+                request,
+              ),
+          );
+        }
+        const { renderRecoveryCodeList } = await import('./render.js');
+        context.stdout.write(renderRecoveryCodeList(result, json));
+      },
+    },
+    {
+      name: 'use',
+      description: 'Mark one recovery code used without revealing its value.',
+      arguments: [
+        { syntax: '<group>', description: 'Group ID, unique name, or alias.' },
+        {
+          syntax: '<credential>',
+          description: 'Credential ID, unique name, or alias within the group.',
+        },
+        {
+          syntax: '<field>',
+          description: 'Recovery-code field ID, stable key, exact label, or prefix.',
+        },
+      ],
+      options: [
+        recoveryCodeOption,
+        {
+          flags: '--if-revision <number>',
+          description: 'Only write when the credential is still at this revision.',
+        },
+        jsonOption,
+        secretBackendOption,
+        backendPassphraseStdinOption,
+      ],
+      execute: async (context, arguments_, options) => {
+        const groupQuery = requiredArgument(arguments_[0], 'group query');
+        const credentialQuery = requiredArgument(arguments_[1], 'credential query');
+        const fieldQuery = requiredArgument(arguments_[2], 'field query');
+        const code = await recoveryCodeSelector(options);
+        const ifRevision = expectedRevision(options);
+        const json = optionBoolean(options, 'json');
+
+        const { cliUseRecoveryCodeRequestSchema } =
+          await import('./mutation-contracts.js');
+        const request = cliUseRecoveryCodeRequestSchema.parse({
+          groupQuery,
+          credentialQuery,
+          fieldQuery,
+          code,
+          ...(ifRevision === undefined ? {} : { ifRevision }),
+        });
+
+        let result: CliRecoveryCodeUseResult;
+        if (context.ports?.useRecoveryCode !== undefined) {
+          result = await context.ports.useRecoveryCode(request);
+        } else {
+          const { executeProductionUseRecoveryCode } =
+            await import('./production/mutations.js');
+          result = await withUnlockedVault(
+            context,
+            'recovery use',
+            options,
+            async (unlocked, store, rootKey) =>
+              executeProductionUseRecoveryCode(
+                {
+                  source: store,
+                  queue: store,
+                  vaultId: unlocked.profile.vaultId,
+                  rootKey,
+                },
+                request,
+              ),
+          );
+        }
+        const { renderRecoveryCodeUse } = await import('./render.js');
+        context.stdout.write(renderRecoveryCodeUse(result, json));
+      },
+    },
+    {
+      name: 'reveal',
+      description: 'Reveal one authorized recovery code, optionally consuming it.',
+      arguments: [
+        { syntax: '<group>', description: 'Group ID, unique name, or alias.' },
+        {
+          syntax: '<credential>',
+          description: 'Credential ID, unique name, or alias within the group.',
+        },
+        {
+          syntax: '<field>',
+          description: 'Recovery-code field ID, stable key, exact label, or prefix.',
+        },
+      ],
+      options: [
+        recoveryCodeOption,
+        {
+          flags: '--use',
+          description: 'Mark the code used before it is printed.',
+        },
+        {
+          flags: '--if-revision <number>',
+          description: 'Only write when the credential is still at this revision.',
+        },
+        {
+          flags: '--stdout',
+          description:
+            'Explicitly allow writing revealed secret to non-interactive stdout stream.',
+        },
+        secretBackendOption,
+        backendPassphraseStdinOption,
+      ],
+      execute: async (context, arguments_, options) => {
+        const groupQuery = requiredArgument(arguments_[0], 'group query');
+        const credentialQuery = requiredArgument(arguments_[1], 'credential query');
+        const fieldQuery = requiredArgument(arguments_[2], 'field query');
+        const code = await recoveryCodeSelector(options);
+        const use = optionBoolean(options, 'use');
+        const ifRevision = expectedRevision(options);
+
+        const allowStdout = optionBoolean(options, 'stdout');
+        if (!allowStdout && (context.stdout as { isTTY?: boolean }).isTTY !== true) {
+          throw new CliUsageError(
+            'Redirection is denied by default for revealed secrets. Use --stdout to explicitly allow streaming.',
+          );
+        }
+
+        const { cliRevealRecoveryCodeRequestSchema } =
+          await import('./mutation-contracts.js');
+        const request = cliRevealRecoveryCodeRequestSchema.parse({
+          groupQuery,
+          credentialQuery,
+          fieldQuery,
+          code,
+          ...(use ? { use: true } : {}),
+          ...(ifRevision === undefined ? {} : { ifRevision }),
+        });
+
+        let result: CliRecoveryCodeRevealResult;
+        if (context.ports?.revealRecoveryCode !== undefined) {
+          result = await context.ports.revealRecoveryCode(request);
+        } else {
+          const { executeProductionRevealRecoveryCode } =
+            await import('./production/mutations.js');
+          result = await withUnlockedVault(
+            context,
+            'recovery reveal',
+            options,
+            async (unlocked, store, rootKey) =>
+              executeProductionRevealRecoveryCode(
+                {
+                  source: store,
+                  queue: store,
+                  vaultId: unlocked.profile.vaultId,
+                  rootKey,
+                },
+                request,
+              ),
+          );
+        }
+
+        if (result.receipt !== null) {
+          const { renderRecoveryCodeUse } = await import('./render.js');
+          context.stderr.write(renderRecoveryCodeUse(result.receipt, false));
+        }
+        context.stdout.write(`${sanitizeTerminalText(result.value)}\n`);
+      },
+    },
+    {
+      name: 'copy',
+      description: 'Copy one available recovery code to the guarded clipboard.',
+      arguments: [
+        { syntax: '<group>', description: 'Group ID, unique name, or alias.' },
+        {
+          syntax: '<credential>',
+          description: 'Credential ID, unique name, or alias within the group.',
+        },
+        {
+          syntax: '<field>',
+          description: 'Recovery-code field ID, stable key, exact label, or prefix.',
+        },
+      ],
+      options: [recoveryCodeOption, secretBackendOption, backendPassphraseStdinOption],
+      execute: async (context, arguments_, options) => {
+        const [{ parseCopyReceipt }, { renderCopyReceipt }] = await Promise.all([
+          import('./contracts.js'),
+          import('./render.js'),
+        ]);
+        const groupQuery = parseInput(querySchema, arguments_[0], 'group query');
+        const credentialQuery = parseInput(
+          querySchema,
+          arguments_[1],
+          'credential query',
+        );
+        const fieldQuery = parseInput(querySchema, arguments_[2], 'field query');
+        const elementId = await recoveryCodeSelector(options);
+
+        const copyOpts = { elementId };
+        let rawReceipt: unknown;
+
+        if (context.ports?.copy !== undefined) {
+          rawReceipt = await context.ports.copy(
+            groupQuery,
+            credentialQuery,
+            fieldQuery,
+            copyOpts,
+          );
+        } else {
+          const { executeProductionCopy } = await import('./production/copy.js');
+          await withUnlockedVault(
+            context,
+            'recovery copy',
+            options,
+            async (unlocked, store, rootKey) => {
+              rawReceipt = await executeProductionCopy(
+                {
+                  source: store,
+                  vaultId: unlocked.profile.vaultId,
+                  rootKey,
+                  clipboard: unlocked.environment.clipboard,
+                  signal: unlocked.session.signal,
+                },
+                groupQuery,
+                credentialQuery,
+                fieldQuery,
+                copyOpts,
+              );
+            },
+          );
+        }
+
+        const receipt = parseCopyReceipt(rawReceipt);
+        context.stdout.write(renderCopyReceipt(receipt));
+      },
+    },
+  ],
+});
+
 const auditCommand: CliCommandDescriptor = Object.freeze({
   name: 'audit',
   description: 'Inspect locally derived, authorized audit events.',
@@ -4475,6 +4791,7 @@ export const CLI_COMMAND_CATALOG: readonly CliCommandDescriptor[] = Object.freez
   noteCommand,
   attachmentCommand,
   historyCommand,
+  recoveryCommand,
   auditCommand,
   showCommand,
   copyCommand,
@@ -4847,6 +5164,7 @@ export const PUBLIC_CLI_COMMAND_CATALOG: readonly CliCommandDescriptor[] =
     noteCommand,
     attachmentCommand,
     historyCommand,
+    recoveryCommand,
     auditCommand,
     showCommand,
     copyCommand,

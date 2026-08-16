@@ -670,6 +670,7 @@ export type FieldValueElementId = z.infer<typeof fieldValueElementIdSchema>;
 export type FieldValueElementLifecycle = z.infer<
   typeof fieldValueElementLifecycleSchema
 >;
+export type FieldValueElement = z.infer<typeof fieldValueElementSchema>;
 export type FieldScalarValue = z.infer<typeof fieldScalarValueSchema>;
 export type FieldValueContent = z.infer<typeof fieldValueContentSchema>;
 export type PresentFieldValue = z.infer<typeof presentFieldValueSchema>;

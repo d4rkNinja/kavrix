@@ -6,6 +6,7 @@ export * from './policies/export-policy.js';
 export * from './policies/key-slots.js';
 export * from './policies/name-resolution.js';
 export * from './policies/notes.js';
+export * from './policies/recovery-codes.js';
 export * from './policies/session-lifetime.js';
 export * from './policies/template-migration.js';
 export * from './ports.js';

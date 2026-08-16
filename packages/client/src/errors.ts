@@ -115,6 +115,8 @@ export type CredentialCopyFailureKind =
   | 'index-required'
   | 'index-inapplicable'
   | 'index-out-of-range'
+  | 'element-not-found'
+  | 'selector-conflict'
   | 'used'
   | 'authorization-required'
   | 'authorization-denied'
@@ -149,9 +151,13 @@ function copyFailureMessage(kind: CredentialCopyFailureKind): string {
     case 'index-required':
       return 'A repeatable field requires an element index.';
     case 'index-inapplicable':
-      return 'An element index applies only to a repeatable field.';
+      return 'An element selector applies only to a repeatable field.';
     case 'index-out-of-range':
       return 'The element index is outside the available range.';
+    case 'element-not-found':
+      return 'No element in the selected field carries that identifier.';
+    case 'selector-conflict':
+      return 'An element index and an element identifier cannot both be given.';
     case 'used':
       return 'The selected one-time element is no longer available.';
     case 'authorization-required':
