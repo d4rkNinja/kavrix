@@ -8,6 +8,8 @@ import {
 } from '@kavrix/client/cli-contracts';
 import type { ItemKeyRotationSkipReason } from '@kavrix/client';
 import type {
+  PurgeCategory,
+  PurgePlan,
   ReferenceGraphResult,
   TotpConfiguration,
   VaultSearchHit,
@@ -28,6 +30,7 @@ import {
   timestampSchema,
   transferCollisionStrategySchema,
   vaultIdSchema,
+  type ArchivedFieldValue,
   type ControlListPageOptions,
   type DeviceId,
   type DeviceListPageResponse,
@@ -69,6 +72,9 @@ import type {
   CliListRecoveryCodesRequest,
   CliNoteMutationResult,
   CliPlanTemplateMigrationRequest,
+  CliPurgeFieldsRequest,
+  CliPurgeNotesRequest,
+  CliPurgePreviewRequest,
   CliReferenceListRequest,
   CliReferenceRemoveRequest,
   CliReferenceWriteRequest,
@@ -698,6 +704,88 @@ export interface CliReferenceRemoveResult {
 }
 
 /**
+ * One retention purge inventory, exactly as the core policy produced it.
+ *
+ * The plan is carried unchanged because it is already the narrower shape: every
+ * unit names a field key, note title, credential title, or opaque ID that the
+ * matching listing command already discloses, and never the archived value a
+ * purge would destroy. Reshaping it here could only widen what the renderer can
+ * print.
+ *
+ * `undiscoverableCategories` is the honest half of the report. A deleted group is
+ * excluded from every vault read and this client has no way to enumerate one, so
+ * the plan cannot claim to have examined that category. Saying so is the
+ * difference between "nothing is left" and "this client cannot see what is left".
+ */
+export interface CliPurgePreviewResult {
+  readonly vaultId: VaultId;
+  readonly plan: PurgePlan;
+  readonly undiscoverableCategories: readonly CliUndiscoverablePurgeCategory[];
+}
+
+export interface CliUndiscoverablePurgeCategory {
+  readonly category: PurgeCategory;
+  readonly reason: string;
+}
+
+/** One archived field value a purge destroyed, named the way `field list` names it. */
+export interface CliPurgedField {
+  readonly fieldKey: string;
+  readonly fieldLabel: string;
+  readonly reason: ArchivedFieldValue['reason'];
+  readonly archivedAt: string;
+  readonly ageDays: number;
+}
+
+/**
+ * One completed archived-value purge.
+ *
+ * The relations retired and the attachments left unreferenced are reported
+ * because a purge that quietly changed either would be indistinguishable from one
+ * that did not: a relation is what every field-level reference resolves through,
+ * and an attachment ID is the operator's only handle on a blob this client cannot
+ * read.
+ */
+export interface CliPurgeFieldsResult {
+  readonly vaultId: VaultId;
+  readonly groupId: GroupId;
+  readonly groupName: string;
+  readonly credentialId: string;
+  readonly title: string;
+  readonly purged: readonly CliPurgedField[];
+  readonly retiredRelations: readonly string[];
+  readonly unreferencedAttachments: readonly string[];
+  readonly previousRevision: number;
+  readonly revision: number;
+}
+
+/** One archived note a purge destroyed. The note content never appears here. */
+export interface CliPurgedNote {
+  readonly noteId: string;
+  readonly title: string;
+  readonly archivedAt: string;
+  readonly ageDays: number;
+}
+
+/**
+ * One completed archived-note purge.
+ *
+ * `credentialId` is absent when the notes belonged to the group itself, because a
+ * group note and a credential note live in different records and reporting one as
+ * the other would misstate which revision moved.
+ */
+export interface CliPurgeNotesResult {
+  readonly vaultId: VaultId;
+  readonly groupId: GroupId;
+  readonly groupName: string;
+  readonly credentialId?: string;
+  readonly credentialTitle?: string;
+  readonly purged: readonly CliPurgedNote[];
+  readonly previousRevision: number;
+  readonly revision: number;
+}
+
+/**
  * One planned guarded execution. Carries destination names and addresses only:
  * a plan is printed before any field is resolved, so it can never hold a value.
  */
@@ -921,6 +1009,9 @@ export interface CliUseCasePorts {
   removeReference?(
     request: CliReferenceRemoveRequest,
   ): Promise<CliReferenceRemoveResult>;
+  previewPurge?(request: CliPurgePreviewRequest): Promise<CliPurgePreviewResult>;
+  purgeFields?(request: CliPurgeFieldsRequest): Promise<CliPurgeFieldsResult>;
+  purgeNotes?(request: CliPurgeNotesRequest): Promise<CliPurgeNotesResult>;
   showAuditEvent?(request: CliShowAuditEventRequest): Promise<CliAuditEventDetail>;
   listRecoveryCodes?(
     request: CliListRecoveryCodesRequest,

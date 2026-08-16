@@ -423,6 +423,20 @@ export const storedFieldValueSchema = z
   })
   .strict();
 
+/**
+ * Why a field value was archived rather than kept active.
+ *
+ * Named so that every layer deciding what an archived value *is* — a migration
+ * that produces one, a retention purge that selects one, a CLI filter that names
+ * one — resolves to this list instead of restating it. A second copy is how one of
+ * them starts accepting a reason the payload schema refuses.
+ */
+export const archivedFieldValueReasonSchema = z.enum([
+  'template-field-removed',
+  'type-conversion',
+  'user-archived',
+]);
+
 export const archivedFieldValueSchema = z
   .object({
     definition: fieldDefinitionSchema,
@@ -430,7 +444,7 @@ export const archivedFieldValueSchema = z
     sourceTemplateId: templateIdSchema,
     sourceTemplateVersion: templateVersionSchema,
     archivedAt: timestampSchema,
-    reason: z.enum(['template-field-removed', 'type-conversion', 'user-archived']),
+    reason: archivedFieldValueReasonSchema,
   })
   .strict()
   .superRefine((archived, context) => {

@@ -1,6 +1,7 @@
 import type {
-  ActiveFieldValue,
+  AttachmentId,
   FieldDefinition,
+  FieldValue,
   GroupPayload,
   ItemId,
   ItemPayload,
@@ -227,22 +228,81 @@ function bindingsByTarget(
   return byTarget;
 }
 
-/** Every item reference inside one stored value, with its element ID when repeatable. */
-function referencesInValue(
-  value: ActiveFieldValue | Readonly<{ state: 'orphaned' }>,
-): readonly Readonly<{ itemId: string; elementId?: string }>[] {
+/**
+ * One reference carried by a stored field value.
+ *
+ * The element ID is present only when the reference is one entry of a repeatable
+ * field, because that is the only case where a field holds more than one and the
+ * caller needs to say which.
+ */
+export type FieldValueReference =
+  | Readonly<{ kind: 'item-reference'; itemId: ItemId; elementId?: string }>
+  | Readonly<{
+      kind: 'attachment-reference';
+      attachmentId: AttachmentId;
+      elementId?: string;
+    }>;
+
+/**
+ * Every reference a single stored field value carries.
+ *
+ * Exported because reference extraction has to have exactly one definition: a
+ * traversal, a reference write, and a retention purge all decide what a value
+ * points at, and a second copy of this walk is how one of them starts disagreeing
+ * with the payload schema about which relations a credential still binds.
+ *
+ * An orphaned value is accepted so an archived field can be examined through the
+ * same helper: the reference inside it is still a reference, and pretending
+ * otherwise would make an archived value look like it binds nothing.
+ */
+export function referencesInFieldValue(
+  value: FieldValue | undefined,
+): readonly FieldValueReference[] {
+  if (value === undefined) return [];
+  if (value.state === 'orphaned') return referencesInFieldValue(value.originalValue);
   if (value.state !== 'present') return [];
   if (value.content.cardinality === 'single') {
     const scalar = value.content.value;
-    return scalar.kind === 'item-reference' ? [{ itemId: scalar.itemId }] : [];
+    if (scalar.kind === 'item-reference')
+      return [{ kind: scalar.kind, itemId: scalar.itemId }];
+    if (scalar.kind === 'attachment-reference') {
+      return [{ kind: scalar.kind, attachmentId: scalar.attachmentId }];
+    }
+    return [];
   }
-  const found: Readonly<{ itemId: string; elementId?: string }>[] = [];
+  const found: FieldValueReference[] = [];
   for (const element of value.content.elements) {
-    if (element.value.kind === 'item-reference') {
-      found.push({ itemId: element.value.itemId, elementId: element.id });
+    const scalar = element.value;
+    if (scalar.kind === 'item-reference') {
+      found.push({ kind: scalar.kind, itemId: scalar.itemId, elementId: element.id });
+    }
+    if (scalar.kind === 'attachment-reference') {
+      found.push({
+        kind: scalar.kind,
+        attachmentId: scalar.attachmentId,
+        elementId: element.id,
+      });
     }
   }
   return found;
+}
+
+/** Every item reference inside one stored value, with its element ID when repeatable. */
+function referencesInValue(
+  value: FieldValue | undefined,
+): readonly Readonly<{ itemId: ItemId; elementId?: string }>[] {
+  return referencesInFieldValue(value).flatMap((reference) =>
+    reference.kind === 'item-reference'
+      ? [
+          {
+            itemId: reference.itemId,
+            ...(reference.elementId === undefined
+              ? {}
+              : { elementId: reference.elementId }),
+          },
+        ]
+      : [],
+  );
 }
 
 /**

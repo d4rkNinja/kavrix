@@ -975,7 +975,7 @@ describe('CLI command shell', () => {
 
   it('limits the production bin catalog to commands with real static behavior', async () => {
     const publishedCommands =
-      'version generate totp key init connect recover unlock lock status template group credential field note reference attachment history recovery audit show copy reveal search get set update run sync backup transfer device completion';
+      'version generate totp key init connect recover unlock lock status template group credential field note reference purge attachment history recovery audit show copy reveal search get set update run sync backup transfer device completion';
     expect(PUBLIC_CLI_COMMAND_CATALOG.map(({ name }) => name)).toEqual(
       publishedCommands.split(' '),
     );

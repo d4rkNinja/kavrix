@@ -36,6 +36,9 @@ import {
   type CliHistoryRestoreResult,
   type CliHistorySummary,
   type CliItemKeyRotationResult,
+  type CliPurgeFieldsResult,
+  type CliPurgeNotesResult,
+  type CliPurgePreviewResult,
   type CliRecoverResult,
   type CliRecoveryCodeListResult,
   type CliRecoveryCodeRevealResult,
@@ -3585,6 +3588,263 @@ const referenceCommand: CliCommandDescriptor = Object.freeze({
   ],
 });
 
+/**
+ * Permanent destruction of records this vault already retired.
+ *
+ * Kept as its own family, deliberately not folded into `field remove` or
+ * `note remove`: those retire a live record and keep the archived copy, while these
+ * destroy the archived copy and cannot be undone by `field restore`, `note restore`,
+ * or `history restore`. `preview` is the read that answers what a purge would reach,
+ * including the categories this client cannot reach at all, so an operator never has
+ * to run a destructive command to learn its scope. Every writing subcommand demands
+ * `--force` and accepts `--if-revision`, because an irreversible write on a record
+ * that moved underneath the preview is the one outcome no later command can repair.
+ */
+const purgeCommand: CliCommandDescriptor = Object.freeze({
+  name: 'purge',
+  description: 'Permanently destroy records this vault already retired.',
+  options: [secretBackendOption, backendPassphraseStdinOption],
+  children: [
+    {
+      name: 'preview',
+      description: 'Report what a purge would destroy and what it would leave behind.',
+      options: [
+        {
+          flags: '--group <query>',
+          description: 'Limit the preview to one group, by ID, name, or alias.',
+        },
+        {
+          flags: '--credential <query>',
+          description: 'Limit the preview to one credential within --group.',
+        },
+        {
+          flags: '--older-than <days>',
+          description: 'Only count records retired more than this many days ago.',
+        },
+        {
+          flags: '--category <category...>',
+          description:
+            'Limit the preview to these categories: archived-field, orphan-value, note, credential, group, attachment, history.',
+        },
+        jsonOption,
+        secretBackendOption,
+        backendPassphraseStdinOption,
+      ],
+      execute: async (context, _arguments, options) => {
+        const json = optionBoolean(options, 'json');
+        const categories = optionStrings(options, 'category', 'purge categories');
+        const { cliPurgePreviewQuerySchema } = await import('./mutation-contracts.js');
+        const request = parseInput(
+          cliPurgePreviewQuerySchema,
+          {
+            ...(options['group'] === undefined ? {} : { group: options['group'] }),
+            ...(options['credential'] === undefined
+              ? {}
+              : { credential: options['credential'] }),
+            ...(options['olderThan'] === undefined
+              ? {}
+              : { olderThan: options['olderThan'] }),
+            ...(categories === undefined ? {} : { category: categories }),
+          },
+          'purge preview request',
+        );
+
+        let result: CliPurgePreviewResult;
+        if (context.ports?.previewPurge !== undefined) {
+          result = await context.ports.previewPurge(request);
+        } else {
+          const { executeProductionPurgePreview } =
+            await import('./production/purge.js');
+          result = await withUnlockedVault(
+            context,
+            'purge preview',
+            options,
+            async (unlocked, store, rootKey) =>
+              executeProductionPurgePreview(
+                { source: store, vaultId: unlocked.profile.vaultId, rootKey },
+                request,
+              ),
+          );
+        }
+
+        const { renderPurgePreview } = await import('./render.js');
+        context.stdout.write(renderPurgePreview(result, json));
+      },
+    },
+    {
+      name: 'fields',
+      description: "Permanently destroy a credential's archived field values.",
+      arguments: [
+        { syntax: '<group>', description: 'Group ID, unique name, or alias.' },
+        {
+          syntax: '<credential>',
+          description: 'Credential ID, unique name, or alias within the group.',
+        },
+      ],
+      options: [
+        {
+          flags: '--field <query>',
+          description: 'Destroy only this archived value, by stable key or label.',
+        },
+        {
+          flags: '--reason <reason...>',
+          description:
+            'Destroy only values archived for these reasons: template-field-removed, type-conversion, user-archived.',
+        },
+        {
+          flags: '--older-than <days>',
+          description: 'Only destroy values archived more than this many days ago.',
+        },
+        {
+          flags: '--if-revision <number>',
+          description: 'Only write when the credential is still at this revision.',
+        },
+        {
+          flags: '--force',
+          description: 'Required. Confirms the archived values cannot be restored.',
+        },
+        jsonOption,
+        secretBackendOption,
+        backendPassphraseStdinOption,
+      ],
+      execute: async (context, arguments_, options) => {
+        const json = optionBoolean(options, 'json');
+        if (!optionBoolean(options, 'force')) {
+          throw new CliUsageError(
+            'The --force flag is required for permanent field value purging.',
+          );
+        }
+        const ifRevision = expectedRevision(options);
+        const reasons = optionStrings(options, 'reason', 'purge reasons');
+        const { cliPurgeFieldsQuerySchema } = await import('./mutation-contracts.js');
+        const request = parseInput(
+          cliPurgeFieldsQuerySchema,
+          {
+            group: requiredArgument(arguments_[0], 'group query'),
+            credential: requiredArgument(arguments_[1], 'credential query'),
+            ...(options['field'] === undefined ? {} : { field: options['field'] }),
+            ...(reasons === undefined ? {} : { reason: reasons }),
+            ...(options['olderThan'] === undefined
+              ? {}
+              : { olderThan: options['olderThan'] }),
+            ...(ifRevision === undefined ? {} : { ifRevision }),
+          },
+          'purge fields request',
+        );
+
+        let result: CliPurgeFieldsResult;
+        if (context.ports?.purgeFields !== undefined) {
+          result = await context.ports.purgeFields(request);
+        } else {
+          const { executeProductionPurgeFields } =
+            await import('./production/purge.js');
+          result = await withUnlockedVault(
+            context,
+            'purge fields',
+            options,
+            async (unlocked, store, rootKey) =>
+              executeProductionPurgeFields(
+                {
+                  source: store,
+                  queue: store,
+                  vaultId: unlocked.profile.vaultId,
+                  rootKey,
+                },
+                request,
+              ),
+          );
+        }
+
+        const { renderPurgeFields } = await import('./render.js');
+        context.stdout.write(renderPurgeFields(result, json));
+      },
+    },
+    {
+      name: 'notes',
+      description: 'Permanently destroy archived notes of a group or one credential.',
+      arguments: [
+        { syntax: '<group>', description: 'Group ID, unique name, or alias.' },
+      ],
+      options: [
+        {
+          flags: '--credential <query>',
+          description:
+            "Destroy the credential's archived notes instead of the group's own.",
+        },
+        {
+          flags: '--note <id>',
+          description: 'Destroy only this note, by ID. Titles are not resolved here.',
+        },
+        {
+          flags: '--older-than <days>',
+          description: 'Only destroy notes archived more than this many days ago.',
+        },
+        {
+          flags: '--if-revision <number>',
+          description: 'Only write when the record is still at this revision.',
+        },
+        {
+          flags: '--force',
+          description: 'Required. Confirms the archived notes cannot be restored.',
+        },
+        jsonOption,
+        secretBackendOption,
+        backendPassphraseStdinOption,
+      ],
+      execute: async (context, arguments_, options) => {
+        const json = optionBoolean(options, 'json');
+        if (!optionBoolean(options, 'force')) {
+          throw new CliUsageError(
+            'The --force flag is required for permanent note purging.',
+          );
+        }
+        const ifRevision = expectedRevision(options);
+        const { cliPurgeNotesQuerySchema } = await import('./mutation-contracts.js');
+        const request = parseInput(
+          cliPurgeNotesQuerySchema,
+          {
+            group: requiredArgument(arguments_[0], 'group query'),
+            ...(options['credential'] === undefined
+              ? {}
+              : { credential: options['credential'] }),
+            ...(options['note'] === undefined ? {} : { note: options['note'] }),
+            ...(options['olderThan'] === undefined
+              ? {}
+              : { olderThan: options['olderThan'] }),
+            ...(ifRevision === undefined ? {} : { ifRevision }),
+          },
+          'purge notes request',
+        );
+
+        let result: CliPurgeNotesResult;
+        if (context.ports?.purgeNotes !== undefined) {
+          result = await context.ports.purgeNotes(request);
+        } else {
+          const { executeProductionPurgeNotes } = await import('./production/purge.js');
+          result = await withUnlockedVault(
+            context,
+            'purge notes',
+            options,
+            async (unlocked, store, rootKey) =>
+              executeProductionPurgeNotes(
+                {
+                  source: store,
+                  queue: store,
+                  vaultId: unlocked.profile.vaultId,
+                  rootKey,
+                },
+                request,
+              ),
+          );
+        }
+
+        const { renderPurgeNotes } = await import('./render.js');
+        context.stdout.write(renderPurgeNotes(result, json));
+      },
+    },
+  ],
+});
+
 const attachmentCommand: CliCommandDescriptor = Object.freeze({
   name: 'attachment',
   description: 'Manage encrypted attachments for credential items.',
@@ -5524,6 +5784,7 @@ export const CLI_COMMAND_CATALOG: readonly CliCommandDescriptor[] = Object.freez
   fieldCommand,
   noteCommand,
   referenceCommand,
+  purgeCommand,
   attachmentCommand,
   historyCommand,
   recoveryCommand,
@@ -5899,6 +6160,7 @@ export const PUBLIC_CLI_COMMAND_CATALOG: readonly CliCommandDescriptor[] =
     fieldCommand,
     noteCommand,
     referenceCommand,
+    purgeCommand,
     attachmentCommand,
     historyCommand,
     recoveryCommand,
