@@ -52,6 +52,7 @@ import type {
   CliFieldMutationResult,
   CliFieldReadResult,
 } from './mutation-contracts.js';
+import type { GeneratedSecretSummary } from './public-security-tools.js';
 import { safeJson, sanitizeTerminalOutput, sanitizeTerminalText } from './terminal.js';
 
 type SafeInvite = Readonly<{
@@ -1155,17 +1156,33 @@ export function renderRunResult(result: CliRunResult, json: boolean): string {
   return lines.join('\n').concat('\n');
 }
 
+/** Machine-readable action name for each rendered field write. */
+const FIELD_MUTATION_ACTIONS = Object.freeze({
+  set: 'set',
+  updated: 'update',
+  generated: 'generate',
+} as const);
+
 /**
  * Renders a field write receipt. The receipt names the resolved target and the
  * revisions around the write, and never carries the written value.
+ *
+ * A generated write additionally reports the shape it produced. That shape is a
+ * length or a word count, both of which the caller supplied, so it tells a reader
+ * what happened without narrowing the value that was stored.
  */
 export function renderFieldMutation(
-  action: 'set' | 'updated',
+  action: 'set' | 'updated' | 'generated',
   result: CliFieldMutationResult,
   json: boolean,
+  generation?: GeneratedSecretSummary,
 ): string {
   if (json) {
-    return safeJson({ action: action === 'set' ? 'set' : 'update', ...result });
+    return safeJson({
+      action: FIELD_MUTATION_ACTIONS[action],
+      ...result,
+      ...(generation === undefined ? {} : { generation }),
+    });
   }
   const lines = [
     `Field "${sanitizeTerminalText(result.fieldKey)}" ${action} for credential "${sanitizeTerminalText(
@@ -1175,9 +1192,18 @@ export function renderFieldMutation(
     `  Type: ${sanitizeTerminalText(result.fieldType)}`,
     `  Sensitive: ${result.sensitive ? 'yes' : 'no'}`,
     `  Created: ${result.created ? 'yes' : 'no'}`,
+    ...(generation === undefined
+      ? []
+      : [`  Generated: ${describeGeneration(generation)}`]),
     `  Revision: ${String(result.previousRevision)} -> ${String(result.revision)}`,
   ];
   return lines.join('\n').concat('\n');
+}
+
+function describeGeneration(generation: GeneratedSecretSummary): string {
+  return generation.kind === 'password'
+    ? `password (${String(generation.length)} characters)`
+    : `passphrase (${String(generation.words)} words)`;
 }
 
 /**

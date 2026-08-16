@@ -84,6 +84,7 @@ encrypted mutation against the unlocked local store. Its current surface is:
 | `creds credential delete <group> <credential> --force`                                                                                | Available in the built package | Permanently deletes a credential with an explicit `--force` authorization.                                                                                                                                                                                                                                                                                                                                     |
 | `creds field add <group> <credential> <field-key> [opts]`                                                                             | Available in the built package | Adds a new dynamic field definition to a credential. An initial value arrives only through `--value-stdin`, never through an argument.                                                                                                                                                                                                                                                                         |
 | `creds field set <group> <credential> <field> [opts]`                                                                                 | Available in the built package | Writes one field value read from `--value-stdin` or a masked prompt. Resolves the field by ID, key, label, or unique prefix; requires `--create` to define a missing field; accepts `--if-revision <n>`; refuses to overwrite a repeatable field.                                                                                                                                                              |
+| `creds field generate <group> <credential> <field> [opts]`                                                                            | Available in the built package | Generates one password or passphrase with the production RNG and stores it in a credential field through a single atomic update. Defaults to a 24-character password; `--passphrase` selects the reviewed word list. Requires `--create` for a missing field, accepts `--if-revision <n>`, and emits the value only for an explicit `--reveal` or `--copy`, which re-read it under the guarded policies.       |
 | `creds field update <group> <credential> <field>`                                                                                     | Available in the built package | Updates item-specific field definition metadata (label, type, sensitive). Accepts `--if-revision <n>` and refuses to redefine a shared group-template field.                                                                                                                                                                                                                                                   |
 | `creds field archive <group> <credential> <field-key>`                                                                                | Available in the built package | Archives a field value into archivedFieldValues.                                                                                                                                                                                                                                                                                                                                                               |
 | `creds field restore <group> <credential> <field-key>`                                                                                | Available in the built package | Restores an archived field value back to active field values.                                                                                                                                                                                                                                                                                                                                                  |
@@ -140,6 +141,18 @@ and `--stdout`. `creds totp code` accepts the same policy options against a stor
 seed and validates them before the vault is opened, so an out-of-range request
 never decrypts anything. Secret output requires an interactive stdout unless
 `--stdout` is explicit.
+
+`creds field generate` accepts the same password and passphrase policy options
+against a credential field and validates them before the vault is opened, so an
+out-of-range request never unlocks anything. Mixing the two policies is refused
+rather than silently resolved: `--passphrase` rejects `--length`, the class
+minima, and `--exclude`, and a password request rejects `--words`,
+`--separator`, `--capitalize`, `--digit`, and `--exclude-word`. The generated
+value is not printed by the write itself. `--copy` places it on the guarded
+clipboard and `--reveal` prints it, each by re-reading the stored field through
+the same reveal and copy policies `creds reveal` and `creds copy` enforce. With
+`--reveal` the value is alone on stdout and the receipts move to stderr, so a
+redirect captures only the secret.
 
 `key create` is unprotected by default. `--protect-with-passphrase` acquires two
 matching masked entries of at least 12 UTF-8 bytes; `--passphrase-stdin` requires

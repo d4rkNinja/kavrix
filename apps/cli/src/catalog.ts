@@ -2189,6 +2189,65 @@ const fieldWriteOptions: readonly CliOptionDescriptor[] = Object.freeze([
 ]);
 
 /**
+ * Policy options a generated field write accepts.
+ *
+ * None of them declares a default. A declared default is indistinguishable from a
+ * value the caller typed, and that distinction is what lets the command refuse a
+ * password flag combined with `--passphrase` instead of silently ignoring it. The
+ * defaults are applied once the requested generator is known.
+ */
+const fieldGenerationOptions: readonly CliOptionDescriptor[] = Object.freeze([
+  {
+    flags: '--passphrase',
+    description: 'Generate a word-list passphrase instead of a password.',
+  },
+  {
+    flags: '--length <number>',
+    description: 'Password length from 8 through 1024; defaults to 24.',
+  },
+  {
+    flags: '--lowercase-min <number>',
+    description: 'Minimum lowercase characters; zero disables the class. Default 1.',
+  },
+  {
+    flags: '--uppercase-min <number>',
+    description: 'Minimum uppercase characters; zero disables the class. Default 1.',
+  },
+  {
+    flags: '--digits-min <number>',
+    description: 'Minimum decimal digits; zero disables the class. Default 1.',
+  },
+  {
+    flags: '--symbols-min <number>',
+    description: 'Minimum symbols; zero disables the class. Default 1.',
+  },
+  {
+    flags: '--exclude <characters>',
+    description: 'Exclude unique visible ASCII characters from a generated password.',
+  },
+  {
+    flags: '--words <number>',
+    description: 'Passphrase word count from 6 through 24; defaults to 8.',
+  },
+  {
+    flags: '--separator <character>',
+    description: 'One supported visible passphrase separator; defaults to "-".',
+  },
+  {
+    flags: '--capitalize',
+    description: 'Capitalize exactly one randomly selected passphrase word.',
+  },
+  {
+    flags: '--digit',
+    description: 'Append one independently selected decimal digit to a passphrase.',
+  },
+  {
+    flags: '--exclude-word <word...>',
+    description: 'Exclude canonical word-list entries from a passphrase.',
+  },
+]);
+
+/**
  * Acquire a field value without ever touching argv.
  *
  * Standard input is the scriptable path; a terminal falls back to a masked
@@ -2286,6 +2345,152 @@ async function executeFieldSet(
     }
     const { renderFieldMutation } = await import('./render.js');
     context.stdout.write(renderFieldMutation('set', result, asJson));
+  } finally {
+    zeroizeBytes(secretBytes);
+  }
+}
+
+/**
+ * Shared body of `field generate`.
+ *
+ * The secret is produced before the vault is opened, so an out-of-bounds policy
+ * is a usage failure raised while nothing is decrypted, and the value is written
+ * by the same single-update path `field set` uses — the write either lands whole
+ * or not at all. The generated value never reaches a rendered stream: an explicit
+ * `--reveal` or `--copy` reads it back through the guarded read paths, which
+ * re-apply the field's own reveal and copy policies.
+ */
+async function executeFieldGenerate(
+  context: CliCommandContext,
+  arguments_: readonly (string | undefined)[],
+  options: Readonly<Record<string, unknown>>,
+): Promise<void> {
+  const groupQuery = requiredArgument(arguments_[0], 'group query');
+  const credentialQuery = requiredArgument(arguments_[1], 'credential query');
+  const fieldQuery = requiredArgument(arguments_[2], 'field query');
+  const create = optionBoolean(options, 'create');
+  const asJson = optionBoolean(options, 'json');
+  const reveal = optionBoolean(options, 'reveal');
+  const copy = optionBoolean(options, 'copy');
+  const ifRevision = expectedRevision(options);
+
+  // A reveal streams a secret to standard output, so the boundary is authorized
+  // before anything is generated, unlocked, or written.
+  if (reveal) requireSecretOutputAuthorization(context, options);
+
+  const [{ generateSecretForStorage }, { cliSetFieldRequestSchema }] =
+    await Promise.all([
+      import('./public-security-tools.js'),
+      import('./mutation-contracts.js'),
+    ]);
+  const generated = await generateSecretForStorage(options);
+  const secretBytes = Buffer.from(generated.value, 'utf8');
+
+  try {
+    const request = cliSetFieldRequestSchema.parse({
+      groupQuery,
+      credentialQuery,
+      fieldKey: fieldQuery,
+      value: secretBytes,
+      ...(create ? { create: true } : {}),
+      ...(ifRevision === undefined ? {} : { ifRevision }),
+    });
+
+    let produced: CliFieldMutationResult | undefined;
+    let revealedValue: string | undefined;
+    let rawReceipt: unknown;
+
+    const ports = context.ports;
+    if (ports?.setField !== undefined) {
+      // A configured write port without the matching read port cannot honour the
+      // requested egress, and falling through to the production path mid-flight
+      // would open a second vault, so this is reported as unavailable instead.
+      if (reveal && ports.reveal === undefined) {
+        throw new CliUnavailableError('field generate');
+      }
+      produced = await ports.setField(request);
+      if (copy) {
+        rawReceipt = await ports.copy(
+          groupQuery,
+          credentialQuery,
+          produced.fieldKey,
+          {},
+        );
+      }
+      if (ports.reveal !== undefined && reveal) {
+        revealedValue = (
+          await ports.reveal(groupQuery, credentialQuery, produced.fieldKey, {})
+        ).value;
+      }
+    } else {
+      const { executeProductionSetField } = await import('./production/mutations.js');
+      await withUnlockedVault(
+        context,
+        'field generate',
+        options,
+        async (unlocked, store, rootKey) => {
+          const written = await executeProductionSetField(
+            {
+              source: store,
+              queue: store,
+              vaultId: unlocked.profile.vaultId,
+              rootKey,
+            },
+            request,
+          );
+          produced = written;
+          // Both reads resolve the field by its written stable key, so a query
+          // that matched by prefix cannot resolve to a different field here.
+          if (copy) {
+            const { executeProductionCopy } = await import('./production/copy.js');
+            rawReceipt = await executeProductionCopy(
+              {
+                source: store,
+                vaultId: unlocked.profile.vaultId,
+                rootKey,
+                clipboard: unlocked.environment.clipboard,
+                signal: unlocked.session.signal,
+              },
+              groupQuery,
+              credentialQuery,
+              written.fieldKey,
+            );
+          }
+          if (reveal) {
+            const { executeProductionReveal } = await import('./production/reveal.js');
+            revealedValue = (
+              await executeProductionReveal(
+                { source: store, vaultId: unlocked.profile.vaultId, rootKey },
+                groupQuery,
+                credentialQuery,
+                written.fieldKey,
+              )
+            ).value;
+          }
+        },
+      );
+    }
+    if (produced === undefined) {
+      throw new Error('The field write did not produce a receipt.');
+    }
+
+    const { renderFieldMutation } = await import('./render.js');
+    // A revealed secret owns standard output so a redirect captures the value
+    // alone; every receipt then goes to the diagnostic stream.
+    const receipts = reveal ? context.stderr : context.stdout;
+    receipts.write(
+      renderFieldMutation('generated', produced, asJson, generated.summary),
+    );
+    if (rawReceipt !== undefined) {
+      const [{ parseCopyReceipt }, { renderCopyReceipt }] = await Promise.all([
+        import('./contracts.js'),
+        import('./render.js'),
+      ]);
+      receipts.write(renderCopyReceipt(parseCopyReceipt(rawReceipt)));
+    }
+    if (revealedValue !== undefined) {
+      context.stdout.write(`${sanitizeTerminalText(revealedValue)}\n`);
+    }
   } finally {
     zeroizeBytes(secretBytes);
   }
@@ -2475,6 +2680,44 @@ const fieldCommand: CliCommandDescriptor = Object.freeze({
       ],
       execute: async (context, arguments_, options) => {
         await executeFieldSet('field set', context, arguments_, options);
+      },
+    },
+    {
+      name: 'generate',
+      description:
+        'Generate a password or passphrase and store it in a credential field.',
+      arguments: [
+        { syntax: '<group>', description: 'Group ID, unique name, or alias.' },
+        {
+          syntax: '<credential>',
+          description: 'Credential ID, unique name, or alias.',
+        },
+        {
+          syntax: '<field>',
+          description: 'Field ID, stable key, exact label, or unique prefix.',
+        },
+      ],
+      options: [
+        ...fieldGenerationOptions,
+        {
+          flags: '--create',
+          description: 'Create the field when no existing field matches.',
+        },
+        {
+          flags: '--reveal',
+          description: 'Print the stored value through the guarded reveal path.',
+        },
+        {
+          flags: '--copy',
+          description: 'Place the stored value on the guarded clipboard.',
+        },
+        secretStdoutOption,
+        ...fieldWriteOptions,
+        secretBackendOption,
+        backendPassphraseStdinOption,
+      ],
+      execute: async (context, arguments_, options) => {
+        await executeFieldGenerate(context, arguments_, options);
       },
     },
     {
