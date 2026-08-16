@@ -8,6 +8,7 @@ import {
   ValidationError,
   findReferencePath,
   isItemReferenceField,
+  referencesInFieldValue,
   resolveNamedEntity,
   traverseReferenceGraph,
   type ReferenceScope,
@@ -310,14 +311,17 @@ function boundTargets(item: ItemPayload): ReadonlySet<string> {
   return bound;
 }
 
+/**
+ * Every item-reference target one stored value names.
+ *
+ * Delegated to the policy that owns what a reference inside a value *is*, so the
+ * relation-bookkeeping here and the retention purge that retires those relations
+ * can never disagree about which values count. Stored values are active by schema,
+ * so the policy's orphan-unwrapping branch is unreachable from this call.
+ */
 function referencedTargets(value: FieldValue | undefined): readonly string[] {
-  if (value?.state !== 'present') return [];
-  if (value.content.cardinality === 'single') {
-    const scalar = value.content.value;
-    return scalar.kind === 'item-reference' ? [scalar.itemId] : [];
-  }
-  return value.content.elements.flatMap((element) =>
-    element.value.kind === 'item-reference' ? [element.value.itemId] : [],
+  return referencesInFieldValue(value).flatMap((reference) =>
+    reference.kind === 'item-reference' ? [reference.itemId] : [],
   );
 }
 

@@ -733,13 +733,34 @@ export function resolveWritableField(
 }
 
 /** Fail closed when the record moved on since the caller read its revision. */
+function assertExpectedRecordRevision(
+  record: Readonly<{ revision: number }>,
+  expected: number | undefined,
+): void {
+  if (expected !== undefined && expected !== record.revision) {
+    throw new SyncConflictError();
+  }
+}
+
 export function assertExpectedItemRevision(
   item: ItemPayload,
   expected: number | undefined,
 ): void {
-  if (expected !== undefined && expected !== item.revision) {
-    throw new SyncConflictError();
-  }
+  assertExpectedRecordRevision(item, expected);
+}
+
+/**
+ * The same guard for a group, which carries notes of its own.
+ *
+ * A group is a record an operator can name a revision for exactly as they can for
+ * a credential, and the two guards share one comparison so a purge cannot end up
+ * enforcing the check on one kind of record and skipping it on the other.
+ */
+export function assertExpectedGroupRevision(
+  group: GroupPayload,
+  expected: number | undefined,
+): void {
+  assertExpectedRecordRevision(group, expected);
 }
 
 export function storedFieldValue(

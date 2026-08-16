@@ -35,6 +35,9 @@ import type {
   CliKeySlot,
   CliKeySlotResult,
   CliPortableKeyRotationResult,
+  CliPurgeFieldsResult,
+  CliPurgeNotesResult,
+  CliPurgePreviewResult,
   CliRecoverResult,
   CliRecoveryCodeListResult,
   CliRecoveryCodeUseResult,
@@ -585,6 +588,279 @@ export function renderReferenceRemove(
   ]
     .join('\n')
     .concat('\n');
+}
+
+/** How a purge disposition reads to an operator deciding whether to run the purge. */
+const PURGE_DISPOSITION_LABEL = {
+  purgeable: 'purgeable',
+  retained: 'retained by the window',
+  'server-retained': 'retained by the server schedule',
+  unsupported: 'not stored on this device',
+} as const;
+
+/**
+ * Renders one purge inventory.
+ *
+ * Retained and unsupported units are listed rather than filtered, because the
+ * question this command answers is "what would a purge destroy, and what would it
+ * leave behind" — hiding the second half would read as "nothing is left" when the
+ * truth is that this client cannot reach it. Every unit is a label and a date; no
+ * field value or note content is carried, so a preview stays safe to paste.
+ */
+export function renderPurgePreview(
+  result: CliPurgePreviewResult,
+  json: boolean,
+): string {
+  const safe = {
+    vaultId: sanitizeTerminalText(result.vaultId),
+    plan: {
+      evaluatedAt: sanitizeTerminalText(result.plan.evaluatedAt),
+      ...(result.plan.olderThanDays === undefined
+        ? {}
+        : { olderThanDays: result.plan.olderThanDays }),
+      categories: result.plan.categories,
+      purgeableCount: result.plan.purgeableCount,
+      truncated: result.plan.truncated,
+      totals: result.plan.totals.map((total) => ({
+        category: total.category,
+        purgeable: total.purgeable,
+        retained: total.retained,
+        serverRetained: total.serverRetained,
+        unsupported: total.unsupported,
+      })),
+      units: result.plan.units.map((unit) => ({
+        category: unit.category,
+        disposition: unit.disposition,
+        unitId: sanitizeTerminalText(unit.unitId),
+        label: sanitizeTerminalText(unit.label),
+        ...(unit.reason === undefined
+          ? {}
+          : { reason: sanitizeTerminalText(unit.reason) }),
+        ...(unit.groupId === undefined
+          ? {}
+          : { groupId: sanitizeTerminalText(unit.groupId) }),
+        ...(unit.groupName === undefined
+          ? {}
+          : { groupName: sanitizeTerminalText(unit.groupName) }),
+        ...(unit.credentialId === undefined
+          ? {}
+          : { credentialId: sanitizeTerminalText(unit.credentialId) }),
+        ...(unit.credentialTitle === undefined
+          ? {}
+          : { credentialTitle: sanitizeTerminalText(unit.credentialTitle) }),
+        ...(unit.retiredAt === undefined
+          ? {}
+          : { retiredAt: sanitizeTerminalText(unit.retiredAt) }),
+        ...(unit.ageDays === undefined ? {} : { ageDays: unit.ageDays }),
+        ...(unit.tombstone === undefined
+          ? {}
+          : {
+              tombstone: {
+                deletedAt: sanitizeTerminalText(unit.tombstone.deletedAt),
+                ...(unit.tombstone.purgeAfter === undefined
+                  ? {}
+                  : { purgeAfter: sanitizeTerminalText(unit.tombstone.purgeAfter) }),
+              },
+            }),
+      })),
+      retiredRelations: result.plan.retiredRelations.map((relation) => ({
+        credentialId: sanitizeTerminalText(relation.credentialId),
+        targetId: sanitizeTerminalText(relation.targetId),
+      })),
+      unreferencedAttachments: result.plan.unreferencedAttachments.map(
+        (attachment) => ({
+          credentialId: sanitizeTerminalText(attachment.credentialId),
+          attachmentId: sanitizeTerminalText(attachment.attachmentId),
+        }),
+      ),
+    },
+    undiscoverableCategories: result.undiscoverableCategories.map((entry) => ({
+      category: entry.category,
+      reason: sanitizeTerminalText(entry.reason),
+    })),
+  };
+  if (json) return safeJson(safe);
+
+  const lines = [
+    safe.plan.olderThanDays === undefined
+      ? `Purge preview at ${safe.plan.evaluatedAt} (no retention window):`
+      : `Purge preview at ${safe.plan.evaluatedAt} (retired more than ${String(
+          safe.plan.olderThanDays,
+        )} day(s) ago):`,
+  ];
+  if (safe.plan.units.length === 0) {
+    lines.push('  (nothing in scope)');
+  }
+  for (const unit of safe.plan.units) {
+    lines.push(
+      `  - [${unit.category}] ${unit.label} (${PURGE_DISPOSITION_LABEL[unit.disposition]})`,
+    );
+    const location = [
+      ...(unit.groupName === undefined ? [] : [`group ${unit.groupName}`]),
+      ...(unit.credentialTitle === undefined
+        ? []
+        : [`credential ${unit.credentialTitle}`]),
+    ];
+    if (location.length > 0) lines.push(`      In: ${location.join(', ')}`);
+    if (unit.retiredAt !== undefined) {
+      lines.push(
+        `      Retired: ${unit.retiredAt}${
+          unit.ageDays === undefined ? '' : ` (${String(unit.ageDays)} day(s) ago)`
+        }`,
+      );
+    }
+    if (unit.reason !== undefined) lines.push(`      Why: ${unit.reason}`);
+    if (unit.tombstone?.purgeAfter !== undefined) {
+      lines.push(`      Server may destroy after: ${unit.tombstone.purgeAfter}`);
+    }
+  }
+  for (const total of safe.plan.totals) {
+    lines.push(
+      `  ${total.category}: ${String(total.purgeable)} purgeable, ${String(
+        total.retained,
+      )} retained by the window, ${String(
+        total.serverRetained,
+      )} retained by the server, ${String(total.unsupported)} not stored locally.`,
+    );
+  }
+  for (const relation of safe.plan.retiredRelations) {
+    lines.push(
+      `  Relation retired with its last binding: ${relation.credentialId} -> ${relation.targetId}.`,
+    );
+  }
+  for (const attachment of safe.plan.unreferencedAttachments) {
+    lines.push(
+      `  Attachment left unreferenced: ${attachment.attachmentId} on ${attachment.credentialId}.`,
+    );
+  }
+  for (const entry of safe.undiscoverableCategories) {
+    lines.push(`  ${entry.category}: ${entry.reason}`);
+  }
+  lines.push(
+    `${String(safe.plan.purgeableCount)} unit(s) would be destroyed permanently by \`purge fields\` or \`purge notes\`.`,
+  );
+  if (safe.plan.truncated) {
+    lines.push(
+      'The plan stopped at its unit ceiling, so more is in scope than is shown; narrow the preview with --group or --category.',
+    );
+  }
+  return lines.join('\n').concat('\n');
+}
+
+/**
+ * Renders one archived-value purge.
+ *
+ * The purged values are named by field key and label only. An archived value holds
+ * the last secret a converted or removed field carried, so printing it back is how
+ * a destroyed secret survives in a terminal scrollback.
+ */
+export function renderPurgeFields(result: CliPurgeFieldsResult, json: boolean): string {
+  const safe = {
+    vaultId: sanitizeTerminalText(result.vaultId),
+    groupId: sanitizeTerminalText(result.groupId),
+    groupName: sanitizeTerminalText(result.groupName),
+    credentialId: sanitizeTerminalText(result.credentialId),
+    title: sanitizeTerminalText(result.title),
+    purged: result.purged.map((field) => ({
+      fieldKey: sanitizeTerminalText(field.fieldKey),
+      fieldLabel: sanitizeTerminalText(field.fieldLabel),
+      reason: field.reason,
+      archivedAt: sanitizeTerminalText(field.archivedAt),
+      ageDays: field.ageDays,
+    })),
+    retiredRelations: result.retiredRelations.map((relation) =>
+      sanitizeTerminalText(relation),
+    ),
+    unreferencedAttachments: result.unreferencedAttachments.map((attachment) =>
+      sanitizeTerminalText(attachment),
+    ),
+    previousRevision: result.previousRevision,
+    revision: result.revision,
+  };
+  if (json) return safeJson(safe);
+
+  if (safe.purged.length === 0) {
+    return [
+      `No archived value of ${safe.title} (${safe.credentialId}) matched, so nothing was destroyed.`,
+      `Revision ${String(safe.revision)} is unchanged.`,
+    ]
+      .join('\n')
+      .concat('\n');
+  }
+  const lines = [
+    `Permanently destroyed ${String(safe.purged.length)} archived value(s) of ${safe.title} (${safe.credentialId}) in ${safe.groupName}:`,
+  ];
+  for (const field of safe.purged) {
+    lines.push(
+      `  - ${field.fieldLabel} (${field.fieldKey}, ${field.reason}), archived ${field.archivedAt} (${String(
+        field.ageDays,
+      )} day(s) ago)`,
+    );
+  }
+  for (const relation of safe.retiredRelations) {
+    lines.push(`  Relation retired because no value binds it any more: ${relation}.`);
+  }
+  for (const attachment of safe.unreferencedAttachments) {
+    lines.push(
+      `  Attachment left unreferenced: ${attachment}; use \`attachment delete --force\` to unlink it.`,
+    );
+  }
+  lines.push(`Revision ${String(safe.previousRevision)} -> ${String(safe.revision)}.`);
+  return lines.join('\n').concat('\n');
+}
+
+/**
+ * Renders one archived-note purge.
+ *
+ * Titles and dates only: the note body is the secret a note holds, and this is the
+ * command that destroys it, so echoing the body back would defeat the destruction.
+ */
+export function renderPurgeNotes(result: CliPurgeNotesResult, json: boolean): string {
+  const safe = {
+    vaultId: sanitizeTerminalText(result.vaultId),
+    groupId: sanitizeTerminalText(result.groupId),
+    groupName: sanitizeTerminalText(result.groupName),
+    ...(result.credentialId === undefined
+      ? {}
+      : { credentialId: sanitizeTerminalText(result.credentialId) }),
+    ...(result.credentialTitle === undefined
+      ? {}
+      : { credentialTitle: sanitizeTerminalText(result.credentialTitle) }),
+    purged: result.purged.map((note) => ({
+      noteId: sanitizeTerminalText(note.noteId),
+      title: sanitizeTerminalText(note.title),
+      archivedAt: sanitizeTerminalText(note.archivedAt),
+      ageDays: note.ageDays,
+    })),
+    previousRevision: result.previousRevision,
+    revision: result.revision,
+  };
+  if (json) return safeJson(safe);
+
+  const owner =
+    safe.credentialTitle === undefined
+      ? `${safe.groupName} (${safe.groupId})`
+      : `${safe.credentialTitle} (${safe.credentialId ?? ''}) in ${safe.groupName}`;
+  if (safe.purged.length === 0) {
+    return [
+      `No archived note of ${owner} matched, so nothing was destroyed.`,
+      `Revision ${String(safe.revision)} is unchanged.`,
+    ]
+      .join('\n')
+      .concat('\n');
+  }
+  const lines = [
+    `Permanently destroyed ${String(safe.purged.length)} archived note(s) of ${owner}:`,
+  ];
+  for (const note of safe.purged) {
+    lines.push(
+      `  - ${note.title} (${note.noteId}), archived ${note.archivedAt} (${String(
+        note.ageDays,
+      )} day(s) ago)`,
+    );
+  }
+  lines.push(`Revision ${String(safe.previousRevision)} -> ${String(safe.revision)}.`);
+  return lines.join('\n').concat('\n');
 }
 
 export function renderShow(result: CliShowResult, json: boolean): string {

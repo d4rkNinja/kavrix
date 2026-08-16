@@ -1,8 +1,10 @@
 import { MAX_ROTATED_ITEM_KEYS } from '@kavrix/client';
 import {
+  MAX_PURGE_RETENTION_DAYS,
   MAX_REFERENCE_TRAVERSAL_DEPTH,
   MAX_VAULT_SEARCH_RESULTS,
   MAX_VAULT_SEARCH_TERM_LENGTH,
+  PURGE_CATEGORIES,
 } from '@kavrix/core';
 import {
   ENVIRONMENT_NAME_PATTERN,
@@ -12,6 +14,7 @@ import {
   type InheritableEnvironmentName,
 } from '@kavrix/runner';
 import {
+  archivedFieldValueReasonSchema,
   auditEventClassSchema,
   auditEventIdentifierSchema,
   fieldTypeSchema,
@@ -666,6 +669,152 @@ export const cliReferenceRemoveRequestSchema = z
   .strict();
 
 export type CliReferenceRemoveRequest = z.infer<typeof cliReferenceRemoveRequestSchema>;
+
+/**
+ * The purge categories, taken from the policy rather than restated here.
+ *
+ * A second list is how the CLI starts accepting a category the policy has no
+ * disposition for, so the enum is derived from the exported tuple.
+ */
+const purgeCategorySchema = z.enum(PURGE_CATEGORIES);
+
+/** Argv form of a retention window, bounded by the policy's own ceiling. */
+const olderThanDaysArgvSchema = z
+  .string()
+  .regex(/^(?:0|[1-9][0-9]*)$/u)
+  .transform(Number)
+  .pipe(z.number().int().min(1).max(MAX_PURGE_RETENTION_DAYS));
+
+/**
+ * One retention purge inventory request.
+ *
+ * Every filter is optional and none of them is a default: an unscoped preview is
+ * the whole vault, which is the question "what could a purge reach" and the only
+ * safe starting point. The window bound is the policy's own, so a window the
+ * policy would refuse fails as a usage error before any vault is opened.
+ */
+export const cliPurgePreviewRequestSchema = z
+  .object({
+    groupQuery: cleanNameSchema.optional(),
+    credentialQuery: cleanNameSchema.optional(),
+    olderThanDays: z.number().int().min(1).max(MAX_PURGE_RETENTION_DAYS).optional(),
+    categories: z
+      .array(purgeCategorySchema)
+      .min(1)
+      .max(PURGE_CATEGORIES.length)
+      .optional(),
+  })
+  .strict()
+  .superRefine((request, context) => {
+    if (request.credentialQuery !== undefined && request.groupQuery === undefined) {
+      context.addIssue({
+        code: 'custom',
+        message: 'A credential filter needs the group that holds it',
+        path: ['groupQuery'],
+      });
+    }
+  });
+
+export type CliPurgePreviewRequest = z.infer<typeof cliPurgePreviewRequestSchema>;
+
+export const cliPurgePreviewQuerySchema = z
+  .object({
+    group: cleanNameSchema.optional(),
+    credential: cleanNameSchema.optional(),
+    olderThan: olderThanDaysArgvSchema.optional(),
+    category: z
+      .array(purgeCategorySchema)
+      .min(1)
+      .max(PURGE_CATEGORIES.length)
+      .optional(),
+  })
+  .strict()
+  .transform((query): CliPurgePreviewRequest => ({
+    ...(query.group === undefined ? {} : { groupQuery: query.group }),
+    ...(query.credential === undefined ? {} : { credentialQuery: query.credential }),
+    ...(query.olderThan === undefined ? {} : { olderThanDays: query.olderThan }),
+    ...(query.category === undefined ? {} : { categories: query.category }),
+  }))
+  .pipe(cliPurgePreviewRequestSchema);
+
+/**
+ * One archived-value purge.
+ *
+ * The credential is always named. A purge is irreversible, so it is scoped to one
+ * record rather than swept across the vault: `--field` and `--reason` narrow that
+ * record further, and omitting both means every archived value of that credential
+ * the retention window already allows.
+ */
+export const cliPurgeFieldsRequestSchema = z
+  .object({
+    groupQuery: cleanNameSchema,
+    credentialQuery: cleanNameSchema,
+    fieldKey: cleanNameSchema.optional(),
+    reasons: z.array(archivedFieldValueReasonSchema).min(1).max(3).optional(),
+    olderThanDays: z.number().int().min(1).max(MAX_PURGE_RETENTION_DAYS).optional(),
+    ifRevision: expectedRevisionSchema.optional(),
+  })
+  .strict();
+
+export type CliPurgeFieldsRequest = z.infer<typeof cliPurgeFieldsRequestSchema>;
+
+export const cliPurgeFieldsQuerySchema = z
+  .object({
+    group: cleanNameSchema,
+    credential: cleanNameSchema,
+    field: cleanNameSchema.optional(),
+    reason: z.array(archivedFieldValueReasonSchema).min(1).max(3).optional(),
+    olderThan: olderThanDaysArgvSchema.optional(),
+    ifRevision: expectedRevisionSchema.optional(),
+  })
+  .strict()
+  .transform((query): CliPurgeFieldsRequest => ({
+    groupQuery: query.group,
+    credentialQuery: query.credential,
+    ...(query.field === undefined ? {} : { fieldKey: query.field }),
+    ...(query.reason === undefined ? {} : { reasons: query.reason }),
+    ...(query.olderThan === undefined ? {} : { olderThanDays: query.olderThan }),
+    ...(query.ifRevision === undefined ? {} : { ifRevision: query.ifRevision }),
+  }))
+  .pipe(cliPurgeFieldsRequestSchema);
+
+/**
+ * One archived-note purge.
+ *
+ * `credentialQuery` selects between the group's own notes and one credential's,
+ * because they live in different records: guessing would move the wrong revision.
+ * `noteId` is an ID rather than a title query — a purge is irreversible, so the
+ * one command that destroys a note refuses to resolve it by prefix.
+ */
+export const cliPurgeNotesRequestSchema = z
+  .object({
+    groupQuery: cleanNameSchema,
+    credentialQuery: cleanNameSchema.optional(),
+    noteId: noteIdSchema.optional(),
+    olderThanDays: z.number().int().min(1).max(MAX_PURGE_RETENTION_DAYS).optional(),
+    ifRevision: expectedRevisionSchema.optional(),
+  })
+  .strict();
+
+export type CliPurgeNotesRequest = z.infer<typeof cliPurgeNotesRequestSchema>;
+
+export const cliPurgeNotesQuerySchema = z
+  .object({
+    group: cleanNameSchema,
+    credential: cleanNameSchema.optional(),
+    note: noteIdSchema.optional(),
+    olderThan: olderThanDaysArgvSchema.optional(),
+    ifRevision: expectedRevisionSchema.optional(),
+  })
+  .strict()
+  .transform((query): z.input<typeof cliPurgeNotesRequestSchema> => ({
+    groupQuery: query.group,
+    ...(query.credential === undefined ? {} : { credentialQuery: query.credential }),
+    ...(query.note === undefined ? {} : { noteId: query.note }),
+    ...(query.olderThan === undefined ? {} : { olderThanDays: query.olderThan }),
+    ...(query.ifRevision === undefined ? {} : { ifRevision: query.ifRevision }),
+  }))
+  .pipe(cliPurgeNotesRequestSchema);
 
 export const cliListAuditEventsRequestSchema = z
   .object({
