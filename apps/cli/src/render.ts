@@ -47,6 +47,8 @@ import type {
   CliTemplateSummary,
   CliTransferExportResult,
   CliTransferImportResult,
+  CliVaultSearchHit,
+  CliVaultSearchResult,
 } from './contracts.js';
 import type {
   CliFieldMutationResult,
@@ -1090,6 +1092,65 @@ export function renderAuditEventDetail(
   }
   if (event.recordRevision !== undefined) {
     lines.push(`  Record Revision: ${String(event.recordRevision)}`);
+  }
+  return lines.join('\n').concat('\n');
+}
+
+/**
+ * Names the properties that matched for one hit.
+ *
+ * A locator is a label — a field label, a note title, a tag — never a matched
+ * value and never a surrounding excerpt, so a `field-value` match reports which
+ * field matched and stops there.
+ */
+function searchMatchSummary(hit: CliVaultSearchHit): string {
+  const parts = hit.matches.map((match) =>
+    match.locator === undefined
+      ? sanitizeTerminalText(match.source)
+      : `${sanitizeTerminalText(match.source)} (${sanitizeTerminalText(match.locator)})`,
+  );
+  if (hit.matchesTruncated) parts.push('…');
+  return parts.join(', ');
+}
+
+/** Renders one hit's heading, which identifies the record but not the match. */
+function searchHitHeading(hit: CliVaultSearchHit): string {
+  const group = sanitizeTerminalText(hit.groupName);
+  if (hit.kind === 'group') {
+    return `  - Group ${group} [${sanitizeTerminalText(hit.groupId)}]`;
+  }
+  return `  - ${group} / ${sanitizeTerminalText(hit.title)} [${sanitizeTerminalText(hit.credentialId)}]`;
+}
+
+/**
+ * Renders a bounded local search result.
+ *
+ * Every match is reported by property, so reading a matched value still requires
+ * an explicit reveal. The scan counters are printed because they are the only
+ * honest signal of coverage: a hit count alone cannot show that archived records
+ * or secret values were excluded from the scan.
+ */
+export function renderVaultSearch(result: CliVaultSearchResult, json: boolean): string {
+  if (json) {
+    return safeJson(result);
+  }
+  const scanned = `Scanned ${String(result.scannedGroups)} group(s) and ${String(
+    result.scannedCredentials,
+  )} credential(s).`;
+  if (result.hits.length === 0) {
+    return `No matches found.\n${scanned}\n`;
+  }
+  const lines = [
+    result.truncated
+      ? `Matches (${String(result.hits.length)} of ${String(result.matchedCount)}):`
+      : `Matches (${String(result.hits.length)}):`,
+  ];
+  for (const hit of result.hits) {
+    lines.push(searchHitHeading(hit), `      Matched: ${searchMatchSummary(hit)}`);
+  }
+  lines.push(scanned);
+  if (result.truncated) {
+    lines.push('Refine the term or raise --limit to see the remaining matches.');
   }
   return lines.join('\n').concat('\n');
 }

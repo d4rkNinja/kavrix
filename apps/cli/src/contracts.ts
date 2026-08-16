@@ -6,7 +6,11 @@ import {
   type CredentialCopyReceipt,
   type CredentialShowProjection,
 } from '@kavrix/client/cli-contracts';
-import type { TotpConfiguration } from '@kavrix/core';
+import type {
+  TotpConfiguration,
+  VaultSearchHit,
+  VaultSearchResult,
+} from '@kavrix/core';
 import {
   apiBearerTokenSchema,
   deviceListPageResponseSchema,
@@ -78,6 +82,7 @@ import type {
   CliUpdateTemplateRequest,
   CliUploadAttachmentRequest,
   CliUseRecoveryCodeRequest,
+  CliVaultSearchRequest,
 } from './mutation-contracts.js';
 
 export const cliStatusSchema = z
@@ -573,6 +578,21 @@ export interface CliAuditEventDetail {
 }
 
 /**
+ * One bounded local search result.
+ *
+ * The projection is `VaultSearchResult` unchanged: the core policy already
+ * restricts a hit to the property that matched and never carries matched text, so
+ * re-shaping it here could only widen what the renderer can print.
+ */
+export type CliVaultSearchResult = VaultSearchResult;
+
+/**
+ * One search hit: a group, or a credential together with the group holding it.
+ * Every hit names the properties that matched and carries no matched text.
+ */
+export type CliVaultSearchHit = VaultSearchHit;
+
+/**
  * One planned guarded execution. Carries destination names and addresses only:
  * a plan is printed before any field is resolved, so it can never hold a value.
  */
@@ -789,6 +809,7 @@ export interface CliUseCasePorts {
   diffHistory?(request: CliDiffHistoryRequest): Promise<CliHistoryDiff>;
   restoreHistory?(request: CliRestoreHistoryRequest): Promise<CliHistoryRestoreResult>;
   listAuditEvents?(request: CliListAuditEventsRequest): Promise<CliAuditEventPage>;
+  search?(request: CliVaultSearchRequest): Promise<CliVaultSearchResult>;
   showAuditEvent?(request: CliShowAuditEventRequest): Promise<CliAuditEventDetail>;
   listRecoveryCodes?(
     request: CliListRecoveryCodesRequest,

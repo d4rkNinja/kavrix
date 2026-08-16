@@ -231,6 +231,66 @@ describe('VaultReadSession', () => {
     await expect(session.listGroups()).rejects.toBeInstanceOf(VaultLockedError);
   });
 
+  it('reads every group with its items in one pass over the vault', async () => {
+    const fixture = await encryptedFixture({
+      groupNames: ['Production', 'Staging'],
+      itemTitles: ['Primary', 'Replica'],
+    });
+    const source = new MemoryReadSource(fixture);
+    const session = new VaultReadSession(source, fixture.vaultId);
+    await session.unlock(fixture.rootKey);
+
+    const scopes = await session.listScopes();
+
+    expect(scopes.map(({ group }) => group.id)).toEqual(['group.1', 'group.2']);
+    expect(scopes.map(({ items }) => items.map((item) => item.id))).toEqual([
+      ['item.1.1', 'item.1.2'],
+      ['item.2.1', 'item.2.2'],
+    ]);
+    // One group enumeration total, not one per group: the per-group form would
+    // re-open every group to resolve each query.
+    expect(source.calls).toMatchObject({ listGroups: 1, listItems: 2 });
+  });
+
+  it('restricts a scope read to one resolved group', async () => {
+    const fixture = await encryptedFixture({
+      groupNames: ['Production', 'Staging'],
+      itemTitles: ['Primary'],
+    });
+    const source = new MemoryReadSource(fixture);
+    const session = new VaultReadSession(source, fixture.vaultId);
+    await session.unlock(fixture.rootKey);
+
+    const scopes = await session.listScopes('Staging');
+
+    expect(scopes).toHaveLength(1);
+    expect(scopes[0]?.group.id).toBe('group.2');
+    expect(scopes[0]?.items.map((item) => item.id)).toEqual(['item.2.1']);
+    expect(source.calls).toMatchObject({ listItems: 1 });
+  });
+
+  it('refuses a scope read for an unknown or ambiguous group and when locked', async () => {
+    const fixture = await encryptedFixture({
+      groupNames: ['Production east', 'Production west'],
+      itemTitles: ['Primary'],
+    });
+    const session = new VaultReadSession(
+      new MemoryReadSource(fixture),
+      fixture.vaultId,
+    );
+    await session.unlock(fixture.rootKey);
+
+    await expect(session.listScopes('nothing-like-this')).rejects.toBeInstanceOf(
+      NotFoundError,
+    );
+    await expect(session.listScopes('Production')).rejects.toBeInstanceOf(
+      AmbiguousNameError,
+    );
+
+    session.lock();
+    await expect(session.listScopes()).rejects.toBeInstanceOf(VaultLockedError);
+  });
+
   it('does not retain plaintext in errors or enumerable session inspection', async () => {
     const canary = 'PLAINTEXT-CANARY-CLIENT-17d83';
     const fixture = await encryptedFixture({ plaintextCanary: canary });

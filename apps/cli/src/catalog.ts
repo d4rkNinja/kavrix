@@ -46,6 +46,7 @@ import {
   type CliTemplateMigrationStatusResult,
   type CliTemplateSummary,
   type CliUseCasePorts,
+  type CliVaultSearchResult,
 } from './contracts.js';
 import {
   CliRunFailedError,
@@ -4348,6 +4349,85 @@ const revealCommand: CliCommandDescriptor = Object.freeze({
   },
 });
 
+/**
+ * Searches the unlocked vault on this device.
+ *
+ * The scan runs entirely locally against payloads decrypted for the duration of
+ * the command: nothing is indexed, cached, or sent anywhere, so a server cannot
+ * learn the term or which records matched. Sensitive field values are excluded
+ * unless `--include-secret-values` is passed on this invocation, and even then a
+ * hit names only the field that matched — reading the value still requires
+ * `get --reveal` or `reveal`.
+ */
+const searchCommand: CliCommandDescriptor = Object.freeze({
+  name: 'search',
+  description: 'Search the unlocked vault locally for a term.',
+  arguments: [
+    {
+      syntax: '<term>',
+      description: 'Case-insensitive text to look for in the unlocked vault.',
+    },
+  ],
+  options: [
+    {
+      flags: '--group <query>',
+      description: 'Restrict the scan to one group ID, unique name, or alias.',
+    },
+    {
+      flags: '--limit <1..200>',
+      description: 'Maximum number of matching records to report.',
+    },
+    {
+      flags: '--include-archived',
+      description: 'Also scan archived groups and credentials.',
+    },
+    {
+      flags: '--include-secret-values',
+      description: 'Also match sensitive field values, for this invocation only.',
+    },
+    jsonOption,
+    secretBackendOption,
+    backendPassphraseStdinOption,
+  ],
+  execute: async (context, arguments_, options) => {
+    const term = requiredArgument(arguments_[0], 'search term');
+    const json = optionBoolean(options, 'json');
+
+    const { cliVaultSearchQuerySchema } = await import('./mutation-contracts.js');
+    const request = parseInput(
+      cliVaultSearchQuerySchema,
+      {
+        term,
+        ...(options['group'] === undefined ? {} : { group: options['group'] }),
+        ...(options['limit'] === undefined ? {} : { limit: options['limit'] }),
+        includeArchived: optionBoolean(options, 'includeArchived'),
+        includeSecretValues: optionBoolean(options, 'includeSecretValues'),
+      },
+      'search request',
+    );
+
+    let result: CliVaultSearchResult;
+    if (context.ports?.search !== undefined) {
+      result = await context.ports.search(request);
+    } else {
+      const { executeProductionVaultSearch } = await import('./production/search.js');
+      result = await withUnlockedVault(
+        context,
+        'search',
+        options,
+        async (unlocked, store, rootKey) =>
+          executeProductionVaultSearch(
+            { source: store, vaultId: unlocked.profile.vaultId, rootKey },
+            request,
+          ),
+      );
+    }
+
+    const { renderVaultSearch } = await import('./render.js');
+    context.stdout.write(renderVaultSearch(result, json));
+  },
+});
+
 const getCommand: CliCommandDescriptor = Object.freeze({
   name: 'get',
   description: 'Get one credential field value.',
@@ -5146,6 +5226,7 @@ export const CLI_COMMAND_CATALOG: readonly CliCommandDescriptor[] = Object.freez
   showCommand,
   copyCommand,
   revealCommand,
+  searchCommand,
   getCommand,
   setCommand,
   updateCommand,
@@ -5519,6 +5600,7 @@ export const PUBLIC_CLI_COMMAND_CATALOG: readonly CliCommandDescriptor[] =
     showCommand,
     copyCommand,
     revealCommand,
+    searchCommand,
     getCommand,
     setCommand,
     updateCommand,

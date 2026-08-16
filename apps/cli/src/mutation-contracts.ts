@@ -1,3 +1,4 @@
+import { MAX_VAULT_SEARCH_RESULTS, MAX_VAULT_SEARCH_TERM_LENGTH } from '@kavrix/core';
 import {
   ENVIRONMENT_NAME_PATTERN,
   INHERITABLE_ENVIRONMENT_NAMES,
@@ -491,6 +492,52 @@ export type CliStoredTotpQuery = z.infer<typeof cliStoredTotpRequestSchema>;
 export const MAX_AUDIT_EVENT_PAGE_SIZE = 200;
 /** Page size used when the caller does not request one. */
 export const DEFAULT_AUDIT_EVENT_PAGE_SIZE = 50;
+
+/**
+ * One local search request.
+ *
+ * `includeSecretValues` is per-invocation by construction: there is no stored
+ * setting that could leave secret-value search enabled for a later command.
+ */
+export const cliVaultSearchRequestSchema = z
+  .object({
+    term: cleanNameSchema.max(MAX_VAULT_SEARCH_TERM_LENGTH),
+    groupQuery: cleanNameSchema.optional(),
+    limit: z.number().int().min(1).max(MAX_VAULT_SEARCH_RESULTS).optional(),
+    includeArchived: z.boolean(),
+    includeSecretValues: z.boolean(),
+  })
+  .strict();
+
+export type CliVaultSearchRequest = z.infer<typeof cliVaultSearchRequestSchema>;
+
+/**
+ * Accepts the raw `search` option strings and normalizes them into the request
+ * contract. The bound lives in the pipe so an out-of-range limit is reported as a
+ * usage error before any vault is opened.
+ */
+export const cliVaultSearchQuerySchema = z
+  .object({
+    term: cleanNameSchema.max(MAX_VAULT_SEARCH_TERM_LENGTH),
+    group: cleanNameSchema.optional(),
+    limit: z
+      .string()
+      .regex(/^(?:0|[1-9][0-9]*)$/u)
+      .transform(Number)
+      .pipe(z.number().int().min(1).max(MAX_VAULT_SEARCH_RESULTS))
+      .optional(),
+    includeArchived: z.boolean(),
+    includeSecretValues: z.boolean(),
+  })
+  .strict()
+  .transform((query): CliVaultSearchRequest => ({
+    term: query.term,
+    ...(query.group === undefined ? {} : { groupQuery: query.group }),
+    ...(query.limit === undefined ? {} : { limit: query.limit }),
+    includeArchived: query.includeArchived,
+    includeSecretValues: query.includeSecretValues,
+  }))
+  .pipe(cliVaultSearchRequestSchema);
 
 export const cliListAuditEventsRequestSchema = z
   .object({
