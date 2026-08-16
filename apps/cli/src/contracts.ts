@@ -6,6 +6,7 @@ import {
   type CredentialCopyReceipt,
   type CredentialShowProjection,
 } from '@kavrix/client/cli-contracts';
+import type { TotpConfiguration } from '@kavrix/core';
 import {
   apiBearerTokenSchema,
   deviceListPageResponseSchema,
@@ -517,6 +518,42 @@ export interface CliRecoveryCodeRevealResult {
   readonly receipt: CliRecoveryCodeUseResult | null;
 }
 
+/**
+ * A resolved stored-seed TOTP request.
+ *
+ * The queries name what to read; the configuration is the caller's bounded
+ * policy, already validated. `unixTimeSeconds` is resolved before the request is
+ * built so the generated code and the reported expiry describe the same step
+ * rather than two clock reads either side of a vault unlock.
+ */
+export interface CliStoredTotpRequest {
+  readonly groupQuery: string;
+  readonly credentialQuery: string;
+  readonly fieldQuery: string | undefined;
+  readonly configuration: TotpConfiguration;
+  readonly unixTimeSeconds: number;
+}
+
+/**
+ * One generated code and the receipt that explains it.
+ *
+ * The seed is deliberately absent, and there is no field on this result from
+ * which it could be recovered: the code is a one-way function of the seed and the
+ * time step. `remainingSeconds` is how long this code stays valid, which is what
+ * makes an operator's decision to reuse or regenerate an informed one.
+ */
+export interface CliStoredTotpResult {
+  readonly groupName: string;
+  readonly credentialTitle: string;
+  readonly fieldLabel: string;
+  readonly fieldKey: string;
+  readonly code: string;
+  readonly remainingSeconds: number;
+  readonly algorithm: string;
+  readonly digits: number;
+  readonly periodSeconds: number;
+}
+
 /** One projected audit event. Carries opaque metadata only. */
 export type CliAuditEventSummary = LocalAuditEvent;
 
@@ -762,6 +799,7 @@ export interface CliUseCasePorts {
   revealRecoveryCode?(
     request: CliRevealRecoveryCodeRequest,
   ): Promise<CliRecoveryCodeRevealResult>;
+  storedTotp?(request: CliStoredTotpRequest): Promise<CliStoredTotpResult>;
   run?(request: CliRunRequest): Promise<CliRunResult>;
   reveal?(
     groupQuery: string,

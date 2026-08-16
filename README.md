@@ -51,7 +51,7 @@ version`, static Bash/Zsh/Fish/PowerShell completion, password and passphrase
 generation, TOTP generation, create-only portable key-file creation, crash-safe
 local initialization with resume/cancel, guarded unlock/lock, a locked local
 `creds status` diagnostic for one already-enrolled data home, encrypted
-local group and credential CRUD, dynamic field operations, encrypted note CRUD, redacted credential inspection (`creds show`), guarded clipboard copy (`creds copy`), guarded credential reveal (`creds reveal`), scriptable field retrieval (`creds get`), vault synchronization (`creds sync`), and guarded vault-to-vault transfer under a separate confirmed passphrase (`creds transfer`).
+local group and credential CRUD, dynamic field operations, encrypted note CRUD, redacted credential inspection (`creds show`), guarded clipboard copy (`creds copy`), guarded credential reveal (`creds reveal`), scriptable field retrieval (`creds get`), stored-seed TOTP generation (`creds totp code`), vault synchronization (`creds sync`), and guarded vault-to-vault transfer under a separate confirmed passphrase (`creds transfer`).
 Status reads only the canonical profile, opaque pending-mutation count, and
 protected rollback timestamp. With `sealed-file`, it authenticates and unseals
 only that local protected rollback metadata; it never obtains vault
@@ -72,6 +72,7 @@ Prepared local commands include:
 creds generate password
 creds generate passphrase
 creds totp
+creds totp code "Engineering" "Database Admin" --stdout
 creds key create --file portable-key.cvk
 creds init
 creds unlock --check
@@ -111,7 +112,10 @@ discarding its elements.
 Generated values and TOTP codes require an interactive output stream unless
 `--stdout` is explicit. TOTP seeds, protected-file passphrases, and sealed
 status-backend passphrases use masked input or explicit bounded stdin modes;
-they are never accepted as arguments or environment settings. `key create`
+they are never accepted as arguments or environment settings. `creds totp code`
+takes no seed input at all: it decrypts a seed already stored in the vault,
+wipes the decoded bytes before returning, prints only the code, and refuses a
+field whose reveal policy is `never`. `key create`
 never prints the portable key and refuses to replace an existing file. Local
 group/credential creation is encrypted at rest and requires an unlocked local
 lifecycle (see [CLI Reference](./docs/cli-reference.md)).
