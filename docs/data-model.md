@@ -256,8 +256,27 @@ than an ordinary string. Item and attachment value references use their
 respective branded opaque IDs.
 
 Item-only field definitions follow the same contract and can be promoted through
-a migration that maps the existing stable identity safely. References use
-opaque IDs and are checked locally for cycles or missing targets as relevant.
+a migration that maps the existing stable identity safely.
+
+`relatedItemIds` is the authoritative relation list. Every field-level
+`item-reference` value must resolve through it, so a payload whose reference field
+names a target absent from the list is refused and the two are always written in
+the same mutation. The list is unique, excludes the item itself, and is bounded.
+A relation may exist with no field binding it, because a field reference is
+required to appear in the list and not the reverse; an unbound relation is
+therefore a valid state and is reported rather than treated as an error.
+
+Reference resolution is local and reports three target states. A readable target
+is `active`. A target carrying `archivedAt` is `archived`, which retires the
+credential without breaking the relation. A tombstoned target is excluded from
+every read, so its relation survives with nothing behind it and resolves as
+`missing` rather than being dropped. Outward traversal is breadth-first, expands
+each credential at most once, and is bounded by both a maximum depth and a node
+ceiling; a truncated walk says so instead of presenting itself as complete. A
+repeat and a cycle are distinct: a credential reached again on a sibling branch is
+a shared target, while one reached again on its own path back to the root closes a
+loop. Cycles are legal, disclosed with the path they close, and never silently
+pruned.
 
 ### Notes
 

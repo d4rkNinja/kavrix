@@ -40,6 +40,9 @@ import {
   type CliRecoveryCodeListResult,
   type CliRecoveryCodeRevealResult,
   type CliRecoveryCodeUseResult,
+  type CliReferenceListResult,
+  type CliReferenceRemoveResult,
+  type CliReferenceWriteResult,
   type CliStatus,
   type CliStoredTotpRequest,
   type CliStoredTotpResult,
@@ -3343,6 +3346,245 @@ const noteCommand: CliCommandDescriptor = Object.freeze({
   ],
 });
 
+/**
+ * Credential-to-credential references.
+ *
+ * A reference is a relation, not a copied identifier: the vault records it on the
+ * item so a walk can follow it, a cycle can be reported, and a target that has
+ * gone away shows up as missing instead of as a stale string nobody notices.
+ * Traversal is bounded by depth and by a node ceiling so a large or looping
+ * reference set cannot turn a read into an unbounded walk.
+ */
+const referenceCommand: CliCommandDescriptor = Object.freeze({
+  name: 'reference',
+  description: 'Inspect and maintain references between credentials.',
+  options: [secretBackendOption, backendPassphraseStdinOption],
+  children: [
+    {
+      name: 'list',
+      description:
+        "Walk a credential's references, reporting cycles and missing targets.",
+      arguments: [
+        { syntax: '<group>', description: 'Group ID, unique name, or alias.' },
+        {
+          syntax: '<credential>',
+          description: 'Credential ID, unique name, or alias within the group.',
+        },
+      ],
+      options: [
+        {
+          flags: '--depth <1..16>',
+          description: 'How many reference levels to follow. Defaults to one.',
+        },
+        jsonOption,
+        secretBackendOption,
+        backendPassphraseStdinOption,
+      ],
+      execute: async (context, arguments_, options) => {
+        const json = optionBoolean(options, 'json');
+        const { cliReferenceListQuerySchema } = await import('./mutation-contracts.js');
+        const request = parseInput(
+          cliReferenceListQuerySchema,
+          {
+            group: requiredArgument(arguments_[0], 'group query'),
+            credential: requiredArgument(arguments_[1], 'credential query'),
+            ...(options['depth'] === undefined ? {} : { depth: options['depth'] }),
+          },
+          'reference list request',
+        );
+
+        let result: CliReferenceListResult;
+        if (context.ports?.listReferences !== undefined) {
+          result = await context.ports.listReferences(request);
+        } else {
+          const { executeProductionReferenceList } =
+            await import('./production/references.js');
+          result = await withUnlockedVault(
+            context,
+            'reference list',
+            options,
+            async (unlocked, store, rootKey) =>
+              executeProductionReferenceList(
+                { source: store, vaultId: unlocked.profile.vaultId, rootKey },
+                request,
+              ),
+          );
+        }
+
+        const { renderReferenceList } = await import('./render.js');
+        context.stdout.write(renderReferenceList(result, json));
+      },
+    },
+    {
+      name: 'add',
+      description: 'Point a reference field of one credential at another credential.',
+      arguments: [
+        { syntax: '<group>', description: 'Group ID, unique name, or alias.' },
+        {
+          syntax: '<credential>',
+          description: 'Credential ID, unique name, or alias within the group.',
+        },
+        {
+          syntax: '<field>',
+          description: 'Item-reference field to write, by stable key or label.',
+        },
+        {
+          syntax: '<target>',
+          description: 'Credential the reference points at, by ID, name, or alias.',
+        },
+      ],
+      options: [
+        {
+          flags: '--target-group <query>',
+          description:
+            "Group holding the target. Defaults to the source credential's group.",
+        },
+        {
+          flags: '--allow-cycle',
+          description:
+            'Record the reference even though it closes a cycle back to this credential.',
+        },
+        {
+          flags: '--if-revision <number>',
+          description: 'Only write when the credential is still at this revision.',
+        },
+        jsonOption,
+        secretBackendOption,
+        backendPassphraseStdinOption,
+      ],
+      execute: async (context, arguments_, options) => {
+        const json = optionBoolean(options, 'json');
+        const ifRevision = expectedRevision(options);
+        const { cliReferenceWriteRequestSchema } =
+          await import('./mutation-contracts.js');
+        const request = parseInput(
+          cliReferenceWriteRequestSchema,
+          {
+            groupQuery: requiredArgument(arguments_[0], 'group query'),
+            credentialQuery: requiredArgument(arguments_[1], 'credential query'),
+            fieldQuery: requiredArgument(arguments_[2], 'field query'),
+            targetQuery: requiredArgument(arguments_[3], 'target query'),
+            ...(options['targetGroup'] === undefined
+              ? {}
+              : { targetGroupQuery: options['targetGroup'] }),
+            allowCycle: optionBoolean(options, 'allowCycle'),
+            ...(ifRevision === undefined ? {} : { ifRevision }),
+          },
+          'reference add request',
+        );
+
+        let result: CliReferenceWriteResult;
+        if (context.ports?.addReference !== undefined) {
+          result = await context.ports.addReference(request);
+        } else {
+          const { executeProductionReferenceAdd } =
+            await import('./production/references.js');
+          result = await withUnlockedVault(
+            context,
+            'reference add',
+            options,
+            async (unlocked, store, rootKey) =>
+              executeProductionReferenceAdd(
+                {
+                  source: store,
+                  queue: store,
+                  vaultId: unlocked.profile.vaultId,
+                  rootKey,
+                },
+                request,
+              ),
+          );
+        }
+
+        const { renderReferenceWrite } = await import('./render.js');
+        context.stdout.write(renderReferenceWrite(result, json));
+      },
+    },
+    {
+      name: 'remove',
+      description: 'Drop a reference from a field, retiring the relation when unused.',
+      arguments: [
+        { syntax: '<group>', description: 'Group ID, unique name, or alias.' },
+        {
+          syntax: '<credential>',
+          description: 'Credential ID, unique name, or alias within the group.',
+        },
+        {
+          syntax: '<field>',
+          description: 'Item-reference field to clear, by stable key or label.',
+        },
+      ],
+      options: [
+        {
+          flags: '--target <query>',
+          description:
+            'Which reference to drop. Required when the field holds more than one.',
+        },
+        {
+          flags: '--target-group <query>',
+          description:
+            "Group holding the target. Defaults to the source credential's group.",
+        },
+        {
+          flags: '--if-revision <number>',
+          description: 'Only write when the credential is still at this revision.',
+        },
+        jsonOption,
+        secretBackendOption,
+        backendPassphraseStdinOption,
+      ],
+      execute: async (context, arguments_, options) => {
+        const json = optionBoolean(options, 'json');
+        const ifRevision = expectedRevision(options);
+        const { cliReferenceRemoveRequestSchema } =
+          await import('./mutation-contracts.js');
+        const request = parseInput(
+          cliReferenceRemoveRequestSchema,
+          {
+            groupQuery: requiredArgument(arguments_[0], 'group query'),
+            credentialQuery: requiredArgument(arguments_[1], 'credential query'),
+            fieldQuery: requiredArgument(arguments_[2], 'field query'),
+            ...(options['target'] === undefined
+              ? {}
+              : { targetQuery: options['target'] }),
+            ...(options['targetGroup'] === undefined
+              ? {}
+              : { targetGroupQuery: options['targetGroup'] }),
+            ...(ifRevision === undefined ? {} : { ifRevision }),
+          },
+          'reference remove request',
+        );
+
+        let result: CliReferenceRemoveResult;
+        if (context.ports?.removeReference !== undefined) {
+          result = await context.ports.removeReference(request);
+        } else {
+          const { executeProductionReferenceRemove } =
+            await import('./production/references.js');
+          result = await withUnlockedVault(
+            context,
+            'reference remove',
+            options,
+            async (unlocked, store, rootKey) =>
+              executeProductionReferenceRemove(
+                {
+                  source: store,
+                  queue: store,
+                  vaultId: unlocked.profile.vaultId,
+                  rootKey,
+                },
+                request,
+              ),
+          );
+        }
+
+        const { renderReferenceRemove } = await import('./render.js');
+        context.stdout.write(renderReferenceRemove(result, json));
+      },
+    },
+  ],
+});
+
 const attachmentCommand: CliCommandDescriptor = Object.freeze({
   name: 'attachment',
   description: 'Manage encrypted attachments for credential items.',
@@ -5281,6 +5523,7 @@ export const CLI_COMMAND_CATALOG: readonly CliCommandDescriptor[] = Object.freez
   credentialCommand,
   fieldCommand,
   noteCommand,
+  referenceCommand,
   attachmentCommand,
   historyCommand,
   recoveryCommand,
@@ -5655,6 +5898,7 @@ export const PUBLIC_CLI_COMMAND_CATALOG: readonly CliCommandDescriptor[] =
     credentialCommand,
     fieldCommand,
     noteCommand,
+    referenceCommand,
     attachmentCommand,
     historyCommand,
     recoveryCommand,

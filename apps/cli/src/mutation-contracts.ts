@@ -1,5 +1,9 @@
 import { MAX_ROTATED_ITEM_KEYS } from '@kavrix/client';
-import { MAX_VAULT_SEARCH_RESULTS, MAX_VAULT_SEARCH_TERM_LENGTH } from '@kavrix/core';
+import {
+  MAX_REFERENCE_TRAVERSAL_DEPTH,
+  MAX_VAULT_SEARCH_RESULTS,
+  MAX_VAULT_SEARCH_TERM_LENGTH,
+} from '@kavrix/core';
 import {
   ENVIRONMENT_NAME_PATTERN,
   INHERITABLE_ENVIRONMENT_NAMES,
@@ -579,6 +583,89 @@ export const cliItemKeyRotationQuerySchema = z
     ...(query.credential.length === 0 ? {} : { credentialQueries: query.credential }),
   }))
   .pipe(cliItemKeyRotationRequestSchema);
+
+/**
+ * One reference-navigation request.
+ *
+ * The depth bound is the core policy's own ceiling rather than a second opinion,
+ * so a walk the policy would refuse is reported as a usage error before any vault
+ * is opened.
+ */
+export const cliReferenceListRequestSchema = z
+  .object({
+    groupQuery: cleanNameSchema,
+    credentialQuery: cleanNameSchema,
+    depth: z.number().int().min(1).max(MAX_REFERENCE_TRAVERSAL_DEPTH).optional(),
+  })
+  .strict();
+
+export type CliReferenceListRequest = z.infer<typeof cliReferenceListRequestSchema>;
+
+export const cliReferenceListQuerySchema = z
+  .object({
+    group: cleanNameSchema,
+    credential: cleanNameSchema,
+    depth: z
+      .string()
+      .regex(/^(?:0|[1-9][0-9]*)$/u)
+      .transform(Number)
+      .pipe(z.number().int().min(1).max(MAX_REFERENCE_TRAVERSAL_DEPTH))
+      .optional(),
+  })
+  .strict()
+  .transform((query): CliReferenceListRequest => ({
+    groupQuery: query.group,
+    credentialQuery: query.credential,
+    ...(query.depth === undefined ? {} : { depth: query.depth }),
+  }))
+  .pipe(cliReferenceListRequestSchema);
+
+/**
+ * One reference write.
+ *
+ * The target is named the same way every other credential is named, and
+ * `targetGroupQuery` exists because a reference may cross groups: without it a
+ * target in another group would be unreachable, and defaulting to the source
+ * group would silently resolve the wrong credential when both groups hold a
+ * similar title.
+ *
+ * `allowCycle` is a deliberate acknowledgement, not a bypass. A cycle is a legal
+ * shape, but closing one unannounced is how a reference set becomes unnavigable,
+ * so the write refuses until the operator says the loop is intended.
+ */
+export const cliReferenceWriteRequestSchema = z
+  .object({
+    groupQuery: cleanNameSchema,
+    credentialQuery: cleanNameSchema,
+    fieldQuery: cleanNameSchema,
+    targetQuery: cleanNameSchema,
+    targetGroupQuery: cleanNameSchema.optional(),
+    allowCycle: z.boolean(),
+    ifRevision: expectedRevisionSchema.optional(),
+  })
+  .strict();
+
+export type CliReferenceWriteRequest = z.infer<typeof cliReferenceWriteRequestSchema>;
+
+/**
+ * One reference removal.
+ *
+ * `targetQuery` is optional so a single-valued reference field can be cleared
+ * without restating what it points at, while a repeatable field still needs the
+ * target named because clearing the whole list is a different intent.
+ */
+export const cliReferenceRemoveRequestSchema = z
+  .object({
+    groupQuery: cleanNameSchema,
+    credentialQuery: cleanNameSchema,
+    fieldQuery: cleanNameSchema,
+    targetQuery: cleanNameSchema.optional(),
+    targetGroupQuery: cleanNameSchema.optional(),
+    ifRevision: expectedRevisionSchema.optional(),
+  })
+  .strict();
+
+export type CliReferenceRemoveRequest = z.infer<typeof cliReferenceRemoveRequestSchema>;
 
 export const cliListAuditEventsRequestSchema = z
   .object({
