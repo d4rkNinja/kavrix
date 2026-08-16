@@ -137,6 +137,11 @@ dependency audit is insufficient.
   sensitivity changes at group and item scope.
 - Validate credential references, copy sequences containing only stable keys,
   password generator policies, and TOTP against published algorithm vectors.
+- Generate a TOTP code from a stored seed and assert the published vectors are
+  unchanged, the seed appears in no projection, stored record, or queued mutation,
+  the decoded seed is wiped on both the success and the failure path, a `never`
+  reveal policy is refused, and a tampered or non-canonical stored seed fails
+  closed without echoing the stored bytes.
 
 ## Storage and API integration tests
 
@@ -341,7 +346,7 @@ The product specification's acceptance scenarios are release gates:
 
 | Scenario                   | Essential proof                                                                                                                    |
 | -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
-| Email dynamic fields/notes | Lock/unlock, item-only promotion, note counts, copy/reveal/TOTP, safe rename/migration, canary-clean persistence                   |
+| Email dynamic fields/notes | Lock/unlock, item-only promotion, note counts, copy/reveal/stored-seed TOTP, safe rename/migration, canary-clean persistence       |
 | Database credentials       | Multiple engines, SSH reference, `creds run` argv/log safety, item rotation, passphrase change                                     |
 | Template deletion safety   | Ten-item archive/restore exactness and separate explicit purge                                                                     |
 | Corruption/tampering       | Nonce/ciphertext/ID/group/key swaps all fail closed with no output                                                                 |

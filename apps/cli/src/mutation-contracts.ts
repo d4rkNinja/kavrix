@@ -465,6 +465,28 @@ export type CliRevealRecoveryCodeRequest = z.infer<
   typeof cliRevealRecoveryCodeRequestSchema
 >;
 
+/**
+ * A stored-seed TOTP request.
+ *
+ * `fieldQuery` is optional because the common credential holds exactly one
+ * TOTP-secret field, and requiring its name would make the safe path the verbose
+ * one. When it is omitted the field is selected by type and refused if that
+ * selection is not unique, so omitting it never widens what a caller reaches.
+ *
+ * The algorithm, digit count, and period are deliberately absent: they are policy
+ * the caller supplies through bounded options, not stored field state, and they
+ * are validated by the shared TOTP option parser before a vault is unlocked.
+ */
+export const cliStoredTotpRequestSchema = z
+  .object({
+    groupQuery: cleanNameSchema,
+    credentialQuery: cleanNameSchema,
+    fieldQuery: cleanNameSchema.optional(),
+  })
+  .strict();
+
+export type CliStoredTotpQuery = z.infer<typeof cliStoredTotpRequestSchema>;
+
 /** Inclusive upper bound on one audit page. Keeps local reads bounded. */
 export const MAX_AUDIT_EVENT_PAGE_SIZE = 200;
 /** Page size used when the caller does not request one. */

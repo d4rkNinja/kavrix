@@ -218,13 +218,7 @@ function parseTotpOptions(
   const parsed = z
     .object({
       secretStdin: z.boolean().optional().default(false),
-      algorithm: z.enum(['sha1', 'sha256', 'sha512']),
-      digits: z.enum(['6', '7', '8']).transform((value) => Number(value) as 6 | 7 | 8),
-      period: boundedIntegerString(
-        core.MIN_TOTP_PERIOD_SECONDS,
-        core.MAX_TOTP_PERIOD_SECONDS,
-      ),
-      time: boundedIntegerString(0, core.MAX_TOTP_UNIX_TIME_SECONDS).optional(),
+      ...totpConfigurationShape(core),
       stdout: z.boolean().optional(),
     })
     .strict()
@@ -236,6 +230,61 @@ function parseTotpOptions(
     digits: parsed.data.digits,
     period: parsed.data.period,
     time: parsed.data.time,
+  };
+}
+
+/**
+ * The raw option strings that select a TOTP algorithm, width, period, and
+ * explicit generation time.
+ *
+ * Shared by the local-seed command and the stored-credential command so both
+ * enforce one set of bounds. Duplicating the bounds would let the two paths drift
+ * and would make an out-of-range period a usage error on one and an unchecked
+ * value on the other.
+ */
+function totpConfigurationShape(core: CoreSecurityTools): Readonly<{
+  algorithm: z.ZodType<TotpAlgorithm>;
+  digits: z.ZodType<6 | 7 | 8, string>;
+  period: z.ZodType<number>;
+  time: z.ZodOptional<z.ZodType<number>>;
+}> {
+  return {
+    algorithm: z.enum(['sha1', 'sha256', 'sha512']),
+    digits: z.enum(['6', '7', '8']).transform((value) => Number(value) as 6 | 7 | 8),
+    period: boundedIntegerString(
+      core.MIN_TOTP_PERIOD_SECONDS,
+      core.MAX_TOTP_PERIOD_SECONDS,
+    ),
+    time: boundedIntegerString(0, core.MAX_TOTP_UNIX_TIME_SECONDS).optional(),
+  };
+}
+
+/**
+ * Parse only the TOTP policy options, ignoring every unrelated option the
+ * invoking command carries.
+ *
+ * The stored-credential command also accepts backend selection and passphrase
+ * options, so this deliberately does not reject unknown keys; the parser that
+ * rejects an unknown flag is Commander, which refuses it before any option value
+ * reaches here. Every value that is present is still bounds-checked, and a
+ * failure is reported as the same opaque usage error the local-seed path uses so
+ * neither path becomes an oracle for which option was wrong.
+ */
+export async function parseTotpConfigurationOptions(
+  options: Readonly<Record<string, unknown>>,
+): Promise<
+  Readonly<{ configuration: TotpConfiguration; unixTimeSeconds: number | undefined }>
+> {
+  const core = await import('@kavrix/core');
+  const parsed = z.object(totpConfigurationShape(core)).safeParse(options);
+  if (!parsed.success) throw new CliUsageError('The TOTP request is invalid.');
+  return {
+    configuration: {
+      algorithm: parsed.data.algorithm,
+      digits: parsed.data.digits,
+      periodSeconds: parsed.data.period,
+    },
+    unixTimeSeconds: parsed.data.time,
   };
 }
 

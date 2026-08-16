@@ -1,8 +1,8 @@
 # Direct access CLI
 
 The product requirement is a fast direct path to one credential. The packed
-`creds` executable now composes that path: `show`, `copy`, `reveal`, `get`, and
-the `recovery` lifecycle commands are all registered in
+`creds` executable now composes that path: `show`, `copy`, `reveal`, `get`,
+`totp code`, and the `recovery` lifecycle commands are all registered in
 `PUBLIC_CLI_COMMAND_CATALOG`. The sections below state what each released
 contract does and does not guarantee.
 
@@ -14,6 +14,7 @@ contract does and does not guarantee.
 | `creds copy <group> <credential> <field>`   | Native secure-clipboard adapter, composed copy use case, and TUI item-ID/field-ID intent boundary | Registered in the packed executable |
 | `creds reveal <group> <credential> <field>` | Composed reveal use case with a non-interactive redirection guard                                 | Registered in the packed executable |
 | `creds recovery list / use / reveal / copy` | Core recovery-code selection policy plus composed lifecycle executors                             | Registered in the packed executable |
+| `creds totp code <group> <credential>`      | Core stored-seed TOTP policy plus a composed read-only executor that wipes the decoded seed       | Registered in the packed executable |
 
 See [CLI Reference](./cli-reference.md) for the full public command list.
 
@@ -140,10 +141,13 @@ creds reveal <group-query> <credential-query> <field>
 It exists in the built package and denies non-interactive redirection unless
 `--stdout` is passed explicitly. `creds recovery reveal` prints one recovery code
 under the same guard, and adds `--use` to mark that code used before it is
-printed.
+printed. `creds totp code` prints a code derived from a stored seed under the same
+guard, and never prints the seed itself.
 
-Only the recovery path consults the field's `revealPolicy`: it refuses a field
-declared `never`. `creds reveal` and `creds get --reveal` do not, so the timed and
+The recovery and stored-TOTP paths consult the field's `revealPolicy`: both refuse
+a field declared `never`. A generated code is short-lived rather than permanent,
+but it still authenticates, so it is guarded exactly as a recovery code is.
+`creds reveal` and `creds get --reveal` do not consult it, so the timed and
 `confirm` reveal ceremony remains TUI-only. The TUI state machine permits reveal
 only for a sensitive field whose `revealPolicy` is not `never`, requests
 confirmation when the policy is `confirm`, delegates

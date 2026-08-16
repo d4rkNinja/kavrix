@@ -21,6 +21,7 @@ export type CliFeature =
   | 'copy'
   | 'init'
   | 'totp'
+  | 'totp code'
   | 'key create'
   | 'key slot list'
   | 'key slot create'

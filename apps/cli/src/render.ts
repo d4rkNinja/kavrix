@@ -41,6 +41,7 @@ import type {
   CliRunResult,
   CliShowResult,
   CliStatus,
+  CliStoredTotpResult,
   CliTemplateMigrationApplyResult,
   CliTemplateMigrationStatusResult,
   CliTemplateSummary,
@@ -1249,6 +1250,28 @@ export function renderRecoveryCodeUse(
     `  Used At: ${sanitizeTerminalText(result.usedAt)}`,
     `  Remaining: ${String(result.inventory.available)} of ${String(result.inventory.total)}`,
     `  Revision: ${String(result.previousRevision)} -> ${String(result.revision)}`,
+  ];
+  return lines.join('\n').concat('\n');
+}
+
+/**
+ * Renders the receipt that accompanies a generated TOTP code.
+ *
+ * The code itself is not here. It is written alone to stdout so a command
+ * substitution captures exactly the code, and this receipt goes to stderr where
+ * it explains which field and which policy produced it without contaminating the
+ * captured value. The receipt names no seed material and stays safe to log.
+ */
+export function renderStoredTotpReceipt(result: CliStoredTotpResult): string {
+  const lines = [
+    `TOTP code for "${sanitizeTerminalText(result.credentialTitle)}" in group "${sanitizeTerminalText(
+      result.groupName,
+    )}":`,
+    `  Field: ${sanitizeTerminalText(result.fieldLabel)} (${sanitizeTerminalText(result.fieldKey)})`,
+    `  Policy: ${sanitizeTerminalText(result.algorithm)}, ${String(result.digits)} digits, ${String(
+      result.periodSeconds,
+    )}s period`,
+    `  Valid For: ${String(result.remainingSeconds)}s`,
   ];
   return lines.join('\n').concat('\n');
 }

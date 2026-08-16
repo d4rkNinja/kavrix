@@ -40,6 +40,8 @@ import {
   type CliRecoveryCodeRevealResult,
   type CliRecoveryCodeUseResult,
   type CliStatus,
+  type CliStoredTotpRequest,
+  type CliStoredTotpResult,
   type CliTemplateMigrationApplyResult,
   type CliTemplateMigrationStatusResult,
   type CliTemplateSummary,
@@ -310,6 +312,111 @@ const totpCommand: CliCommandDescriptor = Object.freeze({
       description: 'Generate at an explicit bounded Unix timestamp.',
     },
     secretStdoutOption,
+  ],
+  children: [
+    {
+      name: 'code',
+      description: 'Generate one TOTP code from a seed stored in the unlocked vault.',
+      arguments: [
+        { syntax: '<group>', description: 'Group ID, unique name, or alias.' },
+        {
+          syntax: '<credential>',
+          description: 'Credential ID, unique name, or alias within the group.',
+        },
+        {
+          syntax: '[field]',
+          description:
+            'TOTP-secret field ID, stable key, exact label, or prefix. Omit when the credential holds exactly one.',
+        },
+      ],
+      options: [
+        {
+          flags: '--algorithm <algorithm>',
+          description: 'TOTP digest: sha1, sha256, or sha512.',
+          defaultValue: 'sha1',
+        },
+        {
+          flags: '--digits <number>',
+          description: 'TOTP width: 6, 7, or 8 digits.',
+          defaultValue: '6',
+        },
+        {
+          flags: '--period <seconds>',
+          description: 'TOTP period from 5 through 3600 seconds.',
+          defaultValue: '30',
+        },
+        {
+          flags: '--time <unix-seconds>',
+          description: 'Generate at an explicit bounded Unix timestamp.',
+        },
+        secretStdoutOption,
+        secretBackendOption,
+        backendPassphraseStdinOption,
+      ],
+      execute: async (context, arguments_, options) => {
+        const groupQuery = requiredArgument(arguments_[0], 'group query');
+        const credentialQuery = requiredArgument(arguments_[1], 'credential query');
+        // An omitted optional positional arrives as an empty string, which is
+        // the request to select the credential's only TOTP field by type.
+        const fieldArgument = arguments_[2] ?? '';
+        const fieldQuery =
+          fieldArgument.trim().length === 0 ? undefined : fieldArgument;
+
+        const allowStdout = optionBoolean(options, 'stdout');
+        if (!allowStdout && (context.stdout as { isTTY?: boolean }).isTTY !== true) {
+          throw new CliUsageError(
+            'Redirection is denied by default for generated TOTP codes. Use --stdout to explicitly allow streaming.',
+          );
+        }
+
+        const [{ cliStoredTotpRequestSchema }, { parseTotpConfigurationOptions }] =
+          await Promise.all([
+            import('./mutation-contracts.js'),
+            import('./public-security-tools.js'),
+          ]);
+        // Bounds are checked before a vault is unlocked, so an invalid policy
+        // never reaches a decrypted seed.
+        const policy = await parseTotpConfigurationOptions(options);
+        const queries = cliStoredTotpRequestSchema.parse({
+          groupQuery,
+          credentialQuery,
+          ...(fieldQuery === undefined ? {} : { fieldQuery }),
+        });
+        const request: CliStoredTotpRequest = {
+          groupQuery: queries.groupQuery,
+          credentialQuery: queries.credentialQuery,
+          fieldQuery: queries.fieldQuery,
+          configuration: policy.configuration,
+          unixTimeSeconds: policy.unixTimeSeconds ?? Math.floor(Date.now() / 1_000),
+        };
+
+        let result: CliStoredTotpResult;
+        if (context.ports?.storedTotp !== undefined) {
+          result = await context.ports.storedTotp(request);
+        } else {
+          const { executeProductionStoredTotp } =
+            await import('./production/stored-totp.js');
+          result = await withUnlockedVault(
+            context,
+            'totp code',
+            options,
+            async (unlocked, store, rootKey) =>
+              executeProductionStoredTotp(
+                {
+                  source: store,
+                  vaultId: unlocked.profile.vaultId,
+                  rootKey,
+                },
+                request,
+              ),
+          );
+        }
+
+        const { renderStoredTotpReceipt } = await import('./render.js');
+        context.stderr.write(renderStoredTotpReceipt(result));
+        context.stdout.write(`${sanitizeTerminalText(result.code)}\n`);
+      },
+    },
   ],
   execute: async (context, _arguments, options) => {
     await executeTotpGeneration(context, secretInput(context, 'totp'), options);

@@ -30,6 +30,22 @@ random digit, and canonical word exclusions. TOTP exposes SHA-1/SHA-256/SHA-512,
 bounded period, and an optional bounded Unix timestamp. Verification windows are not exposed
 because this command generates a code; it does not verify one.
 
+### Stored-seed TOTP
+
+`creds totp code <group> <credential> [field]` generates a code from a seed already held in the
+local encrypted vault, exposing the same policy options as `creds totp`. It reads no seed input:
+the seed is decrypted locally through the unlocked read session, decoded inside
+`@kavrix/core`, and its decoded bytes are wiped on every exit path including the failure path.
+No request reaches the API, because a zero-knowledge server holds neither the seed nor the key.
+
+Policy bounds are validated before the vault is opened, so an out-of-range request never decrypts
+anything. Omitting `[field]` selects the credential's only TOTP field and refuses to guess when
+there are two. A field whose reveal policy is `never` is refused, a field of any other type is
+refused as a wrong type rather than reported as a missing seed, and a tampered or non-canonical
+stored seed fails closed with a message that never echoes the stored bytes. The code goes to
+stdout under the same `--stdout` redirection guard as the other secret-output commands; the field
+and policy receipt goes to stderr so a command substitution captures the code alone.
+
 ### Embedded word-list attribution
 
 Passphrase generation embeds the **EFF Short Wordlist for Passphrases #1**, created and
