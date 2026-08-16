@@ -97,6 +97,7 @@ export type CliFeature =
   | 'recovery copy'
   | 'run'
   | 'reveal'
+  | 'search'
   | 'get'
   | 'set'
   | 'update'

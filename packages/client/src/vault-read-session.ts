@@ -47,6 +47,18 @@ export type CredentialShowResult = Readonly<{
   template: GroupTemplate;
 }>;
 
+/**
+ * One group and every item it holds, read while that group's key was live.
+ *
+ * Callers that need the whole vault use this instead of `listGroups` followed by
+ * one `listItems` per group: resolving a group query re-opens every group, so the
+ * per-group form costs a quadratic number of decryptions on a large vault.
+ */
+export type VaultGroupScope = Readonly<{
+  group: GroupPayload;
+  items: readonly ItemPayload[];
+}>;
+
 interface UnlockedState {
   readonly rootKey: VaultRootKey;
   readonly keyVersion: KeyVersion;
@@ -139,6 +151,35 @@ export class VaultReadSession {
         return await this.#loadItems(group, state, epoch);
       } finally {
         zeroize(group.key);
+      }
+    });
+  }
+
+  /**
+   * Reads whole groups with their items in a single pass over the vault.
+   *
+   * Group keys stay live only while that group's items are being opened, and
+   * every key is zeroized before the call returns. Archived and deleted records
+   * are returned as stored; filtering them is the caller's policy decision.
+   */
+  async listScopes(groupQuery?: string): Promise<readonly VaultGroupScope[]> {
+    return this.#read(async (state, epoch) => {
+      const groups = await this.#loadGroups(state, epoch);
+      try {
+        const selected =
+          groupQuery === undefined
+            ? groups
+            : [this.#selectOpenGroup(groups, groupQuery)];
+        const scopes: VaultGroupScope[] = [];
+        for (const group of selected) {
+          scopes.push({
+            group: group.payload,
+            items: await this.#loadItems(group, state, epoch),
+          });
+        }
+        return scopes;
+      } finally {
+        for (const group of groups) zeroize(group.key);
       }
     });
   }
@@ -288,18 +329,24 @@ export class VaultReadSession {
     const groups = await this.#loadGroups(state, epoch);
     let selected: OpenGroup | undefined;
     try {
-      const payload = resolveNamedEntity(
-        query,
-        groups.map((group) => group.payload),
-      );
-      selected = groups.find((group) => group.payload.id === payload.id);
-      if (selected === undefined) throw new CryptoAuthenticationError();
+      selected = this.#selectOpenGroup(groups, query);
       return selected;
     } finally {
       for (const group of groups) {
         if (group !== selected) zeroize(group.key);
       }
     }
+  }
+
+  /** Resolves a query against already-opened groups without releasing any key. */
+  #selectOpenGroup(groups: readonly OpenGroup[], query: string): OpenGroup {
+    const payload = resolveNamedEntity(
+      query,
+      groups.map((group) => group.payload),
+    );
+    const selected = groups.find((group) => group.payload.id === payload.id);
+    if (selected === undefined) throw new CryptoAuthenticationError();
+    return selected;
   }
 
   async #loadItems(

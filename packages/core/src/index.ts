@@ -10,6 +10,7 @@ export * from './policies/recovery-codes.js';
 export * from './policies/session-lifetime.js';
 export * from './policies/stored-totp.js';
 export * from './policies/template-migration.js';
+export * from './policies/vault-search.js';
 export * from './ports.js';
 export * from './password-generator.js';
 export {
