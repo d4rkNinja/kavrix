@@ -88,3 +88,19 @@ or platform adapters. UI and commands call use cases instead of databases.
   `files` allowlist, `prepack` verification, and `npm pack --dry-run` inspection.
 - Do not publish, tag, push, or create releases unless the user has authorized the
   external action and the exact target has been verified.
+
+## `publish with rocket` release authorization
+
+When the repository owner uses the exact phrase `publish with rocket`, treat it
+as explicit authorization to complete the current Kavrix release end to end:
+
+1. Confirm the intended package version and release scope.
+2. Run the complete local release gates and stop on any failure.
+3. Commit the reviewed release changes and push `main`.
+4. Wait for required CI and CodeQL checks on the exact commit; never bypass them.
+5. Create and push the matching `v<package-version>` tag only after those checks pass.
+6. Monitor the trusted-publishing workflow until npm publication, registry-integrity reconciliation, and GitHub release creation succeed.
+7. Verify the npm version/dist-tag and GitHub release, then report exact evidence.
+
+The phrase does not authorize force pushes, history rewriting, secret exposure,
+manual token publication, check bypasses, or publishing a different version.
