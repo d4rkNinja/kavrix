@@ -13,7 +13,10 @@ permissions:
 jobs:
   analyze:
     name: Analyze JavaScript and TypeScript
-    if: ${{ !github.event.repository.private || vars.KAVRIX_PRIVATE_CODEQL_ENABLED == 'true' }}
+    # The public repository must always produce a CodeQL result. Use the
+    # explicit visibility value instead of negating a loosely typed boolean;
+    # the release gate treats a skipped analysis as a failure.
+    if: ${{ github.event.repository.visibility == 'public' || vars.KAVRIX_PRIVATE_CODEQL_ENABLED == 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
