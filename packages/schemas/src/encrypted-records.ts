@@ -65,6 +65,8 @@ const associatedDataBaseSchema = z
     schemaVersion: schemaVersionSchema,
     keyVersion: keyVersionSchema,
     vaultId: vaultIdSchema,
+    revision: vaultRevisionSchema.optional(),
+    metadataDigest: sha256DigestSchema.optional(),
   })
   .strict();
 

@@ -8,6 +8,7 @@ export * from './fields.js';
 export * from './history.js';
 export * from './identifiers.js';
 export * from './keychain.js';
+export * from './local-vault.js';
 export * from './notes.js';
 export * from './payloads.js';
 export * from './primitives.js';

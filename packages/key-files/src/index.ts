@@ -24,3 +24,16 @@ export {
   type PortableKeyFileProtection,
   type PortableKeyFileWriteOptions,
 } from './portable-key-files.js';
+export {
+  readRecoveryKitFile,
+  writeRecoveryKitFile,
+  type ParsedRecoveryKit,
+  type RecoveryKitBinding,
+} from './recovery-kit-files.js';
+export {
+  copyRevisionAnchor,
+  readRevisionAnchor,
+  validateRevisionAnchorFile,
+  writeRevisionAnchor,
+  type RevisionAnchor,
+} from './revision-anchor.js';

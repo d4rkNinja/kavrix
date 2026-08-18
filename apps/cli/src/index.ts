@@ -1,11 +1,2 @@
-export * from './catalog.js';
-export * from './cli.js';
-export * from './contracts.js';
-export * from './errors.js';
-export * from './initialization.js';
-export * from './key-file-create.js';
-export * from './public-security-tools.js';
-export * from './render.js';
-export * from './secret-input.js';
-export * from './terminal.js';
-export * from './version.js';
+export { buildLocalCli, runLocalCli, type LocalCliOptions } from './local-vault-cli.js';
+export { CLI_VERSION } from './version.js';

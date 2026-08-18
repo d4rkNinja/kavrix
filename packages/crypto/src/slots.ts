@@ -212,6 +212,41 @@ export async function unlockRecoveryKeySlot(
   }
 }
 
+export async function unlockPortableKeySlotBytes(
+  slot: PortableSlot,
+  portableKey: Uint8Array,
+  expectedBinding: SlotBinding,
+): Promise<VaultRootKey> {
+  const parsedSlot = requireSlotType(slot, 'portable-key', expectedBinding);
+  const kek = derivePortableKek(portableKey, parsedSlot.derivation);
+  try {
+    return await unwrapRootKey(
+      parsedSlot.wrappedRootKey,
+      kek,
+      rootSlotContext(expectedBinding),
+    );
+  } finally {
+    zeroize(kek);
+  }
+}
+
+export async function unlockRecoveryKeySlotBytes(
+  slot: RecoverySlot,
+  recoveryKey: Uint8Array,
+  expectedBinding: SlotBinding,
+): Promise<VaultRootKey> {
+  const parsedSlot = requireSlotType(slot, 'recovery-key', expectedBinding);
+  const kek = deriveRecoveryKek(recoveryKey, parsedSlot.derivation);
+  try {
+    return await unwrapRootKey(
+      parsedSlot.wrappedRootKey,
+      kek,
+      rootSlotContext(expectedBinding),
+    );
+  } finally {
+    zeroize(kek);
+  }
+}
 export async function unlockDeviceKeySlot(
   slot: DeviceSlot,
   deviceKey: Uint8Array,

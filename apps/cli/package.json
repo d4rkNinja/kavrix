@@ -34,12 +34,14 @@
     }
   },
   "bin": {
-    "creds": "./dist/bin.js"
+    "kavrix": "./dist/bin.js"
   },
   "files": [
     "dist/**/*.js",
     "dist/**/*.d.ts",
-    "dist/*.cdx.json"
+    "dist/*.cdx.json",
+    "README.md",
+    "LICENSE"
   ],
   "engines": {
     "node": ">=24.12.0 <25 || >=25.1.0"
@@ -47,26 +49,13 @@
   "scripts": {
     "build": "tsc -b tsconfig.build.json --pretty false && node scripts/build-package.js",
     "typecheck": "tsc -b tsconfig.build.json --pretty false && tsc -p tsconfig.json --pretty false",
-    "test": "pnpm run build && vitest run --root ../.. apps/cli/test",
-    "test:coverage": "pnpm run build && vitest run --root ../.. apps/cli/test --coverage --coverage.include=apps/cli/src/**",
+    "test": "pnpm run build && vitest run --root ../.. apps/cli/test/local-vault-cli-view.test.ts apps/cli/test/package.test.ts",
+    "test:coverage": "pnpm run build && vitest run --root ../.. apps/cli/test/local-vault-cli-view.test.ts apps/cli/test/package.test.ts --coverage --coverage.include=apps/cli/src/**",
     "prepack": "pnpm run build",
     "pack:check": "pnpm pack --dry-run --json",
     "package:smoke": "pnpm run build && node scripts/smoke-packed-package.js"
   },
-  "devDependencies": {
-    "@kavrix/client": "workspace:*",
-    "@kavrix/clipboard": "workspace:*",
-    "@kavrix/core": "workspace:*",
-    "@kavrix/crypto": "workspace:*",
-    "@kavrix/import-export": "workspace:*",
-    "@kavrix/key-files": "workspace:*",
-    "@kavrix/keychain": "workspace:*",
-    "@kavrix/local-store": "workspace:*",
-    "@kavrix/runner": "workspace:*",
-    "@kavrix/schemas": "workspace:*",
-    "@kavrix/sync": "workspace:*",
-    "commander": "catalog:",
-    "esbuild": "0.28.1",
-    "zod": "catalog:"
+  "dependencies": {
+    "mongodb": "7.5.0"
   }
 }

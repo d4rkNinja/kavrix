@@ -1,6 +1,9 @@
 packages:
-  - apps/*
-  - packages/*
+  - apps/cli
+  - packages/schemas
+  - packages/crypto
+  - packages/key-files
+  - packages/storage
 
 strictPeerDependencies: true
 preferWorkspacePackages: true
@@ -11,19 +14,7 @@ minimumReleaseAgeExclude:
 trustPolicy: no-downgrade
 
 overrides:
-  '@typescript-eslint/eslint-plugin': 8.65.0
-  '@typescript-eslint/parser': 8.65.0
-  '@typescript-eslint/project-service': 8.65.0
-  '@typescript-eslint/scope-manager': 8.65.0
-  '@typescript-eslint/tsconfig-utils': 8.65.0
-  '@typescript-eslint/type-utils': 8.65.0
-  '@typescript-eslint/types': 8.65.0
-  '@typescript-eslint/typescript-estree': 8.65.0
-  '@typescript-eslint/utils': 8.65.0
-  '@typescript-eslint/visitor-keys': 8.65.0
-  nanoid: 3.3.18
-  postcss: 8.5.25
-  rolldown: 1.2.1
+  kavrix: link:apps/cli
 
 allowBuilds:
   esbuild: true

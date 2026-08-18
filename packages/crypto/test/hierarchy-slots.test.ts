@@ -123,7 +123,7 @@ describe('key hierarchy and independent unlock slots', () => {
       ),
     ).rejects.toBeInstanceOf(AuthenticationError);
 
-    const passphrase = Buffer.from('slot passphrase', 'utf8');
+    const passphrase = Buffer.from('slot passphrase!', 'utf8');
     const passphraseSlot = await createPassphraseKeySlot(
       secondIdentity,
       passphrase,
@@ -132,7 +132,7 @@ describe('key hierarchy and independent unlock slots', () => {
     await expect(
       unlockPassphraseKeySlot(
         passphraseSlot,
-        Buffer.from('wrong passphrase'),
+        Buffer.from('wrong passphrase!'),
         secondBinding,
       ),
     ).rejects.toBeInstanceOf(AuthenticationError);

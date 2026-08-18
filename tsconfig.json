@@ -7,5 +7,5 @@
     "ignoreDeprecations": "6.0",
     "sourceMap": false
   },
-  "include": ["vitest.config.ts", "vitest.platform.config.ts", "scripts/**/*.ts"]
+  "include": ["vitest.config.ts", "vitest.platform.config.ts"]
 }

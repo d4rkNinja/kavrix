@@ -8,8 +8,5 @@
     "tsBuildInfoFile": ".tsbuildinfo"
   },
   "include": ["src/**/*.ts"],
-  "references": [
-    { "path": "../schemas/tsconfig.build.json" },
-    { "path": "../core/tsconfig.build.json" }
-  ]
+  "references": [{ "path": "../schemas/tsconfig.build.json" }]
 }

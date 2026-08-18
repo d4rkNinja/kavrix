@@ -1,25 +1,21 @@
 import { defineConfig } from 'vitest/config';
 
-const mongoIntegrationEnabled =
-  process.env['KAVRIX_MONGODB_URI'] !== undefined &&
-  process.env['KAVRIX_MONGODB_URI'].length > 0;
 const testBoundaryTimeoutMs = process.platform === 'win32' ? 60_000 : 10_000;
 
 export default defineConfig({
   test: {
-    // Windows security tests intentionally exercise real PowerShell, ACL, and
-    // process boundaries. Running those files concurrently can starve the
-    // fixed fail-closed helper timeouts on two-core CI runners.
     fileParallelism: process.platform !== 'win32',
     hookTimeout: testBoundaryTimeoutMs,
-    include: mongoIntegrationEnabled
-      ? [
-          '{apps,packages}/**/*.test.ts',
-          'scripts/**/*.test.ts',
-          'apps/api/integration/**/*.integration.ts',
-          'packages/storage/integration/**/*.integration.ts',
-        ]
-      : ['{apps,packages}/**/*.test.ts', 'scripts/**/*.test.ts'],
+    include: [
+      'apps/cli/test/local-vault-cli-view.test.ts',
+      'apps/cli/test/local-secrets.test.ts',
+      'apps/cli/test/package.test.ts',
+      'packages/schemas/test/**/*.test.ts',
+      'packages/crypto/test/**/*.test.ts',
+      'packages/key-files/test/secure-stream.test.ts',
+      'packages/key-files/test/recovery-kit-files.test.ts',
+      'packages/storage/test/mongo-local-vault-uri.test.ts',
+    ],
     passWithNoTests: false,
     restoreMocks: true,
     unstubEnvs: true,

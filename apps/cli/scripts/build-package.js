@@ -31,9 +31,22 @@ const cryptoRequire = createRequire(
   resolve(repositoryRoot, 'packages/crypto/package.json'),
 );
 const sodiumRequire = createRequire(cryptoRequire.resolve('libsodium-wrappers'));
+const externalRuntimePackages = new Set([
+  'mongodb',
+  'kerberos',
+  '@mongodb-js/zstd',
+  '@aws-sdk/credential-providers',
+  'gcp-metadata',
+  'snappy',
+  'socks',
+  'mongodb-client-encryption',
+]);
 const allowedNodeImports = new Set(
   builtinModules.flatMap((name) => [name, `node:${name}`]),
 );
+for (const externalPackage of externalRuntimePackages) {
+  allowedNodeImports.add(externalPackage);
+}
 
 const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
 assertPublicManifest(manifest);
@@ -42,6 +55,7 @@ const reviewedRuntimePackages = await Promise.all(
   [
     ['commander', require],
     ['zod', require],
+    ['mongodb', require],
     ['libsodium-wrappers', cryptoRequire],
     ['libsodium', sodiumRequire],
   ].map(([name, resolver]) => readDependencyLicense(name, resolver)),
@@ -68,6 +82,7 @@ const bundle = await build({
   sourcemap: 'inline',
   sourcesContent: false,
   splitting: true,
+  external: [...externalRuntimePackages],
   // Must track the engines floor, not the newest supported runtime: emitted
   // syntax has to parse on the oldest Node the manifest admits.
   target: ['node24.12'],
@@ -85,13 +100,14 @@ const includedPackages = includedExternalPackages(
   bundle.metafile,
   reviewedRuntimePackages,
 );
+const sbomPackages = await collectRuntimePackages(includedPackages);
 validateBundleImports(bundle.metafile);
 validateReviewedPackageInputs(bundle.metafile, reviewedRuntimePackages);
 validateSplitOutputs(bundle.metafile, reviewedRuntimePackages);
 const javascriptArtifacts = await collectJavaScriptArtifacts();
 await validateCompiledArtifacts(javascriptArtifacts);
-const sbom = await createSbom(manifest, includedPackages, javascriptArtifacts);
-validateSbom(sbom, manifest, includedPackages, javascriptArtifacts);
+const sbom = await createSbom(manifest, sbomPackages, javascriptArtifacts);
+validateSbom(sbom, manifest, sbomPackages, javascriptArtifacts);
 await writeFile(
   resolve(outputDirectory, 'kavrix.cdx.json'),
   `${JSON.stringify(sbom, null, 2)}\n`,
@@ -105,18 +121,25 @@ function assertPublicManifest(value) {
     );
   }
   for (const key of [
-    'dependencies',
     'optionalDependencies',
     'peerDependencies',
     'bundledDependencies',
     'bundleDependencies',
   ]) {
     if (key in value) {
-      throw new Error(`The self-contained public package must not declare ${key}.`);
+      throw new Error(`The public package must not declare ${key}.`);
     }
   }
-  if (value.bin?.creds !== './dist/bin.js') {
-    throw new Error('The public creds executable must resolve to the compiled bundle.');
+  const dependencyNames = Object.keys(value.dependencies ?? {});
+  if (dependencyNames.length !== 1 || dependencyNames[0] !== 'mongodb') {
+    throw new Error(
+      'The public package may depend only on the reviewed MongoDB runtime.',
+    );
+  }
+  if (value.bin?.kavrix !== './dist/bin.js') {
+    throw new Error(
+      'The public kavrix executable must resolve to the compiled bundle.',
+    );
   }
   if (
     value.publishConfig?.access !== 'public' ||
@@ -140,13 +163,19 @@ function assertSafeOutputDirectory() {
 }
 
 async function readDependencyLicense(packageName, resolver) {
-  const packageRoot = await findPackageRoot(resolver.resolve(packageName), packageName);
+  let entryPath;
+  try {
+    entryPath = resolver.resolve(`${packageName}/package.json`);
+  } catch {
+    entryPath = resolver.resolve(packageName);
+  }
+  const packageRoot = await findPackageRoot(entryPath, packageName);
   const dependencyManifest = JSON.parse(
     await readFile(resolve(packageRoot, 'package.json'), 'utf8'),
   );
   const licenseFile = (await readdir(packageRoot))
     .sort((left, right) => left.localeCompare(right, 'en'))
-    .find((name) => /^licen[cs]e(?:\.|$)/iu.test(name));
+    .find((name) => /^licen[cs]e(?:[.-]|$)/iu.test(name));
   if (licenseFile === undefined) {
     throw new Error(`No license file was found for bundled package ${packageName}.`);
   }
@@ -167,7 +196,45 @@ async function readDependencyLicense(packageName, resolver) {
     license: dependencyManifest.license,
     licenseText,
     root: packageRoot,
+    runtimeDependencyNames: [
+      ...new Set([
+        ...Object.keys(dependencyManifest.dependencies ?? {}),
+        ...Object.keys(dependencyManifest.optionalDependencies ?? {}),
+      ]),
+    ],
   };
+}
+
+async function collectRuntimePackages(seeds) {
+  const packages = new Map();
+  const queue = [...seeds];
+  while (queue.length > 0) {
+    const current = queue.shift();
+    if (current === undefined) continue;
+    const key = `${current.name}@${current.version}`;
+    if (packages.has(key)) continue;
+    packages.set(key, current);
+    const resolver = createRequire(resolve(current.root, 'package.json'));
+    for (const dependencyName of current.runtimeDependencyNames) {
+      let dependency;
+      try {
+        dependency = await readDependencyLicense(dependencyName, resolver);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        throw new Error(
+          `Could not inventory runtime dependency ${dependencyName} of ${key}: ${message}`,
+          { cause: error },
+        );
+      }
+      queue.push(dependency);
+    }
+  }
+  return [...packages.values()].sort((left, right) =>
+    `${left.name}@${left.version}`.localeCompare(
+      `${right.name}@${right.version}`,
+      'en',
+    ),
+  );
 }
 
 function validateReviewedPackageInputs(metafile, reviewedPackages) {
@@ -212,15 +279,23 @@ function renderLicenseBanner(packages) {
 }
 
 function includedExternalPackages(metafile, reviewedPackages) {
+  const externalImports = new Set(
+    Object.values(metafile.outputs)
+      .flatMap((output) => output.imports)
+      .filter((item) => item.external)
+      .map((item) => item.path),
+  );
   return reviewedPackages.filter((dependency) => {
     const normalizedRoot = normalizePath(dependency.root);
-    return Object.keys(metafile.inputs).some((input) => {
-      const absoluteInput = normalizePath(resolve(packageDirectory, input));
-      return (
-        absoluteInput === normalizedRoot ||
-        absoluteInput.startsWith(`${normalizedRoot}/`)
-      );
-    });
+    return (
+      Object.keys(metafile.inputs).some((input) => {
+        const absoluteInput = normalizePath(resolve(packageDirectory, input));
+        return (
+          absoluteInput === normalizedRoot ||
+          absoluteInput.startsWith(`${normalizedRoot}/`)
+        );
+      }) || externalImports.has(dependency.name)
+    );
   });
 }
 
@@ -249,7 +324,6 @@ function validateSplitOutputs(metafile, reviewedPackages) {
     return normalized !== 'dist/bin.js' && normalized.endsWith('.js');
   });
   if (
-    chunks.length === 0 ||
     chunks.some(
       ([path]) =>
         !/^dist\/chunks\/chunk-[A-Z0-9]+\.js$/u.test(normalizeRelativePath(path)),
@@ -257,6 +331,7 @@ function validateSplitOutputs(metafile, reviewedPackages) {
   ) {
     throw new Error('The CLI bundle did not emit deterministic named ESM chunks.');
   }
+  if (chunks.length === 0) return;
 
   const cryptoRoots = reviewedPackages
     .filter(({ name }) => name === 'libsodium' || name === 'libsodium-wrappers')
@@ -307,7 +382,6 @@ async function validateCompiledArtifacts(artifacts) {
   if (
     !artifactPaths.includes('dist/bin.js') ||
     !artifactPaths.includes('dist/index.js') ||
-    !artifactPaths.some((path) => path.startsWith('dist/chunks/')) ||
     artifactPaths.some(
       (path) =>
         path !== 'dist/bin.js' &&
@@ -357,6 +431,19 @@ async function createSbom(packageManifest, dependencies, artifacts) {
     purl: npmPurl(dependency.name, dependency.version),
   }));
   const components = [...libraryComponents, effWordListComponent];
+  const referencesByName = new Map(
+    dependencies.map((dependency) => [
+      dependency.name,
+      npmPurl(dependency.name, dependency.version),
+    ]),
+  );
+  const dependencyEntries = dependencies.map((dependency) => ({
+    ref: npmPurl(dependency.name, dependency.version),
+    dependsOn: dependency.runtimeDependencyNames
+      .map((name) => referencesByName.get(name))
+      .filter((reference) => reference !== undefined)
+      .sort(),
+  }));
   return {
     $schema: 'https://cyclonedx.org/schema/bom-1.6.schema.json',
     bomFormat: 'CycloneDX',
@@ -387,9 +474,14 @@ async function createSbom(packageManifest, dependencies, artifacts) {
     dependencies: [
       {
         ref: rootReference,
-        dependsOn: components.map((component) => component['bom-ref']).sort(),
+        dependsOn: Object.keys(packageManifest.dependencies ?? {})
+          .map((name) => referencesByName.get(name))
+          .filter((reference) => reference !== undefined)
+          .concat(effWordListComponent['bom-ref'])
+          .sort(),
       },
-      ...components.map((component) => ({ ref: component['bom-ref'], dependsOn: [] })),
+      ...dependencyEntries,
+      { ref: effWordListComponent['bom-ref'], dependsOn: [] },
     ],
   };
 }

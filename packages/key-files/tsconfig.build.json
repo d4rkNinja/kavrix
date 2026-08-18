@@ -11,5 +11,8 @@
   },
   "include": ["src/**/*.ts"],
   "exclude": ["test/**/*.ts"],
-  "references": [{ "path": "../crypto/tsconfig.build.json" }]
+  "references": [
+    { "path": "../schemas/tsconfig.build.json" },
+    { "path": "../crypto/tsconfig.build.json" }
+  ]
 }

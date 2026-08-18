@@ -155,6 +155,7 @@ jobs:
           for notice in \
             'commander@15.0.0 (MIT)' \
             'zod@4.4.3 (MIT)' \
+            'mongodb@7.5.0 (Apache-2.0)' \
             'libsodium-wrappers@0.8.4 (ISC)' \
             'libsodium@0.8.4 (ISC)'; do
             grep --fixed-strings "$notice" "$bin" >/dev/null
@@ -163,12 +164,24 @@ jobs:
             'EFF Short Wordlist for Passphrases #1' \
             'https://www.eff.org/files/2016/09/08/eff_short_wordlist_1.txt' \
             'https://creativecommons.org/licenses/by/4.0/' \
-            'dice-code column'; do
+            'zero-knowledge'; do
             grep --fixed-strings "$attribution" "$readme" >/dev/null
           done
           for sbom_marker in \
             'pkg:npm/commander@15.0.0' \
             'pkg:npm/zod@4.4.3' \
+            'pkg:npm/mongodb@7.5.0' \
+            'pkg:npm/@mongodb-js/saslprep@1.4.13' \
+            'pkg:npm/@types/webidl-conversions@7.0.3' \
+            'pkg:npm/@types/whatwg-url@13.0.0' \
+            'pkg:npm/bson@7.3.1' \
+            'pkg:npm/memory-pager@1.5.0' \
+            'pkg:npm/mongodb-connection-string-url@7.0.2' \
+            'pkg:npm/punycode@2.3.1' \
+            'pkg:npm/sparse-bitfield@3.0.3' \
+            'pkg:npm/tr46@5.1.1' \
+            'pkg:npm/webidl-conversions@7.0.0' \
+            'pkg:npm/whatwg-url@14.2.0' \
             'pkg:npm/libsodium-wrappers@0.8.4' \
             'pkg:npm/libsodium@0.8.4' \
             'urn:kavrix:data:eff-short-wordlist-for-passphrases-1' \

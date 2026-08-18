@@ -21,18 +21,10 @@
   "scripts": {
     "build": "tsc -b tsconfig.build.json",
     "typecheck": "tsc -b tsconfig.build.json --pretty false && tsc -p tsconfig.json --pretty false",
-    "test": "vitest run --root ../.. packages/storage/test",
-    "test:integration": "tsx ./scripts/storage-integration-gate.ts"
+    "test": "vitest run --root ../.. packages/storage/test"
   },
   "dependencies": {
-    "@kavrix/core": "workspace:*",
     "@kavrix/schemas": "workspace:*",
-    "mongodb": "catalog:",
-    "zod": "catalog:"
-  },
-  "devDependencies": {
-    "@kavrix/client": "workspace:*",
-    "@kavrix/crypto": "workspace:*",
-    "@kavrix/import-export": "workspace:*"
+    "mongodb": "catalog:"
   }
 }

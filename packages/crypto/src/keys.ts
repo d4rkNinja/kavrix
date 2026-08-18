@@ -56,6 +56,7 @@ type DeviceKeyDerivation = Extract<
 export const ARGON2ID_MINIMUM_MEMORY_KIB = 65_536;
 export const ARGON2ID_MINIMUM_PASSES = 3;
 export const ARGON2ID_MINIMUM_PARALLELISM = 4;
+export const MIN_PASSPHRASE_BYTES = 16;
 // These local resource ceilings are deliberately stricter than the persistence
 // schema. Untrusted key files are rejected before Node allocates Argon2 memory.
 export const ARGON2ID_MAXIMUM_MEMORY_KIB = 262_144;
@@ -234,7 +235,10 @@ export async function derivePassphraseKek(
   passphrase: Uint8Array,
   derivation: PassphraseDerivation,
 ): Promise<KeyEncryptionKey> {
-  if (passphrase.byteLength === 0 || passphrase.byteLength > 1_048_576) {
+  if (
+    passphrase.byteLength < MIN_PASSPHRASE_BYTES ||
+    passphrase.byteLength > 1_048_576
+  ) {
     throw new CryptoInputError('Passphrase byte length is outside the supported range');
   }
   const parsed = passphraseDerivationSchema.parse(derivation);

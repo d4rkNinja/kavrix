@@ -47,7 +47,9 @@ The Argon2id floor is the memory-constrained recommendation in
 [RFC 9106 section 4](https://datatracker.ietf.org/doc/html/rfc9106#section-4):
 64 MiB, three passes, four lanes, a 128-bit salt, and a 256-bit output. New
 passphrase slots should calibrate upward on the target device while never going
-below that floor. Stored parameters, not current defaults, govern later unlocks.
+below that floor. The active CLI also rejects passphrases shorter than 16 UTF-8
+bytes before Argon2id derivation. Stored parameters, not current defaults, govern
+later unlocks.
 
 XChaCha20-Poly1305 is selected because its 192-bit nonce supports safe random
 nonce generation without maintaining a global nonce counter. The implementation
