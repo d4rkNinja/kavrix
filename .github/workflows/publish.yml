@@ -315,7 +315,7 @@ jobs:
           set -euo pipefail
           test -z "${NODE_AUTH_TOKEN:-}"
           test -z "${NPM_TOKEN:-}"
-          npm publish "$PACKAGE_ARCHIVE" \
+          npm publish "./$PACKAGE_ARCHIVE" \
             --ignore-scripts \
             --access public \
             --tag "$NPM_DIST_TAG" \
