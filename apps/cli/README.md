@@ -1,136 +1,80 @@
-# Kavrix CLI
+# kavrix
 
-Kavrix is a local encrypted credential vault for MongoDB. It encrypts values
-before they leave your computer and connects directly to MongoDB. You do not
-run a Kavrix server, HTTP API, sync daemon, or self-hosting process.
+A local, zero-knowledge credential vault backed directly by MongoDB. Kavrix
+encrypts values before storage; it does not require or start a Kavrix server.
 
 ## Install
 
+Requires Node.js `>=24.12.0 <25` or `>=25.1.0` and a reachable MongoDB deployment.
+
 ```sh
 npm install --global kavrix
+kavrix --version
+kavrix --help
 ```
 
-Supported Node.js versions:
-
-```
->=24.12.0 <25 || >=25.1.0
-```
-
-## First vault
-
-Run these commands in order:
+## Quick start
 
 ```sh
-kavrix db ping --database kavrix_local
-kavrix init --database kavrix_local --key-file ./kavrix.key
-kavrix put production/api-token --database kavrix_local --key-file ./kavrix.key
-kavrix list --database kavrix_local --key-file ./kavrix.key
-kavrix get production/api-token --database kavrix_local --key-file ./kavrix.key
+kavrix db ping
+kavrix init
+kavrix put github/token
+kavrix list
+kavrix view
+kavrix get github/token --reveal
 ```
 
-Kavrix asks for the MongoDB URI, key-file passphrase, and credential value
-through protected input. It never accepts those secrets as ordinary command
-arguments. `get` stays masked unless you explicitly add
-`--reveal`.
+Commands prompt for sensitive input. Do not place secrets or MongoDB credentials
+in normal command arguments or shell history. Use `kavrix <command> --help` for
+the exact protected-input options available in this version.
 
-Create and verify a recovery kit immediately after initialization:
+## Main command groups
 
-```sh
-kavrix recovery create \
-  --vault default \
-  --key-file ./kavrix.key \
-  --recovery-file ./kavrix.recovery.kit
+- `db ping`: test direct MongoDB connectivity.
+- `init`: create a vault and passphrase-protected portable key file.
+- `put`, `get`, `list`, `view`, `search`, `stats`: manage encrypted values.
+- `has`, `rename`, `remove`: inspect or change records without accidental reveal.
+- `vault list`, `vault status`: select and inspect vaults.
+- `key status|verify|copy|replicate|assign|rewrap`: manage protected key files.
+- `recovery create|verify|revoke|status|use`: manage protected recovery kits.
+- `doctor`, `doctor health`: authenticate, diagnose, and perform bounded safe repair.
 
-kavrix recovery verify \
-  --vault default \
-  --key-file ./kavrix.key \
-  --recovery-file ./kavrix.recovery.kit
-```
-
-Store the key file and recovery kit separately. They are protected files, not
-plain text codes. Losing every authorized unlock method is unrecoverable by
-design.
-
-## Commands people use most
-
-| Task                                  | Command                                     |
-| ------------------------------------- | ------------------------------------------- |
-| Readable dashboard                    | `kavrix view`                               |
-| One credential card                   | `kavrix view <name>`                        |
-| Search names only                     | `kavrix search <pattern>`                   |
-| Counts and safe statistics            | `kavrix stats`                              |
-| Add or replace a value                | `kavrix put <name> [--overwrite]`           |
-| Read a value                          | `kavrix get <name> [--reveal]`              |
-| Rename a record                       | `kavrix rename <from> <to>`                 |
-| Delete a record                       | `kavrix remove <name>`                      |
-| Validate encrypted data               | `kavrix doctor`                             |
-| Check and repair safe transient state | `kavrix doctor health`                      |
-| Inspect vaults                        | `kavrix vault list` / `kavrix vault status` |
-
-## Key and recovery lifecycle
-
-| Task                                  | Command                                      |
-| ------------------------------------- | -------------------------------------------- |
-| Inspect a key file                    | `kavrix key status`                          |
-| Verify a key file                     | `kavrix key verify`                          |
-| Create another key-file copy          | `kavrix key copy`                            |
-| Same copy operation, explicit aliases | `kavrix key replicate` / `kavrix key assign` |
-| Change a key-file passphrase          | `kavrix key rewrap`                          |
-| Create a recovery kit                 | `kavrix recovery create`                     |
-| Verify a recovery kit                 | `kavrix recovery verify`                     |
-| List recovery-slot state              | `kavrix recovery status`                     |
-| Revoke a recovery slot                | `kavrix recovery revoke <slotId>`            |
-| Replace a lost key with recovery      | `kavrix recovery use`                        |
-
-Key-file copies share the same vault binding and are not independently
-revocable. Recovery use requires the trusted local revision anchor and creates
-a new protected destination; it does not silently overwrite an existing file.
+Plaintext output is opt-in. `get` requires `--reveal`; listing and dashboard
+commands never display credential values.
 
 ## Security boundary
 
-MongoDB receives encrypted envelopes, wrapped key-slot metadata, and unavoidable
-operational metadata. It does not receive plaintext credential values,
-passphrases, portable keys, recovery keys, or decrypted records.
+Vault payloads use XChaCha20-Poly1305 authenticated encryption. Protected key and
+recovery files use Argon2id-derived keys and XChaCha20-Poly1305. Ciphertext is
+bound to vault identity, schema/key version, revision, and security metadata.
+MongoDB stores ciphertext plus visible operational metadata; it never receives
+the portable key, recovery key, passphrase, root key, or decrypted value.
 
-Kavrix uses versioned authenticated encryption, independent key slots, strict
-input schemas, protected key-file permissions, and fail-closed validation.
-Tampering, wrong bindings, malformed data, missing keys, and unsafe rollback
-states do not produce plaintext.
+A protected local revision anchor detects older database snapshots and
+same-revision metadata forks. Normal unlock fails closed if the anchor is
+missing or inconsistent. `doctor health --accept-current` is an explicit trust
+decision, not an automatic recovery shortcut.
 
-The local process and host remain part of the trust boundary. A process running
-as the already-unlocked user can read plaintext in memory, and terminal
-software, clipboard managers, swap, backups, or crash dumps may retain data.
-Kavrix protects the database boundary; it cannot protect a compromised computer.
+Remote MongoDB URIs must explicitly enable validated TLS. Kavrix rejects insecure
+TLS options. It cannot protect an already-unlocked machine from local
+administrators, same-user malware, keyloggers, terminal capture, or process-memory
+inspection. Losing all valid key files and recovery kits makes the vault
+unrecoverable by design.
 
-## Safe input and output
+## Documentation and support
 
-- Use masked prompts, protected files, or explicit stdin for secrets.
-- Use `--database-url-stdin`, `--passphrase-stdin`, and `--value-stdin` for controlled automation.
-- Never put secrets in command arguments, URLs, environment files, or logs.
-- Plaintext is masked unless `--reveal` is explicitly requested.
-- Keep key files and recovery kits outside the database backup path when possible.
-- Use TLS with certificate and hostname verification for remote MongoDB.
+- [Full README](https://github.com/d4rkNinja/kavrix#readme)
+- [Command guide](https://github.com/d4rkNinja/kavrix/blob/main/docs/cli-reference.md)
+- [Threat model](https://github.com/d4rkNinja/kavrix/blob/main/docs/threat-model.md)
+- [Security reports](https://github.com/d4rkNinja/kavrix/blob/main/SECURITY.md)
+- [Issue tracker](https://github.com/d4rkNinja/kavrix/issues)
 
-Run the full command help whenever you need option details:
+## Word-list attribution
 
-```sh
-kavrix --help
-kavrix <command> --help
-```
+Generated passphrases use **EFF Short Wordlist for Passphrases #1**, from
+https://www.eff.org/files/2016/09/08/eff_short_wordlist_1.txt, licensed under
+CC BY 4.0: https://creativecommons.org/licenses/by/4.0/.
 
-For the complete practical guide, see
-[../../docs/cli-reference.md](../../docs/cli-reference.md) in the source
-repository. For the public product guide, see the repository
-[README](../../README.md).
+## License
 
-## License and attribution
-
-Kavrix is released under the MIT license. The package includes attribution for
-the [EFF Short Wordlist for Passphrases #1](https://www.eff.org/files/2016/09/08/eff_short_wordlist_1.txt)
-under [CC-BY-4.0](https://creativecommons.org/licenses/by/4.0/).
-
-## Zero-knowledge boundary
-
-Kavrix uses a zero-knowledge storage boundary: MongoDB receives encrypted
-credential envelopes and wrapped key metadata, but not plaintext values,
-passphrases, portable keys, or recovery keys.
+MIT

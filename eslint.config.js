@@ -8,7 +8,6 @@ export default tseslint.config(
       '**/dist/**',
       '**/node_modules/**',
       '**/*.d.ts',
-      'apps/api/**',
       'apps/cli/src/catalog.ts',
       'apps/cli/src/cli.ts',
       'apps/cli/src/contracts.ts',
@@ -114,7 +113,6 @@ export default tseslint.config(
           patterns: [
             {
               group: [
-                '@kavrix/api',
                 '@kavrix/client',
                 '@kavrix/clipboard',
                 '@kavrix/crypto',
@@ -135,7 +133,7 @@ export default tseslint.config(
     },
   },
   {
-    files: ['apps/api/src/**/*.{ts,tsx}', 'packages/storage/src/**/*.{ts,tsx}'],
+    files: ['packages/storage/src/**/*.{ts,tsx}'],
     rules: {
       'no-restricted-imports': [
         'error',

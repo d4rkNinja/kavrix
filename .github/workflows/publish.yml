@@ -4,6 +4,12 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to publish, for example v0.1.2
+        required: true
+        type: string
 
 permissions: {}
 
@@ -19,12 +25,43 @@ jobs:
       actions: read
       contents: read
     outputs:
+      archive_integrity: ${{ steps.package.outputs.archive_integrity }}
       archive_name: ${{ steps.package.outputs.archive_name }}
       archive_sha256: ${{ steps.package.outputs.archive_sha256 }}
       artifact_name: ${{ steps.package.outputs.artifact_name }}
       npm_dist_tag: ${{ steps.release.outputs.npm_dist_tag }}
       package_version: ${{ steps.package.outputs.package_version }}
+      release_tag: ${{ steps.release_ref.outputs.release_tag }}
+      tagged_commit: ${{ steps.release_gate.outputs.tagged_commit }}
     steps:
+      - name: Resolve and validate the exact release tag
+        id: release_ref
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_REF: ${{ github.ref }}
+          PUSH_TAG: ${{ github.ref_name }}
+          REQUESTED_TAG: ${{ inputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$EVENT_NAME" in
+            push)
+              release_tag="$PUSH_TAG"
+              ;;
+            workflow_dispatch)
+              test "$EVENT_REF" = 'refs/heads/main'
+              release_tag="$REQUESTED_TAG"
+              ;;
+            *)
+              echo "Unsupported release event: $EVENT_NAME" >&2
+              exit 1
+              ;;
+          esac
+          if [[ ! "$release_tag" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-beta\.(0|[1-9][0-9]*))?$ ]]; then
+            echo 'Release tag must be v<semver> or v<semver>-beta.<number>.' >&2
+            exit 1
+          fi
+          echo "release_tag=$release_tag" >> "$GITHUB_OUTPUT"
       - name: Require the reviewed public repository
         env:
           REPOSITORY_VISIBILITY: ${{ github.event.repository.visibility }}
@@ -33,14 +70,15 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           fetch-depth: 0
-          ref: ${{ github.ref }}
+          ref: refs/tags/${{ steps.release_ref.outputs.release_tag }}
           persist-credentials: false
       - name: Require the tagged commit on main with exact-SHA CI and CodeQL
+        id: release_gate
         env:
           GITHUB_API_URL: ${{ github.api_url }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           GITHUB_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_TAG: ${{ steps.release_ref.outputs.release_tag }}
         shell: bash
         run: |
           set -euo pipefail
@@ -53,6 +91,7 @@ jobs:
           node apps/cli/scripts/require-workflow-runs.js \
             .github/workflows/ci.yml \
             .github/workflows/codeql.yml
+          echo "tagged_commit=$tagged_commit" >> "$GITHUB_OUTPUT"
       # STOP: Do not add signature verification until the product decision names
       # the exact allowed signer fingerprint and rotation/revocation policy.
       - name: Require the public CLI package
@@ -71,7 +110,7 @@ jobs:
       - name: Match the package version, release type, tag, and npm channel
         id: release
         env:
-          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_TAG: ${{ steps.release_ref.outputs.release_tag }}
         shell: bash
         run: |
           set -euo pipefail
@@ -128,7 +167,18 @@ jobs:
           test "${#archives[@]}" -eq 1
           test "${archives[0]}" = "package-artifacts/$archive_name"
           archive_sha256="$(sha256sum "$archive" | awk '{print $1}')"
+          archive_integrity="$(node --input-type=module - "$archive" <<'NODE'
+          import { createHash } from 'node:crypto';
+          import { readFileSync } from 'node:fs';
+
+          const archive = process.argv[2];
+          const digest = createHash('sha512').update(readFileSync(archive)).digest('base64');
+          process.stdout.write(`sha512-${digest}`);
+          NODE
+          )"
           [[ "$archive_sha256" =~ ^[0-9a-f]{64}$ ]]
+          test "${archive_integrity#sha512-}" != "$archive_integrity"
+          echo "archive_integrity=$archive_integrity" >> "$GITHUB_OUTPUT"
           echo "archive=$archive" >> "$GITHUB_OUTPUT"
           echo "archive_name=$archive_name" >> "$GITHUB_OUTPUT"
           echo "archive_sha256=$archive_sha256" >> "$GITHUB_OUTPUT"
@@ -253,12 +303,13 @@ jobs:
           path: package-artifacts
       - name: Validate the sole approved release archive
         env:
+          EXPECTED_ARCHIVE_INTEGRITY: ${{ needs.validate.outputs.archive_integrity }}
           EXPECTED_ARCHIVE_NAME: ${{ needs.validate.outputs.archive_name }}
           EXPECTED_ARCHIVE_SHA256: ${{ needs.validate.outputs.archive_sha256 }}
           EXPECTED_NPM_DIST_TAG: ${{ needs.validate.outputs.npm_dist_tag }}
           EXPECTED_PACKAGE_VERSION: ${{ needs.validate.outputs.package_version }}
           PACKAGE_ARCHIVE: package-artifacts/${{ needs.validate.outputs.archive_name }}
-          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_TAG: ${{ needs.validate.outputs.release_tag }}
           REPOSITORY_VISIBILITY: ${{ github.event.repository.visibility }}
         shell: bash
         run: |
@@ -288,6 +339,16 @@ jobs:
           test -f "$PACKAGE_ARCHIVE"
           actual_sha256="$(sha256sum "$PACKAGE_ARCHIVE" | awk '{print $1}')"
           test "$actual_sha256" = "$EXPECTED_ARCHIVE_SHA256"
+          actual_integrity="$(node --input-type=module - "$PACKAGE_ARCHIVE" <<'NODE'
+          import { createHash } from 'node:crypto';
+          import { readFileSync } from 'node:fs';
+
+          const archive = process.argv[2];
+          const digest = createHash('sha512').update(readFileSync(archive)).digest('base64');
+          process.stdout.write(`sha512-${digest}`);
+          NODE
+          )"
+          test "$actual_integrity" = "$EXPECTED_ARCHIVE_INTEGRITY"
           node --input-type=module - "$PACKAGE_ARCHIVE" "$EXPECTED_PACKAGE_VERSION" <<'NODE'
           import { execFileSync } from 'node:child_process';
           const [archive, expectedVersion] = process.argv.slice(2);
@@ -306,8 +367,10 @@ jobs:
             throw new Error('The downloaded archive manifest violates release policy.');
           }
           NODE
-      - name: Publish the inspected archive through npm OIDC
+      - name: Publish or reconcile the inspected archive through npm OIDC
         env:
+          EXPECTED_ARCHIVE_INTEGRITY: ${{ needs.validate.outputs.archive_integrity }}
+          EXPECTED_PACKAGE_VERSION: ${{ needs.validate.outputs.package_version }}
           NPM_DIST_TAG: ${{ needs.validate.outputs.npm_dist_tag }}
           PACKAGE_ARCHIVE: package-artifacts/${{ needs.validate.outputs.archive_name }}
         shell: bash
@@ -315,11 +378,43 @@ jobs:
           set -euo pipefail
           test -z "${NODE_AUTH_TOKEN:-}"
           test -z "${NPM_TOKEN:-}"
+          registry_integrity() {
+            npm view "kavrix@$EXPECTED_PACKAGE_VERSION" dist.integrity 2>/dev/null || true
+          }
+          published_integrity="$(registry_integrity)"
+          if test -n "$published_integrity"; then
+            if test "$published_integrity" != "$EXPECTED_ARCHIVE_INTEGRITY"; then
+              echo "kavrix@$EXPECTED_PACKAGE_VERSION already exists with different package bytes." >&2
+              exit 1
+            fi
+            echo "kavrix@$EXPECTED_PACKAGE_VERSION already matches the inspected archive."
+            exit 0
+          fi
+
+          publish_status=0
           npm publish "./$PACKAGE_ARCHIVE" \
             --ignore-scripts \
             --access public \
             --tag "$NPM_DIST_TAG" \
-            --provenance
+            --provenance || publish_status=$?
+
+          for attempt in {1..12}; do
+            published_integrity="$(registry_integrity)"
+            if test "$published_integrity" = "$EXPECTED_ARCHIVE_INTEGRITY"; then
+              exit 0
+            fi
+            if test -n "$published_integrity"; then
+              echo "The registry returned different package bytes for kavrix@$EXPECTED_PACKAGE_VERSION." >&2
+              exit 1
+            fi
+            sleep 5
+          done
+          if test "$publish_status" -ne 0; then
+            echo "npm publish failed with status $publish_status and no matching registry version appeared." >&2
+            exit "$publish_status"
+          fi
+          echo "kavrix@$EXPECTED_PACKAGE_VERSION was not visible with the expected integrity after publication." >&2
+          exit 1
   release:
     name: Create GitHub release after npm publication
     needs: [validate, publish]
@@ -330,31 +425,39 @@ jobs:
     steps:
       - name: Verify npm publication before creating the release
         env:
+          EXPECTED_ARCHIVE_INTEGRITY: ${{ needs.validate.outputs.archive_integrity }}
           EXPECTED_PACKAGE_VERSION: ${{ needs.validate.outputs.package_version }}
         shell: bash
         run: |
           set -euo pipefail
           for attempt in {1..12}; do
             published_version="$(npm view "kavrix@$EXPECTED_PACKAGE_VERSION" version 2>/dev/null || true)"
-            if test "$published_version" = "$EXPECTED_PACKAGE_VERSION"; then
+            published_integrity="$(npm view "kavrix@$EXPECTED_PACKAGE_VERSION" dist.integrity 2>/dev/null || true)"
+            if test "$published_version" = "$EXPECTED_PACKAGE_VERSION" && \
+              test "$published_integrity" = "$EXPECTED_ARCHIVE_INTEGRITY"; then
               exit 0
+            fi
+            if test "$published_version" = "$EXPECTED_PACKAGE_VERSION" && test -n "$published_integrity"; then
+              echo "kavrix@$EXPECTED_PACKAGE_VERSION exists with different package bytes." >&2
+              exit 1
             fi
             sleep 5
           done
-          echo "kavrix@$EXPECTED_PACKAGE_VERSION was not visible in the npm registry after publication." >&2
+          echo "kavrix@$EXPECTED_PACKAGE_VERSION was not visible with the expected integrity after publication." >&2
           exit 1
       - name: Create the GitHub release only after npm publication
         env:
           GH_TOKEN: ${{ github.token }}
           EXPECTED_PACKAGE_VERSION: ${{ needs.validate.outputs.package_version }}
+          EXPECTED_TAGGED_COMMIT: ${{ needs.validate.outputs.tagged_commit }}
           NPM_DIST_TAG: ${{ needs.validate.outputs.npm_dist_tag }}
-          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_TAG: ${{ needs.validate.outputs.release_tag }}
         shell: bash
         run: |
           set -euo pipefail
           test "$RELEASE_TAG" = "v$EXPECTED_PACKAGE_VERSION"
           tagged_commit="$(gh api "repos/$GITHUB_REPOSITORY/commits/$RELEASE_TAG" --jq .sha)"
-          test "$tagged_commit" = "$GITHUB_SHA"
+          test "$tagged_commit" = "$EXPECTED_TAGGED_COMMIT"
           if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             echo "Release $RELEASE_TAG already exists for the verified tag; leaving it unchanged."
             exit 0

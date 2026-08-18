@@ -166,7 +166,14 @@ async function main() {
       readme.includes('zero-knowledge'),
       'README must describe the zero-knowledge boundary',
     );
-    assert(readme.includes('eff.org'), 'README must include the EFF attribution link');
+    assert(
+      readme.includes('https://www.eff.org/files/2016/09/08/eff_short_wordlist_1.txt'),
+      'README must include the exact EFF attribution URL',
+    );
+    assert(
+      readme.includes('https://creativecommons.org/licenses/by/4.0/'),
+      'README must include the exact CC BY 4.0 attribution URL',
+    );
 
     const sbom = await readJson(join(packageRoot, 'dist', 'kavrix.cdx.json'));
     const components = Array.isArray(sbom.components) ? sbom.components : [];

@@ -2,7 +2,6 @@
 
 /packages/crypto/ @d4rkNinja
 /packages/keychain/ @d4rkNinja
-/apps/api/ @d4rkNinja
 /SECURITY.md @d4rkNinja
 /docs/cryptography.md @d4rkNinja
 /docs/threat-model.md @d4rkNinja

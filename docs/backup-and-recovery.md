@@ -1,28 +1,34 @@
 # Recovery kits
 
-Kavrix recovery is a protected-file flow for replacing a lost portable key. It
-does not upload a backup archive or expose a plaintext backup code.
+A recovery kit is a passphrase-protected file that can replace a lost portable
+key. It is not a plaintext backup code and is never uploaded by Kavrix.
 
 ## Lifecycle
 
-\`\`\`sh
-kavrix recovery create --vault <id> --key-file <path> --recovery-file <path>
-kavrix recovery verify --recovery-file <path> --key-file <path>
-kavrix recovery status --vault <id>
-kavrix recovery revoke --vault <id> --slot <slot-id>
-kavrix recovery use --vault <id> --key-file <path> --recovery-file <path>
-\`\`\`
+```sh
+kavrix recovery create
+kavrix recovery verify
+kavrix recovery status
+kavrix recovery revoke <slot-id>
+kavrix recovery use
+```
 
-Creation wraps recovery material for one vault and slot in a passphrase-protected
-kit. Verification authenticates the kit without changing MongoDB. Use unwraps
-the root key locally, rotates the vault root key, and persists the updated
-document. Revoked slots are rejected by the current decrypt path.
+Use `kavrix recovery <command> --help` for vault, key-file, and recovery-file
+options. Sensitive values are collected through masked prompts or explicit
+protected input flows.
 
-Keep recovery kits on a separate protected medium from portable-key files. Kavrix
-stores a restrictive sidecar revision anchor next to the active key file and
-authenticates it with the vault root key. A lower revision or same-revision
-metadata fork is rejected before credentials are returned. Recovery-only
-operations require that same anchor, so losing both the key file and its anchor
-is an intentional manual-recovery condition. Payload AAD still authenticates
-the complete document metadata and revision; root rotation cannot erase old
-ciphertext snapshots.
+Creation adds an authenticated recovery slot to the encrypted vault document and
+writes the matching passphrase-protected recovery file. Verification authenticates
+the file without changing MongoDB. Revocation changes the authenticated slot
+state and refuses to remove the last active recovery path. Use authenticates the
+kit, requires the trusted revision anchor, creates a replacement protected key
+file, rotates the vault root key, and persists a new document revision.
+
+Keep recovery kits on media separate from the active key file and database
+backups. Anyone with the recovery file and its passphrase can recover the vault.
+If every valid key file and recovery kit is lost, Kavrix cannot decrypt the
+credentials.
+
+Recovery rotation protects the current document; it cannot erase copies of old
+encrypted snapshots. Protect MongoDB backups and define an appropriate retention
+policy.

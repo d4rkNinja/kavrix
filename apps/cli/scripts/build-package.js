@@ -553,7 +553,7 @@ function validateSbom(sbom, packageManifest, dependencies, artifacts) {
 }
 
 function npmPurl(name, version) {
-  return `pkg:npm/${encodeURIComponent(name).replace('%40', '@')}@${version}`;
+  return `pkg:npm/${encodeURIComponent(name).replaceAll('%40', '@')}@${version}`;
 }
 
 function deterministicUuid(value) {

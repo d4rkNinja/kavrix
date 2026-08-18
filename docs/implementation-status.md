@@ -2,73 +2,62 @@
 
 ## Supported product
 
-The supported product is the \`kavrix\` CLI in \`apps/cli\`. It connects directly
-to MongoDB and persists one authenticated encrypted local-vault document per
-vault. The public npm artifact contains only compiled CLI output, declarations,
-the SBOM, README, and license metadata.
+The supported product is the `kavrix` CLI in `apps/cli`. It connects directly to
+MongoDB and persists one authenticated encrypted local-vault version 2 document
+per vault. No Kavrix API server, sync daemon, SQLite cache, or interactive Ink
+TUI is required or shipped.
 
-The active workspace packages are:
+Active release workspaces:
 
-- \`@kavrix/schemas\`: canonical local-vault and encrypted-envelope schemas.
-- \`@kavrix/crypto\`: reviewed key derivation, wrapping, and AEAD operations.
-- \`@kavrix/key-files\`: protected portable-key and recovery-kit file handling.
-- \`@kavrix/storage\`: direct MongoDB adapter with fail-closed URI policy.
-- \`kavrix\`: command composition and masked interactive input.
+- `@kavrix/schemas`: canonical local-vault and envelope schemas.
+- `@kavrix/crypto`: key derivation, wrapping, authenticated encryption, and secure-byte helpers.
+- `@kavrix/key-files`: protected portable-key, recovery-kit, and revision-anchor files.
+- `@kavrix/storage`: direct MongoDB adapter and fail-closed URI/TLS policy.
+- `kavrix`: CLI composition, masked input, sanitized rendering, and npm package.
 
-The old HTTP API, sync/client graph, SQLite store, TUI, and self-hosting commands
-are not part of the supported build or npm artifact.
+## Implemented command surface
 
-Only local-vault version 2 documents with authenticated metadata binding are
-accepted. Older local-vault documents are rejected rather than silently
-decrypted without the binding. No automatic migration is provided; an old
-release must be used offline to unlock and re-enter values into a newly
-initialized v2 vault.
+- database ping and vault initialization;
+- encrypted put/get/list/view/search/stats operations;
+- explicit override and reveal controls;
+- has, rename, remove, vault list, and vault status;
+- protected key-file status, verify, copy, replicate, assign, and rewrap;
+- recovery-kit create, verify, status, revoke, and use;
+- authenticated `doctor` validation and fail-closed `doctor health` repair.
 
-## Command coverage
+Run `kavrix <command> --help` for exact options. Planned or retired commands must
+not be documented as available.
 
-The CLI supports vault initialization, database ping, encrypted put/get/list
-operations, guarded view/search/stats output, remove/has/rename/doctor checks
-(including fail-closed \`doctor health\` with bounded transient retry and
-explicit revision-anchor initialization), vault selection/status, protected key
-lifecycle operations, and recovery-kit create/verify/revoke/status/use flows.
+## Security properties
 
-Recovery-kit use unwraps the root key and rotates the vault root key before
-persisting the updated document. A revoked slot is rejected by the local
-decrypt path. Recovery files must remain protected and separate from the
-portable key file.
+- plaintext values and unlock keys do not cross the MongoDB storage boundary;
+- payload AAD binds vault identity, versions, revision, and a recomputed digest of
+  portable/recovery-slot metadata;
+- a root-key-authenticated local anchor rejects lower revisions and same-revision
+  forks before plaintext is returned;
+- remote MongoDB requires explicit validated TLS and insecure TLS flags are rejected;
+- protected files use bounded formats, atomic creation, and permission checks;
+- terminal output is sanitized and values are masked unless reveal is explicit.
 
-## Release validation
+## Release gates
 
-The release gate is:
+A release requires formatting, lint, strict typecheck, unit tests, build,
+packed-install smoke, package allowlist inspection, SBOM verification, dependency
+audit, exact-SHA CI and CodeQL, and npm OIDC provenance. A real MongoDB integration
+run requires a disposable replica-set URI. Windows ACL evidence depends on the
+actual runner account and filesystem.
 
-1. \`pnpm install --frozen-lockfile\`
-2. \`pnpm build\`
-3. \`pnpm format:check\`
-4. \`pnpm lint\`
-5. \`pnpm typecheck\`
-6. focused Vitest suites
-7. \`pnpm --filter kavrix package:smoke\`
-8. \`pnpm audit --audit-level high\`
+The verification result for a release belongs in its CI logs and GitHub release,
+not as a permanently stale test count in this document.
 
-A real MongoDB replica-set integration test runs only when
-\`KAVRIX_MONGODB_URI\` is provided. No local MongoDB daemon is bundled or
-started by Kavrix. Windows protected-file ACL behavior depends on the host
-account and filesystem policy and must be verified on a supported Windows
-runner.
+## Known limits
 
-The latest local verification passed formatting, lint, strict typecheck, build,
-24 CLI test files (264 tests), the key-files suite (2 files, 9 tests), and the npm pack allowlist. Packed-install smoke and
-the npm advisory audit remain unverified here because registry access returns
-EACCES; live MongoDB and supported Windows ACL evidence are also unavailable.
+MongoDB can observe vault IDs, revisions, timestamps, ciphertext sizes, and access
+patterns. A database operator can delete or withhold data. The local revision
+anchor is fail-closed but is not remote tamper-proof storage; accepting a missing
+anchor is an explicit operator trust decision.
 
-## Known security limits
-
-MongoDB metadata such as vault identifiers, revisions, timestamps, and envelope
-sizes remains visible. A local revision anchor now blocks lower-revision and
-same-revision metadata-fork replay for the active key-file path and recovery
-operations. It is local state, not tamper-proof remote storage: deleting the
-anchor is fail-closed unless an operator explicitly accepts the current state
-with \`doctor health --accept-current\`.
-
-No release process, documentation, or command accepts plaintext unlock material
-as a positional argument or writes it to logs.
+Kavrix does not protect an unlocked host from administrators, same-user malware,
+keyloggers, screen/terminal/clipboard capture, process-memory inspection, swap, or
+crash dumps. JavaScript cannot guarantee complete zeroization. Losing all valid
+key files and recovery kits is unrecoverable by design.

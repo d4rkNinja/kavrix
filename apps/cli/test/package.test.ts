@@ -52,7 +52,11 @@ describe('npm package contract', () => {
     ).toBe(true);
     expect(existsSync(join(cliRoot, 'README.md'))).toBe(true);
     expect(existsSync(join(cliRoot, 'LICENSE'))).toBe(true);
-    expect(readFileSync(join(cliRoot, 'README.md'), 'utf8')).toContain('eff.org');
+    const readme = readFileSync(join(cliRoot, 'README.md'), 'utf8');
+    expect(readme).toContain(
+      'https://www.eff.org/files/2016/09/08/eff_short_wordlist_1.txt',
+    );
+    expect(readme).toContain('https://creativecommons.org/licenses/by/4.0/');
   });
 
   it('records the bundled and runtime dependency inventory in the SBOM', () => {

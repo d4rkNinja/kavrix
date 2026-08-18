@@ -1,75 +1,105 @@
 # npm release
 
+Kavrix publishes one platform-independent JavaScript package through npm trusted
+publishing. Do not publish from a workstation and do not configure a long-lived
+npm token.
+
 ## Artifact contract
 
-The public package is \`kavrix\`. Its npm artifact contains:
+The `kavrix` archive may contain only:
 
-- \`dist/**/*.js\`
-- \`dist/**/*.d.ts\`
-- \`dist/*.cdx.json\`
-- \`README.md\`
-- \`LICENSE\`
+- `dist/**/*.js`
+- `dist/**/*.d.ts`
+- `dist/*.cdx.json`
+- `README.md`
+- `LICENSE`
+- npm-generated `package.json`
 
-The compiled bundle is an ESM Node.js CLI with a \`kavrix\` bin entry. MongoDB
-\`7.5.0\` is the only runtime dependency. Workspace packages, TypeScript source,
-tests, local state, coverage, and build metadata are not publishable artifacts.
-
-\`apps/cli/scripts/build-package.js\` emits the bundle, a CycloneDX 1.6 SBOM, and
-artifact hashes. The SBOM records Commander, Zod, MongoDB, its resolved runtime
-dependency graph (including \`@mongodb-js/saslprep\`, \`@types/webidl-conversions\`,
-\`@types/whatwg-url\`, \`bson\`, \`memory-pager\`,
-\`mongodb-connection-string-url\`, \`punycode\`, \`sparse-bitfield\`, \`tr46\`,
-\`webidl-conversions\`, and \`whatwg-url\`), libsodium-wrappers, libsodium, and
-the EFF word-list attribution.
+MongoDB `7.5.0` is the only external runtime dependency. The compiled bundle
+contains the CLI plus reviewed bundled libraries. The generated CycloneDX 1.6
+SBOM records bundled components and the complete lockfile-resolved MongoDB
+runtime graph. Workspace protocols, TypeScript source, tests, local state,
+coverage, credentials, and plaintext canaries are forbidden.
 
 ## Local preflight
 
 Run from the repository root:
 
-\`\`\`sh
+```sh
 pnpm install --frozen-lockfile
 pnpm verify
 pnpm --filter kavrix package:smoke
 pnpm --filter kavrix pack:check
 pnpm audit --audit-level high
-\`\`\`
+```
 
-\`package:smoke\` installs the exact archive into a temporary directory and
-executes the installed bundle's version and help commands. It rejects workspace
-references, plaintext canaries, undeclared files, missing attribution, and
-unreviewed SBOM dependencies.
+`package:smoke` builds the exact archive, installs it in a temporary directory,
+checks the allowlist and SBOM, rejects plaintext canaries/private paths, and
+executes the installed version/help commands.
 
-## CI and publication policy
+## Release commit
 
-CI verifies the build on the supported Node and operating-system matrix, runs
-focused tests, checks the packed artifact, and runs the dependency audit. A
-MongoDB replica-set job exercises the direct storage adapter when the runner
-provides the configured integration URI.
+1. Set `apps/cli/package.json` to the intended unused npm version.
+2. Update user documentation and release notes.
+3. Run the full local preflight.
+4. Commit and push the reviewed change to `main`.
+5. Wait for CI and CodeQL to pass for the exact commit.
 
-Publication is intentionally separate from local verification and is tag-driven.
-The reviewed workflow requires:
+The release workflow independently requires those exact-SHA checks. It will not
+publish a tag whose commit has failing or missing CI/CodeQL evidence.
 
-- a public repository and a pushed tag exactly matching \`v<package-version>\`;
-- successful exact-SHA CI and CodeQL runs for that tagged commit;
-- no long-lived npm token;
-- npm trusted publishing/OIDC with the \`npm\` environment and public registry;
-- one inspected archive whose SHA-256 is checked again before \`npm publish\`;
-- the npm registry to confirm the version before GitHub creates the release page.
+## Automatic publication
 
-Create a release by pushing the version tag after the version commit is on \`main\`:
+Create and push a tag that exactly matches the package version:
 
-\`\`\`sh
+```sh
 git tag v<package-version>
 git push origin v<package-version>
-\`\`\`
+```
 
-Do not create a GitHub release manually first. The workflow publishes and verifies
-npm before creating the GitHub release, so a failed publication cannot leave a
-successful-looking release page.
+A `v*` tag starts `.github/workflows/publish.yml`. The workflow:
 
-## Release blockers
+1. proves the tag is contained in `main` and matches `kavrix`'s version;
+2. requires successful exact-SHA CI and CodeQL runs;
+3. installs with the frozen lockfile and reruns verification/audit;
+4. creates and inspects one release archive;
+5. passes that immutable archive to the protected `npm` environment;
+6. publishes through npm OIDC with provenance;
+7. reconciles registry SHA-512 integrity with the inspected archive; and
+8. creates the GitHub release only after npm confirms the version.
 
-The package is not a release claim until npm ownership, OIDC trusted-publishing
-configuration, and signed release policy are reviewed by the project owner. A
-live MongoDB integration run and supported Windows ACL run are also required
-before claiming cross-platform production readiness.
+Stable versions publish to `latest`; `-beta.N` versions publish to `beta`.
+
+## Safe retry
+
+If publication needs to be retried for an existing tag, dispatch the workflow
+from `main` with that exact tag:
+
+```sh
+gh workflow run publish.yml \
+  --repo d4rkNinja/kavrix \
+  --ref main \
+  -f tag=v<package-version>
+```
+
+The retry is idempotent. If npm already contains the version, the workflow
+requires its immutable integrity to match before continuing. Never delete and
+recreate a published npm version.
+
+## Required external configuration
+
+- npm trusted publisher: repository `d4rkNinja/kavrix`, workflow `publish.yml`,
+  environment `npm`, permission to publish.
+- GitHub `npm` environment: deployment policy restricted to `main` and `v*` tags.
+- Repository rulesets: protect `main` and release-tag creation.
+- npm account: 2FA enabled; no token-based publication secret in GitHub.
+
+For maximum security, require an environment reviewer and disallow administrator
+bypass. This intentionally trades zero-click releases for a human approval at
+the final publish boundary.
+
+## Evidence limits
+
+A successful package pipeline proves source/build/package policy for its runner.
+It does not prove a user's MongoDB TLS configuration, backup policy, Windows ACL
+behavior on every filesystem, or resistance to a compromised unlocked host.
