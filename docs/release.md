@@ -46,17 +46,26 @@ focused tests, checks the packed artifact, and runs the dependency audit. A
 MongoDB replica-set job exercises the direct storage adapter when the runner
 provides the configured integration URI.
 
-Publication is intentionally separate from local verification. The reviewed
-workflow requires:
+Publication is intentionally separate from local verification and is tag-driven.
+The reviewed workflow requires:
 
-- a public repository and a release tag exactly matching \`v<package-version>\`;
-- successful exact-SHA CI and CodeQL runs;
+- a public repository and a pushed tag exactly matching \`v<package-version>\`;
+- successful exact-SHA CI and CodeQL runs for that tagged commit;
 - no long-lived npm token;
 - npm trusted publishing/OIDC with the \`npm\` environment and public registry;
-- one inspected archive whose SHA-256 is checked again before \`npm publish\`.
+- one inspected archive whose SHA-256 is checked again before \`npm publish\`;
+- the npm registry to confirm the version before GitHub creates the release page.
 
-Do not publish, tag, or configure external npm credentials from a local
-development session without explicit authorization.
+Create a release by pushing the version tag after the version commit is on \`main\`:
+
+\`\`\`sh
+git tag v<package-version>
+git push origin v<package-version>
+\`\`\`
+
+Do not create a GitHub release manually first. The workflow publishes and verifies
+npm before creating the GitHub release, so a failed publication cannot leave a
+successful-looking release page.
 
 ## Release blockers
 
