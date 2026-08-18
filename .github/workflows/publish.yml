@@ -163,29 +163,56 @@ jobs:
             'zero-knowledge'; do
             grep --fixed-strings "$attribution" "$readme" >/dev/null
           done
-          for sbom_marker in \
-            'pkg:npm/commander@15.0.0' \
-            'pkg:npm/zod@4.4.3' \
-            'pkg:npm/mongodb@7.5.0' \
-            'pkg:npm/@mongodb-js/saslprep@1.4.13' \
-            'pkg:npm/@types/webidl-conversions@7.0.3' \
-            'pkg:npm/@types/whatwg-url@13.0.0' \
-            'pkg:npm/bson@7.3.1' \
-            'pkg:npm/memory-pager@1.5.0' \
-            'pkg:npm/mongodb-connection-string-url@7.0.2' \
-            'pkg:npm/punycode@2.3.1' \
-            'pkg:npm/sparse-bitfield@3.0.3' \
-            'pkg:npm/tr46@5.1.1' \
-            'pkg:npm/webidl-conversions@7.0.0' \
-            'pkg:npm/whatwg-url@14.2.0' \
-            'pkg:npm/libsodium-wrappers@0.8.4' \
-            'pkg:npm/libsodium@0.8.4' \
-            'urn:kavrix:data:eff-short-wordlist-for-passphrases-1' \
-            'CC-BY-4.0' \
-            'kavrix:source-sha256' \
-            '8f5ca830b8bffb6fe39c9736c024a00a6a6411adb3f83a9be8bfeeb6e067ae69'; do
-            grep --fixed-strings "$sbom_marker" "$sbom" >/dev/null
-          done
+          node --input-type=module - "$sbom" <<'NODE'
+          import fs from 'node:fs';
+
+          const sbomPath = process.argv[2];
+          const sbomText = fs.readFileSync(sbomPath, 'utf8');
+          const document = JSON.parse(sbomText);
+          const components = Array.isArray(document.components) ? document.components : [];
+          if (components.length === 0) {
+            throw new Error('The release SBOM has no components.');
+          }
+
+          const purls = new Set(
+            components
+              .map((component) => component.purl)
+              .filter((purl) => typeof purl === 'string')
+              .map((purl) => decodeURIComponent(purl)),
+          );
+          for (const purl of [
+            'pkg:npm/commander@15.0.0',
+            'pkg:npm/zod@4.4.3',
+            'pkg:npm/mongodb@7.5.0',
+            'pkg:npm/@mongodb-js/saslprep@1.4.13',
+            'pkg:npm/@types/webidl-conversions@7.0.3',
+            'pkg:npm/@types/whatwg-url@13.0.0',
+            'pkg:npm/bson@7.3.1',
+            'pkg:npm/memory-pager@1.5.0',
+            'pkg:npm/mongodb-connection-string-url@7.0.2',
+            'pkg:npm/punycode@2.3.1',
+            'pkg:npm/sparse-bitfield@3.0.3',
+            'pkg:npm/tr46@5.1.1',
+            'pkg:npm/webidl-conversions@7.0.0',
+            'pkg:npm/whatwg-url@14.2.0',
+            'pkg:npm/libsodium-wrappers@0.8.4',
+            'pkg:npm/libsodium@0.8.4',
+          ]) {
+            if (!purls.has(purl)) {
+              throw new Error(`The release SBOM is missing ${purl}.`);
+            }
+          }
+          for (const marker of [
+            'urn:kavrix:data:eff-short-wordlist-for-passphrases-1',
+            'CC-BY-4.0',
+            'kavrix:source-sha256',
+            '8f5ca830b8bffb6fe39c9736c024a00a6a6411adb3f83a9be8bfeeb6e067ae69',
+          ]) {
+            if (!sbomText.includes(marker)) {
+              throw new Error(`The release SBOM is missing ${marker}.`);
+            }
+          }
+          NODE
           if grep --recursive --binary-files=text --extended-regexp \
             'workspace:|secret-password-canary|secret-note-canary|runtime-vault-secret-canary|KAVRIX-BACKUP-PLAINTEXT-CANARY|plaintext-storage-canary|unique-plaintext-canary-7ac19783|canary-plaintext-value' \
             "$inspection/package"; then
