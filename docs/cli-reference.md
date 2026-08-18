@@ -1,62 +1,251 @@
-# CLI reference
+# Kavrix command guide
 
-Kavrix is a direct-MongoDB local CLI. Run \`kavrix --help\` or
-\`kavrix <command> --help\` for the authoritative option list.
+This guide explains the commands in the order a user normally needs them.
+`kavrix --help` and `kavrix <command> --help%% remain the
+authoritative option lists for the installed version.
 
-## Vault and database
+## 1. Connect to MongoDB
 
-- \`kavrix init\`: create a vault and a protected portable key file.
-- \`kavrix db ping\`: verify the configured MongoDB connection without unlocking a vault.
-- \`kavrix vault list\`: list vault identifiers without revealing values.
-- \`kavrix vault status\`: show non-secret vault metadata and key-slot state.
+Kavrix talks to MongoDB directly. It does not start a server and does not write
+a settings file containing your database URI or unlock material.
 
-## Encrypted credentials
+```sh
+kavrix db ping --database kavrix_local
+```
 
-- \`kavrix put <name>\`: encrypt and store a value; existing names require \`--overwrite\`.
-- \`kavrix get <name>\`: read a value; plaintext output requires the explicit \`--reveal\` guard.
-- \`kavrix list\`: list names and metadata without values.
-- \`kavrix view <name>\`: render one guarded credential view.
-- \`kavrix search <query>\`: search names and safe metadata without printing values.
-- \`kavrix stats\`: show counts and non-secret size/revision statistics.
-- \`kavrix remove <name>\`: delete a credential; use the command's confirmation guard.
-- \`kavrix has <name>\`: check existence without revealing its value.
-- \`kavrix rename <from> <to>\`: rename an encrypted record without reprinting it.
-- \`kavrix doctor\`: decrypt and validate the local vault without printing values.
-- \`kavrix doctor health\`: run fail-closed checks for the Mongo connection, vault schema/AAD,
-  protected portable key, encrypted payload, and recovery slots. It retries a transient Mongo
-  connection once and reports that retry as \`autoHealed\`; it never regenerates keys, rewrites
-  ciphertext, bypasses rollback protection, or guesses how to repair cryptographic corruption.
-  Missing keys, metadata tampering, replay/rollback, invalid ciphertext, and unavailable MongoDB
-  are reported under \`manualRecoveryRequired\`. A missing trusted local revision anchor is
-  never initialized implicitly; use \`--accept-current\` only after independently verifying the
-  current database snapshot.
+The URI is requested through protected input. For controlled automation, use
+`--database-url-stdin` and provide stdin through a channel that is
+protected by your process supervisor. Do not put a URI containing credentials
+in shell history or command arguments.
 
-## Key files
+Common database options:
 
-- \`kavrix key status\`: show protected key-file metadata.
-- \`kavrix key verify\`: cryptographically verify a key file.
-- \`kavrix key copy\`, \`key replicate\`, \`key assign\`: create another protected key file with the same binding.
-- \`kavrix key rewrap\`: replace a key-file passphrase without changing its vault binding.
+| Option                 | Meaning                                        |
+| ---------------------- | ---------------------------------------------- |
+| `--database-url-stdin` | Read the MongoDB URI from stdin                |
+| `--database <name>`    | Database name when the URI does not select one |
+| `--collection <name>`  | Vault collection name                          |
+| `--vault <id>`         | Opaque vault identifier                        |
 
-Key-file copies are not independently revocable. Keep copies protected and
-separate from the database.
+Use TLS with certificate and hostname verification for remote MongoDB
+deployments. Encryption at rest does not replace transport security.
 
-## Recovery kits
+## 2. Create a vault
 
-- \`kavrix recovery create\`: create a passphrase-protected recovery kit for an active vault slot.
-- \`kavrix recovery verify\`: validate a recovery kit and the trusted local anchor without changing the vault.
-- \`kavrix recovery status\`: list non-secret recovery-slot state.
-- \`kavrix recovery revoke\`: revoke a slot in the current local document.
-- \`kavrix recovery use\`: unlock with a recovery kit and trusted local anchor, then rotate the root key.
+```sh
+kavrix init --database kavrix_local --key-file ./kavrix.key
+```
 
-Recovery kits contain wrapped key material, not plaintext backup codes. Payload
-AAD rejects partial metadata tampering, and the trusted local revision anchor
-rejects lower-revision or same-revision forked snapshots. Recovery-only commands
-fail closed when that anchor is missing.
+Initialization creates the encrypted vault, a protected portable key file, and
+the initial unlock slot. The key-file passphrase is requested through a masked
+prompt or `--passphrase-stdin`. Passphrases must contain at least 16
+UTF-8 bytes.
 
-## Input and output rules
+The key file is the first unlock method. Do not store it in source control,
+inside a public cloud-sync folder, or beside every database backup.
 
-Secrets are accepted through masked prompts, protected files, or explicit stdin
-frames. They are not accepted as positional arguments, environment variables,
-settings files, or unguarded output. Terminal output is sanitized and masks
-values by default.
+## 3. Store and read credentials
+
+### Add or replace a value
+
+```sh
+kavrix put production/api-token \
+  --database kavrix_local \
+  --key-file ./kavrix.key
+```
+
+Kavrix prompts for the value without echoing it. Existing names are protected
+from accidental replacement; add `--overwrite` only when replacement
+is intentional. `--value-stdin` is available for controlled
+automation.
+
+### Read a value
+
+```sh
+kavrix get production/api-token \
+  --database kavrix_local \
+  --key-file ./kavrix.key
+```
+
+The default output is masked. `--reveal` explicitly writes plaintext
+to stdout:
+
+```sh
+kavrix get production/api-token --reveal
+```
+
+Use `--reveal` only in a trusted terminal. Do not redirect it to a
+file, log, shell history, or an untrusted child process.
+
+### Browse without revealing values
+
+| Need                                | Command                   |
+| ----------------------------------- | ------------------------- |
+| List names                          | `kavrix list`             |
+| Dashboard                           | `kavrix view`             |
+| One credential card                 | `kavrix view <name>`      |
+| Search names                        | `kavrix search <pattern>` |
+| Counts and size/revision statistics | `kavrix stats`            |
+| Existence check                     | `kavrix has <name>`       |
+
+`view`, `search`, and `stats` never need to print
+credential values. `view` supports `--json` for masked
+machine-readable output; `search` and `stats%% also support
+`--json`.
+
+### Change or remove a record
+
+```sh
+kavrix rename production/api-token production/service-token
+kavrix remove production/service-token
+```
+
+Renaming keeps the encrypted value and changes only the record name. Removal
+deletes the selected credential through the vault mutation path. Read the
+confirmation prompt and stop if the selected name is not the one you intended.
+
+## 4. Inspect vaults
+
+```sh
+kavrix vault list
+kavrix vault status --vault default
+```
+
+These commands show identifiers and non-secret metadata. They do not unlock or
+print credential values.
+
+## 5. Key-file lifecycle
+
+All key-file commands accept `--key-file`; copy operations also
+accept `--output-key-file` or `--destination`.
+
+| Goal                         | Command                                      |
+| ---------------------------- | -------------------------------------------- |
+| Show safe metadata           | `kavrix key status`                          |
+| Verify cryptographic binding | `kavrix key verify`                          |
+| Create a protected copy      | `kavrix key copy`                            |
+| Explicit copy aliases        | `kavrix key replicate` / `kavrix key assign` |
+| Replace the file passphrase  | `kavrix key rewrap`                          |
+
+Copy, replicate, and assign create another protected file for the same vault.
+They do not create independently revocable identities. Protect each copy with a
+different physical or administrative location. Existing destination files are
+not replaced unless `--overwrite` is explicit.
+
+## 6. Recovery-kit lifecycle
+
+### Create and verify
+
+```sh
+kavrix recovery create \
+  --vault default \
+  --key-file ./kavrix.key \
+  --recovery-file ./kavrix.recovery.kit
+
+kavrix recovery verify \
+  --vault default \
+  --key-file ./kavrix.key \
+  --recovery-file ./kavrix.recovery.kit
+```
+
+The recovery kit is a protected encrypted file. Its passphrase is separate from
+the portable key-file passphrase. Store the kit separately and verify it before
+an outage.
+
+### Inspect, revoke, and use
+
+| Goal                                  | Command                           |
+| ------------------------------------- | --------------------------------- |
+| Show non-secret slot counts and state | `kavrix recovery status`          |
+| Revoke one slot                       | `kavrix recovery revoke <slotId>` |
+| Create replacement key material       | `kavrix recovery use`             |
+
+Recovery use requires the current trusted local revision anchor. It verifies
+the recovery kit and current snapshot before creating a new protected key file.
+It does not guess a missing key, overwrite an existing destination by default,
+or bypass rollback checks.
+
+## 7. Validate the vault
+
+### Normal validation
+
+```sh
+kavrix doctor
+```
+
+`doctor` unlocks and validates the local vault without printing
+credential values.
+
+### Health and safe repair
+
+```sh
+kavrix doctor health
+```
+
+Health checks cover:
+
+| Check                 | What it protects                                  |
+| --------------------- | ------------------------------------------------- |
+| MongoDB connection    | Availability and one bounded transient retry      |
+| Vault schema          | Canonical shape and supported versions            |
+| Key file              | File safety, binding, and cryptographic integrity |
+| Encrypted payload     | AEAD authentication and associated data           |
+| Recovery slots        | Valid lifecycle state and metadata integrity      |
+| Local revision anchor | Detection of rollback and same-revision forks     |
+
+The command may retry a transient MongoDB connection and report that safe
+transient action as `autoHealed`. It never regenerates a key, rewrites
+ciphertext, disables authentication, or silently accepts a lower revision.
+
+`manualRecoveryRequired` means an operator must investigate. Confirm
+the URI, vault, key file, and database snapshot; compare with a known-good
+backup; then use a verified recovery kit if appropriate.
+`--accept-current` is only for initializing a missing local anchor
+after independent verification of the current database snapshot.
+
+## 8. Shared safety options
+
+| Option                 | Where it applies                            | Safety purpose                         |
+| ---------------------- | ------------------------------------------- | -------------------------------------- |
+| `--key-file <path>`    | Vault commands                              | Select the protected portable key file |
+| `--passphrase-stdin`   | Key-file commands                           | Read a passphrase without an argument  |
+| `--database-url-stdin` | Database commands                           | Read a URI without shell history       |
+| `--value-stdin`        | `put`                                       | Read a value without an argument       |
+| `--overwrite`          | Put, copy, recovery output                  | Opt into replacing an existing object  |
+| `--json`               | View, search, stats, recovery verify/status | Masked machine-readable output         |
+| `--reveal`             | Get and named view                          | Explicit plaintext output guard        |
+
+Kavrix rejects ordinary secret-bearing arguments and does not store secrets in
+environment variables or a default settings file.
+
+## 9. Security model in user terms
+
+- Credential values are authenticated-encrypted before MongoDB writes.
+- MongoDB stores opaque encrypted envelopes and wrapped key-slot metadata, not
+  plaintext credentials or unlock material.
+- The key hierarchy lets unlock methods change without re-encrypting every credential.
+- Protected files are checked for canonical format, vault binding, integrity,
+  and user-only filesystem permissions.
+- Tampering, malformed input, wrong bindings, missing keys, and unsafe replay
+  fail closed rather than returning partial plaintext.
+- The local unlocked process remains trusted. A compromised user account,
+  terminal, clipboard, backup, swap, crash dump, or host can still expose data.
+- MongoDB can observe operational metadata such as opaque relationships,
+  ciphertext sizes, versions, timestamps, and traffic patterns.
+- Losing all authorized key files and recovery kits is permanent by design.
+
+The implementation uses versioned authenticated encryption with libsodium
+XChaCha20-Poly1305 and Argon2id-based passphrase derivation. See
+[cryptography.md](cryptography.md) for the technical contract and its stated
+limitations.
+
+## 10. Support checklist
+
+When a command fails:
+
+1. Run the same command with `--help` and confirm the selected paths and vault.
+2. Run `kavrix db ping` to separate database availability from unlock problems.
+3. Run `kavrix key verify` for the selected key file.
+4. Run `kavrix doctor health` and follow `manualRecoveryRequired` guidance.
+5. Do not delete the only key file, revoke the last unlock method, or accept a
+   current snapshot without an independent backup comparison.
