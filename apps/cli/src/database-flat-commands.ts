@@ -1,0 +1,158 @@
+import { zeroize } from '@kavrix/crypto';
+import { profileIdSchema, vaultIdSchema, type VaultId } from '@kavrix/schemas';
+import {
+  FileEncryptedDatabaseStore,
+  MongoEncryptedDatabaseStore,
+} from '@kavrix/storage';
+
+import { DatabaseSession } from './database-session.js';
+import {
+  DatastoreProfileRegistry,
+  type DatastoreProfile,
+} from './datastore-profiles.js';
+import { LocalSecretInput, type LocalSecretKind } from './local-secrets.js';
+
+const LEGACY_DEFAULT_VAULT_ID = 'default';
+
+export class DatabaseFlatCommandError extends Error {
+  public constructor(message: string) {
+    super(message);
+    this.name = 'DatabaseFlatCommandError';
+  }
+}
+
+export type DatabaseFlatCommandOptions = Readonly<{
+  profile?: string;
+  profileConfigDir?: string;
+  vault: string;
+  databaseUrlStdin?: boolean;
+  passphraseStdin?: boolean;
+  valueStdin?: boolean;
+}>;
+
+export type DatabaseFlatSecrets = Readonly<{
+  databaseUrl?: string;
+  passphrase: string;
+  extras: readonly string[];
+}>;
+
+export async function usesDatabaseContainer(
+  options: DatabaseFlatCommandOptions,
+): Promise<boolean> {
+  return (await selectedDatabaseProfile(options)) !== null;
+}
+
+export async function readDatabaseFlatSecrets(
+  options: DatabaseFlatCommandOptions,
+  extras: readonly LocalSecretKind[],
+): Promise<DatabaseFlatSecrets> {
+  const profile = await selectedDatabaseProfile(options);
+  if (profile === null)
+    throw new DatabaseFlatCommandError('A database profile is required.');
+  if (
+    options.vault === LEGACY_DEFAULT_VAULT_ID ||
+    !options.vault.startsWith('vault_')
+  ) {
+    throw new DatabaseFlatCommandError(
+      'Select one database vault explicitly with --vault before reading secrets.',
+    );
+  }
+  const kinds: LocalSecretKind[] = [
+    ...(profile.datastore === 'mongodb' ? (['database-url'] as const) : []),
+    'passphrase',
+    ...extras,
+  ];
+  const flags = kinds.map((kind) => {
+    if (kind === 'database-url') return options.databaseUrlStdin === true;
+    if (kind === 'passphrase') return options.passphraseStdin === true;
+    return options.valueStdin === true;
+  });
+  const anyStdin = flags.some(Boolean);
+  if (anyStdin && !flags.every(Boolean)) {
+    throw new DatabaseFlatCommandError(
+      'Use stdin flags for every secret in a command, or use masked prompts for all of them.',
+    );
+  }
+  const values = await new LocalSecretInput(process.stdin, process.stderr).read(
+    kinds,
+    anyStdin,
+  );
+  const offset = profile.datastore === 'mongodb' ? 1 : 0;
+  const passphrase = values[offset];
+  if (passphrase === undefined) {
+    throw new DatabaseFlatCommandError('Secret input is incomplete.');
+  }
+  return {
+    ...(profile.datastore === 'mongodb' ? { databaseUrl: required(values[0]) } : {}),
+    passphrase,
+    extras: values.slice(offset + 1),
+  };
+}
+
+export async function withDatabaseFlatVault(
+  options: DatabaseFlatCommandOptions,
+  secrets: DatabaseFlatSecrets,
+  operation: (
+    session: DatabaseSession,
+    vaultId: VaultId,
+    profile: DatastoreProfile,
+  ) => Promise<void>,
+): Promise<void> {
+  const profile = await selectedDatabaseProfile(options);
+  if (profile?.databaseId === undefined) {
+    throw new DatabaseFlatCommandError('A database profile is required.');
+  }
+  const vaultId = vaultIdSchema.parse(options.vault);
+  const store =
+    profile.datastore === 'file'
+      ? await FileEncryptedDatabaseStore.open(profile.dataFile)
+      : await MongoEncryptedDatabaseStore.connect(
+          required(secrets.databaseUrl),
+          profile.database,
+          {
+            databaseCollectionName: profile.databaseCollection,
+            vaultCollectionName: profile.vaultCollection,
+          },
+        );
+  let session: DatabaseSession | undefined;
+  const passphrase = Buffer.from(secrets.passphrase, 'utf8');
+  try {
+    session = await DatabaseSession.open({
+      store,
+      keyFile: profile.keyFile,
+      passphrase,
+      expectedDatabaseId: profile.databaseId,
+    });
+    await operation(session, vaultId, profile);
+  } finally {
+    zeroize(passphrase);
+    if (session !== undefined) await session.close();
+    else await store.close().catch(() => undefined);
+  }
+}
+
+async function selectedDatabaseProfile(
+  options: DatabaseFlatCommandOptions,
+): Promise<DatastoreProfile | null> {
+  const registryOptions =
+    options.profileConfigDir === undefined
+      ? {}
+      : { configDirectory: options.profileConfigDir };
+  const registry =
+    options.profile === undefined
+      ? await DatastoreProfileRegistry.openIfPresent(registryOptions)
+      : await DatastoreProfileRegistry.open(registryOptions);
+  if (registry === null) return null;
+  const profile =
+    options.profile === undefined
+      ? await registry.current()
+      : await registry.get(profileIdSchema.parse(options.profile));
+  return profile?.databaseId === undefined ? null : profile;
+}
+
+function required(value: string | undefined): string {
+  if (value === undefined || value.length === 0) {
+    throw new DatabaseFlatCommandError('Secret input is incomplete.');
+  }
+  return value;
+}

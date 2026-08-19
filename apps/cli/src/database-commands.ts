@@ -63,6 +63,17 @@ export function addDatabaseOwnerCommands(db: Command): void {
   status.option('--json', 'Emit machine-readable non-secret status.');
   status.action(async (...args: unknown[]) => handleDatabaseStatus(optionsFrom(args)));
 
+  const key = db.command('key').description('Manage database-owner key files.');
+  const keyStatus = key
+    .command('status')
+    .description('Authenticate and inspect one database-owner key binding.');
+  addRoutingOptions(keyStatus);
+  addSecretOption(keyStatus);
+  keyStatus.option('--json', 'Emit machine-readable non-secret status.');
+  keyStatus.action(async (...args: unknown[]) =>
+    handleDatabaseStatus(optionsFrom(args)),
+  );
+
   const recovery = db
     .command('recovery')
     .description('Manage database-root recovery kits.');

@@ -10,7 +10,18 @@ export {
   type DatabaseRecoveryVerifyOptions,
   type DatabaseSessionErrorCode,
   type DatabaseVaultCatalogEntry,
+  type MigrationInitializationOwnership,
+  type MigrationVaultOwnership,
 } from './database-session.js';
+export {
+  DatabaseMigrationError,
+  migrateLegacyVaultToDatabase,
+  type DatabaseMigrationDestination,
+  type DatabaseMigrationErrorCode,
+  type LegacyDatabaseMigrationOptions,
+  type LegacyDatabaseMigrationResult,
+  type LegacyMigrationSource,
+} from './database-migration.js';
 export {
   DatastoreProfileError,
   DatastoreProfileRegistry,

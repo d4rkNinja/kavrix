@@ -1,4 +1,4 @@
-import { access, mkdtemp, readFile } from 'node:fs/promises';
+import { access, mkdtemp, readFile, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -17,11 +17,18 @@ describe('database owner command composition', () => {
   it('registers the database and multi-vault owner surface without delete or secret arguments', () => {
     const program = buildLocalCli();
     const db = program.commands.find((command) => command.name() === 'db');
+    const migrate = program.commands.find((command) => command.name() === 'migrate');
     const vault = program.commands.find((command) => command.name() === 'vault');
     const databaseVault = db?.commands.find((command) => command.name() === 'vault');
     expect(db?.commands.map((command) => command.name())).toEqual(
-      expect.arrayContaining(['init', 'status', 'recovery', 'vault']),
+      expect.arrayContaining(['init', 'key', 'status', 'recovery', 'vault']),
     );
+    expect(migrate?.commands.map((command) => command.name())).toEqual(['database']);
+    expect(
+      db?.commands
+        .find((command) => command.name() === 'key')
+        ?.commands.map((command) => command.name()),
+    ).toEqual(['status']);
     expect(
       db?.commands
         .find((command) => command.name() === 'recovery')
@@ -383,8 +390,12 @@ describe('database owner command composition', () => {
     }
     expect(thrown).toMatchObject({ code: 'authentication' });
     expect(serializeThrown(thrown)).not.toContain('profile-publication-secret-canary');
-    for (const path of [dataFile, keyFile, keyFile + '.database-anchor']) {
-      await expect(access(path)).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(access(dataFile)).rejects.toMatchObject({ code: 'ENOENT' });
+    for (const path of [keyFile, keyFile + '.database-anchor']) {
+      expect(await readFile(path)).toHaveLength(0);
+      if (process.platform !== 'win32') {
+        expect((await stat(path)).mode & 0o077).toBe(0);
+      }
     }
   });
 

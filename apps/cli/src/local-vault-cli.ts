@@ -68,6 +68,17 @@ import {
 import { Command } from 'commander';
 
 import { addDatabaseOwnerCommands } from './database-commands.js';
+import {
+  DatabaseFlatCommandError,
+  readDatabaseFlatSecrets,
+  usesDatabaseContainer,
+  withDatabaseFlatVault,
+} from './database-flat-commands.js';
+import {
+  DatabaseMigrationCommandError,
+  executeDatabaseMigrationCommand,
+} from './database-migration-command.js';
+import { DatabaseMigrationError } from './database-migration.js';
 import { DatabaseSessionError } from './database-session.js';
 import {
   DatastoreProfileError,
@@ -109,6 +120,11 @@ export type LocalCliOptions = Readonly<{
   databaseUrlStdin?: boolean;
   profile?: string;
   profileConfigDir?: string;
+  sourceProfile?: string;
+  destinationProfile?: string;
+  sourceVault?: string;
+  secretsStdin?: boolean;
+  initialize?: boolean;
   passphraseStdin?: boolean;
   newPassphraseStdin?: boolean;
   recoveryPassphraseStdin?: boolean;
@@ -185,6 +201,23 @@ export function buildLocalCli(): Command {
   addDatastoreProfileSelectionOptions(ping);
   ping.action(async (...args: unknown[]) => {
     await handlePing(getOptions(args), profileRoutingOverrides(args));
+  });
+
+  const migrate = program
+    .command('migrate')
+    .description('Explicit copy-first migrations.');
+  const migrateDatabase = migrate
+    .command('database')
+    .description('Copy one legacy version 2 vault into an existing database.');
+  migrateDatabase
+    .requiredOption('--source-profile <id>', 'Legacy version 2 datastore profile.')
+    .requiredOption('--destination-profile <id>', 'Bound database profile.')
+    .requiredOption('--source-vault <id>', 'Legacy source vault identifier.')
+    .option('--profile-config-dir <path>', 'Protected profile configuration directory.')
+    .option('--initialize', 'Explicitly initialize the unbound destination profile.')
+    .option('--secrets-stdin', 'Read every migration secret from exact stdin frames.');
+  migrateDatabase.action(async (...args: unknown[]) => {
+    await handleMigrateDatabase(getOptions(args));
   });
 
   const put = program
@@ -461,11 +494,17 @@ export async function runLocalCli(argv: readonly string[]): Promise<void> {
             ? error.message
             : error instanceof DatastoreProfileError
               ? error.message
-              : error instanceof DatabaseSessionError
+              : error instanceof DatabaseMigrationError
                 ? error.message
-                : error instanceof AggregateError
+                : error instanceof DatabaseMigrationCommandError
                   ? error.message
-                  : 'Kavrix command failed.';
+                  : error instanceof DatabaseFlatCommandError
+                    ? error.message
+                    : error instanceof DatabaseSessionError
+                      ? error.message
+                      : error instanceof AggregateError
+                        ? error.message
+                        : 'Kavrix command failed.';
     process.stderr.write(colorizeError(message) + '\n');
     process.exitCode = 1;
   }
@@ -849,6 +888,7 @@ function colorizeError(message: string): string {
 
 function addDatabaseOptions(command: Command): void {
   addDatabaseOnlyOptions(command);
+  addDatastoreProfileSelectionOptions(command);
   command.option(
     '--passphrase-stdin',
     'Read the key-file passphrase from standard input (never from an argument).',
@@ -1392,8 +1432,29 @@ async function handlePing(
   });
 }
 
+async function handleMigrateDatabase(options: LocalCliOptions): Promise<void> {
+  writeJson(await executeDatabaseMigrationCommand(options));
+}
+
 async function handlePut(name: string, options: LocalCliOptions): Promise<void> {
   validateCredentialName(name);
+  if (await usesDatabaseContainer(options)) {
+    const values = await readDatabaseFlatSecrets(options, ['field-value']);
+    const value = requiredSecret(values.extras, 0);
+    await withDatabaseFlatVault(options, values, async (session, vaultId) => {
+      const updated = await session.updateVault(vaultId, (payload) => {
+        if (Object.hasOwn(payload.records, name) && options.overwrite !== true) {
+          throw new LocalCliError(
+            'Credential already exists. Re-run with --overwrite to replace it.',
+          );
+        }
+        payload.records[name] = { value, updatedAt: now() };
+        return payload;
+      });
+      writeJson({ saved: true, name, revision: updated.revision });
+    });
+    return;
+  }
   const values = await readSecrets(
     ['database-url', 'passphrase', 'field-value'],
     options,
@@ -1432,6 +1493,19 @@ async function handlePut(name: string, options: LocalCliOptions): Promise<void> 
 
 async function handleGet(name: string, options: LocalCliOptions): Promise<void> {
   validateCredentialName(name);
+  if (await usesDatabaseContainer(options)) {
+    const values = await readDatabaseFlatSecrets(options, []);
+    await withDatabaseFlatVault(options, values, async (session, vaultId) => {
+      let found: LocalVaultPayload['records'][string] | undefined;
+      const document = await session.inspectVault(vaultId, (payload) => {
+        found = payload.records[name];
+      });
+      if (found === undefined) throw new LocalCliError('Credential was not found.');
+      if (options.reveal === true) process.stdout.write(found.value + '\n');
+      else writeJson({ name, value: REDACTED, revision: document.revision });
+    });
+    return;
+  }
   const values = await readSecrets(['database-url', 'passphrase'], options);
   const databaseUrl = requiredSecret(values, 0);
   const passphrase = requiredSecret(values, 1);
@@ -1457,6 +1531,19 @@ async function handleGet(name: string, options: LocalCliOptions): Promise<void> 
 }
 
 async function handleList(options: LocalCliOptions): Promise<void> {
+  if (await usesDatabaseContainer(options)) {
+    const values = await readDatabaseFlatSecrets(options, []);
+    await withDatabaseFlatVault(options, values, async (session, vaultId) => {
+      let names: string[] = [];
+      const document = await session.inspectVault(vaultId, (payload) => {
+        names = Object.keys(payload.records).sort((left, right) =>
+          left.localeCompare(right),
+        );
+      });
+      writeJson({ revision: document.revision, names });
+    });
+    return;
+  }
   const values = await readSecrets(['database-url', 'passphrase'], options);
   const databaseUrl = requiredSecret(values, 0);
   const passphrase = requiredSecret(values, 1);
@@ -1492,6 +1579,36 @@ async function handleView(
     throw new LocalCliError(
       'view --reveal requires an interactive terminal; use get --reveal for explicit scripted output.',
     );
+  }
+  if (await usesDatabaseContainer(options)) {
+    const values = await readDatabaseFlatSecrets(options, []);
+    await withDatabaseFlatVault(options, values, async (session, vaultId) => {
+      let entries: [string, LocalVaultPayload['records'][string]][] = [];
+      const document = await session.inspectVault(vaultId, (payload) => {
+        entries = Object.entries(payload.records)
+          .filter(([credentialName]) => name === undefined || credentialName === name)
+          .sort(([left], [right]) => left.localeCompare(right));
+      });
+      if (name !== undefined && entries.length === 0)
+        throw new LocalCliError('Credential was not found.');
+      if (options.json === true || !process.stdout.isTTY) {
+        writeJson({
+          vaultId,
+          revision: document.revision,
+          count: entries.length,
+          records: entries.map(([credentialName, record]) => ({
+            name: credentialName,
+            updatedAt: record.updatedAt,
+            value: REDACTED,
+          })),
+        });
+      } else {
+        process.stdout.write(
+          renderVaultView(document, entries, options.reveal === true),
+        );
+      }
+    });
+    return;
   }
   const values = await readSecrets(['database-url', 'passphrase'], options);
   const databaseUrl = requiredSecret(values, 0);
@@ -1535,6 +1652,31 @@ async function handleSearch(term: string, options: LocalCliOptions): Promise<voi
     throw new LocalCliError('Search patterns are limited to 128 characters.');
   }
   const limit = parseLimit(options.limit);
+  if (await usesDatabaseContainer(options)) {
+    const values = await readDatabaseFlatSecrets(options, []);
+    await withDatabaseFlatVault(options, values, async (session, vaultId) => {
+      let matches: [string, LocalVaultPayload['records'][string]][] = [];
+      const document = await session.inspectVault(vaultId, (payload) => {
+        matches = Object.entries(payload.records)
+          .filter(([name]) => name.toLocaleLowerCase().includes(normalizedTerm))
+          .sort(([left], [right]) => left.localeCompare(right));
+      });
+      const result = {
+        vaultId,
+        revision: document.revision,
+        pattern: term,
+        count: matches.length,
+        truncated: matches.length > limit,
+        matches: matches.slice(0, limit).map(([name, record]) => ({
+          name,
+          updatedAt: record.updatedAt,
+        })),
+      };
+      if (options.json === true || !process.stdout.isTTY) writeJson(result);
+      else process.stdout.write(renderSearchResult(result));
+    });
+    return;
+  }
   const values = await readSecrets(['database-url', 'passphrase'], options);
   const databaseUrl = requiredSecret(values, 0);
   const passphrase = requiredSecret(values, 1);
@@ -1569,6 +1711,29 @@ async function handleSearch(term: string, options: LocalCliOptions): Promise<voi
 }
 
 async function handleStats(options: LocalCliOptions): Promise<void> {
+  if (await usesDatabaseContainer(options)) {
+    const values = await readDatabaseFlatSecrets(options, []);
+    await withDatabaseFlatVault(options, values, async (session, vaultId) => {
+      let timestamps: string[] = [];
+      const document = await session.inspectVault(vaultId, (payload) => {
+        timestamps = Object.values(payload.records)
+          .map((record) => record.updatedAt)
+          .sort();
+      });
+      const result = {
+        vaultId,
+        revision: document.revision,
+        currentKeyVersion: document.currentKeyVersion,
+        credentialCount: timestamps.length,
+        oldestCredentialAt: timestamps[0] ?? null,
+        newestCredentialAt: timestamps.at(-1) ?? null,
+        updatedAt: document.updatedAt,
+      };
+      if (options.json === true || !process.stdout.isTTY) writeJson(result);
+      else process.stdout.write(renderVaultStats(result));
+    });
+    return;
+  }
   const values = await readSecrets(['database-url', 'passphrase'], options);
   const databaseUrl = requiredSecret(values, 0);
   const passphrase = requiredSecret(values, 1);
@@ -1602,6 +1767,22 @@ async function handleStats(options: LocalCliOptions): Promise<void> {
 
 async function handleRemove(name: string, options: LocalCliOptions): Promise<void> {
   validateCredentialName(name);
+  if (await usesDatabaseContainer(options)) {
+    const values = await readDatabaseFlatSecrets(options, []);
+    await withDatabaseFlatVault(options, values, async (session, vaultId) => {
+      const updated = await session.updateVault(vaultId, (payload) => {
+        if (payload.records[name] === undefined)
+          throw new LocalCliError('Credential was not found.');
+        return localVaultPayloadSchema.parse({
+          records: Object.fromEntries(
+            Object.entries(payload.records).filter(([key]) => key !== name),
+          ),
+        });
+      });
+      writeJson({ removed: true, name, revision: updated.revision });
+    });
+    return;
+  }
   const values = await readSecrets(['database-url', 'passphrase'], options);
   const databaseUrl = requiredSecret(values, 0);
   const passphrase = requiredSecret(values, 1);
@@ -1635,6 +1816,17 @@ async function handleRemove(name: string, options: LocalCliOptions): Promise<voi
 
 async function handleHas(name: string, options: LocalCliOptions): Promise<void> {
   validateCredentialName(name);
+  if (await usesDatabaseContainer(options)) {
+    const values = await readDatabaseFlatSecrets(options, []);
+    await withDatabaseFlatVault(options, values, async (session, vaultId) => {
+      let exists = false;
+      const document = await session.inspectVault(vaultId, (payload) => {
+        exists = Object.hasOwn(payload.records, name);
+      });
+      writeJson({ exists, name, revision: document.revision });
+    });
+    return;
+  }
   const values = await readSecrets(['database-url', 'passphrase'], options);
   const databaseUrl = requiredSecret(values, 0);
   const passphrase = requiredSecret(values, 1);
@@ -1662,6 +1854,26 @@ async function handleRename(
   validateCredentialName(from);
   validateCredentialName(to);
   if (from === to) throw new LocalCliError('Credential names must be different.');
+  if (await usesDatabaseContainer(options)) {
+    const values = await readDatabaseFlatSecrets(options, []);
+    await withDatabaseFlatVault(options, values, async (session, vaultId) => {
+      const updated = await session.updateVault(vaultId, (payload) => {
+        const source = payload.records[from];
+        if (source === undefined) throw new LocalCliError('Credential was not found.');
+        if (Object.hasOwn(payload.records, to))
+          throw new LocalCliError('The destination credential already exists.');
+        return localVaultPayloadSchema.parse({
+          records: Object.fromEntries(
+            Object.entries(payload.records).flatMap(([key, record]) =>
+              key === from ? [[to, record]] : [[key, record]],
+            ),
+          ),
+        });
+      });
+      writeJson({ renamed: true, from, to, revision: updated.revision });
+    });
+    return;
+  }
   const values = await readSecrets(['database-url', 'passphrase'], options);
   const databaseUrl = requiredSecret(values, 0);
   const passphrase = requiredSecret(values, 1);
@@ -1697,6 +1909,23 @@ async function handleRename(
 }
 
 async function handleDoctor(options: LocalCliOptions): Promise<void> {
+  if (await usesDatabaseContainer(options)) {
+    const values = await readDatabaseFlatSecrets(options, []);
+    await withDatabaseFlatVault(options, values, async (session, vaultId, profile) => {
+      let credentialCount = 0;
+      const document = await session.inspectVault(vaultId, (payload) => {
+        credentialCount = Object.keys(payload.records).length;
+      });
+      writeJson({
+        healthy: true,
+        vaultId,
+        datastore: profile.datastore,
+        revision: document.revision,
+        credentialCount,
+      });
+    });
+    return;
+  }
   const values = await readSecrets(['database-url', 'passphrase'], options);
   const databaseUrl = requiredSecret(values, 0);
   const passphrase = requiredSecret(values, 1);
@@ -1728,6 +1957,35 @@ async function handleDoctorHealth(options: LocalCliOptions): Promise<void> {
     credentialCount?: number;
     activeRecoverySlots?: number;
     revokedRecoverySlots?: number;
+  }
+
+  if (await usesDatabaseContainer(options)) {
+    const values = await readDatabaseFlatSecrets(options, []);
+    await withDatabaseFlatVault(options, values, async (session, vaultId, profile) => {
+      let credentialCount = 0;
+      const document = await session.inspectVault(vaultId, (payload) => {
+        credentialCount = Object.keys(payload.records).length;
+      });
+      writeJson({
+        healthy: true,
+        datastore: profile.datastore,
+        vaultId,
+        revision: document.revision,
+        checks: [
+          {
+            name: 'database-container',
+            status: 'ok',
+            detail:
+              'The database binding, revision anchor, vault envelope, and payload authenticated.',
+            revision: document.revision,
+            credentialCount,
+          },
+        ],
+        autoHealed: [],
+        manualRecoveryRequired: [],
+      });
+    });
+    return;
   }
 
   const values = await readSecrets(['database-url', 'passphrase'], options);
@@ -2963,6 +3221,9 @@ function asError(error: unknown): Error {
     error instanceof PortableKeyFileError ||
     error instanceof EncryptedVaultStoreError ||
     error instanceof DatastoreProfileError ||
+    error instanceof DatabaseMigrationError ||
+    error instanceof DatabaseMigrationCommandError ||
+    error instanceof DatabaseFlatCommandError ||
     error instanceof DatabaseSessionError
   )
     return error;

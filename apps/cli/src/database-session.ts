@@ -94,6 +94,32 @@ const DATABASE_VAULT_DELETION_AUTHORIZATION = Symbol(
 type DatabaseVaultDeletionAuthorization = Readonly<{
   token: typeof DATABASE_VAULT_DELETION_AUTHORIZATION;
 }>;
+declare const migrationVaultOwnershipBrand: unique symbol;
+export type MigrationVaultOwnership = Readonly<{
+  readonly [migrationVaultOwnershipBrand]: true;
+}>;
+interface MigrationVaultOwnershipState {
+  databaseId: DatabaseId;
+  vaultId: VaultId;
+  revision: DatabaseVaultDocument['revision'];
+  payloadMetadataDigest: Sha256Digest;
+}
+const migrationVaultOwnerships = new WeakMap<object, MigrationVaultOwnershipState>();
+declare const migrationInitializationOwnershipBrand: unique symbol;
+export type MigrationInitializationOwnership = Readonly<{
+  readonly [migrationInitializationOwnershipBrand]: true;
+}>;
+type MigrationInitializationOwnershipState = Readonly<{
+  databaseId: DatabaseId;
+  rollbackDatabase: (databaseId: DatabaseId) => Promise<void>;
+  keyPublication: DatabaseKeyFilePublication;
+  anchorPublication: DatabaseRevisionAnchorPublication;
+}>;
+const migrationInitializationOwnerships = new WeakMap<
+  object,
+  MigrationInitializationOwnershipState
+>();
+const MIGRATION_INITIALIZATION_REQUEST = Symbol('migration-initialization-request');
 
 export type DatabaseSessionErrorCode =
   | 'ambiguous-commit'
@@ -298,7 +324,31 @@ export class DatabaseSession {
           throw new DatabaseSessionError('ambiguous-commit');
         }
       }
-      return { databaseId, keyFile: options.keyFile, anchorFile };
+      const result = { databaseId, keyFile: options.keyFile, anchorFile };
+      if (
+        (
+          options as DatabaseInitializationOptions & {
+            migrationRequest?: symbol;
+          }
+        ).migrationRequest === MIGRATION_INITIALIZATION_REQUEST
+      ) {
+        if (
+          options.rollbackDatabase === undefined ||
+          keyPublication === undefined ||
+          anchorPublication === undefined
+        ) {
+          throw new DatabaseSessionError('operation');
+        }
+        const ownership = Object.freeze({}) as MigrationInitializationOwnership;
+        migrationInitializationOwnerships.set(ownership, {
+          databaseId,
+          rollbackDatabase: options.rollbackDatabase,
+          keyPublication,
+          anchorPublication,
+        });
+        return { ...result, ownership } as typeof result;
+      }
+      return result;
     } catch (error) {
       const cleanupErrors: DatabaseSessionError[] = [];
       if (bindingPublicationUncertain) {
@@ -338,6 +388,61 @@ export class DatabaseSession {
       zeroize(portableKey);
       zeroize(passphrase);
     }
+  }
+
+  /** Initializes a database while retaining opaque rollback ownership. */
+  public static async initializeForMigration(
+    options: Omit<DatabaseInitializationOptions, 'publishBinding'> &
+      Readonly<{
+        rollbackDatabase: (databaseId: DatabaseId) => Promise<void>;
+      }>,
+  ): Promise<
+    Readonly<{
+      databaseId: DatabaseId;
+      keyFile: string;
+      anchorFile: string;
+      ownership: MigrationInitializationOwnership;
+    }>
+  > {
+    return (await this.initialize({
+      ...options,
+      migrationRequest: MIGRATION_INITIALIZATION_REQUEST,
+    } as DatabaseInitializationOptions)) as Awaited<
+      ReturnType<typeof DatabaseSession.initializeForMigration>
+    >;
+  }
+
+  /** Consumes initialization rollback authority after verified publication. */
+  public static commitMigrationInitialization(
+    ownership: MigrationInitializationOwnership,
+  ): void {
+    requireMigrationInitializationOwnership(ownership);
+    migrationInitializationOwnerships.delete(ownership);
+  }
+
+  /** Rolls back only the exact database/key/anchor artifacts owned by migration. */
+  public static async rollbackMigrationInitialization(
+    ownership: MigrationInitializationOwnership,
+  ): Promise<void> {
+    const state = requireMigrationInitializationOwnership(ownership);
+    try {
+      await state.rollbackDatabase(state.databaseId);
+    } catch {
+      throw new DatabaseSessionError('ambiguous-commit');
+    }
+    const cleanupErrors: DatabaseSessionError[] = [];
+    await cleanupOwned(
+      () => cleanupOwnedDatabaseRevisionAnchor(state.anchorPublication),
+      cleanupErrors,
+    );
+    await cleanupOwned(
+      () => cleanupOwnedDatabaseKeyFile(state.keyPublication),
+      cleanupErrors,
+    );
+    if (cleanupErrors.length > 0) {
+      throw new DatabaseSessionError('ambiguous-commit');
+    }
+    migrationInitializationOwnerships.delete(ownership);
   }
 
   public static async open(options: DatabaseOpenOptions): Promise<DatabaseSession> {
@@ -507,6 +612,24 @@ export class DatabaseSession {
     }
   }
 
+  /** Creates a vault with an opaque cleanup capability for copy-first migration. */
+  public async createMigrationVault(
+    labelInput: string,
+  ): Promise<
+    Readonly<{ entry: DatabaseVaultCatalogEntry; ownership: MigrationVaultOwnership }>
+  > {
+    const entry = await this.createVault(labelInput);
+    const document = await this.getVaultDocument(entry.id);
+    const ownership = Object.freeze({}) as MigrationVaultOwnership;
+    migrationVaultOwnerships.set(ownership, {
+      databaseId: this.#databaseId,
+      vaultId: entry.id,
+      revision: document.revision,
+      payloadMetadataDigest: document.payloadMetadataDigest,
+    });
+    return { entry, ownership };
+  }
+
   public async renameVault(idInput: VaultId, labelInput: string): Promise<void> {
     this.#assertOpen();
     const id = vaultIdSchema.parse(idInput);
@@ -596,6 +719,107 @@ export class DatabaseSession {
       zeroize(nextPlaintext);
       zeroize(root);
     }
+  }
+
+  /** Stages migration plaintext and advances only the matching owned vault. */
+  public async updateMigrationVault(
+    ownership: MigrationVaultOwnership,
+    update: (
+      current: LocalVaultPayload,
+    ) => LocalVaultPayload | Promise<LocalVaultPayload>,
+  ): Promise<DatabaseVaultDocument> {
+    const state = requireMigrationOwnership(ownership, this.#databaseId);
+    const current = await this.getVaultDocument(state.vaultId);
+    if (
+      current.revision !== state.revision ||
+      current.payloadMetadataDigest !== state.payloadMetadataDigest
+    ) {
+      throw new DatabaseSessionError('ambiguous-commit');
+    }
+    const updated = await this.updateVault(state.vaultId, update);
+    state.revision = updated.revision;
+    state.payloadMetadataDigest = updated.payloadMetadataDigest;
+    return updated;
+  }
+
+  /** Locally decrypts one vault for bounded verification without mutating it. */
+  public async inspectVault(
+    idInput: VaultId,
+    inspect: (payload: LocalVaultPayload) => void | Promise<void>,
+  ): Promise<DatabaseVaultDocument> {
+    this.#assertOpen();
+    const current = await this.getVaultDocument(vaultIdSchema.parse(idInput));
+    let root: VaultRootKey | undefined;
+    let plaintext: Uint8Array | undefined;
+    try {
+      root = await unwrapVaultRootForDatabase(
+        current.wrappedVaultRoot,
+        this.#rootKey,
+        current.wrappedVaultRoot.aad,
+      );
+      plaintext = await decryptPayload(
+        current.encryptedPayload,
+        root,
+        current.encryptedPayload.aad,
+      );
+      const payload = localVaultPayloadSchema.parse(
+        JSON.parse(decodeSecretUtf8(plaintext)) as unknown,
+      );
+      await inspect(structuredClone(payload));
+      return current;
+    } catch (error) {
+      throw mapError(error);
+    } finally {
+      zeroize(plaintext);
+      zeroize(root);
+    }
+  }
+
+  /** Removes only an unchanged vault proven to have been created by migration. */
+  public async rollbackMigrationVault(
+    ownership: MigrationVaultOwnership,
+  ): Promise<void> {
+    const state = requireMigrationOwnership(ownership, this.#databaseId);
+    const current = await this.getVaultDocument(state.vaultId);
+    if (
+      current.revision !== state.revision ||
+      current.payloadMetadataDigest !== state.payloadMetadataDigest
+    ) {
+      throw new DatabaseSessionError('ambiguous-commit');
+    }
+    const nextCatalog = databaseCatalogPayloadSchema.parse({
+      ...this.#catalog,
+      vaults: this.#catalog.vaults.filter((entry) => entry.id !== state.vaultId),
+    });
+    const nextDatabase = await reencryptCatalog(
+      this.#database,
+      nextCatalog,
+      this.#rootKey,
+    );
+    const before = await observedAnchor(this.#store, this.#database);
+    const after = anchorWithoutVault(before, nextDatabase, state.vaultId);
+    await this.#anchoredMutation(
+      before,
+      after,
+      async () => {
+        await this.#store.deleteVault({
+          database: nextDatabase,
+          expectedDatabaseRevision: this.#database.revision,
+          vaultId: state.vaultId,
+          expectedVaultRevision: current.revision,
+        });
+      },
+      { authorizeRemovedVault: (candidate) => candidate === state.vaultId },
+    );
+    this.#database = nextDatabase;
+    this.#catalog = nextCatalog;
+    migrationVaultOwnerships.delete(ownership);
+  }
+
+  /** Consumes migration cleanup authority after independent verification. */
+  public commitMigrationVault(ownership: MigrationVaultOwnership): void {
+    requireMigrationOwnership(ownership, this.#databaseId);
+    migrationVaultOwnerships.delete(ownership);
   }
 
   /** Internal policy port; no unguarded CLI command is registered in this task. */
@@ -997,6 +1221,9 @@ export class DatabaseSession {
     before: DatabaseRevisionAnchor,
     after: DatabaseRevisionAnchor,
     mutate: () => Promise<void>,
+    verification: Readonly<{
+      authorizeRemovedVault?: (vaultId: VaultId) => boolean;
+    }> = {},
   ): Promise<void> {
     const publication = { storeAccepted: false };
     try {
@@ -1009,7 +1236,7 @@ export class DatabaseSession {
           publication.storeAccepted = true;
           return { nextAnchor: after, result: undefined };
         },
-        { requireExactVaultSet: true },
+        { requireExactVaultSet: true, ...verification },
       );
     } catch (error) {
       if (publication.storeAccepted) {
@@ -1298,6 +1525,8 @@ async function reconcileAnchor(
   rootKey: DatabaseRootKey,
   observed: DatabaseRevisionAnchor,
 ): Promise<void> {
+  const trusted = await readDatabaseRevisionAnchor(path, rootKey, observed);
+  if (canonicalJson(trusted) === canonicalJson(observed)) return;
   await transitionDatabaseRevisionAnchor(path, rootKey, observed, () =>
     Promise.resolve({ nextAnchor: observed, result: undefined }),
   );
@@ -1536,6 +1765,25 @@ function mapError(error: unknown): DatabaseSessionError {
     return new DatabaseSessionError('operation');
   }
   return new DatabaseSessionError('authentication');
+}
+
+function requireMigrationOwnership(
+  ownership: MigrationVaultOwnership,
+  databaseId: DatabaseId,
+): MigrationVaultOwnershipState {
+  const state = migrationVaultOwnerships.get(ownership);
+  if (state?.databaseId !== databaseId) {
+    throw new DatabaseSessionError('invalid');
+  }
+  return state;
+}
+
+function requireMigrationInitializationOwnership(
+  ownership: MigrationInitializationOwnership,
+): MigrationInitializationOwnershipState {
+  const state = migrationInitializationOwnerships.get(ownership);
+  if (state === undefined) throw new DatabaseSessionError('invalid');
+  return state;
 }
 
 async function cleanupOwned(

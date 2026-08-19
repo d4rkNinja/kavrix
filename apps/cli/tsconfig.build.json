@@ -12,6 +12,9 @@
   "include": [
     "src/bin.ts",
     "src/database-commands.ts",
+    "src/database-flat-commands.ts",
+    "src/database-migration-command.ts",
+    "src/database-migration.ts",
     "src/database-session.ts",
     "src/datastore-profiles.ts",
     "src/index.ts",

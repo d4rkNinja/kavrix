@@ -5,6 +5,7 @@ import {
   readFile,
   rename,
   rm,
+  stat,
   writeFile,
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -256,10 +257,12 @@ describe('DatabaseSession', () => {
       );
       return true;
     });
-    await expect(access(keyFile)).rejects.toMatchObject({ code: 'ENOENT' });
-    await expect(access(databaseRevisionAnchorPath(keyFile))).rejects.toMatchObject({
-      code: 'ENOENT',
-    });
+    for (const path of [keyFile, databaseRevisionAnchorPath(keyFile)]) {
+      expect(await readFile(path)).toHaveLength(0);
+      if (process.platform !== 'win32') {
+        expect((await stat(path)).mode & 0o077).toBe(0);
+      }
+    }
     expect(store.database).toBeNull();
   });
 
