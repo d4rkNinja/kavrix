@@ -69,6 +69,28 @@ For controlled file-mode automation, `db init --secrets-stdin` expects exactly:
 MongoDB mode prepends one `<MongoDB URI>\n` frame. Passphrases must be at least
 16 UTF-8 bytes. Do not construct these frames in a shell command line.
 
+### Share a complete local database
+
+```sh
+kavrix db key create --profile work \
+  --output-key-file ./work.shared.database.key
+```
+
+After the command succeeds, copy exactly the generated share key and the
+matching encrypted database file. The new key contains an encrypted,
+authenticated one-use anchor for that exact snapshot. On first open in a clean
+location, Kavrix authenticates the catalog and every vault, requires exact
+equality with the share-time anchor, creates the companion `.database-anchor`,
+and consumes bootstrap authority in the copied key. A missing owner anchor, a
+consumed share key without its anchor, or any older, newer, or forked database
+snapshot fails closed. Because the DRK opens every wrapped VRK, local sharing is
+whole-database access and has no vault-scoped revocation.
+
+For `--secrets-stdin`, `db key create` expects the current owner-key passphrase,
+the new share-key passphrase, and confirmation. MongoDB local-share export also
+prepends the URI frame, but the resulting key is intended for an exact copied
+local container, not a vault-scoped Mongo grant.
+
 ## 3. Create and select vaults
 
 ```sh
@@ -150,7 +172,9 @@ separate protected medium.
 | Create a fresh owner key file | `kavrix db recovery use`             |
 
 Recovery use validates the kit, database binding, current datastore state, and
-trusted database anchor before writing a fresh owner key and anchor. It does not
+trusted database anchor before writing a fresh owner key and anchor. Recovery
+companion anchors may advance only through the authenticated recovery workflow
+after an owner mutation; ordinary owner opens never auto-advance an anchor. It does not
 guess a passphrase, bypass rollback checks, recreate missing ciphertext, or
 erase old snapshots. Database recovery kits and legacy vault recovery kits are
 different formats and reject cross-use.
@@ -194,10 +218,13 @@ kavrix migrate database \
 ```
 
 For an unbound local destination, `--initialize --secrets-stdin` expects exactly
-the source passphrase, destination passphrase, destination confirmation, private
-database label, and private migrated-vault label. A MongoDB source URI frame,
-when applicable, comes first. The reader has a strict maximum of seven frames,
-matching the widest migration secret construction.
+the source passphrase, expected source-vault label, destination passphrase,
+destination confirmation, private database label, and private migrated-vault
+label. A MongoDB source URI frame, when applicable, comes first, making the
+supported MongoDB-source-to-local initialization flow exactly seven frames. The
+expected source label is checked only after the legacy vault authenticates and a
+mismatch returns a generic migration-input error. The reader accepts at most
+seven frames and rejects requests for eight or more.
 
 Kavrix authenticates the version 2 source key, anchor, metadata, and payload;
 creates a new VRK-bound destination vault; reopens the destination; and compares

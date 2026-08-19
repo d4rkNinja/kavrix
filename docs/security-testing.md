@@ -5,7 +5,7 @@ direct MongoDB behavior when a disposable MongoDB prerequisite is available.
 
 ## Required local checks
 
-\`\`\`sh
+```sh
 pnpm install --frozen-lockfile
 pnpm build
 pnpm format:check
@@ -17,13 +17,14 @@ pnpm acceptance:database-container
 pnpm --filter kavrix package:smoke
 pnpm --filter kavrix pack:check
 pnpm audit --audit-level high
-\`\`\`
+```
 
 The schema and crypto suites cover malformed envelopes, tampering, associated
 data swaps, key-slot wrapping, recovery-slot binding, and plaintext canaries.
 Protected-file suites cover passphrase failures, database/vault binding,
 tampering, path safety, and POSIX/Windows permission enforcement. The storage
-suite covers fail-closed Mongo URI policy, two-collection transaction behavior,
+suite covers fail-closed Mongo URI policy, exact idempotent Mongo index
+definitions, two-collection transaction behavior,
 and local schema, bounds, links, locks, compare-and-swap conflicts, atomic
 publication, and deletion.
 
@@ -39,14 +40,19 @@ redaction, package allowlisting, and scans of outputs and protected artifacts.
 The runner handles `SIGINT` and `SIGTERM`, stops active children, attempts every
 cleanup target even after an earlier cleanup failure, restores the caller's npm
 cache setting, aggregates redacted operation/cleanup errors, and prints success
-only after cleanup. Expected negative tests run inside the same cleanup envelope.
+only after cleanup. Child probes cover signals both after handlers are installed
+but before any potential root is created and while cleanup is in progress; the
+parent owns every potential path and verifies its absence. Expected negative
+tests run inside the same cleanup envelope.
 
 ## MongoDB integration
 
 The storage integration test runs only when `KAVRIX_MONGODB_URI` identifies a
 disposable replica set or sharded topology with transaction support. It creates a
-random test database, verifies transactional database/vault operations and
-indexes in the live service, and drops only that generated database.
+random test database, verifies transactional database/vault operations, the
+automatic database `_id_` index, and the named unique
+`{databaseId: 1, id: 1}` vault discovery index in the live service, then drops
+only that generated database.
 
 The repository does not bootstrap MongoDB in CI: the workflow has no reviewed,
 immutable, transaction-capable service image or safe replica-set startup path.

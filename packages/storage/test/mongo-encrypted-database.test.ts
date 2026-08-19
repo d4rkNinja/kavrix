@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mongodb = vi.hoisted(() => {
   const databaseCollection = {
+    createIndex: vi.fn(async () => '_id_'),
     deleteOne: vi.fn(),
     find: vi.fn(),
     findOne: vi.fn(),
@@ -9,6 +10,7 @@ const mongodb = vi.hoisted(() => {
     updateOne: vi.fn(),
   };
   const vaultCollection = {
+    createIndex: vi.fn(async () => 'database_vault_identity'),
     deleteOne: vi.fn(),
     find: vi.fn(),
     findOne: vi.fn(),
@@ -106,7 +108,28 @@ describe('MongoEncryptedDatabaseStore', () => {
     expect(mongodb.client.db).toHaveBeenCalledWith(DATABASE_NAME);
     expect(database.collection).toHaveBeenNthCalledWith(1, 'database_records');
     expect(database.collection).toHaveBeenNthCalledWith(2, 'vault_records');
+    expect(mongodb.vaultCollection.createIndex).toHaveBeenCalledWith(
+      { databaseId: 1, id: 1 },
+      { name: 'database_vault_identity', unique: true },
+    );
     await store.close();
+  });
+
+  it('closes the client and redacts index initialization failures', async () => {
+    const sensitive = new Error('mongodb://user:password@example.test/private');
+    mongodb.vaultCollection.createIndex.mockRejectedValueOnce(sensitive);
+    mongodb.client.db.mockReturnValue({
+      collection: vi.fn((name: string) =>
+        name === 'kavrix_databases'
+          ? mongodb.databaseCollection
+          : mongodb.vaultCollection,
+      ),
+    });
+
+    await expect(
+      MongoEncryptedDatabaseStore.connect(URI, DATABASE_NAME),
+    ).rejects.toEqual(new EncryptedDatabaseStoreError('connection'));
+    expect(mongodb.client.close).toHaveBeenCalledOnce();
   });
 
   it('uses the exact default database and vault collection names', async () => {

@@ -52,7 +52,9 @@ export {
 } from './revision-anchor.js';
 export {
   cleanupOwnedDatabaseKeyFile,
+  consumeDatabaseLocalShareBootstrap,
   createOwnedDatabaseKeyFile,
+  createOwnedDatabaseLocalShareKeyFile,
   readDatabaseKeyFileBinding,
   readDatabaseKeyFile,
   writeDatabaseKeyFile,

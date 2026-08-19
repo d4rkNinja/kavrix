@@ -5,6 +5,7 @@ import {
   databaseRevisionAnchorPath,
   deleteSecureFile,
   readDatabaseRecoveryKitFileBinding,
+  validateSecureFileDestination,
   validateSecureFileSource,
 } from '@kavrix/key-files';
 import { profileIdSchema, vaultIdSchema, type DatabaseId } from '@kavrix/schemas';
@@ -72,6 +73,18 @@ export function addDatabaseOwnerCommands(db: Command): void {
   keyStatus.option('--json', 'Emit machine-readable non-secret status.');
   keyStatus.action(async (...args: unknown[]) =>
     handleDatabaseStatus(optionsFrom(args)),
+  );
+  const keyCreate = key
+    .command('create')
+    .description('Create a protected key for sharing one local database.');
+  addRoutingOptions(keyCreate);
+  addSecretOption(keyCreate);
+  keyCreate.requiredOption(
+    '--output-key-file <path>',
+    'Fresh protected local-share database-key destination.',
+  );
+  keyCreate.action(async (...args: unknown[]) =>
+    handleDatabaseKeyCreate(optionsFrom(args)),
   );
 
   const recovery = db
@@ -216,6 +229,26 @@ async function handleDatabaseStatus(options: DatabaseCommandOptions): Promise<vo
   await withOwnerSession(options, [], (session) => {
     writeOutput(session.status());
   });
+}
+
+async function handleDatabaseKeyCreate(options: DatabaseCommandOptions): Promise<void> {
+  if (options.outputKeyFile === undefined) throw new DatabaseSessionError('invalid');
+  const keyFile = options.outputKeyFile;
+  await validateSecureFileDestination(keyFile);
+  await withOwnerSession(
+    options,
+    ['new-passphrase', 'new-passphrase'],
+    async (session, extras) => {
+      if (extras[0] === undefined || extras[0] !== extras[1])
+        throw new DatabaseSessionError('invalid');
+      const passphrase = Buffer.from(extras[0], 'utf8');
+      try {
+        writeOutput(await session.createLocalShareKey({ keyFile, passphrase }));
+      } finally {
+        zeroize(passphrase);
+      }
+    },
+  );
 }
 
 async function handleRecoveryCreate(options: DatabaseCommandOptions): Promise<void> {

@@ -10,18 +10,33 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { generatePortableKey, generateRecoveryKey, zeroize } from '@kavrix/crypto';
-import { databaseIdSchema, keySlotIdSchema } from '@kavrix/schemas';
+import {
+  encodeBase64Url,
+  generatePortableKey,
+  generateRecoveryKey,
+  zeroize,
+} from '@kavrix/crypto';
+import {
+  databaseIdSchema,
+  databaseRevisionSchema,
+  keySlotIdSchema,
+  sha256DigestSchema,
+  vaultIdSchema,
+  vaultRevisionSchema,
+} from '@kavrix/schemas';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
   cleanupOwnedDatabaseKeyFile,
+  consumeDatabaseLocalShareBootstrap,
   createOwnedDatabaseKeyFile,
+  createOwnedDatabaseLocalShareKeyFile,
   readDatabaseKeyFile,
   readDatabaseKeyFileBinding,
   writeDatabaseRecoveryKitFile,
   writeDatabaseKeyFile,
   type DatabaseKeyBinding,
+  type DatabaseRevisionAnchor,
 } from '../src/index.js';
 
 let directory = '';
@@ -45,6 +60,24 @@ function passphrase(value = 'correct horse battery staple'): Uint8Array {
 }
 function options(secret: Uint8Array, mode: 'create' | 'replace' = 'create') {
   return { mode, protection: { kind: 'passphrase' as const, passphrase: secret } };
+}
+
+function digest(value: number) {
+  return sha256DigestSchema.parse(encodeBase64Url(new Uint8Array(32).fill(value)));
+}
+
+function shareAnchor(): DatabaseRevisionAnchor {
+  return {
+    databaseId: binding.databaseId,
+    databaseRevision: databaseRevisionSchema.parse(2),
+    catalogMetadataDigest: digest(1),
+    vaultHeads: {
+      [vaultIdSchema.parse('vault_alpha')]: {
+        revision: vaultRevisionSchema.parse(3),
+        metadataDigest: digest(2),
+      },
+    },
+  };
 }
 
 describe('protected database key files', () => {
@@ -102,6 +135,54 @@ describe('protected database key files', () => {
     }
   });
 
+  it('round-trips and irreversibly consumes an authenticated local-share bootstrap', async () => {
+    const file = path('shared.key');
+    const key = generatePortableKey();
+    const secret = passphrase();
+    const anchor = shareAnchor();
+    try {
+      const created = await createOwnedDatabaseLocalShareKeyFile(
+        file,
+        key,
+        binding,
+        anchor,
+        options(secret),
+      );
+      expect(created.status).toBe('published');
+      const serialized = await readFile(file, 'utf8');
+      expect(serialized).toContain('Version: 2');
+      expect(serialized).not.toContain(anchor.catalogMetadataDigest);
+      const parsed = await readDatabaseKeyFile(file, secret, binding);
+      try {
+        expect(parsed.portableKey).toEqual(key);
+        expect(parsed.localShareBootstrap).toEqual(anchor);
+      } finally {
+        zeroize(parsed.portableKey);
+      }
+
+      await consumeDatabaseLocalShareBootstrap(file, key, binding, secret);
+      const consumed = await readDatabaseKeyFile(file, secret, binding);
+      try {
+        expect(consumed.portableKey).toEqual(key);
+        expect(consumed.localShareBootstrap).toBeNull();
+      } finally {
+        zeroize(consumed.portableKey);
+      }
+      const consumedText = await readFile(file, 'utf8');
+      const tampered = consumedText.replace(
+        /Ciphertext: ([A-Za-z0-9_-])/u,
+        (_match, first: string) => `Ciphertext: ${first === 'A' ? 'B' : 'A'}`,
+      );
+      await writeFile(file, tampered, { mode: 0o600 });
+      await expect(readDatabaseKeyFile(file, secret, binding)).rejects.toMatchObject({
+        code: 'KEY_FILE_UNSAFE',
+      });
+    } finally {
+      zeroize(key);
+      zeroize(secret);
+    }
+  });
+
   it('fails closed for passphrase, database, and key-slot mismatches', async () => {
     const file = path();
     const key = generatePortableKey();
@@ -150,7 +231,7 @@ describe('protected database key files', () => {
           code: 'KEY_FILE_UNSAFE',
         });
       }
-      await writeFile(file, Buffer.alloc(16_385), { mode: 0o600 });
+      await writeFile(file, Buffer.alloc(256 * 1024 + 1), { mode: 0o600 });
       await expect(readDatabaseKeyFile(file, secret, binding)).rejects.toMatchObject({
         code: 'KEY_FILE_UNSAFE',
       });

@@ -26,7 +26,9 @@ import {
   cleanupOwnedDatabaseKeyFile,
   cleanupOwnedDatabaseRecoveryKitFile,
   cleanupOwnedDatabaseRevisionAnchor,
+  consumeDatabaseLocalShareBootstrap,
   createOwnedDatabaseKeyFile,
+  createOwnedDatabaseLocalShareKeyFile,
   createOwnedDatabaseRecoveryKitFile,
   createOwnedDatabaseRevisionAnchor,
   readDatabaseKeyFile,
@@ -37,6 +39,7 @@ import {
   transitionOwnedDatabaseRevisionAnchor,
   validateSecureFileDestination,
   type DatabaseKeyFilePublication,
+  type DatabaseKeyBinding,
   type DatabaseRecoveryBinding,
   type DatabaseRecoveryKitFilePublication,
   type DatabaseRevisionAnchor,
@@ -171,6 +174,11 @@ export type DatabaseRecoveryCreateOptions = Readonly<{
   passphrase: Uint8Array;
 }>;
 
+export type DatabaseLocalShareKeyCreateOptions = Readonly<{
+  keyFile: string;
+  passphrase: Uint8Array;
+}>;
+
 export type DatabaseRecoveryVerifyOptions = DatabaseRecoveryCreateOptions &
   Readonly<{ expectedBinding?: DatabaseRecoveryBinding }>;
 
@@ -189,6 +197,7 @@ export class DatabaseSession {
   readonly #anchorFile: string;
   readonly #databaseId: DatabaseId;
   readonly #rootKey: DatabaseRootKey;
+  readonly #portableKey: PortableKey;
   #database: EncryptedDatabaseDocument;
   #catalog: DatabaseCatalogPayload;
   #closed = false;
@@ -200,6 +209,7 @@ export class DatabaseSession {
       database: EncryptedDatabaseDocument;
       catalog: DatabaseCatalogPayload;
       rootKey: DatabaseRootKey;
+      portableKey: PortableKey;
     }>,
   ) {
     this.#store = options.store;
@@ -208,6 +218,7 @@ export class DatabaseSession {
     this.#database = options.database;
     this.#catalog = options.catalog;
     this.#rootKey = options.rootKey;
+    this.#portableKey = options.portableKey;
   }
 
   public static async validateInitializationDestinations(
@@ -490,15 +501,28 @@ export class DatabaseSession {
         catalog,
         rootKey,
       );
-      await reconcileAnchor(anchorFile, rootKey, observed);
+      await reconcileOpenAnchor({
+        anchorFile,
+        rootKey,
+        observed,
+        keyFile: options.keyFile,
+        binding: publicBinding,
+        portableKey,
+        passphrase,
+        ...(parsed.localShareBootstrap === undefined
+          ? {}
+          : { localShareBootstrap: parsed.localShareBootstrap }),
+      });
       const session = new DatabaseSession({
         store: options.store,
         anchorFile,
         database,
         catalog,
         rootKey,
+        portableKey,
       });
       rootKey = undefined;
+      portableKey = undefined;
       return session;
     } catch (error) {
       throw mapError(error);
@@ -934,6 +958,35 @@ export class DatabaseSession {
     }
   }
 
+  public async createLocalShareKey(
+    options: DatabaseLocalShareKeyCreateOptions,
+  ): Promise<Readonly<{ keyFile: string }>> {
+    this.#assertOpen();
+    await validateSecureFileDestination(options.keyFile);
+    const passphrase = Uint8Array.from(options.passphrase);
+    try {
+      const anchor = await authenticateDatabaseState(
+        this.#store,
+        this.#database,
+        this.#catalog,
+        this.#rootKey,
+      );
+      const created = await createOwnedDatabaseLocalShareKeyFile(
+        options.keyFile,
+        this.#portableKey,
+        { databaseId: this.#databaseId, keySlotId: this.#database.keySlot.id },
+        anchor,
+        { protection: { kind: 'passphrase', passphrase } },
+      );
+      if (created.status !== 'published') throw created.error;
+      return { keyFile: options.keyFile };
+    } catch (error) {
+      throw mapError(error);
+    } finally {
+      zeroize(passphrase);
+    }
+  }
+
   public recoveryStatus(): Readonly<{ active: number; revoked: number }> {
     this.#assertOpen();
     return {
@@ -1176,6 +1229,7 @@ export class DatabaseSession {
   public async close(): Promise<void> {
     if (this.#closed) return;
     this.#closed = true;
+    zeroize(this.#portableKey);
     zeroize(this.#rootKey);
     observeCleared(this.#rootKey);
     try {
@@ -1256,6 +1310,7 @@ export class DatabaseSession {
   async #poison(): Promise<void> {
     if (this.#closed) return;
     this.#closed = true;
+    zeroize(this.#portableKey);
     zeroize(this.#rootKey);
     observeCleared(this.#rootKey);
     await this.#store.close().catch(() => undefined);
@@ -1555,6 +1610,53 @@ async function reconcileAnchor(
     return;
   }
   throw new DatabaseSessionError('rollback');
+}
+
+async function reconcileOpenAnchor(
+  options: Readonly<{
+    anchorFile: string;
+    rootKey: DatabaseRootKey;
+    observed: DatabaseRevisionAnchor;
+    keyFile: string;
+    binding: DatabaseKeyBinding;
+    portableKey: PortableKey;
+    passphrase: Uint8Array;
+    localShareBootstrap?: DatabaseRevisionAnchor | null;
+  }>,
+): Promise<void> {
+  if (options.localShareBootstrap === undefined) {
+    await reconcileAnchor(options.anchorFile, options.rootKey, options.observed);
+    return;
+  }
+
+  try {
+    await reconcileAnchor(options.anchorFile, options.rootKey, options.observed);
+  } catch (error) {
+    if (options.localShareBootstrap === null) throw error;
+    if (canonicalJson(options.localShareBootstrap) !== canonicalJson(options.observed))
+      throw error;
+    const created = await createOwnedDatabaseRevisionAnchor(
+      options.anchorFile,
+      options.rootKey,
+      options.observed,
+    );
+    if (created.status !== 'published') throw error;
+    await readDatabaseRevisionAnchor(
+      options.anchorFile,
+      options.rootKey,
+      options.observed,
+      { requireExactVaultSet: true },
+    );
+  }
+
+  if (options.localShareBootstrap !== null) {
+    await consumeDatabaseLocalShareBootstrap(
+      options.keyFile,
+      options.portableKey,
+      options.binding,
+      options.passphrase,
+    );
+  }
 }
 
 function anchorWithCreatedVault(

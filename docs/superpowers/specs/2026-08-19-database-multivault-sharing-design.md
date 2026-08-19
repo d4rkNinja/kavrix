@@ -16,8 +16,9 @@ vaults explicitly granted to that identity.
 
 Local-file mode will use the same multi-vault encrypted container but will not
 implement users or fine-grained grants. Sharing a local database means securely
-sharing exactly two protected artifacts: the encrypted database file and its
-database-owner key file. Anyone holding both artifacts and the key-file
+sharing exactly two protected artifacts: the encrypted database file and a
+fresh local-share database key file generated from its exact authenticated
+snapshot. Anyone holding both artifacts and the key-file
 passphrase has access to every vault in that local database.
 
 No plaintext project name, vault name, environment name, credential name,
@@ -105,7 +106,13 @@ XChaCha20-Poly1305 construction and is bound to:
 - the datastore format and cryptographic versions; and
 - the expected datastore type.
 
-The database key file never contains MongoDB credentials. A database key file
+The database key file never contains MongoDB credentials. Owner key files use a
+mandatory companion anchor. A fresh local-share key additionally contains a
+passphrase-protected, authenticated, one-use bootstrap anchor for the exact
+share-time snapshot. First use creates its companion anchor and consumes the
+bootstrap; missing consumed/owner anchors and non-exact first-use snapshots fail
+closed. Recovery companion anchors may move forward only within the
+authenticated recovery workflow after its database mutation. A database key file
 must fail against a different database ID even if collection names and vault IDs
 match.
 
@@ -476,7 +483,8 @@ revocation, and rollback tests pass together.
   access only that vault.
 - Reader cannot publish, editor can publish, and owner can grant/revoke.
 - Revoked user cannot read the next revision; remaining users can.
-- Local sharing works with the database file plus matching owner key and rejects
+- Local sharing works with the database file plus a fresh matching local-share
+  key, bootstraps exactly once from the authenticated share-time anchor, and rejects
   all user/grant commands.
 - v2 migration preserves every credential and leaves the source intact.
 - Cleanup succeeds after both passing and intentionally failing flows.

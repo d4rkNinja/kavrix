@@ -91,11 +91,13 @@ XChaCha20-Poly1305. HKDF-SHA-256 derives purpose-specific keys. Associated data
 binds ciphertext to the database, vault, purpose, key version, revision, and a
 digest of security-relevant metadata.
 
-A database-root-key-authenticated revision anchor is stored beside the active
-database-owner key file. Kavrix rejects lower database revisions,
+A database-root-key-authenticated revision anchor is stored beside each active
+database key file. Kavrix rejects lower database revisions,
 same-revision forks, and inconsistent catalog/vault heads before returning
-plaintext. A missing or invalid database anchor fails closed; there is no
-automatic database-container acceptance shortcut.
+plaintext. A missing or invalid owner anchor fails closed. A freshly generated
+local-share key contains an encrypted, authenticated one-use anchor for the exact
+share-time snapshot; first use publishes its companion anchor and consumes that
+bootstrap authority. It never accepts a newer, older, or forked first-use file.
 
 Remote MongoDB connections must explicitly enable validated TLS. Multi-document
 database/vault changes require a MongoDB replica set or sharded topology with
@@ -115,9 +117,10 @@ and [data model](docs/data-model.md).
 
 Keep at least one database recovery kit on a separate protected medium from the
 active owner key. Back up datastore ciphertext and protected recovery material
-separately. For local-file sharing, the database file and matching owner key
-file together grant full access to every vault once the key passphrase is known;
-there is no vault-scoped local sharing or revocation.
+separately. For local-file sharing, generate a fresh protected share key with
+`kavrix db key create`, then transfer that key and the exact matching database
+file. Together they grant full access to every vault once the share-key
+passphrase is known; there is no vault-scoped local sharing or revocation.
 
 Database recovery recreates owner access to the same database root key; each
 vault still has an independent vault root key wrapped to that database root.

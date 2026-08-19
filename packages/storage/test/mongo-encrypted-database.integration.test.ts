@@ -59,6 +59,45 @@ integration('MongoEncryptedDatabaseStore replica-set integration', () => {
     }
   });
 
+  it('installs the required idempotent vault discovery index', async () => {
+    const inspectionClient = new MongoClient(mongoUri as string, {
+      connectTimeoutMS: 5_000,
+      serverSelectionTimeoutMS: 5_000,
+      socketTimeoutMS: 10_000,
+      timeoutMS: 10_000,
+    });
+    try {
+      await inspectionClient.connect();
+      const databaseIndexes = await inspectionClient
+        .db(databaseName)
+        .collection('kavrix_databases')
+        .listIndexes()
+        .toArray();
+      const vaultIndexes = await inspectionClient
+        .db(databaseName)
+        .collection('kavrix_vaults')
+        .listIndexes()
+        .toArray();
+      expect(databaseIndexes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ name: '_id_', key: { _id: 1 } }),
+        ]),
+      );
+      expect(vaultIndexes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ name: '_id_', key: { _id: 1 } }),
+          expect.objectContaining({
+            name: 'database_vault_identity',
+            key: { databaseId: 1, id: 1 },
+            unique: true,
+          }),
+        ]),
+      );
+    } finally {
+      await inspectionClient.close();
+    }
+  });
+
   it('persists two vaults transactionally, detects all revision conflicts, and contains no plaintext canary', async () => {
     const activeStore = store;
     if (activeStore === undefined)

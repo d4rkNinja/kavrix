@@ -28,7 +28,7 @@ describe('database owner command composition', () => {
       db?.commands
         .find((command) => command.name() === 'key')
         ?.commands.map((command) => command.name()),
-    ).toEqual(['status']);
+    ).toEqual(['status', 'create']);
     expect(
       db?.commands
         .find((command) => command.name() === 'recovery')
@@ -57,6 +57,7 @@ describe('database owner command composition', () => {
     const firstRecovery = join(directory, 'first.kavrix-db-recovery');
     const secondRecovery = join(directory, 'second.kavrix-db-recovery');
     const recoveredKey = join(directory, 'recovered.kavrix-db-key');
+    const localShareKey = join(directory, 'local-share.kavrix-db-key');
     const otherDataFile = join(directory, 'other-database.kavrix');
     const otherKeyFile = join(directory, 'other-owner.kavrix-db-key');
     const passphrase = 'correct horse battery staple';
@@ -190,6 +191,22 @@ describe('database owner command composition', () => {
       ),
     ).toEqual({ renamed: true, vaultId });
 
+    expect(
+      await execute(
+        [
+          passphrase,
+          'recipient horse battery staple',
+          'recipient horse battery staple',
+        ],
+        'db',
+        'key',
+        'create',
+        ...route,
+        '--output-key-file',
+        localShareKey,
+      ),
+    ).toEqual({ keyFile: localShareKey });
+
     const first = await execute(
       [passphrase, passphrase, passphrase],
       'db',
@@ -289,6 +306,7 @@ describe('database owner command composition', () => {
       'recovery-passphrase',
       'recovery-passphrase',
     ]);
+    expect(requests).toContainEqual(['passphrase', 'new-passphrase', 'new-passphrase']);
     expect(requests).toContainEqual([
       'recovery-passphrase',
       'new-passphrase',
@@ -304,6 +322,7 @@ describe('database owner command composition', () => {
       secondRecovery + '.database-anchor',
       recoveredKey,
       recoveredKey + '.database-anchor',
+      localShareKey,
       otherDataFile,
       otherKeyFile,
       otherKeyFile + '.database-anchor',

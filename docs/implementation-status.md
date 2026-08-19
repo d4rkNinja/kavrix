@@ -22,7 +22,7 @@ Active release workspaces:
 - protected non-secret datastore profile add/list/use/status/remove;
 - file/MongoDB database initialization, authenticated status, and MongoDB ping;
 - encrypted database vault create/list/status/rename;
-- database-owner key status and database recovery create/verify/status/revoke/use;
+- database-owner key status, whole-local-database share-key creation, and database recovery create/verify/status/revoke/use;
 - explicit legacy version 2 migration into an existing or explicitly initialized local database;
 - encrypted put/get/list/view/search/stats operations;
 - explicit override and reveal controls;
@@ -41,6 +41,9 @@ not be documented as available.
   versions, revision, and authenticated metadata digests;
 - a DRK-authenticated local anchor rejects rollback, same-revision forks, and
   inconsistent catalog/vault heads before plaintext is returned;
+- fresh local-share keys carry a protected one-use exact-snapshot bootstrap;
+  owner anchors remain mandatory and recovery anchors advance only inside the
+  authenticated recovery workflow;
 - local publication is atomic and MongoDB multi-document publication requires transactions;
 - remote MongoDB requires explicit validated TLS and insecure TLS flags are rejected;
 - protected files use bounded formats, atomic creation, and permission checks;
@@ -63,13 +66,16 @@ not as a permanently stale test count in this document.
 
 MongoDB can observe opaque database/vault IDs, revisions, timestamps, ciphertext
 sizes, and access patterns. A database operator can delete or withhold data. The
-local revision anchor is fail-closed but is not remote tamper-proof storage.
+local revision anchor is fail-closed but is not remote tamper-proof storage. A
+fresh local-share key trusts only the exact authenticated snapshot captured when
+the key was created; after first use its companion anchor is mandatory.
 
 User identities, public enrollment, recipient discovery, vault grants, reader/
 editor/owner roles, revocation with VRK rotation, and ownership transfer are not
 implemented. Environments, groups/services, structured items, and typed fields
 are also deferred. Local-file mode has no fine-grained sharing: sharing its data
-file and matching owner key grants full database access once unlocked.
+file and a freshly generated matching share key grants full database access once
+unlocked.
 
 Kavrix does not protect an unlocked host from administrators, same-user malware,
 keyloggers, screen/terminal/clipboard capture, process-memory inspection, swap, or

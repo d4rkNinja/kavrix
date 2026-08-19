@@ -1,5 +1,7 @@
 import {
   access,
+  chmod,
+  copyFile,
   mkdir,
   mkdtemp,
   readFile,
@@ -10,6 +12,8 @@ import {
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+
+import { zeroize } from '@kavrix/crypto';
 
 import {
   databaseRevisionAnchorPath,
@@ -29,6 +33,7 @@ import {
 } from '@kavrix/schemas';
 import {
   EncryptedDatabaseStoreError,
+  FileEncryptedDatabaseStore,
   type CreateVaultInput,
   type DeleteVaultInput,
   type EncryptedDatabaseStore,
@@ -50,6 +55,86 @@ const PASSPHRASE = Buffer.from('correct horse battery staple', 'utf8');
 afterEach(() => setDatabaseSessionZeroizationObserverForTest(undefined));
 
 describe('DatabaseSession', () => {
+  it('opens every vault from exactly a copied database file and one local-share key', async () => {
+    const source = await mkdtemp(join(tmpdir(), 'kavrix-share-source-'));
+    const recipient = await mkdtemp(join(tmpdir(), 'kavrix-share-recipient-'));
+    const staleRecipient = await mkdtemp(join(tmpdir(), 'kavrix-share-stale-'));
+    const dataFile = join(source, 'database.kavrix');
+    const ownerKey = join(source, 'owner.key');
+    const shareKey = join(source, 'share.key');
+    const sharePassphrase = Buffer.from('recipient horse battery staple', 'utf8');
+    const store = await FileEncryptedDatabaseStore.open(dataFile);
+    await DatabaseSession.initialize({
+      store,
+      keyFile: ownerKey,
+      passphrase: PASSPHRASE,
+      label: 'shared database',
+    });
+    const owner = await DatabaseSession.open({
+      store,
+      keyFile: ownerKey,
+      passphrase: PASSPHRASE,
+    });
+    const alpha = await owner.createVault('alpha');
+    await owner.createVault('beta');
+    await owner.createLocalShareKey({
+      keyFile: shareKey,
+      passphrase: sharePassphrase,
+    });
+
+    const recipientData = join(recipient, 'database.kavrix');
+    const recipientKey = join(recipient, 'database.key');
+    await copyFile(dataFile, recipientData);
+    await copyFile(shareKey, recipientKey);
+    if (process.platform !== 'win32') {
+      await chmod(recipientData, 0o600);
+      await chmod(recipientKey, 0o600);
+    }
+    const recipientStore = await FileEncryptedDatabaseStore.open(recipientData);
+    const opened = await DatabaseSession.open({
+      store: recipientStore,
+      keyFile: recipientKey,
+      passphrase: sharePassphrase,
+    });
+    expect(opened.listVaults().map((vault) => vault.label)).toEqual(['alpha', 'beta']);
+    await opened.close();
+    await expect(
+      access(databaseRevisionAnchorPath(recipientKey)),
+    ).resolves.toBeUndefined();
+
+    await rm(databaseRevisionAnchorPath(recipientKey));
+    const missingAnchorStore = await FileEncryptedDatabaseStore.open(recipientData);
+    await expect(
+      DatabaseSession.open({
+        store: missingAnchorStore,
+        keyFile: recipientKey,
+        passphrase: sharePassphrase,
+      }),
+    ).rejects.toMatchObject({ code: 'authentication' });
+    await missingAnchorStore.close();
+
+    await owner.updateVault(alpha.id, (payload) => payload);
+    const staleData = join(staleRecipient, 'database.kavrix');
+    const staleKey = join(staleRecipient, 'database.key');
+    await copyFile(dataFile, staleData);
+    await copyFile(shareKey, staleKey);
+    if (process.platform !== 'win32') {
+      await chmod(staleData, 0o600);
+      await chmod(staleKey, 0o600);
+    }
+    await owner.close();
+    const staleStore = await FileEncryptedDatabaseStore.open(staleData);
+    await expect(
+      DatabaseSession.open({
+        store: staleStore,
+        keyFile: staleKey,
+        passphrase: sharePassphrase,
+      }),
+    ).rejects.toMatchObject({ code: 'authentication' });
+    await staleStore.close();
+    zeroize(sharePassphrase);
+  });
+
   it('initializes, authenticates an exact anchor, and manages two independent vaults', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'kavrix-session-'));
     const store = new MemoryDatabaseStore();

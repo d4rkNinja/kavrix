@@ -82,11 +82,13 @@ export class MongoEncryptedDatabaseStore implements EncryptedDatabaseStore {
         timeoutMS: SOCKET_TIMEOUT_MS,
       });
       await client.connect();
-      return new MongoEncryptedDatabaseStore(
+      const store = new MongoEncryptedDatabaseStore(
         client,
         client.db(databaseName),
         collectionNames,
       );
+      await store.#initializeIndexes();
+      return store;
     } catch {
       if (client !== undefined) {
         try {
@@ -97,6 +99,13 @@ export class MongoEncryptedDatabaseStore implements EncryptedDatabaseStore {
       }
       throw new EncryptedDatabaseStoreError('connection');
     }
+  }
+
+  async #initializeIndexes(): Promise<void> {
+    await this.#vaults.createIndex(
+      { databaseId: 1, id: 1 },
+      { name: 'database_vault_identity', unique: true },
+    );
   }
 
   async ping(): Promise<void> {
