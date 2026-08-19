@@ -660,8 +660,14 @@ async function publishContainer(
     directoryPath,
     `.${basename(targetPath)}.kavrix-${String(process.pid)}-${randomBytes(16).toString('hex')}.tmp`,
   );
+  const backupPath = join(
+    directoryPath,
+    `.${basename(targetPath)}.kavrix-${String(process.pid)}-${randomBytes(16).toString('hex')}.bak`,
+  );
   let handle: FileHandle | undefined;
   let published = false;
+  let publishedIdentity: FileIdentity | undefined;
+  let backupIdentity: FileIdentity | undefined;
   try {
     handle = await open(
       temporaryPath,
@@ -682,24 +688,31 @@ async function publishContainer(
     await assertTrustedPublicationState(target, lockPath, lockIdentity);
     if (mode === 'create') {
       try {
-        await link(temporaryPath, targetPath);
+        await fileEncryptedDatabaseEffects.link(temporaryPath, targetPath);
       } catch (error) {
         if (fileErrorCode(error) === 'EEXIST')
           throw new EncryptedDatabaseStoreError('exists');
         throw error;
       }
-      await unlink(temporaryPath);
+      await fileEncryptedDatabaseEffects.unlink(temporaryPath);
     } else {
       if (expectedIdentity === undefined)
         throw new EncryptedDatabaseStoreError('operation');
       await assertPathIdentity(targetPath, expectedIdentity);
       await assertTrustedPublicationState(target, lockPath, lockIdentity);
-      await rename(temporaryPath, targetPath);
+      await fileEncryptedDatabaseEffects.link(targetPath, backupPath);
+      backupIdentity = await assertBackupIdentity(backupPath, expectedIdentity);
+      await fileEncryptedDatabaseEffects.rename(temporaryPath, targetPath);
     }
+    publishedIdentity = stagedIdentity;
+    await assertPathIdentity(targetPath, stagedIdentity);
     await assertTrustedPublicationState(target, lockPath, lockIdentity);
     const finalMetadata = await lstat(targetPath, { bigint: true });
     await assertOwnedPermissions(finalMetadata, targetPath, true);
     const finalIdentity = identityOf(finalMetadata);
+    if (!sameIdentity(finalIdentity, stagedIdentity)) {
+      throw new EncryptedDatabaseStoreError('operation');
+    }
     if (process.platform === 'win32') {
       await setWindowsUserOnlyAcl(targetPath);
       await verifyWindowsUserOnlyAcl(targetPath);
@@ -713,17 +726,85 @@ async function publishContainer(
       throw new EncryptedDatabaseStoreError('operation');
     }
     await assertTrustedPublicationState(target, lockPath, lockIdentity);
-    await syncDirectory(directoryPath);
+    await fileEncryptedDatabaseEffects.syncDirectory(directoryPath);
     await assertTrustedPublicationState(target, lockPath, lockIdentity);
+    if (backupIdentity !== undefined) {
+      await assertPathIdentity(backupPath, backupIdentity);
+      await fileEncryptedDatabaseEffects.unlink(backupPath);
+      backupIdentity = undefined;
+    }
     published = true;
   } catch (error) {
+    if (publishedIdentity !== undefined) {
+      try {
+        await rollbackPublishedContainer(
+          mode,
+          directoryPath,
+          targetPath,
+          publishedIdentity,
+          backupPath,
+          backupIdentity,
+        );
+        backupIdentity = undefined;
+      } catch {
+        throw new EncryptedDatabaseStoreError('operation');
+      }
+      throw new EncryptedDatabaseStoreError('operation');
+    }
     if (error instanceof EncryptedDatabaseStoreError) throw error;
     throw new EncryptedDatabaseStoreError('operation');
   } finally {
     contents.fill(0);
     await handle?.close().catch(() => undefined);
-    if (!published) await unlink(temporaryPath).catch(() => undefined);
+    if (!published)
+      await fileEncryptedDatabaseEffects.unlink(temporaryPath).catch(() => undefined);
+    if (published && backupIdentity !== undefined)
+      await fileEncryptedDatabaseEffects.unlink(backupPath).catch(() => undefined);
   }
+}
+
+async function assertBackupIdentity(
+  path: string,
+  expected: FileIdentity,
+): Promise<FileIdentity> {
+  try {
+    const metadata = await lstat(path, { bigint: true });
+    if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.nlink !== 2n) {
+      throw new EncryptedDatabaseStoreError('invalid');
+    }
+    if (!sameIdentity(identityOf(metadata), expected)) {
+      throw new EncryptedDatabaseStoreError('invalid');
+    }
+    if (process.platform === 'win32') await verifyWindowsUserOnlyAcl(path);
+    else if ((metadata.mode & 0o777n) !== 0o600n) {
+      throw new EncryptedDatabaseStoreError('invalid');
+    }
+    return identityOf(metadata);
+  } catch (error) {
+    if (error instanceof EncryptedDatabaseStoreError) throw error;
+    throw new EncryptedDatabaseStoreError('operation');
+  }
+}
+
+async function rollbackPublishedContainer(
+  mode: 'create' | 'replace',
+  directoryPath: string,
+  targetPath: string,
+  publishedIdentity: FileIdentity,
+  backupPath: string,
+  backupIdentity: FileIdentity | undefined,
+): Promise<void> {
+  await assertPathIdentity(targetPath, publishedIdentity);
+  if (mode === 'create') {
+    await fileEncryptedDatabaseEffects.unlink(targetPath);
+  } else {
+    if (backupIdentity === undefined)
+      throw new EncryptedDatabaseStoreError('operation');
+    await assertPathIdentity(backupPath, backupIdentity);
+    await fileEncryptedDatabaseEffects.rename(backupPath, targetPath);
+    await assertPathIdentity(targetPath, backupIdentity);
+  }
+  await fileEncryptedDatabaseEffects.syncDirectory(directoryPath);
 }
 
 async function assertTrustedPublicationState(
@@ -852,3 +933,36 @@ function fileErrorCode(error: unknown): string | undefined {
     ? String(error.code)
     : undefined;
 }
+
+type FileEncryptedDatabaseEffects = Readonly<{
+  link: typeof link;
+  rename: typeof rename;
+  unlink: typeof unlink;
+  syncDirectory: typeof syncDirectory;
+}>;
+
+const defaultFileEncryptedDatabaseEffects: FileEncryptedDatabaseEffects = {
+  link,
+  rename,
+  unlink,
+  syncDirectory,
+};
+
+let fileEncryptedDatabaseEffects = defaultFileEncryptedDatabaseEffects;
+
+/**
+ * Test-only package-internal fault seam. It is deliberately absent from the
+ * storage package barrel, so production consumers cannot configure filesystem
+ * behavior. Each replacement is reset after a test.
+ */
+export const __fileEncryptedDatabaseTestEffects = {
+  replace(overrides: Partial<FileEncryptedDatabaseEffects>): void {
+    fileEncryptedDatabaseEffects = {
+      ...defaultFileEncryptedDatabaseEffects,
+      ...overrides,
+    };
+  },
+  reset(): void {
+    fileEncryptedDatabaseEffects = defaultFileEncryptedDatabaseEffects;
+  },
+};

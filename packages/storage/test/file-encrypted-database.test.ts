@@ -48,6 +48,7 @@ vi.mock('@kavrix/key-files/windows-acl', () => ({
 
 import { defineEncryptedDatabaseStoreContractTests } from './encrypted-database-store-contract.test.js';
 import {
+  __fileEncryptedDatabaseTestEffects,
   FileEncryptedDatabaseStore,
   MAX_FILE_ENCRYPTED_DATABASE_BYTES,
 } from '../src/file-encrypted-database.js';
@@ -60,6 +61,7 @@ const tag = 'AAAAAAAAAAAAAAAAAAAAAA';
 const ciphertext = 'AQID';
 
 afterEach(async () => {
+  __fileEncryptedDatabaseTestEffects.reset();
   vi.clearAllMocks();
   for (const directory of directories.splice(0))
     await rm(directory, { force: true, recursive: true });
@@ -209,6 +211,38 @@ describe('FileEncryptedDatabaseStore', () => {
     expect(
       (await readdir(dirname(target))).filter((name) => name.endsWith('.tmp')),
     ).toEqual([]);
+    await store.close();
+  });
+
+  it('rolls back a post-publication replace failure and retains its lock', async () => {
+    const target = await targetPath();
+    const databaseId = dbId('db_01JROLLBACKREPLACE');
+    const store = await FileEncryptedDatabaseStore.open(target);
+    await store.createDatabase(database(databaseId, 0));
+    const before = await readFile(target, 'utf8');
+    let failed = false;
+    __fileEncryptedDatabaseTestEffects.replace({
+      syncDirectory: async () => {
+        if (!failed) {
+          failed = true;
+          throw new Error('injected directory sync');
+        }
+      },
+    });
+    await expect(
+      store.updateDatabase(database(databaseId, 1), revision(0)),
+    ).rejects.toMatchObject({ code: 'operation' });
+    __fileEncryptedDatabaseTestEffects.reset();
+    expect(await readFile(target, 'utf8')).toBe(before);
+    expect(
+      (await readdir(dirname(target))).filter(
+        (name) => name.endsWith('.tmp') || name.endsWith('.bak'),
+      ),
+    ).toEqual([]);
+    await store.ping();
+    await expect(FileEncryptedDatabaseStore.open(target)).rejects.toMatchObject({
+      code: 'busy',
+    });
     await store.close();
   });
 
