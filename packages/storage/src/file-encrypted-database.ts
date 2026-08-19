@@ -694,6 +694,11 @@ async function publishContainer(
           throw new EncryptedDatabaseStoreError('exists');
         throw error;
       }
+      // The target exists before temporary cleanup; establish a trusted
+      // rollback identity now so a failed temporary unlink cannot leave a
+      // successful-looking create behind.
+      publishedIdentity = stagedIdentity;
+      await assertLinkedPublicationIdentity(targetPath, stagedIdentity);
       await fileEncryptedDatabaseEffects.unlink(temporaryPath);
     } else {
       if (expectedIdentity === undefined)
@@ -703,9 +708,9 @@ async function publishContainer(
       await fileEncryptedDatabaseEffects.link(targetPath, backupPath);
       backupIdentity = await assertBackupIdentity(backupPath, expectedIdentity);
       await fileEncryptedDatabaseEffects.rename(temporaryPath, targetPath);
+      publishedIdentity = stagedIdentity;
+      await assertPathIdentity(targetPath, stagedIdentity);
     }
-    publishedIdentity = stagedIdentity;
-    await assertPathIdentity(targetPath, stagedIdentity);
     await assertTrustedPublicationState(target, lockPath, lockIdentity);
     const finalMetadata = await lstat(targetPath, { bigint: true });
     await assertOwnedPermissions(finalMetadata, targetPath, true);
@@ -739,8 +744,8 @@ async function publishContainer(
       try {
         await rollbackPublishedContainer(
           mode,
-          directoryPath,
-          targetPath,
+          target,
+          lockIdentity,
           publishedIdentity,
           backupPath,
           backupIdentity,
@@ -786,25 +791,53 @@ async function assertBackupIdentity(
   }
 }
 
+async function assertLinkedPublicationIdentity(
+  path: string,
+  expected: FileIdentity,
+): Promise<void> {
+  try {
+    const metadata = await lstat(path, { bigint: true });
+    if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.nlink !== 2n) {
+      throw new EncryptedDatabaseStoreError('invalid');
+    }
+    if (!sameIdentity(identityOf(metadata), expected)) {
+      throw new EncryptedDatabaseStoreError('invalid');
+    }
+    if (process.platform === 'win32') await verifyWindowsUserOnlyAcl(path);
+    else if ((metadata.mode & 0o777n) !== 0o600n) {
+      throw new EncryptedDatabaseStoreError('invalid');
+    }
+  } catch (error) {
+    if (error instanceof EncryptedDatabaseStoreError) throw error;
+    throw new EncryptedDatabaseStoreError('operation');
+  }
+}
+
 async function rollbackPublishedContainer(
   mode: 'create' | 'replace',
-  directoryPath: string,
-  targetPath: string,
+  target: ResolvedFileTarget,
+  lockIdentity: FileIdentity,
   publishedIdentity: FileIdentity,
   backupPath: string,
   backupIdentity: FileIdentity | undefined,
 ): Promise<void> {
+  const { directoryPath, lockPath, targetPath } = target;
+  await assertTrustedPublicationState(target, lockPath, lockIdentity);
   await assertPathIdentity(targetPath, publishedIdentity);
+  await assertTrustedPublicationState(target, lockPath, lockIdentity);
   if (mode === 'create') {
+    await assertTrustedPublicationState(target, lockPath, lockIdentity);
     await fileEncryptedDatabaseEffects.unlink(targetPath);
   } else {
     if (backupIdentity === undefined)
       throw new EncryptedDatabaseStoreError('operation');
     await assertPathIdentity(backupPath, backupIdentity);
+    await assertTrustedPublicationState(target, lockPath, lockIdentity);
     await fileEncryptedDatabaseEffects.rename(backupPath, targetPath);
     await assertPathIdentity(targetPath, backupIdentity);
   }
   await fileEncryptedDatabaseEffects.syncDirectory(directoryPath);
+  await assertTrustedPublicationState(target, lockPath, lockIdentity);
 }
 
 async function assertTrustedPublicationState(
