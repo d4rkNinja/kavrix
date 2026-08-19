@@ -135,6 +135,33 @@ function vaultFixture(databaseId: string, vaultId: string): Record<string, unkno
   };
 }
 
+function recoverySlotFixture(
+  databaseId: string,
+  slotId: string,
+): Record<string, unknown> {
+  return {
+    slotVersion: 1,
+    id: slotId,
+    type: 'recovery-key',
+    state: 'active',
+    keyVersion: 1,
+    derivation: {
+      algorithm: 'hkdf-sha256',
+      version: 1,
+      salt: portableSalt,
+      context: 'kavrix/database-recovery-wrap/v1',
+      outputLength: 32,
+    },
+    wrappedDatabaseRoot: databaseEnvelope(
+      databaseId,
+      'wrapped-database-root',
+      slotId,
+      'database-root',
+    ),
+    createdAt: timestamp,
+  };
+}
+
 describe('encrypted database container contracts', () => {
   const databaseId = databaseIdSchema.parse('db_01JTESTDATABASE');
   const vaultId = vaultIdSchema.parse('vault_01JPROJECTA');
@@ -169,6 +196,23 @@ describe('encrypted database container contracts', () => {
           'catalog',
           2,
         ),
+      }).success,
+    ).toBe(false);
+  });
+
+  it('rejects recovery slots that reuse any database key-slot ID', () => {
+    expect(
+      encryptedDatabaseDocumentSchema.safeParse({
+        ...databaseFixture(databaseId),
+        recoverySlots: [recoverySlotFixture(databaseId, 'slot.database-owner')],
+      }).success,
+    ).toBe(false);
+
+    const recoverySlot = recoverySlotFixture(databaseId, 'slot.recovery.one');
+    expect(
+      encryptedDatabaseDocumentSchema.safeParse({
+        ...databaseFixture(databaseId),
+        recoverySlots: [recoverySlot, recoverySlot],
       }).success,
     ).toBe(false);
   });
