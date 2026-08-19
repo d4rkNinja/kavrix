@@ -2,7 +2,7 @@ import { chmod, link, readFile, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { databaseIdSchema, profileIdSchema } from '@kavrix/schemas';
+import { canonicalJson, databaseIdSchema, profileIdSchema } from '@kavrix/schemas';
 import { setWindowsUserOnlyAcl } from '@kavrix/key-files';
 import { MongoLocalVaultStore } from '@kavrix/storage';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -408,32 +408,34 @@ describe('datastore profiles', () => {
     expect(await readFile(path, 'utf8')).toBe(before);
   });
 
-  it(
-    'rejects control characters, forbidden keys at every depth, noncanonical JSON, and bounds',
-    async () => {
-      const profiles = await registry();
-      await expect(
-        profiles.add({ ...mongoProfile(), database: 'bad\u001bname' }),
-      ).rejects.toThrow('invalid');
-      await expect(
-        profiles.add({ ...mongoProfile(), uri: 'mongodb://forbidden' } as never),
-      ).rejects.toThrow('invalid');
+  it('rejects control characters, forbidden keys at every depth, noncanonical JSON, and bounds', async () => {
+    const profiles = await registry();
+    await expect(
+      profiles.add({ ...mongoProfile(), database: 'bad\u001bname' }),
+    ).rejects.toThrow('invalid');
+    await expect(
+      profiles.add({ ...mongoProfile(), uri: 'mongodb://forbidden' } as never),
+    ).rejects.toThrow('invalid');
 
-      const path = resolveProfilePath(directory);
-      await writeFile(
-        path,
-        '{"current":null,"profiles":[],"version":1,"nested":{"accessToken":"forbidden"}}',
-        { mode: 0o600 },
-      );
-      if (process.platform === 'win32') await setWindowsUserOnlyAcl(path);
-      await expect(profiles.list()).rejects.toThrow('invalid');
+    const path = resolveProfilePath(directory);
+    await writeFile(
+      path,
+      '{"current":null,"profiles":[],"version":1,"nested":{"accessToken":"forbidden"}}',
+      { mode: 0o600 },
+    );
+    if (process.platform === 'win32') await setWindowsUserOnlyAcl(path);
+    await expect(profiles.list()).rejects.toThrow('invalid');
 
-      await rm(path);
-      for (let index = 0; index < 64; index += 1) {
-        await profiles.add(fileProfile(`profile-${String(index)}`));
-      }
-      await expect(profiles.add(fileProfile('profile-64'))).rejects.toThrow('limited');
-    },
-    process.platform === 'win32' ? 180_000 : 60_000,
-  );
+    await rm(path);
+    const maximumProfiles = Array.from({ length: 64 }, (_, index) =>
+      fileProfile(`profile-${String(index)}`),
+    ).sort((left, right) => left.id.localeCompare(right.id));
+    await writeFile(
+      path,
+      canonicalJson({ current: null, profiles: maximumProfiles, version: 1 }),
+      { mode: 0o600 },
+    );
+    if (process.platform === 'win32') await setWindowsUserOnlyAcl(path);
+    await expect(profiles.add(fileProfile('profile-64'))).rejects.toThrow('limited');
+  }, 60_000);
 });
