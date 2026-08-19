@@ -18,6 +18,10 @@ export {
   type FileLocalVaultErrorCode,
 } from './file-local-vault.js';
 export {
+  FileEncryptedDatabaseStore,
+  MAX_FILE_ENCRYPTED_DATABASE_BYTES,
+} from './file-encrypted-database.js';
+export {
   assertMongoUriAllowed,
   MongoLocalVaultError,
   MongoLocalVaultStore,
