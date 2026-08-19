@@ -125,6 +125,9 @@ importers:
 
   packages/storage:
     dependencies:
+      '@kavrix/key-files':
+        specifier: workspace:*
+        version: link:../key-files
       '@kavrix/schemas':
         specifier: workspace:*
         version: link:../schemas

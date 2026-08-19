@@ -7,6 +7,11 @@ import {
   type LocalVaultDocument,
 } from '@kavrix/schemas';
 
+import {
+  EncryptedVaultStoreError,
+  type EncryptedVaultStore,
+} from './encrypted-vault-store.js';
+
 const DEFAULT_COLLECTION_NAME = 'kavrix_vaults';
 const COLLECTION_NAME_PATTERN = /^[A-Za-z0-9_-]{1,64}$/u;
 
@@ -18,11 +23,9 @@ interface StoredLocalVaultDocument {
 export type MongoLocalVaultErrorCode =
   'conflict' | 'connection' | 'exists' | 'invalid' | 'operation';
 
-export class MongoLocalVaultError extends Error {
-  readonly code: MongoLocalVaultErrorCode;
-
+export class MongoLocalVaultError extends EncryptedVaultStoreError {
   constructor(code: MongoLocalVaultErrorCode) {
-    super(
+    const message =
       code === 'conflict'
         ? 'The vault changed while this command was running.'
         : code === 'exists'
@@ -31,10 +34,9 @@ export class MongoLocalVaultError extends Error {
             ? 'The database contains an invalid Kavrix vault document.'
             : code === 'connection'
               ? 'The database connection failed.'
-              : 'The database operation failed.',
-    );
+              : 'The database operation failed.';
+    super(code, message);
     this.name = 'MongoLocalVaultError';
-    this.code = code;
   }
 }
 
@@ -42,7 +44,7 @@ export type MongoLocalVaultStoreOptions = Readonly<{
   collectionName?: string;
 }>;
 
-export class MongoLocalVaultStore {
+export class MongoLocalVaultStore implements EncryptedVaultStore {
   readonly #client: MongoClient;
   readonly #database: Db;
   readonly #collection: Collection<StoredLocalVaultDocument>;
@@ -134,7 +136,7 @@ export class MongoLocalVaultStore {
     if (parsed.revision !== expectedRevision + 1) {
       throw new MongoLocalVaultError('invalid');
     }
-    const expected = vaultRevisionSchema.parse(expectedRevision);
+    const expected = parseRevision(expectedRevision);
     try {
       const result = await this.#collection.updateOne(
         { _id: parsed.id, revision: expected },
@@ -159,6 +161,21 @@ export class MongoLocalVaultStore {
     }
   }
 
+  async delete(
+    vaultId: string,
+    expectedRevision: LocalVaultDocument['revision'],
+  ): Promise<void> {
+    const id = parseVaultId(vaultId);
+    const expected = parseRevision(expectedRevision);
+    try {
+      const result = await this.#collection.deleteOne({ _id: id, revision: expected });
+      if (result.deletedCount !== 1) throw new MongoLocalVaultError('conflict');
+    } catch (error: unknown) {
+      if (error instanceof MongoLocalVaultError) throw error;
+      throw new MongoLocalVaultError('operation');
+    }
+  }
+
   async close(): Promise<void> {
     await this.#client.close();
   }
@@ -167,6 +184,14 @@ export class MongoLocalVaultStore {
 function parseVaultId(value: unknown): string {
   try {
     return vaultIdSchema.parse(value);
+  } catch {
+    throw new MongoLocalVaultError('invalid');
+  }
+}
+
+function parseRevision(value: unknown): LocalVaultDocument['revision'] {
+  try {
+    return vaultRevisionSchema.parse(value);
   } catch {
     throw new MongoLocalVaultError('invalid');
   }

@@ -15,7 +15,7 @@ The `kavrix` archive may contain only:
 - `LICENSE`
 - npm-generated `package.json`
 
-MongoDB `7.5.0` is the only external runtime dependency. The compiled bundle
+MongoDB `7.5.0` is the only external package dependency. The compiled bundle
 contains the CLI plus reviewed bundled libraries. The generated CycloneDX 1.6
 SBOM records bundled components and the complete lockfile-resolved MongoDB
 runtime graph. Workspace protocols, TypeScript source, tests, local state,
@@ -29,13 +29,17 @@ Run from the repository root:
 pnpm install --frozen-lockfile
 pnpm verify
 pnpm --filter kavrix package:smoke
+pnpm acceptance:pre-ci
 pnpm --filter kavrix pack:check
 pnpm audit --audit-level high
 ```
 
 `package:smoke` builds the exact archive, installs it in a temporary directory,
-checks the allowlist and SBOM, rejects plaintext canaries/private paths, and
-executes the installed version/help commands.
+checks the allowlist and SBOM, rejects plaintext canaries/private paths, executes
+the installed version/help commands, and removes every pack/install/cache root.
+`acceptance:pre-ci` installs the packed CLI, runs the local encrypted-file command
+lifecycle, and removes test-owned vault, key, anchor, recovery, and install files
+in `finally` on success or failure.
 
 ## Release commit
 

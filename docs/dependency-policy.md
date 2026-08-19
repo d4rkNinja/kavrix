@@ -12,10 +12,11 @@ and clipboard packages are outside the active workspace and public artifact.
 
 ## Public npm artifact
 
-The CLI bundles Commander, Zod, libsodium-wrappers, and libsodium. MongoDB
-\`7.5.0\` remains an explicit runtime dependency because the CLI connects to the
-database directly. No workspace protocol, local path, optional package, or
-unreviewed runtime import may reach \`dist\`.
+The CLI bundles Commander, Zod, libsodium-wrappers, and libsodium. The local-file
+adapter uses Node's filesystem APIs and adds no runtime dependency. MongoDB
+`7.5.0` remains an explicit runtime dependency because the CLI supports direct
+database connections. No workspace protocol, local path, optional package, or
+unreviewed runtime import may reach `dist`.
 
 The build validates external imports, emits a CycloneDX 1.6 SBOM, records
 artifact hashes, and includes the EFF word-list attribution. The package smoke

@@ -21,9 +21,10 @@
   "scripts": {
     "build": "tsc -b tsconfig.build.json",
     "typecheck": "tsc -b tsconfig.build.json --pretty false && tsc -p tsconfig.json --pretty false",
-    "test": "vitest run --root ../.. packages/storage/test"
+    "test": "vitest run --root ../.. --config packages/storage/vitest.config.ts"
   },
   "dependencies": {
+    "@kavrix/key-files": "workspace:*",
     "@kavrix/schemas": "workspace:*",
     "mongodb": "catalog:"
   }

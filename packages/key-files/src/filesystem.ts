@@ -390,6 +390,63 @@ export async function validateSecureFileSource(
   }
 }
 
+/**
+ * Removes one already-protected Kavrix file without following links. The file is
+ * first moved to a random same-directory quarantine name and its identity is
+ * rechecked before unlink, preventing path replacement from widening deletion.
+ */
+export async function deleteSecureFile(
+  inputPath: string,
+  maximumBytes = MAX_SECURE_STREAM_FILE_BYTES,
+): Promise<void> {
+  assertSecureFileMaximum(maximumBytes);
+  const { directoryPath, targetPath } = await resolveTarget(inputPath);
+  let handle: FileHandle | undefined;
+  let quarantinePath: string | undefined;
+  let originalIdentity: FileIdentity | undefined;
+  try {
+    await validateWriteDirectory(directoryPath);
+    const before = await lstatRegularIdentity(targetPath);
+    originalIdentity = before;
+    handle = await open(targetPath, noFollowReadFlags());
+    const opened = await handle.stat({ bigint: true });
+    if (!sameIdentity(before, opened)) {
+      throw new PortableKeyFileError('KEY_FILE_UNSAFE');
+    }
+    await validateRegularFile(targetPath, opened, maximumBytes);
+    await handle.close();
+    handle = undefined;
+    await verifyPathStillNamesFile(targetPath, before);
+    quarantinePath = join(
+      directoryPath,
+      `.kavrix-delete-${String(process.pid)}-${randomBytes(TEMP_FILE_BYTES).toString('hex')}.tmp`,
+    );
+    await rename(targetPath, quarantinePath);
+    const quarantined = await lstat(quarantinePath, { bigint: true });
+    if (!quarantined.isFile() || !sameIdentity(before, quarantined)) {
+      throw new PortableKeyFileError('KEY_FILE_UNSAFE');
+    }
+    await unlink(quarantinePath);
+    quarantinePath = undefined;
+    await syncDirectory(directoryPath);
+  } catch (error) {
+    throw mappedFileError(error, 'KEY_FILE_OPERATION_FAILED');
+  } finally {
+    await handle?.close().catch(() => undefined);
+    if (quarantinePath !== undefined && originalIdentity !== undefined) {
+      const cleanupPath = quarantinePath;
+      const cleanupIdentity = originalIdentity;
+      await lstat(cleanupPath, { bigint: true })
+        .then(async (candidate) => {
+          if (candidate.isFile() && sameIdentity(cleanupIdentity, candidate)) {
+            await unlink(cleanupPath);
+          }
+        })
+        .catch(() => undefined);
+    }
+  }
+}
+
 async function syncDirectory(directoryPath: string): Promise<void> {
   let handle: FileHandle | undefined;
   try {

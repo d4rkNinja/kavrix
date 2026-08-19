@@ -11,5 +11,8 @@
     "scripts/**/*.ts",
     "*.ts"
   ],
-  "references": [{ "path": "../schemas/tsconfig.build.json" }]
+  "references": [
+    { "path": "../schemas/tsconfig.build.json" },
+    { "path": "../key-files/tsconfig.build.json" }
+  ]
 }

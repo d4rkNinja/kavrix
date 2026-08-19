@@ -9,6 +9,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./windows-acl": {
+      "types": "./dist/windows-acl.d.ts",
+      "import": "./dist/windows-acl.js"
     }
   },
   "files": [

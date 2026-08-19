@@ -1,4 +1,8 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { existsSync } from 'node:fs';
+import { realpath } from 'node:fs/promises';
+import { createInterface } from 'node:readline/promises';
+import { Readable } from 'node:stream';
 
 import {
   createPortableKeySlot,
@@ -15,10 +19,13 @@ import {
 } from '@kavrix/crypto';
 import {
   copyRevisionAnchor,
+  deleteSecureFile,
   PortableKeyFileError,
   readPortableKeyFile,
   readRecoveryKitFile,
   readRevisionAnchor,
+  readSecureFile,
+  validateSecureFileDestination,
   validateRevisionAnchorFile,
   writeRecoveryKitFile,
   writeRevisionAnchor,
@@ -48,7 +55,12 @@ import {
   type LocalVaultPayload,
   type Sha256Digest,
 } from '@kavrix/schemas';
-import { MongoLocalVaultError, MongoLocalVaultStore } from '@kavrix/storage';
+import {
+  EncryptedVaultStoreError,
+  FileLocalVaultStore,
+  MongoLocalVaultStore,
+  type EncryptedVaultStore,
+} from '@kavrix/storage';
 import { Command } from 'commander';
 
 import {
@@ -59,6 +71,7 @@ import {
 import { CLI_VERSION } from './version.js';
 
 const DEFAULT_KEY_FILE = './kavrix.key';
+const DEFAULT_DATA_FILE = './kavrix.vault';
 const DEFAULT_COLLECTION = 'kavrix_vaults';
 const DEFAULT_VAULT_ID = 'default';
 const REDACTED = '[REDACTED]';
@@ -75,12 +88,16 @@ const ANSI_YELLOW = `${ANSI_ESCAPE}[33m`;
 const ANSI_RED = `${ANSI_ESCAPE}[31m`;
 
 export type LocalCliOptions = Readonly<{
+  datastore?: string;
+  dataFile?: string;
   database?: string;
   databaseUrlStdin?: boolean;
   passphraseStdin?: boolean;
   newPassphraseStdin?: boolean;
   recoveryPassphraseStdin?: boolean;
   valueStdin?: boolean;
+  confirmationStdin?: boolean;
+  artifact?: readonly string[];
   keyFile: string;
   source?: string;
   outputKeyFile?: string;
@@ -100,8 +117,9 @@ export function buildLocalCli(): Command {
   const program = new Command();
   program
     .name('kavrix')
-    .description('Local encrypted credential vault backed directly by MongoDB.')
+    .description('Local encrypted credential vault with selectable storage.')
     .version(CLI_VERSION)
+    .helpCommand(false)
     .showHelpAfterError()
     .configureOutput({
       writeOut: (text) =>
@@ -117,6 +135,27 @@ export function buildLocalCli(): Command {
   addKeyOptions(init);
   init.action(async (...args: unknown[]) => {
     await handleInit(getOptions(args));
+  });
+
+  const destroy = program
+    .command('destroy', { hidden: true })
+    .description('Permanently destroy one authenticated vault and its active files.')
+    .helpOption(false)
+    .showHelpAfterError(false);
+  addDatabaseOptions(destroy);
+  addKeyOptions(destroy);
+  destroy.option(
+    '--confirmation-stdin',
+    'Read exactly two destruction confirmations from the protected stdin flow.',
+  );
+  destroy.option(
+    '--artifact <path>',
+    'Additional Kavrix key, anchor, or recovery file bound to this vault.',
+    collectOption,
+    [],
+  );
+  destroy.action(async (...args: unknown[]) => {
+    await handleDestroy(getOptions(args));
   });
 
   const db = program.command('db').description('Database operations.');
@@ -398,9 +437,11 @@ export async function runLocalCli(argv: readonly string[]): Promise<void> {
         ? error.message
         : error instanceof LocalSecretInputError
           ? error.message
-          : error instanceof MongoLocalVaultError
+          : error instanceof EncryptedVaultStoreError
             ? error.message
-            : 'Kavrix command failed.';
+            : error instanceof AggregateError
+              ? error.message
+              : 'Kavrix command failed.';
     process.stderr.write(colorizeError(message) + '\n');
     process.exitCode = 1;
   }
@@ -413,8 +454,21 @@ class LocalCliError extends Error {
   }
 }
 
+class InitializationRollbackError extends AggregateError {
+  public constructor(operationError: unknown, cleanupError: unknown) {
+    super(
+      [asError(operationError), asError(cleanupError)],
+      'Vault initialization failed and datastore rollback was incomplete.',
+      { cause: asError(operationError) },
+    );
+    this.name = 'InitializationRollbackError';
+  }
+}
+
 function addDatabaseOnlyOptions(command: Command): void {
   command
+    .option('--datastore <type>', 'Encrypted datastore: mongodb or file.', 'mongodb')
+    .option('--data-file <path>', 'Encrypted local vault file path.')
     .option(
       '--database-url-stdin',
       'Read the MongoDB connection string from standard input (never from an argument).',
@@ -500,7 +554,24 @@ function addVaultOption(command: Command): void {
 
 function getOptions(args: readonly unknown[]): LocalCliOptions {
   const last = args.at(-1);
-  if (last instanceof Command) return last.opts();
+  if (last instanceof Command) {
+    const hierarchy: Command[] = [];
+    let current: Command | null = last;
+    while (current !== null) {
+      hierarchy.unshift(current);
+      current = current.parent;
+    }
+    const merged: Record<string, unknown> = {};
+    for (const command of hierarchy) {
+      for (const [key, value] of Object.entries(command.opts())) {
+        const source = command.getOptionValueSource(key);
+        if (source !== 'default' || !Object.hasOwn(merged, key)) {
+          merged[key] = value;
+        }
+      }
+    }
+    return merged as LocalCliOptions;
+  }
   const candidate = args.find((value) => typeof value === 'object' && value !== null);
   if (candidate === undefined) throw new LocalCliError('Command options are invalid.');
   return candidate as LocalCliOptions;
@@ -536,7 +607,33 @@ function getNames(args: readonly unknown[]): readonly [string, string] {
   return [from, to];
 }
 
+function collectOption(value: string, previous: readonly string[]): readonly string[] {
+  return [...previous, value];
+}
+
+const RECOVERY_KIT_KEYS = [
+  'authenticationTag',
+  'ciphertext',
+  'derivation',
+  'format',
+  'nonce',
+  'recoverySlotId',
+  'vaultId',
+  'version',
+] as const;
+const REVISION_ANCHOR_KEYS = [
+  'authenticationTag',
+  'format',
+  'keySlotId',
+  'metadataDigest',
+  'revision',
+  'vaultId',
+  'version',
+] as const;
+
 async function handleInit(options: LocalCliOptions): Promise<void> {
+  await validateSecureFileDestination(options.keyFile);
+  await validateSecureFileDestination(revisionAnchorPath(options.keyFile));
   const values = await readSecrets(
     ['database-url', 'passphrase', 'passphrase'],
     options,
@@ -550,6 +647,9 @@ async function handleInit(options: LocalCliOptions): Promise<void> {
   const passphrase = Buffer.from(firstPassphrase, 'utf8');
   const portableKey = generatePortableKey();
   const rootKey = generateVaultRootKey();
+  const createdFiles: string[] = [];
+  let operationError: unknown;
+  const cleanupFailures: Error[] = [];
   try {
     const document = await createVaultDocument(options.vault, portableKey, rootKey);
     const binding = {
@@ -561,37 +661,382 @@ async function handleInit(options: LocalCliOptions): Promise<void> {
       mode: 'create',
       protection: { kind: 'passphrase', passphrase },
     });
-    await withStore(databaseUrl, options, async (store, databaseName) => {
+    createdFiles.push(options.keyFile);
+    await withStore(databaseUrl, options, async (store, target) => {
       await store.create(document);
-      await writeRevisionAnchor(
-        revisionAnchorPath(options.keyFile),
-        rootKey,
-        localVaultRevisionAnchor(document),
-        'create',
-      );
-      writeJson({
-        vaultId: document.id,
-        database: databaseName,
-        collection: options.collection,
-        keyFile: options.keyFile,
-      });
+      try {
+        await writeRevisionAnchor(
+          revisionAnchorPath(options.keyFile),
+          rootKey,
+          localVaultRevisionAnchor(document),
+          'create',
+        );
+        createdFiles.push(revisionAnchorPath(options.keyFile));
+        writeJson({
+          vaultId: document.id,
+          ...storeLocation(options, target),
+          keyFile: options.keyFile,
+        });
+      } catch (error) {
+        try {
+          await store.delete(document.id, document.revision);
+        } catch (cleanupError) {
+          throw new InitializationRollbackError(error, cleanupError);
+        }
+        throw error;
+      }
     });
+  } catch (error) {
+    operationError = error;
   } finally {
+    if (
+      operationError !== undefined &&
+      !(operationError instanceof InitializationRollbackError)
+    ) {
+      for (const path of createdFiles.toReversed()) {
+        try {
+          await deleteSecureFile(path, 16_384);
+        } catch (error) {
+          cleanupFailures.push(asError(error));
+        }
+      }
+    }
     zeroize(passphrase);
     zeroize(portableKey);
     zeroize(rootKey);
   }
+  if (operationError !== undefined && cleanupFailures.length > 0) {
+    throw new AggregateError(
+      [asError(operationError), ...cleanupFailures],
+      'Vault initialization and cleanup failed.',
+    );
+  }
+  if (operationError !== undefined) throw asError(operationError);
+  if (cleanupFailures.length > 0) {
+    throw new AggregateError(
+      cleanupFailures,
+      'Vault initialization cleanup was incomplete.',
+    );
+  }
+}
+
+type DestroyInputs = Readonly<{
+  databaseUrl: string;
+  passphrase: string;
+  confirmations?: readonly [string, string];
+}>;
+
+async function handleDestroy(options: LocalCliOptions): Promise<void> {
+  const datastore = datastoreFrom(options);
+  const challenge = randomUUID().replaceAll('-', '').slice(0, 12).toUpperCase();
+  let inputs: DestroyInputs;
+  if (options.confirmationStdin === true) {
+    process.stderr.write(`Destruction challenge: ${challenge}\n`);
+    inputs = await readDestroyStdin(options);
+  } else {
+    if (options.passphraseStdin === true || options.databaseUrlStdin === true) {
+      throw new LocalCliError(
+        'Destroy stdin secrets require --confirmation-stdin so every frame is read together.',
+      );
+    }
+    const values = await readSecrets(['database-url', 'passphrase'], options);
+    inputs = {
+      databaseUrl: requiredSecret(values, 0),
+      passphrase: requiredSecret(values, 1),
+    };
+  }
+
+  await withStore(inputs.databaseUrl, options, async (store, target) => {
+    const document = await requireVault(store, options.vault);
+    const rootKey = await unlockVault(document, options.keyFile, inputs.passphrase);
+    try {
+      const payload = await decryptVaultPayload(document, rootKey);
+      const additionalArtifacts = await resolveDestroyArtifacts(
+        options.artifact ?? [],
+        document.id,
+        options.keyFile,
+      );
+      const backendTarget =
+        datastore === 'file'
+          ? `file ${sanitizeTerminalText(target)}`
+          : `MongoDB database ${sanitizeTerminalText(target)}, collection ${sanitizeTerminalText(options.collection)}`;
+      process.stderr.write(
+        [
+          '',
+          'Permanent vault destruction requested.',
+          `Vault: ${sanitizeTerminalText(document.id)}`,
+          `Datastore: ${backendTarget}`,
+          `Revision: ${String(document.revision)}`,
+          `Encrypted records: ${String(Object.keys(payload.records).length)}`,
+          `Active key: ${sanitizeTerminalText(options.keyFile)}`,
+          `Revision anchor: ${sanitizeTerminalText(revisionAnchorPath(options.keyFile))}`,
+          ...additionalArtifacts.map(
+            (path) => `Additional artifact: ${sanitizeTerminalText(path)}`,
+          ),
+          'Backups, snapshots, and untracked key or recovery copies are not removed.',
+          '',
+        ].join('\n'),
+      );
+
+      const firstExpected = `DESTROY ${document.id}`;
+      const first =
+        inputs.confirmations?.[0] ??
+        (await readVisibleConfirmation(`Type ${firstExpected} to continue: `));
+      if (first !== firstExpected) {
+        throw new LocalCliError('Vault destruction was cancelled.');
+      }
+
+      const current = await requireVault(store, document.id);
+      if (
+        current.revision !== document.revision ||
+        localVaultMetadataDigest(current) !== localVaultMetadataDigest(document)
+      ) {
+        throw new LocalCliError(
+          'The vault changed during destruction confirmation; nothing was deleted.',
+        );
+      }
+
+      const secondExpected = `DELETE REVISION ${String(document.revision)} ${challenge}`;
+      if (options.confirmationStdin !== true) {
+        process.stderr.write(`Destruction challenge: ${challenge}\n`);
+      }
+      const second =
+        inputs.confirmations?.[1] ??
+        (await readVisibleConfirmation(
+          `Type ${secondExpected} to permanently delete: `,
+        ));
+      if (second !== secondExpected) {
+        throw new LocalCliError('Vault destruction was cancelled.');
+      }
+
+      await store.delete(document.id, document.revision);
+      const failures: Error[] = [];
+      for (const path of [
+        ...additionalArtifacts,
+        revisionAnchorPath(options.keyFile),
+        options.keyFile,
+      ]) {
+        try {
+          await deleteSecureFile(path, 16_384);
+        } catch (error) {
+          failures.push(
+            error instanceof Error
+              ? error
+              : new LocalCliError('A protected vault file could not be deleted.'),
+          );
+        }
+      }
+      if (failures.length > 0) {
+        throw new AggregateError(
+          failures,
+          'The encrypted datastore was deleted, but protected local-file cleanup was incomplete.',
+        );
+      }
+      writeJson({
+        destroyed: true,
+        vaultId: document.id,
+        datastore,
+        target,
+        keyFile: options.keyFile,
+        anchorFile: revisionAnchorPath(options.keyFile),
+      });
+    } finally {
+      zeroize(rootKey);
+    }
+  });
+}
+
+async function resolveDestroyArtifacts(
+  requestedPaths: readonly string[],
+  vaultId: LocalVaultDocument['id'],
+  activeKeyFile: string,
+): Promise<readonly string[]> {
+  const activePaths = new Set([
+    await realpath(activeKeyFile),
+    await realpath(revisionAnchorPath(activeKeyFile)),
+  ]);
+  const candidates = new Set(requestedPaths);
+  for (const path of requestedPaths) {
+    if ((await inspectDestroyArtifact(path, vaultId)) === 'portable-key') {
+      const anchorPath = revisionAnchorPath(path);
+      if (existsSync(anchorPath)) candidates.add(anchorPath);
+    }
+  }
+  const resolved: string[] = [];
+  const seen = new Set<string>();
+  for (const path of candidates) {
+    await inspectDestroyArtifact(path, vaultId);
+    const canonicalPath = await realpath(path);
+    if (!activePaths.has(canonicalPath) && !seen.has(canonicalPath)) {
+      seen.add(canonicalPath);
+      resolved.push(canonicalPath);
+    }
+  }
+  return resolved;
+}
+
+async function inspectDestroyArtifact(
+  path: string,
+  expectedVaultId: LocalVaultDocument['id'],
+): Promise<'portable-key' | 'recovery-kit' | 'revision-anchor'> {
+  const contents = await readSecureFile(path, 16_384);
+  try {
+    const text = contents.toString('utf8');
+    const lines = text.endsWith('\n') ? text.slice(0, -1).split('\n') : [];
+    if (lines[0] === '-----BEGIN CREDVAULT PORTABLE KEY-----') {
+      const validLength = lines.length === 7 || lines.length === 17;
+      const validEnd = lines.at(-1) === '-----END CREDVAULT PORTABLE KEY-----';
+      const vaultLine = lines[3];
+      const validHeaders =
+        lines[1] === 'Version: 1' &&
+        lines[2] === 'Binding: bound' &&
+        lines[4]?.startsWith('Key-ID: ') === true;
+      if (
+        !validLength ||
+        !validEnd ||
+        !validHeaders ||
+        vaultLine !== `Vault-ID: ${expectedVaultId}`
+      ) {
+        throw new LocalCliError('An additional destruction artifact is invalid.');
+      }
+      return 'portable-key';
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(text) as unknown;
+    } catch {
+      throw new LocalCliError('An additional destruction artifact is invalid.');
+    }
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+      throw new LocalCliError('An additional destruction artifact is invalid.');
+    }
+    const record = parsed as Record<string, unknown>;
+    if (vaultIdSchema.parse(record['vaultId']) !== expectedVaultId) {
+      throw new LocalCliError(
+        'An additional destruction artifact belongs to another vault.',
+      );
+    }
+    if (
+      record['format'] === 'kavrix-recovery-kit' &&
+      record['version'] === 1 &&
+      hasExactKeys(record, RECOVERY_KIT_KEYS)
+    ) {
+      return 'recovery-kit';
+    }
+    if (
+      record['format'] === 'kavrix-revision-anchor' &&
+      record['version'] === 1 &&
+      hasExactKeys(record, REVISION_ANCHOR_KEYS)
+    ) {
+      return 'revision-anchor';
+    }
+    throw new LocalCliError('An additional destruction artifact is invalid.');
+  } catch (error) {
+    if (error instanceof LocalCliError) throw error;
+    throw new LocalCliError('An additional destruction artifact is invalid.');
+  } finally {
+    contents.fill(0);
+  }
+}
+
+function hasExactKeys(
+  record: Readonly<Record<string, unknown>>,
+  expectedKeys: readonly string[],
+): boolean {
+  const actualKeys = Object.keys(record).toSorted();
+  return (
+    actualKeys.length === expectedKeys.length &&
+    actualKeys.every((key, index) => key === expectedKeys[index])
+  );
+}
+
+async function readDestroyStdin(options: LocalCliOptions): Promise<DestroyInputs> {
+  const datastore = datastoreFrom(options);
+  if (datastore === 'file') {
+    await FileLocalVaultStore.validatePath(options.dataFile ?? DEFAULT_DATA_FILE);
+  }
+  if (
+    options.passphraseStdin !== true ||
+    (datastore === 'mongodb' && options.databaseUrlStdin !== true)
+  ) {
+    throw new LocalCliError(
+      'Destroy with --confirmation-stdin requires stdin flags for every secret.',
+    );
+  }
+  const chunks: Buffer[] = [];
+  let length = 0;
+  try {
+    for await (const chunk of process.stdin) {
+      const owned = Buffer.from(chunk as Uint8Array);
+      length += owned.byteLength;
+      if (length > 2_100_000) {
+        owned.fill(0);
+        throw new LocalCliError('Destroy input exceeds the supported size.');
+      }
+      chunks.push(owned);
+    }
+    const joined = Buffer.concat(chunks, length);
+    try {
+      const frames = joined.toString('utf8').replace(/\r\n/gu, '\n').split('\n');
+      if (frames.at(-1) === '') frames.pop();
+      const secretCount = datastore === 'mongodb' ? 2 : 1;
+      if (frames.length !== secretCount + 2) {
+        throw new LocalCliError('Destroy input contains the wrong number of values.');
+      }
+      const secretKinds: LocalSecretKind[] =
+        datastore === 'mongodb' ? ['database-url', 'passphrase'] : ['passphrase'];
+      const secretText = frames.slice(0, secretCount).join('\n') + '\n';
+      const validated = await new LocalSecretInput(
+        Readable.from([secretText]),
+        process.stderr,
+      ).read(secretKinds, true);
+      const first = frames[secretCount];
+      const second = frames[secretCount + 1];
+      if (first === undefined || second === undefined) {
+        throw new LocalCliError('Destroy confirmations are incomplete.');
+      }
+      return {
+        databaseUrl: datastore === 'mongodb' ? requiredSecret(validated, 0) : '',
+        passphrase: requiredSecret(validated, datastore === 'mongodb' ? 1 : 0),
+        confirmations: [first, second],
+      };
+    } finally {
+      joined.fill(0);
+    }
+  } finally {
+    for (const chunk of chunks) chunk.fill(0);
+  }
+}
+
+async function readVisibleConfirmation(prompt: string): Promise<string> {
+  if (!process.stdin.isTTY || !process.stderr.isTTY) {
+    throw new LocalCliError(
+      'Destruction confirmation requires a terminal or --confirmation-stdin.',
+    );
+  }
+  const interface_ = createInterface({ input: process.stdin, output: process.stderr });
+  try {
+    const value = await interface_.question(prompt);
+    if (Buffer.byteLength(value, 'utf8') > 512 || /[\r\n\0]/u.test(value)) {
+      throw new LocalCliError('Destruction confirmation is invalid.');
+    }
+    return value;
+  } finally {
+    interface_.close();
+  }
 }
 
 async function handlePing(options: LocalCliOptions): Promise<void> {
+  if (datastoreFrom(options) !== 'mongodb') {
+    throw new LocalCliError('db ping supports only the MongoDB datastore.');
+  }
   const values = await readSecrets(['database-url'], options);
   const databaseUrl = requiredSecret(values, 0);
-  await withStore(databaseUrl, options, async (store, databaseName) => {
+  await withStore(databaseUrl, options, async (store, target) => {
     await store.ping();
     writeJson({
       connected: true,
-      database: databaseName,
-      collection: options.collection,
+      ...storeLocation(options, target),
     });
   });
 }
@@ -904,7 +1349,7 @@ async function handleDoctor(options: LocalCliOptions): Promise<void> {
   const values = await readSecrets(['database-url', 'passphrase'], options);
   const databaseUrl = requiredSecret(values, 0);
   const passphrase = requiredSecret(values, 1);
-  await withStore(databaseUrl, options, async (store, databaseName) => {
+  await withStore(databaseUrl, options, async (store, target) => {
     const document = await requireVault(store, options.vault);
     const rootKey = await unlockVault(document, options.keyFile, passphrase);
     try {
@@ -912,8 +1357,7 @@ async function handleDoctor(options: LocalCliOptions): Promise<void> {
       writeJson({
         healthy: true,
         vaultId: document.id,
-        database: databaseName,
-        collection: options.collection,
+        ...storeLocation(options, target),
         revision: document.revision,
         credentialCount: Object.keys(payload.records).length,
       });
@@ -941,7 +1385,8 @@ async function handleDoctorHealth(options: LocalCliOptions): Promise<void> {
   const checks: HealthCheck[] = [];
   const autoHealed: string[] = [];
   const manualRecoveryRequired: string[] = [];
-  let databaseName: string | undefined;
+  let storeTarget: string | undefined;
+  const datastore = datastoreFrom(options);
 
   const addManualRecovery = (name: string, detail: string): void => {
     checks.push({ name, status: 'manual-recovery', detail });
@@ -949,8 +1394,8 @@ async function handleDoctorHealth(options: LocalCliOptions): Promise<void> {
   };
 
   try {
-    await withStore(databaseUrl, options, async (store, connectedDatabaseName) => {
-      databaseName = connectedDatabaseName;
+    await withStore(databaseUrl, options, async (store, connectedTarget) => {
+      storeTarget = connectedTarget;
 
       let retried = false;
       try {
@@ -959,11 +1404,11 @@ async function handleDoctorHealth(options: LocalCliOptions): Promise<void> {
         try {
           await store.ping();
           retried = true;
-          autoHealed.push('mongo-connection-retry');
+          autoHealed.push('datastore-retry');
         } catch {
           addManualRecovery(
             'database',
-            'MongoDB is unavailable or failed its health check.',
+            'The encrypted datastore is unavailable or failed its health check.',
           );
           return;
         }
@@ -972,8 +1417,8 @@ async function handleDoctorHealth(options: LocalCliOptions): Promise<void> {
         name: 'database',
         status: 'ok',
         detail: retried
-          ? 'MongoDB connection recovered after one bounded retry.'
-          : 'MongoDB connection succeeded.',
+          ? 'The encrypted datastore recovered after one bounded retry.'
+          : 'The encrypted datastore is available.',
       });
 
       let document: Awaited<ReturnType<typeof requireVault>>;
@@ -1070,7 +1515,10 @@ async function handleDoctorHealth(options: LocalCliOptions): Promise<void> {
     });
   } catch {
     if (!checks.some((check) => check.name === 'database')) {
-      addManualRecovery('database', 'MongoDB could not be reached safely.');
+      addManualRecovery(
+        'database',
+        'The encrypted datastore could not be opened safely.',
+      );
     }
   }
 
@@ -1083,7 +1531,9 @@ async function handleDoctorHealth(options: LocalCliOptions): Promise<void> {
     checks,
     manualRecoveryRequired,
   };
-  if (databaseName !== undefined) result['database'] = databaseName;
+  if (storeTarget !== undefined) {
+    Object.assign(result, storeLocation({ ...options, datastore }, storeTarget));
+  }
   writeJson(result);
 }
 
@@ -1490,20 +1940,19 @@ async function handleRecoveryUse(options: LocalCliOptions): Promise<void> {
 async function handleVaultList(options: LocalCliOptions): Promise<void> {
   const values = await readSecrets(['database-url'], options);
   const databaseUrl = requiredSecret(values, 0);
-  await withStore(databaseUrl, options, async (store, databaseName) => {
+  await withStore(databaseUrl, options, async (store, target) => {
     const vaults = await store.listVaultIds();
-    writeJson({ database: databaseName, collection: options.collection, vaults });
+    writeJson({ ...storeLocation(options, target), vaults });
   });
 }
 
 async function handleVaultStatus(options: LocalCliOptions): Promise<void> {
   const values = await readSecrets(['database-url'], options);
   const databaseUrl = requiredSecret(values, 0);
-  await withStore(databaseUrl, options, async (store, databaseName) => {
+  await withStore(databaseUrl, options, async (store, target) => {
     const document = await requireVault(store, options.vault);
     writeJson({
-      database: databaseName,
-      collection: options.collection,
+      ...storeLocation(options, target),
       vaultId: document.id,
       revision: document.revision,
       currentKeyVersion: document.currentKeyVersion,
@@ -1705,7 +2154,7 @@ async function createVaultDocument(
 }
 
 async function requireVault(
-  store: MongoLocalVaultStore,
+  store: EncryptedVaultStore,
   vaultValue: string,
 ): Promise<LocalVaultDocument> {
   const document = await store.get(vaultValue);
@@ -1877,7 +2326,7 @@ async function requireCurrentRevisionAnchor(
 }
 
 async function persistUpdatedDocument(
-  store: MongoLocalVaultStore,
+  store: EncryptedVaultStore,
   updated: LocalVaultDocument,
   expectedRevision: LocalVaultDocument['revision'],
   keyFile: string,
@@ -2038,8 +2487,19 @@ function now(): LocalVaultDocument['createdAt'] {
 async function withStore(
   databaseUrl: string,
   options: LocalCliOptions,
-  operation: (store: MongoLocalVaultStore, databaseName: string) => Promise<void>,
+  operation: (store: EncryptedVaultStore, target: string) => Promise<void>,
 ): Promise<void> {
+  const datastore = datastoreFrom(options);
+  if (datastore === 'file') {
+    const dataFile = options.dataFile ?? DEFAULT_DATA_FILE;
+    const store = await FileLocalVaultStore.open(dataFile);
+    try {
+      await operation(store, dataFile);
+    } finally {
+      await store.close();
+    }
+    return;
+  }
   const databaseName = databaseNameFrom(databaseUrl, options.database);
   const store = await MongoLocalVaultStore.connect(databaseUrl, databaseName, {
     collectionName: options.collection,
@@ -2049,6 +2509,37 @@ async function withStore(
   } finally {
     await store.close();
   }
+}
+
+function storeLocation(
+  options: LocalCliOptions,
+  target: string,
+): Record<string, string> {
+  return datastoreFrom(options) === 'file'
+    ? { datastore: 'file', dataFile: target }
+    : {
+        database: target,
+        collection: options.collection,
+      };
+}
+
+function datastoreFrom(options: LocalCliOptions): 'mongodb' | 'file' {
+  const datastore = options.datastore ?? 'mongodb';
+  if (datastore !== 'mongodb' && datastore !== 'file') {
+    throw new LocalCliError('--datastore must be mongodb or file.');
+  }
+  if (datastore === 'mongodb' && options.dataFile !== undefined) {
+    throw new LocalCliError('--data-file requires --datastore file.');
+  }
+  if (
+    datastore === 'file' &&
+    (options.databaseUrlStdin === true || options.database !== undefined)
+  ) {
+    throw new LocalCliError(
+      'MongoDB connection options cannot be used with --datastore file.',
+    );
+  }
+  return datastore;
 }
 
 function databaseNameFrom(uri: string, explicit: string | undefined): string {
@@ -2075,8 +2566,15 @@ async function readSecrets(
   kinds: readonly LocalSecretKind[],
   options: LocalCliOptions,
 ): Promise<readonly string[]> {
+  const datastore = datastoreFrom(options);
+  if (datastore === 'file') {
+    await FileLocalVaultStore.validatePath(options.dataFile ?? DEFAULT_DATA_FILE);
+  }
   const input = new LocalSecretInput(process.stdin, process.stderr);
-  const flags = kinds.map((kind) => {
+  const requestedKinds = kinds.filter(
+    (kind) => kind !== 'database-url' || datastore === 'mongodb',
+  );
+  const flags = requestedKinds.map((kind) => {
     if (kind === 'database-url') return options.databaseUrlStdin === true;
     if (kind === 'passphrase') return options.passphraseStdin === true;
     if (kind === 'new-passphrase') return options.newPassphraseStdin === true;
@@ -2089,13 +2587,26 @@ async function readSecrets(
       'Use stdin flags for every secret in a command, or use masked prompts for all of them.',
     );
   }
-  return input.read(kinds, anyStdin);
+  const values =
+    requestedKinds.length === 0 ? [] : await input.read(requestedKinds, anyStdin);
+  let index = 0;
+  return kinds.map((kind) => {
+    if (kind === 'database-url' && datastore === 'file') return '';
+    const value = values[index];
+    index += 1;
+    if (value === undefined) throw new LocalCliError('Secret input is incomplete.');
+    return value;
+  });
 }
 
 function requiredSecret(values: readonly string[], index: number): string {
   const value = values[index];
   if (value === undefined) throw new LocalCliError('Secret input is incomplete.');
   return value;
+}
+
+function asError(error: unknown): Error {
+  return error instanceof Error ? error : new LocalCliError('Kavrix operation failed.');
 }
 
 function requiredOption(value: string | undefined, name: string): string {

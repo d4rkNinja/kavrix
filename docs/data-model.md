@@ -1,10 +1,11 @@
 # Data model
 
-Kavrix stores one versioned encrypted document per vault in MongoDB. The
+Kavrix stores one versioned encrypted document per vault in a protected local
+file or MongoDB. The
 canonical runtime contract lives in `packages/schemas/src/local-vault.ts`; this
 page is a user-facing summary.
 
-## MongoDB-visible document
+## Datastore-visible document
 
 A local-vault version 2 document includes:
 
@@ -15,8 +16,9 @@ A local-vault version 2 document includes:
 - document revision and timestamps;
 - authenticated payload-envelope metadata, nonce, and ciphertext.
 
-The database can observe these fields, document size, update timing, and query
-patterns. They are operational metadata, not secret values.
+MongoDB can observe these fields, document size, update timing, and query
+patterns. A process able to read the local file can observe the same fields and
+file-update timing. They are operational metadata, not secret values.
 
 ## Encrypted payload
 
@@ -42,7 +44,7 @@ copy of the same authorization, not a separately revocable database identity.
 
 ## Revisions and concurrency
 
-Every write increments the vault revision. The MongoDB adapter replaces a
+Every write increments the vault revision. Both datastore adapters replace a
 document only when the stored revision matches the caller's expected revision;
 concurrent writers fail with a conflict rather than silently overwriting each
 other.

@@ -59,21 +59,51 @@ async function walkFiles(root, current = root) {
   return files;
 }
 
-async function resolveArchive(argument) {
+const forbiddenContent = [
+  'secret-password-canary',
+  'secret-note-canary',
+  'runtime-vault-secret-canary',
+  'KAVRIX-BACKUP-PLAINTEXT-CANARY',
+  'plaintext-storage-canary',
+  'unique-plaintext-canary-7ac19783',
+  'canary-plaintext-value',
+];
+
+function assertSafeText(text, label) {
+  for (const marker of forbiddenContent) {
+    assert(!text.includes(marker), `${label} contains a forbidden plaintext canary`);
+  }
+  for (const path of [
+    cliRoot,
+    dirname(cliRoot),
+    process.env['HOME'],
+    process.env['USERPROFILE'],
+  ]) {
+    if (typeof path !== 'string' || path.length === 0) continue;
+    const normalizedText = text.replaceAll('\\', '/');
+    const normalizedPath = resolve(path).replaceAll('\\', '/');
+    assert(
+      !normalizedText.includes(normalizedPath),
+      `${label} contains a private path`,
+    );
+  }
+}
+
+async function resolveArchive(argument, packDirectory) {
   if (argument) {
     const archive = resolve(cliRoot, argument);
     assert(existsSync(archive), `Package archive does not exist: ${archive}`);
     return archive;
   }
-  const directory = await mkdtemp(join(tmpdir(), 'kavrix-pack-'));
+  assert(packDirectory !== undefined, 'Package temporary directory is missing');
   run(
     npmCommand,
-    [...npmArgsPrefix, 'pack', '--pack-destination', directory, '--ignore-scripts'],
+    [...npmArgsPrefix, 'pack', '--pack-destination', packDirectory, '--ignore-scripts'],
     cliRoot,
   );
-  const files = (await readdir(directory)).filter((file) => file.endsWith('.tgz'));
+  const files = (await readdir(packDirectory)).filter((file) => file.endsWith('.tgz'));
   assert(files.length === 1, `Expected one packed archive, found ${files.length}`);
-  return join(directory, files[0]);
+  return join(packDirectory, files[0]);
 }
 
 async function main() {
@@ -81,8 +111,14 @@ async function main() {
   const previousNpmCache = process.env['npm_config_cache'];
   process.env['npm_config_cache'] = npmCache;
   let installRoot;
+  let packDirectory;
+  let operationError;
+  let verifiedVersion;
   try {
-    const archive = await resolveArchive(process.argv[2]);
+    if (process.argv[2] === undefined) {
+      packDirectory = await mkdtemp(join(tmpdir(), 'kavrix-pack-'));
+    }
+    const archive = await resolveArchive(process.argv[2], packDirectory);
     installRoot = await mkdtemp(join(tmpdir(), 'kavrix-smoke-'));
     run(
       npmCommand,
@@ -160,6 +196,9 @@ async function main() {
       files.includes('dist/index.d.ts'),
       'dist/index.d.ts is missing from the package',
     );
+    for (const file of files) {
+      assertSafeText(await readFile(join(packageRoot, file), 'utf8'), file);
+    }
 
     const readme = await readFile(join(packageRoot, 'README.md'), 'utf8');
     assert(
@@ -211,6 +250,7 @@ async function main() {
 
     const bin = join(packageRoot, 'dist', 'bin.js');
     const version = run(process.execPath, [bin, '--version'], installRoot);
+    assertSafeText(version.stdout + version.stderr, 'kavrix --version output');
     assert(version.stderr.trim() === '', 'kavrix --version wrote to stderr');
     assert(
       version.stdout.trim() === manifest.version,
@@ -223,6 +263,7 @@ async function main() {
       [['view', '--help'], 'Show a readable vault dashboard'],
     ]) {
       const result = run(process.execPath, [bin, ...args], installRoot);
+      assertSafeText(result.stdout + result.stderr, `kavrix ${args.join(' ')} output`);
       assert(result.stderr.trim() === '', `kavrix ${args.join(' ')} wrote to stderr`);
       assert(
         result.stdout.includes(marker),
@@ -230,20 +271,48 @@ async function main() {
       );
     }
 
-    process.stdout.write(
-      `Verified packed kavrix ${manifest.version} with an allowlisted artifact set.\n`,
-    );
-  } finally {
+    verifiedVersion = manifest.version;
+  } catch (error) {
+    operationError = error;
+  }
+  const cleanupErrors = [];
+  try {
     if (installRoot !== undefined) {
       await rm(installRoot, { recursive: true, force: true });
     }
-    await rm(npmCache, { recursive: true, force: true });
-    if (previousNpmCache === undefined) {
-      delete process.env['npm_config_cache'];
-    } else {
-      process.env['npm_config_cache'] = previousNpmCache;
-    }
+  } catch (error) {
+    cleanupErrors.push(error);
   }
+  try {
+    if (packDirectory !== undefined) {
+      await rm(packDirectory, { recursive: true, force: true });
+    }
+  } catch (error) {
+    cleanupErrors.push(error);
+  }
+  try {
+    await rm(npmCache, { recursive: true, force: true });
+  } catch (error) {
+    cleanupErrors.push(error);
+  }
+  if (previousNpmCache === undefined) {
+    delete process.env['npm_config_cache'];
+  } else {
+    process.env['npm_config_cache'] = previousNpmCache;
+  }
+  if (operationError !== undefined && cleanupErrors.length > 0) {
+    throw new AggregateError(
+      [operationError, ...cleanupErrors],
+      'Packed package verification and cleanup failed.',
+    );
+  }
+  if (operationError !== undefined) throw operationError;
+  if (cleanupErrors.length > 0) {
+    throw new AggregateError(cleanupErrors, 'Packed package cleanup failed.');
+  }
+  process.stdout.write(
+    `Verified packed kavrix ${verifiedVersion} with an allowlisted artifact set.\n`,
+  );
 }
 
 main().catch((error) => {

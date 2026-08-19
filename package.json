@@ -35,6 +35,7 @@
     "test:coverage": "vitest run --coverage",
     "typecheck": "pnpm -r --if-present typecheck",
     "verify": "pnpm build && pnpm format:check && pnpm lint && pnpm typecheck && pnpm test",
+    "acceptance:pre-ci": "node acceptance/pre-ci/all-commands/run.js",
     "changeset": "changeset",
     "version-packages": "changeset version"
   },

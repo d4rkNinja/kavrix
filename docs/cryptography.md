@@ -1,6 +1,7 @@
 # Cryptography
 
-This page documents the cryptography used by the supported direct-MongoDB vault.
+This page documents the cryptography used by the supported local-file and
+direct-MongoDB vault.
 It is a design description, not a claim of formal verification or independent
 audit.
 

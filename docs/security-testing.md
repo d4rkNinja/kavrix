@@ -1,6 +1,7 @@
 # Security testing
 
-Kavrix release validation focuses on the supported direct-MongoDB path.
+Kavrix release validation always covers the packed local-file path and covers
+direct MongoDB behavior when a disposable MongoDB prerequisite is available.
 
 ## Required local checks
 
@@ -12,25 +13,27 @@ pnpm lint
 pnpm typecheck
 pnpm test
 pnpm --filter kavrix package:smoke
+pnpm acceptance:pre-ci
 pnpm audit --audit-level high
 \`\`\`
 
 The schema and crypto suites cover malformed envelopes, tampering, associated
 data swaps, key-slot wrapping, recovery-slot binding, and plaintext canaries.
 Protected-file suites cover passphrase failures, tampering, path safety, and
-permission enforcement. The storage suite covers fail-closed Mongo URI policy.
+permission enforcement. The storage suite covers fail-closed Mongo URI policy
+and local-file schema, bounds, permissions, links, locking, conflicts, atomic
+publication, and deletion. The packed acceptance test invokes the complete
+applicable command lifecycle against test-owned local files and removes its
+temporary root in `finally` after success or failure.
 
 ## MongoDB integration
 
-Set \`KAVRIX_MONGODB_URI\` to a disposable replica-set connection and run:
+MongoDB integration is optional in the local pre-CI runner and must use a
+disposable URI supplied through its protected stdin flow. Do not claim a real
+MongoDB result when that prerequisite is absent.
 
-\`\`\`sh
-pnpm --filter @kavrix/storage test:integration
-\`\`\`
-
-The integration test creates a unique vault document, checks ping/create/get,
-and verifies optimistic revision updates. It does not print credential values
-or retain a fixed test secret.
+The current repository does not ship a standalone live-Mongo integration script;
+the unit suite proves URI policy and adapter contracts, not a live topology.
 
 ## Environment caveats
 

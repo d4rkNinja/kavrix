@@ -1,13 +1,13 @@
 # Kavrix
 
 Kavrix is a local, zero-knowledge credential vault for the terminal. It encrypts
-credential values on your machine and stores only authenticated ciphertext in
-your MongoDB database. Kavrix does not start an API server, sync daemon, or web
-service.
+credential values on your machine and stores only authenticated ciphertext in a
+hardened local vault file or your MongoDB database. Kavrix does not start an API
+server, sync daemon, or web service.
 
 ## What you control
 
-- **Database:** any supported local or remote MongoDB deployment.
+- **Datastore:** a protected local file or supported local/remote MongoDB deployment.
 - **Unlock material:** a passphrase-protected portable key file.
 - **Recovery:** separately protected recovery kits that can replace a lost key.
 - **Trust:** plaintext and root keys stay in the local Kavrix process.
@@ -17,7 +17,8 @@ unrecoverable.
 
 ## Install
 
-Kavrix requires Node.js `>=24.12.0 <25` or `>=25.1.0` and access to MongoDB.
+Kavrix requires Node.js `>=24.12.0 <25` or `>=25.1.0`. MongoDB is required only
+when that datastore is selected.
 
 ```sh
 npm install --global kavrix
@@ -28,21 +29,18 @@ kavrix --help
 ## First vault
 
 ```sh
-# 1. Confirm MongoDB connectivity. Kavrix prompts safely for connection details.
-kavrix db ping
+# 1. Create a local encrypted vault file and protected key file.
+kavrix init --datastore file --data-file ./kavrix.vault
 
-# 2. Create an encrypted vault and protected key file.
-kavrix init
+# 2. Add a credential value through the masked prompt.
+kavrix put github/token --datastore file --data-file ./kavrix.vault
 
-# 3. Add a credential value through the masked prompt.
-kavrix put github/token
+# 3. Browse names without revealing values.
+kavrix list --datastore file --data-file ./kavrix.vault
+kavrix view --datastore file --data-file ./kavrix.vault
 
-# 4. Browse names without revealing values.
-kavrix list
-kavrix view
-
-# 5. Reveal plaintext only when explicitly required.
-kavrix get github/token --reveal
+# 4. Reveal plaintext only when explicitly required.
+kavrix get github/token --reveal --datastore file --data-file ./kavrix.vault
 ```
 
 Do not place passwords, portable keys, recovery secrets, or database credentials
@@ -53,7 +51,7 @@ flows shown by `kavrix <command> --help`.
 
 | Command                     | Purpose                                                     |
 | --------------------------- | ----------------------------------------------------------- |
-| `kavrix db ping`            | Test the direct MongoDB connection.                         |
+| `kavrix db ping`            | Test a direct MongoDB connection.                           |
 | `kavrix init`               | Create a vault and protected key file.                      |
 | `kavrix put <name>`         | Add a value; replacement requires explicit override.        |
 | `kavrix get <name>`         | Read metadata; `--reveal` is required for plaintext.        |
@@ -90,7 +88,8 @@ only be used after independently verifying the database snapshot.
 Remote MongoDB connections must explicitly enable validated TLS. Kavrix rejects
 TLS-disablement and insecure certificate or hostname options. MongoDB can still
 observe vault identifiers, revisions, timestamps, ciphertext sizes, and access
-patterns.
+patterns. A process able to read the local vault file can observe the same
+authenticated metadata, but not credential names or values without unlocking.
 
 Kavrix cannot protect an unlocked host from administrator access, same-user
 malware, keyloggers, terminal capture, process-memory inspection, or a user who
@@ -103,9 +102,9 @@ and [data model](docs/data-model.md).
 ## Recovery and backups
 
 Keep at least one recovery kit on a separate protected medium from the active
-key file. Back up MongoDB ciphertext and the protected recovery material
-separately. A database backup without a valid key or recovery kit is unusable;
-a key without the database does not contain the credentials.
+key file. Back up datastore ciphertext and protected recovery material
+separately. A vault backup without a valid key or recovery kit is unusable; a
+key without the datastore does not contain the credentials.
 
 Recovery-kit use rotates the vault root key for the current document. It cannot
 erase ciphertext from old database snapshots, so backup access controls and
@@ -116,7 +115,7 @@ retention remain important.
 Start with the [documentation index](docs/README.md). The most useful pages are:
 
 - [Command guide](docs/cli-reference.md)
-- [MongoDB connection policy](docs/local-database.md)
+- [Datastore policy](docs/local-database.md)
 - [Recovery kits](docs/backup-and-recovery.md)
 - [Architecture](docs/architecture.md)
 - [Security testing](docs/security-testing.md)

@@ -4,10 +4,11 @@ export {
   sealedEntryFactory,
   type SealedSecretStoreOptions,
 } from './sealed-secret-store.js';
-export { setWindowsUserOnlyAcl } from './windows-acl.js';
+export { setWindowsUserOnlyAcl, verifyWindowsUserOnlyAcl } from './windows-acl.js';
 export {
   MAX_SECURE_STREAM_CHUNK_BYTES,
   MAX_SECURE_STREAM_FILE_BYTES,
+  deleteSecureFile,
   readSecureFile,
   validateSecureFileDestination,
   validateSecureFileSource,

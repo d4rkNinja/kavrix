@@ -1,10 +1,23 @@
 # Kavrix command guide
 
 This guide explains the commands in the order a user normally needs them.
-`kavrix --help` and `kavrix <command> --help%% remain the
+`kavrix --help` and `kavrix <command> --help` remain the
 authoritative option lists for the installed version.
 
-## 1. Connect to MongoDB
+## 1. Select a datastore
+
+MongoDB remains the default for compatibility. To keep the encrypted document
+in a local file instead, repeat these options on every vault command:
+
+```sh
+kavrix init --datastore file --data-file ./kavrix.vault
+```
+
+The local file contains authenticated metadata and an encrypted payload. It does
+not contain plaintext credential names, values, passphrases, or unwrapped keys.
+Kavrix does not write a settings file that silently remembers the selection.
+
+### Connect to MongoDB
 
 Kavrix talks to MongoDB directly. It does not start a server and does not write
 a settings file containing your database URI or unlock material.
@@ -27,13 +40,20 @@ Common database options:
 | `--collection <name>`  | Vault collection name                          |
 | `--vault <id>`         | Opaque vault identifier                        |
 
+Common datastore options:
+
+| Option                        | Meaning                                  |
+| ----------------------------- | ---------------------------------------- |
+| `--datastore <mongodb\|file>` | Select MongoDB or a local encrypted file |
+| `--data-file <path>`          | Local encrypted vault file               |
+
 Use TLS with certificate and hostname verification for remote MongoDB
 deployments. Encryption at rest does not replace transport security.
 
 ## 2. Create a vault
 
 ```sh
-kavrix init --database kavrix_local --key-file ./kavrix.key
+kavrix init --datastore file --data-file ./kavrix.vault --key-file ./kavrix.key
 ```
 
 Initialization creates the encrypted vault, a protected portable key file, and
@@ -90,7 +110,7 @@ file, log, shell history, or an untrusted child process.
 
 `view`, `search`, and `stats` never need to print
 credential values. `view` supports `--json` for masked
-machine-readable output; `search` and `stats%% also support
+machine-readable output; `search` and `stats` also support
 `--json`.
 
 ### Change or remove a record
@@ -186,14 +206,14 @@ Health checks cover:
 
 | Check                 | What it protects                                  |
 | --------------------- | ------------------------------------------------- |
-| MongoDB connection    | Availability and one bounded transient retry      |
+| Encrypted datastore   | Availability and one bounded transient retry      |
 | Vault schema          | Canonical shape and supported versions            |
 | Key file              | File safety, binding, and cryptographic integrity |
 | Encrypted payload     | AEAD authentication and associated data           |
 | Recovery slots        | Valid lifecycle state and metadata integrity      |
 | Local revision anchor | Detection of rollback and same-revision forks     |
 
-The command may retry a transient MongoDB connection and report that safe
+The command may retry a transient datastore operation and report that safe
 transient action as `autoHealed`. It never regenerates a key, rewrites
 ciphertext, disables authentication, or silently accepts a lower revision.
 
@@ -208,6 +228,8 @@ after independent verification of the current database snapshot.
 | Option                 | Where it applies                            | Safety purpose                         |
 | ---------------------- | ------------------------------------------- | -------------------------------------- |
 | `--key-file <path>`    | Vault commands                              | Select the protected portable key file |
+| `--datastore <type>`   | Vault commands                              | Select `mongodb` or `file`             |
+| `--data-file <path>`   | File-backed vault commands                  | Select the encrypted local vault file  |
 | `--passphrase-stdin`   | Key-file commands                           | Read a passphrase without an argument  |
 | `--database-url-stdin` | Database commands                           | Read a URI without shell history       |
 | `--value-stdin`        | `put`                                       | Read a value without an argument       |
@@ -220,8 +242,8 @@ environment variables or a default settings file.
 
 ## 9. Security model in user terms
 
-- Credential values are authenticated-encrypted before MongoDB writes.
-- MongoDB stores opaque encrypted envelopes and wrapped key-slot metadata, not
+- Credential values are authenticated-encrypted before datastore writes.
+- Both datastore adapters store encrypted envelopes and wrapped key-slot metadata, not
   plaintext credentials or unlock material.
 - The key hierarchy lets unlock methods change without re-encrypting every credential.
 - Protected files are checked for canonical format, vault binding, integrity,
@@ -244,8 +266,48 @@ limitations.
 When a command fails:
 
 1. Run the same command with `--help` and confirm the selected paths and vault.
-2. Run `kavrix db ping` to separate database availability from unlock problems.
+2. For MongoDB, run `kavrix db ping` to separate availability from unlock problems.
 3. Run `kavrix key verify` for the selected key file.
 4. Run `kavrix doctor health` and follow `manualRecoveryRequired` guidance.
 5. Do not delete the only key file, revoke the last unlock method, or accept a
    current snapshot without an independent backup comparison.
+
+## Advanced destructive operation
+
+The whole-vault destruction command is intentionally absent from normal help,
+command listings, completion suggestions, the README, and routine workflow
+sections. Use it only after independently verifying the exact datastore, vault,
+key file, recovery copies, and backup retention:
+
+```sh
+kavrix destroy \
+  --datastore file \
+  --data-file ./kavrix.vault \
+  --key-file ./kavrix.key \
+  --artifact ./copied.key \
+  --artifact ./offline.recovery \
+  --vault default
+```
+
+The command first authenticates and decrypts the selected vault. It then shows a
+sanitized deletion plan and requires two exact confirmations: one naming the
+vault and one containing the current revision plus a fresh challenge. There is
+no `--force` or `--yes` bypass. Controlled automation may use
+`--confirmation-stdin` only with every matching secret-stdin flag and the exact
+bounded input frames shown by the live challenge.
+
+Successful destruction removes only the selected MongoDB document or local vault
+file, followed by the active revision anchor, active protected key file, and
+every validated same-vault file supplied with repeatable `--artifact <path>`
+options. When an artifact is a portable key, its adjacent `.anchor` file is
+included automatically when present. All artifact paths are validated before
+the first confirmation; an unsafe, malformed, missing, or differently bound
+file stops destruction before anything is deleted. The public vault binding is
+structurally checked, but copied key and recovery contents cannot be
+cryptographically authenticated without each copy's own passphrase.
+
+The command never drops a MongoDB database or collection. Kavrix cannot discover
+or erase undeclared or unavailable key copies, recovery kits, MongoDB
+oplogs/backups, provider snapshots, filesystem snapshots, SSD-remapped blocks,
+or offline copies. Supply every known local artifact explicitly and destroy
+remaining copies separately under their owning retention policies.

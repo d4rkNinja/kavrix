@@ -15,6 +15,7 @@ vi.mock('../src/windows-acl.js', () => ({
 }));
 
 import {
+  deleteSecureFile,
   readSecureFile,
   validateSecureFileDestination,
   validateSecureFileSource,
@@ -110,6 +111,25 @@ describe('protected streaming file publication', () => {
     await expect(validateSecureFileSource(hardLink, 32)).rejects.toMatchObject({
       code: 'KEY_FILE_UNSAFE',
     });
+  });
+
+  it('deletes only a validated single-link protected file', async () => {
+    const path = join(directory, 'delete.cvkx');
+    await writeSecureStreamFile(path, values([new Uint8Array([3, 2, 1])]), 32);
+    await expect(deleteSecureFile(path, 32)).resolves.toBeUndefined();
+    expect(await readdir(directory)).toEqual([]);
+
+    const target = join(directory, 'target.cvkx');
+    const hardLink = join(directory, 'hard-link.cvkx');
+    await writeSecureStreamFile(target, values([new Uint8Array([4])]), 32);
+    await link(target, hardLink);
+    await expect(deleteSecureFile(target, 32)).rejects.toMatchObject({
+      code: 'KEY_FILE_UNSAFE',
+    });
+    expect((await readdir(directory)).sort()).toEqual([
+      'hard-link.cvkx',
+      'target.cvkx',
+    ]);
   });
 });
 

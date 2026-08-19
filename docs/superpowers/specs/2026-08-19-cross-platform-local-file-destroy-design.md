@@ -182,8 +182,8 @@ artifacts/output for plaintext canaries and private paths.
 
 ## Remote verification
 
-The requested host is `ubuntu@80.225.195.189`. The initial read-only SSH probe to
-port 22 timed out. No result from that host will be claimed until it becomes
+The operator-supplied Ubuntu test host timed out during the initial read-only SSH
+probe to port 22. No result from that host will be claimed until it becomes
 reachable and authenticates using an approved key or agent. Once reachable, the
 remote test will create one test-owned `kavrix` directory, run the packed local
 file acceptance path, and remove that directory in `finally` regardless of pass

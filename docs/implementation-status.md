@@ -2,10 +2,10 @@
 
 ## Supported product
 
-The supported product is the `kavrix` CLI in `apps/cli`. It connects directly to
-MongoDB and persists one authenticated encrypted local-vault version 2 document
-per vault. No Kavrix API server, sync daemon, SQLite cache, or interactive Ink
-TUI is required or shipped.
+The supported product is the `kavrix` CLI in `apps/cli`. It persists one
+authenticated encrypted local-vault version 2 document per vault in a hardened
+local file or directly in MongoDB. No Kavrix API server, sync daemon, SQLite
+cache, or interactive Ink TUI is required or shipped.
 
 Active release workspaces:
 
@@ -17,7 +17,7 @@ Active release workspaces:
 
 ## Implemented command surface
 
-- database ping and vault initialization;
+- selectable MongoDB/local-file initialization and MongoDB ping;
 - encrypted put/get/list/view/search/stats operations;
 - explicit override and reveal controls;
 - has, rename, remove, vault list, and vault status;

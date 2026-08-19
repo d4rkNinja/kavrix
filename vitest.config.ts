@@ -14,6 +14,7 @@ export default defineConfig({
       'packages/crypto/test/**/*.test.ts',
       'packages/key-files/test/secure-stream.test.ts',
       'packages/key-files/test/recovery-kit-files.test.ts',
+      'packages/storage/test/file-local-vault.test.ts',
       'packages/storage/test/mongo-local-vault-uri.test.ts',
     ],
     passWithNoTests: false,

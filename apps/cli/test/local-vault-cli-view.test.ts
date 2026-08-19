@@ -48,6 +48,10 @@ describe('local vault command surface', () => {
     expect(doctor?.commands.map((command) => command.name())).toContain('health');
     const health = doctor?.commands.find((command) => command.name() === 'health');
     expect(health?.options.map((option) => option.long)).toContain('--accept-current');
+    expect(cli.helpInformation()).not.toContain('destroy');
+    const destroy = cli.commands.find((command) => command.name() === 'destroy');
+    expect(destroy).toBeDefined();
+    expect(destroy?.options.map((option) => option.long)).not.toContain('--help');
   });
 
   it('renders a masked vault view without leaking credential values', () => {

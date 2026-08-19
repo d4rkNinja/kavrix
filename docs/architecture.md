@@ -10,10 +10,9 @@ kavrix CLI
 (unlock + AEAD)
 |
 v
-MongoLocalVaultStore
-|
-v
-MongoDB
+EncryptedVaultStore
+|-- FileLocalVaultStore --> protected local vault file
+`-- MongoLocalVaultStore --> MongoDB
 \`\`\`
 
 The CLI is the only process in the supported product. It composes command
@@ -26,12 +25,13 @@ documents but cannot derive the root key.
 - \`packages/schemas\` owns canonical persisted document and envelope schemas.
 - \`packages/crypto\` owns key derivation, authenticated encryption, wrapping, and secure byte handling.
 - \`packages/key-files\` owns protected portable-key and recovery-kit file formats, path safety, and permissions.
-- \`packages/storage\` owns MongoDB connection policy and optimistic document I/O.
+- `packages/storage` owns the backend-neutral encrypted-store contract, hardened
+  local-file I/O, MongoDB connection policy, and optimistic revision checks.
 - \`apps/cli\` owns interactive input, command routing, and sanitized rendering.
 
 No API server, sync daemon, SQLite store, or TUI is required for the local path.
 The public package bundles the CLI and reviewed third-party libraries while
-leaving MongoDB as its single external runtime dependency.
+leaving MongoDB as the only external service and only when selected.
 
 ## Trust and residual risk
 

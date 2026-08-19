@@ -87,31 +87,51 @@ export class LocalSecretInput {
   }
 
   #readMasked(kind: LocalSecretKind, label: string): Promise<string> {
-    const setRawMode = this.#input.setRawMode;
-    if (this.#input.isTTY !== true || setRawMode === undefined) {
+    const input = this.#input;
+    const rawModeSetter = input.setRawMode;
+    if (input.isTTY !== true || rawModeSetter === undefined) {
       throw new LocalSecretInputError(
         'A masked prompt requires a terminal; use the matching stdin flags.',
       );
     }
+    const setRawMode = rawModeSetter.bind(input);
     return new Promise((resolve, reject) => {
       const bytes: number[] = [];
-      const wasRaw = this.#input.isRaw === true;
+      const wasRaw = input.isRaw === true;
       let settled = false;
+      let rawModeAttempted = false;
+      let promptWritten = false;
+      let preparing = true;
+      let cleanupStreamFailed = false;
       const finish = (error?: Error): void => {
         if (settled) return;
         settled = true;
-        this.#input.off('data', onData);
-        this.#input.off('end', onEnd);
-        this.#input.off('error', onError);
+        input.off('data', onData);
+        input.off('end', onEnd);
+        let cleanupFailed = false;
         try {
-          setRawMode(wasRaw);
-          this.#input.pause();
-          this.#output.write('\n');
+          if (rawModeAttempted) setRawMode(wasRaw);
         } catch {
-          error ??= new LocalSecretInputError('Secret input terminal cleanup failed.');
+          cleanupFailed = true;
+        }
+        try {
+          input.pause();
+        } catch {
+          cleanupFailed = true;
+        }
+        input.off('error', onError);
+        if (promptWritten) {
+          try {
+            this.#output.write('\n');
+          } catch {
+            cleanupFailed = true;
+          }
         }
         const value = Buffer.from(bytes).toString('utf8');
         bytes.fill(0);
+        if ((cleanupFailed || cleanupStreamFailed) && error === undefined) {
+          error = new LocalSecretInputError('Secret input terminal cleanup failed.');
+        }
         if (error !== undefined) reject(error);
         else {
           try {
@@ -131,7 +151,17 @@ export class LocalSecretInput {
         );
       };
       const onError = (): void => {
-        finish(new LocalSecretInputError('Secret input could not be read.'));
+        if (settled) {
+          cleanupStreamFailed = true;
+          return;
+        }
+        finish(
+          new LocalSecretInputError(
+            preparing
+              ? 'Secret input terminal preparation failed.'
+              : 'Secret input could not be read.',
+          ),
+        );
       };
       const onData = (chunk: Buffer | string): void => {
         const incoming = Buffer.from(chunk);
@@ -162,12 +192,17 @@ export class LocalSecretInput {
         }
       };
       try {
-        this.#output.write('Enter ' + label + ' (input hidden): ');
+        input.pause();
+        input.on('error', onError);
+        input.once('end', onEnd);
+        input.on('data', onData);
+        rawModeAttempted = true;
         setRawMode(true);
-        this.#input.on('data', onData);
-        this.#input.once('end', onEnd);
-        this.#input.once('error', onError);
-        this.#input.resume();
+        if (!input.listeners('data').includes(onData)) return;
+        this.#output.write('Enter ' + label + ' (input hidden): ');
+        promptWritten = true;
+        preparing = false;
+        input.resume();
       } catch {
         finish(new LocalSecretInputError('Secret input terminal preparation failed.'));
       }
