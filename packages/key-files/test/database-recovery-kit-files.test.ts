@@ -15,6 +15,8 @@ import { databaseIdSchema, keySlotIdSchema, vaultIdSchema } from '@kavrix/schema
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
+  cleanupOwnedDatabaseRecoveryKitFile,
+  createOwnedDatabaseRecoveryKitFile,
   readDatabaseRecoveryKitFileBinding,
   readDatabaseRecoveryKitFile,
   readRecoveryKitFile,
@@ -73,6 +75,31 @@ describe('protected database recovery-kit files', () => {
     }
   });
 
+  it('returns an opaque consumed ownership capability for create-only cleanup', async () => {
+    const file = path();
+    const key = generateRecoveryKey();
+    const secret = passphrase();
+    try {
+      const created = await createOwnedDatabaseRecoveryKitFile(
+        file,
+        key,
+        binding,
+        options(secret),
+      );
+      expect(created.status).toBe('published');
+      if (created.status !== 'published') throw created.error;
+      expect(Object.keys(created.publication)).toEqual([]);
+      await cleanupOwnedDatabaseRecoveryKitFile(created.publication);
+      await expect(readFile(file)).rejects.toMatchObject({ code: 'ENOENT' });
+      await expect(
+        cleanupOwnedDatabaseRecoveryKitFile(created.publication),
+      ).rejects.toMatchObject({ code: 'KEY_FILE_OPERATION_FAILED' });
+    } finally {
+      zeroize(key);
+      zeroize(secret);
+    }
+  });
+
   it('fails closed for passphrase/binding/version/trailing/oversized failures', async () => {
     const file = path();
     const key = generateRecoveryKey();
@@ -104,11 +131,17 @@ describe('protected database recovery-kit files', () => {
         await expect(
           readDatabaseRecoveryKitFile(file, secret, binding),
         ).rejects.toMatchObject({ code: 'KEY_FILE_UNSAFE' });
+        await expect(readDatabaseRecoveryKitFileBinding(file)).rejects.toMatchObject({
+          code: 'KEY_FILE_UNSAFE',
+        });
       }
       await writeFile(file, Buffer.alloc(16_385), { mode: 0o600 });
       await expect(
         readDatabaseRecoveryKitFile(file, secret, binding),
       ).rejects.toMatchObject({ code: 'KEY_FILE_UNSAFE' });
+      await expect(readDatabaseRecoveryKitFileBinding(file)).rejects.toMatchObject({
+        code: 'KEY_FILE_UNSAFE',
+      });
     } finally {
       zeroize(key);
       zeroize(secret);
@@ -131,12 +164,18 @@ describe('protected database recovery-kit files', () => {
         await expect(
           readDatabaseRecoveryKitFile(file, secret, binding),
         ).rejects.toMatchObject({ code: 'KEY_FILE_UNSAFE' });
+        await expect(readDatabaseRecoveryKitFileBinding(file)).rejects.toMatchObject({
+          code: 'KEY_FILE_UNSAFE',
+        });
         await chmod(file, 0o600);
         const hardlink = path('hardlink');
         await link(file, hardlink);
         await expect(
           readDatabaseRecoveryKitFile(file, secret, binding),
         ).rejects.toMatchObject({ code: 'KEY_FILE_UNSAFE' });
+        await expect(readDatabaseRecoveryKitFileBinding(file)).rejects.toMatchObject({
+          code: 'KEY_FILE_UNSAFE',
+        });
         await rm(hardlink);
         const target = path('target');
         await writeFile(target, 'x', { mode: 0o600 });
@@ -145,6 +184,9 @@ describe('protected database recovery-kit files', () => {
         await expect(
           readDatabaseRecoveryKitFile(linked, secret, binding),
         ).rejects.toMatchObject({ code: 'KEY_FILE_UNSAFE' });
+        await expect(readDatabaseRecoveryKitFileBinding(linked)).rejects.toMatchObject({
+          code: 'KEY_FILE_UNSAFE',
+        });
       }
       await writeDatabaseRecoveryKitFile(
         file,
@@ -182,8 +224,44 @@ describe('protected database recovery-kit files', () => {
       await expect(
         readDatabaseRecoveryKitFile(legacyPath, secret),
       ).rejects.toMatchObject({ code: 'KEY_FILE_UNSAFE' });
+      await expect(
+        readDatabaseRecoveryKitFileBinding(legacyPath),
+      ).rejects.toMatchObject({ code: 'KEY_FILE_UNSAFE' });
     } finally {
       zeroize(key);
+      zeroize(secret);
+    }
+  });
+
+  it('rejects authenticated replacement after public pre-binding without exposing ciphertext', async () => {
+    const file = path();
+    const first = generateRecoveryKey();
+    const second = generateRecoveryKey();
+    const secret = passphrase();
+    const replacementBinding: DatabaseRecoveryBinding = {
+      databaseId: databaseIdSchema.parse('db_replaced'),
+      recoverySlotId: keySlotIdSchema.parse('replacement-slot'),
+    };
+    try {
+      await writeDatabaseRecoveryKitFile(file, first, binding, options(secret));
+      const publicBinding = await readDatabaseRecoveryKitFileBinding(file);
+      expect(Object.keys(publicBinding).sort()).toEqual([
+        'databaseId',
+        'recoverySlotId',
+      ]);
+      expect(JSON.stringify(publicBinding)).not.toContain('ciphertext');
+      await writeDatabaseRecoveryKitFile(
+        file,
+        second,
+        replacementBinding,
+        options(secret, 'replace'),
+      );
+      await expect(
+        readDatabaseRecoveryKitFile(file, secret, publicBinding),
+      ).rejects.toMatchObject({ code: 'KEY_FILE_UNSAFE' });
+    } finally {
+      zeroize(first);
+      zeroize(second);
       zeroize(secret);
     }
   });

@@ -25,11 +25,14 @@ import { z } from 'zod';
 
 import { PortableKeyFileError } from './errors.js';
 import {
+  cleanupOwnedSecureFilePublication,
+  createOwnedSecureFile,
   readSecureFile,
   readSecureFileWhileExclusive,
   replaceSecureFileWhileExclusive,
   withExclusiveSecureFile,
   writeSecureFile,
+  type OwnedSecureFilePublication,
 } from './filesystem.js';
 
 const FORMAT = 'kavrix-database-revision-anchor';
@@ -99,6 +102,25 @@ export type DatabaseRevisionAnchorTransitionResult<Result> = Readonly<{
   result: Result;
 }>;
 
+declare const databaseRevisionAnchorPublicationBrand: unique symbol;
+export type DatabaseRevisionAnchorPublication = OwnedSecureFilePublication &
+  Readonly<{ [databaseRevisionAnchorPublicationBrand]: true }>;
+
+export type DatabaseRevisionAnchorCreateResult =
+  | Readonly<{
+      status: 'not-published';
+      error: PortableKeyFileError;
+    }>
+  | Readonly<{
+      status: 'published';
+      publication: DatabaseRevisionAnchorPublication;
+    }>
+  | Readonly<{
+      status: 'publication-uncertain';
+      publication: DatabaseRevisionAnchorPublication;
+      error: PortableKeyFileError;
+    }>;
+
 export function databaseRevisionAnchorPath(databaseKeyFilePath: string): string {
   if (typeof databaseKeyFilePath !== 'string' || databaseKeyFilePath.length === 0) {
     throw new PortableKeyFileError('KEY_FILE_INVALID_PATH');
@@ -126,6 +148,43 @@ export async function writeDatabaseRevisionAnchor(
   } finally {
     zeroize(serialized);
   }
+}
+
+export async function createOwnedDatabaseRevisionAnchor(
+  path: string,
+  databaseRootKey: Uint8Array,
+  anchor: DatabaseRevisionAnchor,
+): Promise<DatabaseRevisionAnchorCreateResult> {
+  requireByteLength(databaseRootKey, DRK_BYTES, 'database root key');
+  let normalized: DatabaseRevisionAnchor;
+  try {
+    normalized = normalizeAnchor(anchor);
+  } catch {
+    throw invalid();
+  }
+  let serialized: Uint8Array | undefined;
+  try {
+    serialized = serializeAnchor(databaseRootKey, normalized);
+    const result = await createOwnedSecureFile(
+      path,
+      serialized,
+      'database-revision-anchor',
+      MAX_FILE_BYTES,
+    );
+    if (result.status === 'not-published') return result;
+    return {
+      ...result,
+      publication: result.publication as DatabaseRevisionAnchorPublication,
+    };
+  } finally {
+    zeroize(serialized);
+  }
+}
+
+export async function cleanupOwnedDatabaseRevisionAnchor(
+  publication: DatabaseRevisionAnchorPublication,
+): Promise<void> {
+  await cleanupOwnedSecureFilePublication(publication, 'database-revision-anchor');
 }
 
 /**

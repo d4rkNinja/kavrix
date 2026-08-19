@@ -48,22 +48,34 @@ export {
   type RevisionAnchor,
 } from './revision-anchor.js';
 export {
+  cleanupOwnedDatabaseKeyFile,
+  createOwnedDatabaseKeyFile,
   readDatabaseKeyFileBinding,
   readDatabaseKeyFile,
   writeDatabaseKeyFile,
   type DatabaseKeyBinding,
+  type DatabaseKeyFileCreateOptions,
+  type DatabaseKeyFileCreateResult,
+  type DatabaseKeyFilePublication,
   type DatabaseKeyFileWriteOptions,
   type ParsedDatabaseKeyFile,
 } from './database-key-files.js';
 export {
+  cleanupOwnedDatabaseRecoveryKitFile,
+  createOwnedDatabaseRecoveryKitFile,
   readDatabaseRecoveryKitFileBinding,
   readDatabaseRecoveryKitFile,
   writeDatabaseRecoveryKitFile,
   type DatabaseRecoveryBinding,
+  type DatabaseRecoveryKitCreateOptions,
+  type DatabaseRecoveryKitFileCreateResult,
+  type DatabaseRecoveryKitFilePublication,
   type DatabaseRecoveryKitWriteOptions,
   type ParsedDatabaseRecoveryKit,
 } from './database-recovery-kit-files.js';
 export {
+  cleanupOwnedDatabaseRevisionAnchor,
+  createOwnedDatabaseRevisionAnchor,
   databaseRevisionAnchorPath,
   databaseRevisionAnchorSchema,
   databaseVaultRevisionAnchorSchema,
@@ -72,6 +84,8 @@ export {
   verifyDatabaseRevisionAnchor,
   writeDatabaseRevisionAnchor,
   type DatabaseRevisionAnchor,
+  type DatabaseRevisionAnchorCreateResult,
+  type DatabaseRevisionAnchorPublication,
   type DatabaseRevisionAnchorVerificationOptions,
   type DatabaseRevisionAnchorTransitionResult,
   type DatabaseVaultRevisionAnchor,

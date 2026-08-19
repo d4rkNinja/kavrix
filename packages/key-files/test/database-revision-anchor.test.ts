@@ -14,6 +14,8 @@ import {
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
+  cleanupOwnedDatabaseRevisionAnchor,
+  createOwnedDatabaseRevisionAnchor,
   databaseRevisionAnchorPath,
   readDatabaseRevisionAnchor,
   transitionDatabaseRevisionAnchor,
@@ -71,6 +73,24 @@ function anchorWithVaultCount(count: number, revision = 4): DatabaseRevisionAnch
 }
 
 describe('DRK-authenticated database revision anchors', () => {
+  it('returns an opaque consumed ownership capability for create-only cleanup', async () => {
+    const file = path();
+    const drk = generateDatabaseRootKey();
+    try {
+      const created = await createOwnedDatabaseRevisionAnchor(file, drk, anchor());
+      expect(created.status).toBe('published');
+      if (created.status !== 'published') throw created.error;
+      expect(Object.keys(created.publication)).toEqual([]);
+      await cleanupOwnedDatabaseRevisionAnchor(created.publication);
+      await expect(readFile(file)).rejects.toMatchObject({ code: 'ENOENT' });
+      await expect(
+        cleanupOwnedDatabaseRevisionAnchor(created.publication),
+      ).rejects.toMatchObject({ code: 'KEY_FILE_OPERATION_FAILED' });
+    } finally {
+      zeroize(drk);
+    }
+  });
+
   it('writes, reads, and verifies all 1,000 bounded vault heads while rejecting count and byte excess', async () => {
     const file = path();
     const drk = generateDatabaseRootKey();

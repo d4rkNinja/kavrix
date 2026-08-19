@@ -20,7 +20,13 @@ import {
 import sodium from 'libsodium-wrappers';
 
 import { PortableKeyFileError } from './errors.js';
-import { readSecureFile, writeSecureFile } from './filesystem.js';
+import {
+  cleanupOwnedSecureFilePublication,
+  createOwnedSecureFile,
+  readSecureFile,
+  writeSecureFile,
+  type OwnedSecureFilePublication,
+} from './filesystem.js';
 
 const FORMAT = 'kavrix-database-recovery-kit';
 const VERSION = 1;
@@ -39,6 +45,29 @@ export type DatabaseRecoveryKitWriteOptions = Readonly<{
   mode?: 'create' | 'replace';
   passphrase: Uint8Array;
 }>;
+
+export type DatabaseRecoveryKitCreateOptions = Readonly<{
+  passphrase: Uint8Array;
+}>;
+
+declare const databaseRecoveryKitFilePublicationBrand: unique symbol;
+export type DatabaseRecoveryKitFilePublication = OwnedSecureFilePublication &
+  Readonly<{ [databaseRecoveryKitFilePublicationBrand]: true }>;
+
+export type DatabaseRecoveryKitFileCreateResult =
+  | Readonly<{
+      status: 'not-published';
+      error: PortableKeyFileError;
+    }>
+  | Readonly<{
+      status: 'published';
+      publication: DatabaseRecoveryKitFilePublication;
+    }>
+  | Readonly<{
+      status: 'publication-uncertain';
+      publication: DatabaseRecoveryKitFilePublication;
+      error: PortableKeyFileError;
+    }>;
 
 export type ParsedDatabaseRecoveryKit = Readonly<{
   binding: DatabaseRecoveryBinding;
@@ -62,6 +91,51 @@ export async function writeDatabaseRecoveryKitFile(
   binding: DatabaseRecoveryBinding,
   options: DatabaseRecoveryKitWriteOptions,
 ): Promise<void> {
+  let serialized: Uint8Array | undefined;
+  try {
+    serialized = await serializeDatabaseRecoveryKitFile(recoveryKey, binding, options);
+    await writeSecureFile(path, serialized, options.mode ?? 'create');
+  } finally {
+    zeroize(serialized);
+  }
+}
+
+export async function createOwnedDatabaseRecoveryKitFile(
+  path: string,
+  recoveryKey: Uint8Array,
+  binding: DatabaseRecoveryBinding,
+  options: DatabaseRecoveryKitCreateOptions,
+): Promise<DatabaseRecoveryKitFileCreateResult> {
+  let serialized: Uint8Array | undefined;
+  try {
+    serialized = await serializeDatabaseRecoveryKitFile(recoveryKey, binding, options);
+    const result = await createOwnedSecureFile(
+      path,
+      serialized,
+      'database-recovery-kit-file',
+      MAX_FILE_BYTES,
+    );
+    if (result.status === 'not-published') return result;
+    return {
+      ...result,
+      publication: result.publication as DatabaseRecoveryKitFilePublication,
+    };
+  } finally {
+    zeroize(serialized);
+  }
+}
+
+export async function cleanupOwnedDatabaseRecoveryKitFile(
+  publication: DatabaseRecoveryKitFilePublication,
+): Promise<void> {
+  await cleanupOwnedSecureFilePublication(publication, 'database-recovery-kit-file');
+}
+
+async function serializeDatabaseRecoveryKitFile(
+  recoveryKey: Uint8Array,
+  binding: DatabaseRecoveryBinding,
+  options: DatabaseRecoveryKitCreateOptions,
+): Promise<Uint8Array> {
   requireByteLength(recoveryKey, KEY_BYTES, 'recovery key');
   validateBinding(binding);
   const ownedKey = Uint8Array.from(recoveryKey);
@@ -94,7 +168,9 @@ export async function writeDatabaseRecoveryKitFile(
       authenticationTag: encodeBase64Url(encrypted.mac),
     };
     serialized = Buffer.from(`${canonicalJson(envelope)}\n`, 'utf8');
-    await writeSecureFile(path, serialized, options.mode ?? 'create');
+    const result = serialized;
+    serialized = undefined;
+    return result;
   } finally {
     zeroize(serialized);
     zeroize(kek);

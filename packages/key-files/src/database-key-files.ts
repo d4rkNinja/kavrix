@@ -20,7 +20,13 @@ import {
 import sodium from 'libsodium-wrappers';
 
 import { PortableKeyFileError } from './errors.js';
-import { readSecureFile, writeSecureFile } from './filesystem.js';
+import {
+  cleanupOwnedSecureFilePublication,
+  createOwnedSecureFile,
+  readSecureFile,
+  writeSecureFile,
+  type OwnedSecureFilePublication,
+} from './filesystem.js';
 
 const BEGIN = '-----BEGIN KAVRIX DATABASE KEY-----';
 const END = '-----END KAVRIX DATABASE KEY-----';
@@ -42,6 +48,29 @@ export type DatabaseKeyFileWriteOptions = Readonly<{
   mode?: 'create' | 'replace';
   protection: Readonly<{ kind: 'passphrase'; passphrase: Uint8Array }>;
 }>;
+
+export type DatabaseKeyFileCreateOptions = Readonly<{
+  protection: Readonly<{ kind: 'passphrase'; passphrase: Uint8Array }>;
+}>;
+
+declare const databaseKeyFilePublicationBrand: unique symbol;
+export type DatabaseKeyFilePublication = OwnedSecureFilePublication &
+  Readonly<{ [databaseKeyFilePublicationBrand]: true }>;
+
+export type DatabaseKeyFileCreateResult =
+  | Readonly<{
+      status: 'not-published';
+      error: PortableKeyFileError;
+    }>
+  | Readonly<{
+      status: 'published';
+      publication: DatabaseKeyFilePublication;
+    }>
+  | Readonly<{
+      status: 'publication-uncertain';
+      publication: DatabaseKeyFilePublication;
+      error: PortableKeyFileError;
+    }>;
 
 export type ParsedDatabaseKeyFile = Readonly<{
   binding: DatabaseKeyBinding;
@@ -75,6 +104,51 @@ export async function writeDatabaseKeyFile(
   binding: DatabaseKeyBinding,
   options: DatabaseKeyFileWriteOptions,
 ): Promise<void> {
+  let serialized: Uint8Array | undefined;
+  try {
+    serialized = await serializeDatabaseKeyFile(portableKey, binding, options);
+    await writeSecureFile(path, serialized, options.mode ?? 'create');
+  } finally {
+    zeroize(serialized);
+  }
+}
+
+export async function createOwnedDatabaseKeyFile(
+  path: string,
+  portableKey: Uint8Array,
+  binding: DatabaseKeyBinding,
+  options: DatabaseKeyFileCreateOptions,
+): Promise<DatabaseKeyFileCreateResult> {
+  let serialized: Uint8Array | undefined;
+  try {
+    serialized = await serializeDatabaseKeyFile(portableKey, binding, options);
+    const result = await createOwnedSecureFile(
+      path,
+      serialized,
+      'database-key-file',
+      MAX_FILE_BYTES,
+    );
+    if (result.status === 'not-published') return result;
+    return {
+      ...result,
+      publication: result.publication as DatabaseKeyFilePublication,
+    };
+  } finally {
+    zeroize(serialized);
+  }
+}
+
+export async function cleanupOwnedDatabaseKeyFile(
+  publication: DatabaseKeyFilePublication,
+): Promise<void> {
+  await cleanupOwnedSecureFilePublication(publication, 'database-key-file');
+}
+
+async function serializeDatabaseKeyFile(
+  portableKey: Uint8Array,
+  binding: DatabaseKeyBinding,
+  options: DatabaseKeyFileCreateOptions,
+): Promise<Uint8Array> {
   requireByteLength(portableKey, KEY_BYTES, 'portable key');
   validateBinding(binding);
   const ownedKey = Uint8Array.from(portableKey);
@@ -113,7 +187,9 @@ export async function writeDatabaseKeyFile(
       ].join('\n'),
       'ascii',
     );
-    await writeSecureFile(path, serialized, options.mode ?? 'create');
+    const result = serialized;
+    serialized = undefined;
+    return result;
   } finally {
     zeroize(serialized);
     zeroize(kek);
