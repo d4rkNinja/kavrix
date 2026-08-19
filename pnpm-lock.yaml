@@ -112,6 +112,9 @@ importers:
       libsodium-wrappers:
         specifier: 'catalog:'
         version: 0.8.4
+      zod:
+        specifier: 'catalog:'
+        version: 4.4.3
 
   packages/schemas:
     dependencies:

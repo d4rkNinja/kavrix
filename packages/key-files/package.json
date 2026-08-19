@@ -29,6 +29,7 @@
   "dependencies": {
     "@kavrix/crypto": "workspace:*",
     "@kavrix/schemas": "workspace:*",
-    "libsodium-wrappers": "catalog:"
+    "libsodium-wrappers": "catalog:",
+    "zod": "catalog:"
   }
 }

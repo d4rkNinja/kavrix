@@ -38,3 +38,28 @@ export {
   writeRevisionAnchor,
   type RevisionAnchor,
 } from './revision-anchor.js';
+export {
+  readDatabaseKeyFile,
+  writeDatabaseKeyFile,
+  type DatabaseKeyBinding,
+  type DatabaseKeyFileWriteOptions,
+  type ParsedDatabaseKeyFile,
+} from './database-key-files.js';
+export {
+  readDatabaseRecoveryKitFile,
+  writeDatabaseRecoveryKitFile,
+  type DatabaseRecoveryBinding,
+  type DatabaseRecoveryKitWriteOptions,
+  type ParsedDatabaseRecoveryKit,
+} from './database-recovery-kit-files.js';
+export {
+  databaseRevisionAnchorPath,
+  databaseRevisionAnchorSchema,
+  databaseVaultRevisionAnchorSchema,
+  readDatabaseRevisionAnchor,
+  verifyDatabaseRevisionAnchor,
+  writeDatabaseRevisionAnchor,
+  type DatabaseRevisionAnchor,
+  type DatabaseRevisionAnchorVerificationOptions,
+  type DatabaseVaultRevisionAnchor,
+} from './database-revision-anchor.js';
