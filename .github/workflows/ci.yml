@@ -56,6 +56,8 @@ jobs:
         run: node --input-type=module -e "if (process.arch !== process.env.EXPECTED_ARCH) process.exit(1)"
       - run: pnpm install --frozen-lockfile
       - run: pnpm verify
+      - name: Exercise packed database profiles, multi-vault storage, and migration
+        run: pnpm acceptance:database-container
       - name: Exercise every applicable command through the packed local-file CLI
         run: pnpm acceptance:pre-ci
       - name: Install and smoke-test the packed public CLI

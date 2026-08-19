@@ -86,6 +86,39 @@ describe('local secret input policy', () => {
     ).resolves.toEqual(['correct horse battery staple']);
   });
 
+  it('accepts the bounded six-frame maximum required by MongoDB-to-local migration', async () => {
+    const values = [
+      'mongodb://localhost/source',
+      'source passphrase value',
+      'destination passphrase',
+      'destination passphrase',
+      'private database label',
+      'private vault label',
+    ];
+    await expect(
+      secretInput(`${values.join('\n')}\n`).read(
+        [
+          'database-url',
+          'passphrase',
+          'new-passphrase',
+          'new-passphrase',
+          'label',
+          'label',
+        ],
+        true,
+      ),
+    ).resolves.toEqual(values);
+  });
+
+  it('rejects secret requests above the migration frame bound', async () => {
+    await expect(
+      secretInput('unused\n').read(
+        Array.from({ length: 7 }, () => 'label' as const),
+        true,
+      ),
+    ).rejects.toThrow('Secret input request is invalid.');
+  });
+
   it('rejects malformed and partial UTF-8 stdin frames and clears consumed chunks', async () => {
     for (const malformed of [
       Buffer.from([0xc3, 0x28, 0x0a]),

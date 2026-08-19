@@ -1,14 +1,15 @@
 # Documentation
 
 This documentation describes the supported Kavrix product: one local CLI that
-encrypts credential values and stores authenticated ciphertext in a hardened
-local file or directly in MongoDB. Historical API, sync-daemon, SQLite, and TUI
-designs are not supported runtime paths.
+stores multiple independently encrypted vaults inside an encrypted local-file
+or MongoDB database container. Legacy version 2 single-vault documents remain a
+read-only migration source and retain their stable compatibility commands.
+Historical API, sync-daemon, SQLite, and TUI designs are not runtime paths.
 
 ## Start here
 
-- [Command guide](cli-reference.md): setup, everyday commands, keys, recovery, and health checks.
-- [Datastore policy](local-database.md): local-file safety plus MongoDB URI and TLS behavior.
+- [Command guide](cli-reference.md): profiles, database/vault setup, migration, credentials, and recovery.
+- [Datastore policy](local-database.md): local two-file sharing and MongoDB transaction/TLS requirements.
 - [Recovery kits](backup-and-recovery.md): create, verify, revoke, and use protected recovery material.
 - [Direct CLI model](direct-access-cli.md): why no Kavrix server is required.
 

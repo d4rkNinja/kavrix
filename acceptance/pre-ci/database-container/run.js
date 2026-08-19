@@ -1,0 +1,934 @@
+/* global Buffer, process, setTimeout, clearTimeout */
+
+import { spawn } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
+import { existsSync } from 'node:fs';
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  writeFile,
+} from 'node:fs/promises';
+import { homedir, tmpdir } from 'node:os';
+import { dirname, join, relative, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const workspaceRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
+const cliRoot = join(workspaceRoot, 'apps', 'cli');
+const npmCommand = process.platform === 'win32' ? process.execPath : 'npm';
+const npmArgsPrefix =
+  process.platform === 'win32'
+    ? [join(dirname(process.execPath), 'node_modules', 'npm', 'bin', 'npm-cli.js')]
+    : [];
+const commandTimeoutMs = 240_000;
+const maxOutputBytes = 4 * 1024 * 1024;
+const activeChildren = new Set();
+const capturedInvocations = [];
+const capturedOutputs = [];
+const sensitiveValues = new Set();
+
+function fail(message) {
+  throw new Error(message);
+}
+
+function assert(condition, message) {
+  if (!condition) fail(message);
+}
+
+function ephemeralSecret(label) {
+  const value = `${label}-${randomBytes(24).toString('base64url')}`;
+  sensitiveValues.add(value);
+  return value;
+}
+
+function stdinFrames(values) {
+  return `${values.join('\n')}\n`;
+}
+
+function assertNoSensitiveText(text, label) {
+  for (const secret of sensitiveValues) {
+    assert(!text.includes(secret), `${label} exposed protected runtime input`);
+  }
+}
+
+function assertSafeInvocation(command, args, environment, label) {
+  assertNoSensitiveText(command, `${label} executable`);
+  assertNoSensitiveText(JSON.stringify(args), `${label} argv`);
+  for (const [name, value] of Object.entries(environment)) {
+    if (typeof value !== 'string') continue;
+    for (const secret of sensitiveValues) {
+      assert(
+        value !== secret && !value.includes(secret),
+        `${label} environment ${name}`,
+      );
+    }
+  }
+}
+
+async function runProcess(command, args, options = {}) {
+  const environment = options.environment ?? process.env;
+  const label = options.label ?? command;
+  assertSafeInvocation(command, args, environment, label);
+  capturedInvocations.push({ command, args: [...args] });
+  return await new Promise((resolveResult, reject) => {
+    const child = spawn(command, args, {
+      cwd: options.cwd ?? workspaceRoot,
+      env: environment,
+      shell: false,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      windowsHide: true,
+    });
+    activeChildren.add(child);
+    const stdout = [];
+    const stderr = [];
+    let bytes = 0;
+    let settled = false;
+    let timeout;
+    const finish = (error, result) => {
+      if (settled) return;
+      settled = true;
+      if (timeout !== undefined) clearTimeout(timeout);
+      if (error !== undefined) reject(error);
+      else resolveResult(result);
+    };
+    const capture = (chunk, target) => {
+      bytes += chunk.byteLength;
+      if (bytes > maxOutputBytes) {
+        child.kill();
+        finish(new Error(`${label} exceeded its output limit`));
+        return;
+      }
+      target.push(Buffer.from(chunk));
+    };
+    child.stdout.on('data', (chunk) => capture(chunk, stdout));
+    child.stderr.on('data', (chunk) => capture(chunk, stderr));
+    child.stdin.on('error', () => undefined);
+    child.once('error', () => finish(new Error(`${label} could not start`)));
+    child.once('close', (code, signal) => {
+      activeChildren.delete(child);
+      const result = {
+        code,
+        signal,
+        stdout: Buffer.concat(stdout).toString('utf8'),
+        stderr: Buffer.concat(stderr).toString('utf8'),
+      };
+      capturedOutputs.push({ label, stdout: result.stdout, stderr: result.stderr });
+      if (options.allowFailure === true) {
+        finish(undefined, result);
+      } else if (code !== 0 || signal !== null) {
+        finish(new Error(`${label} failed: ${redactedDiagnostic(result)}`));
+      } else {
+        finish(undefined, result);
+      }
+    });
+    child.stdin.end(options.input ?? '');
+    timeout = setTimeout(() => {
+      child.kill();
+      finish(new Error(`${label} timed out`));
+    }, options.timeoutMs ?? commandTimeoutMs);
+  });
+}
+
+function redactedDiagnostic(result) {
+  let diagnostic = `${result.stderr}\n${result.stdout}`.trim();
+  for (const secret of sensitiveValues) {
+    diagnostic = diagnostic.replaceAll(secret, '[REDACTED]');
+  }
+  for (const marker of privatePathMarkers()) {
+    diagnostic = diagnostic.replaceAll(marker, '[PATH]');
+  }
+  diagnostic = Array.from(diagnostic)
+    .filter((character) => {
+      const point = character.codePointAt(0) ?? 0;
+      return !(
+        point < 9 ||
+        point === 11 ||
+        point === 12 ||
+        (point >= 14 && point <= 31) ||
+        (point >= 127 && point <= 159)
+      );
+    })
+    .join('');
+  return diagnostic.slice(0, 1_024) || 'no diagnostic output';
+}
+
+function parseJson(result, label) {
+  try {
+    return JSON.parse(result.stdout);
+  } catch {
+    fail(`${label} did not emit JSON`);
+  }
+}
+
+function cliRunner(bin, installRoot) {
+  return async (args, frames = [], options = {}) => {
+    const result = await runProcess(process.execPath, [bin, ...args], {
+      cwd: installRoot,
+      input: stdinFrames(frames),
+      label: `packed kavrix ${args.slice(0, 3).join(' ')}`,
+      allowFailure: options.allowFailure,
+    });
+    assertNoSensitiveText(result.stdout, `kavrix ${args.join(' ')} stdout`);
+    assertNoSensitiveText(result.stderr, `kavrix ${args.join(' ')} stderr`);
+    if (options.expectFailure === true) {
+      assert(
+        result.code !== 0 || result.signal !== null,
+        `kavrix ${args.join(' ')} unexpectedly succeeded`,
+      );
+    }
+    return result;
+  };
+}
+
+function profileConfigArgs(paths) {
+  return ['--config-dir', paths.configDirectory];
+}
+
+function profileRoute(paths, profile) {
+  return ['--profile', profile, '--profile-config-dir', paths.configDirectory];
+}
+
+function legacyFileArgs(dataFile, keyFile, vaultId) {
+  return [
+    '--datastore',
+    'file',
+    '--data-file',
+    dataFile,
+    '--key-file',
+    keyFile,
+    '--vault',
+    vaultId,
+  ];
+}
+
+async function addFileProfile(run, paths, id, dataFile, keyFile) {
+  const result = await run([
+    'db',
+    'profile',
+    'add',
+    id,
+    ...profileConfigArgs(paths),
+    '--datastore',
+    'file',
+    '--data-file',
+    dataFile,
+    '--key-file',
+    keyFile,
+  ]);
+  const profile = parseJson(result, `profile add ${id}`).profile;
+  assert(profile?.id === id, `profile ${id} was not registered`);
+  assert(profile?.databaseId === undefined, `profile ${id} bound before init`);
+}
+
+async function selectProfile(run, paths, id) {
+  await run(['db', 'profile', 'use', id, ...profileConfigArgs(paths)]);
+  const status = parseJson(
+    await run(['db', 'profile', 'status', ...profileConfigArgs(paths)]),
+    `profile status ${id}`,
+  );
+  assert(status.current?.id === id, `profile ${id} was not selected`);
+}
+
+async function initializeDatabase(run, paths, id, passphrase, label) {
+  const result = parseJson(
+    await run(
+      ['db', 'init', ...profileRoute(paths, id), '--secrets-stdin'],
+      [label, passphrase, passphrase],
+    ),
+    `database init ${id}`,
+  );
+  assert(result.initialized === true, `database ${id} was not initialized`);
+  assert(typeof result.databaseId === 'string', `database ${id} has no identifier`);
+  return result.databaseId;
+}
+
+async function createVault(run, paths, profile, passphrase, label, options = {}) {
+  const result = await run(
+    ['db', 'vault', 'create', ...profileRoute(paths, profile), '--secrets-stdin'],
+    [passphrase, label],
+    options,
+  );
+  if (options.expectFailure === true) return result;
+  const created = parseJson(result, `vault create ${profile}`).created;
+  assert(typeof created?.id === 'string', 'vault creation did not return an ID');
+  return created.id;
+}
+
+async function putCredential(run, paths, profile, vaultId, passphrase, name, value) {
+  const result = parseJson(
+    await run(
+      [
+        'put',
+        name,
+        ...profileRoute(paths, profile),
+        '--vault',
+        vaultId,
+        '--passphrase-stdin',
+        '--value-stdin',
+      ],
+      [passphrase, value],
+    ),
+    `put ${name}`,
+  );
+  assert(result.saved === true, `credential ${name} was not saved`);
+}
+
+async function assertCredential(run, paths, profile, vaultId, passphrase, name) {
+  const route = [
+    ...profileRoute(paths, profile),
+    '--vault',
+    vaultId,
+    '--passphrase-stdin',
+  ];
+  const exists = parseJson(
+    await run(['has', name, ...route], [passphrase]),
+    `has ${name}`,
+  );
+  assert(exists.exists === true, `credential ${name} was not found`);
+  const read = parseJson(
+    await run(['get', name, ...route], [passphrase]),
+    `get ${name}`,
+  );
+  assert(read.value === '[REDACTED]', `credential ${name} was revealed by default`);
+}
+
+async function exerciseConcurrentConflict(run, paths, profile, passphrase, label) {
+  const args = [
+    'db',
+    'vault',
+    'create',
+    ...profileRoute(paths, profile),
+    '--secrets-stdin',
+  ];
+  const attempts = await Promise.all([
+    run(args, [passphrase, label], { allowFailure: true }),
+    run(args, [passphrase, label], { allowFailure: true }),
+  ]);
+  const successes = attempts.filter(
+    (result) => result.code === 0 && result.signal === null,
+  );
+  const failures = attempts.filter(
+    (result) => result.code !== 0 || result.signal !== null,
+  );
+  assert(successes.length === 1, 'concurrent vault creation had no single winner');
+  assert(failures.length === 1, 'concurrent vault creation did not fail closed');
+}
+
+async function exerciseDatabaseContainer(run, paths) {
+  const primaryPassphrase = ephemeralSecret('primary-passphrase');
+  const secondPassphrase = ephemeralSecret('second-passphrase');
+  const legacyPassphrase = ephemeralSecret('legacy-passphrase');
+  const migrationPassphrase = ephemeralSecret('migration-passphrase');
+  const recoveryPassphrase = ephemeralSecret('recovery-passphrase');
+  const canaryA = ephemeralSecret('plaintext-canary-a');
+  const canaryB = ephemeralSecret('plaintext-canary-b');
+  const legacyCanary = ephemeralSecret('plaintext-canary-legacy');
+  const databaseLabel = ephemeralSecret('private-database-label');
+  const firstVaultLabel = ephemeralSecret('private-vault-label-a');
+  const secondVaultLabel = ephemeralSecret('private-vault-label-b');
+  const conflictLabel = ephemeralSecret('private-vault-label-conflict');
+  const secondDatabaseLabel = ephemeralSecret('private-database-label-two');
+  const secondDatabaseVaultLabel = ephemeralSecret('private-vault-label-two');
+  const migratedDatabaseLabel = ephemeralSecret('private-database-label-migrated');
+  const migratedVaultLabel = ephemeralSecret('private-vault-label-migrated');
+
+  await addFileProfile(
+    run,
+    paths,
+    'primary',
+    paths.primaryDataFile,
+    paths.primaryKeyFile,
+  );
+  await selectProfile(run, paths, 'primary');
+  const primaryDatabaseId = await initializeDatabase(
+    run,
+    paths,
+    'primary',
+    primaryPassphrase,
+    databaseLabel,
+  );
+
+  const firstVaultId = await createVault(
+    run,
+    paths,
+    'primary',
+    primaryPassphrase,
+    firstVaultLabel,
+  );
+  const secondVaultId = await createVault(
+    run,
+    paths,
+    'primary',
+    primaryPassphrase,
+    secondVaultLabel,
+  );
+  assert(firstVaultId !== secondVaultId, 'database vault IDs are not independent');
+
+  const listed = parseJson(
+    await run(
+      [
+        'db',
+        'vault',
+        'list',
+        ...profileRoute(paths, 'primary'),
+        '--secrets-stdin',
+        '--json',
+      ],
+      [primaryPassphrase],
+    ),
+    'primary vault list',
+  );
+  assert(listed.vaults?.length === 2, 'primary database did not list two vaults');
+  assert(
+    listed.vaults.every((entry) => entry.label === '[REDACTED]'),
+    'vault labels were visible without an explicit reveal flow',
+  );
+
+  await putCredential(
+    run,
+    paths,
+    'primary',
+    firstVaultId,
+    primaryPassphrase,
+    'service/first',
+    canaryA,
+  );
+  await putCredential(
+    run,
+    paths,
+    'primary',
+    secondVaultId,
+    primaryPassphrase,
+    'service/second',
+    canaryB,
+  );
+  await assertCredential(
+    run,
+    paths,
+    'primary',
+    firstVaultId,
+    primaryPassphrase,
+    'service/first',
+  );
+  await assertCredential(
+    run,
+    paths,
+    'primary',
+    secondVaultId,
+    primaryPassphrase,
+    'service/second',
+  );
+
+  await run(
+    [
+      'db',
+      'recovery',
+      'create',
+      ...profileRoute(paths, 'primary'),
+      '--recovery-file',
+      paths.databaseRecoveryFile,
+      '--secrets-stdin',
+    ],
+    [primaryPassphrase, recoveryPassphrase, recoveryPassphrase],
+  );
+
+  await exerciseConcurrentConflict(
+    run,
+    paths,
+    'primary',
+    primaryPassphrase,
+    conflictLabel,
+  );
+
+  await addFileProfile(
+    run,
+    paths,
+    'secondary',
+    paths.secondDataFile,
+    paths.secondKeyFile,
+  );
+  await selectProfile(run, paths, 'secondary');
+  const secondDatabaseId = await initializeDatabase(
+    run,
+    paths,
+    'secondary',
+    secondPassphrase,
+    secondDatabaseLabel,
+  );
+  assert(secondDatabaseId !== primaryDatabaseId, 'two databases shared an ID');
+  await createVault(
+    run,
+    paths,
+    'secondary',
+    secondPassphrase,
+    secondDatabaseVaultLabel,
+  );
+
+  await run(
+    [
+      'db',
+      'status',
+      ...profileRoute(paths, 'secondary'),
+      '--key-file',
+      paths.primaryKeyFile,
+      '--secrets-stdin',
+    ],
+    [secondPassphrase],
+    { allowFailure: true, expectFailure: true },
+  );
+
+  await selectProfile(run, paths, 'primary');
+  await assertCredential(
+    run,
+    paths,
+    'primary',
+    firstVaultId,
+    primaryPassphrase,
+    'service/first',
+  );
+  await assertCredential(
+    run,
+    paths,
+    'primary',
+    secondVaultId,
+    primaryPassphrase,
+    'service/second',
+  );
+
+  const anchorPath = `${paths.primaryKeyFile}.database-anchor`;
+  const staleAnchor = await readFile(anchorPath);
+  const staleDatabase = await readFile(paths.primaryDataFile);
+  await createVault(
+    run,
+    paths,
+    'primary',
+    primaryPassphrase,
+    ephemeralSecret('private-vault-label-anchor-advance'),
+  );
+  const currentAnchor = await readFile(anchorPath);
+  assert(!staleAnchor.equals(currentAnchor), 'database anchor did not advance');
+  const currentDatabase = await readFile(paths.primaryDataFile);
+  try {
+    await writeFile(paths.primaryDataFile, staleDatabase);
+    if (process.platform !== 'win32') await chmod(paths.primaryDataFile, 0o600);
+    await run(
+      ['db', 'status', ...profileRoute(paths, 'primary'), '--secrets-stdin'],
+      [primaryPassphrase],
+      { allowFailure: true, expectFailure: true },
+    );
+  } finally {
+    await writeFile(paths.primaryDataFile, currentDatabase);
+    if (process.platform !== 'win32') await chmod(paths.primaryDataFile, 0o600);
+  }
+
+  try {
+    const tamperedAnchor = Buffer.from(currentAnchor);
+    assert(tamperedAnchor.byteLength > 0, 'database anchor was empty');
+    tamperedAnchor[tamperedAnchor.byteLength - 1] ^= 1;
+    await writeFile(anchorPath, tamperedAnchor);
+    if (process.platform !== 'win32') await chmod(anchorPath, 0o600);
+    await run(
+      ['db', 'status', ...profileRoute(paths, 'primary'), '--secrets-stdin'],
+      [primaryPassphrase],
+      { allowFailure: true, expectFailure: true },
+    );
+  } finally {
+    await writeFile(anchorPath, currentAnchor);
+    if (process.platform !== 'win32') await chmod(anchorPath, 0o600);
+  }
+
+  const authenticDatabase = await readFile(paths.primaryDataFile);
+  try {
+    const tampered = JSON.parse(authenticDatabase.toString('utf8'));
+    const ciphertext = tampered.database.encryptedCatalog.ciphertext;
+    assert(typeof ciphertext === 'string' && ciphertext.length > 0, 'catalog missing');
+    tampered.database.encryptedCatalog.ciphertext = `${
+      ciphertext[0] === 'A' ? 'B' : 'A'
+    }${ciphertext.slice(1)}`;
+    await writeFile(paths.primaryDataFile, JSON.stringify(tampered));
+    if (process.platform !== 'win32') await chmod(paths.primaryDataFile, 0o600);
+    await run(
+      ['db', 'status', ...profileRoute(paths, 'primary'), '--secrets-stdin'],
+      [primaryPassphrase],
+      { allowFailure: true, expectFailure: true },
+    );
+  } finally {
+    await writeFile(paths.primaryDataFile, authenticDatabase);
+    if (process.platform !== 'win32') await chmod(paths.primaryDataFile, 0o600);
+  }
+
+  await addFileProfile(run, paths, 'legacy', paths.legacyDataFile, paths.legacyKeyFile);
+  await run(
+    [
+      'init',
+      ...legacyFileArgs(paths.legacyDataFile, paths.legacyKeyFile, 'legacy-v2'),
+      '--passphrase-stdin',
+    ],
+    [legacyPassphrase, legacyPassphrase],
+  );
+  await run(
+    [
+      'put',
+      'legacy/item',
+      ...legacyFileArgs(paths.legacyDataFile, paths.legacyKeyFile, 'legacy-v2'),
+      '--passphrase-stdin',
+      '--value-stdin',
+    ],
+    [legacyPassphrase, legacyCanary],
+  );
+
+  await addFileProfile(
+    run,
+    paths,
+    'migrated',
+    paths.migratedDataFile,
+    paths.migratedKeyFile,
+  );
+  const migrated = parseJson(
+    await run(
+      [
+        'migrate',
+        'database',
+        '--source-profile',
+        'legacy',
+        '--destination-profile',
+        'migrated',
+        '--source-vault',
+        'legacy-v2',
+        '--profile-config-dir',
+        paths.configDirectory,
+        '--initialize',
+        '--secrets-stdin',
+      ],
+      [
+        legacyPassphrase,
+        migrationPassphrase,
+        migrationPassphrase,
+        migratedDatabaseLabel,
+        migratedVaultLabel,
+      ],
+    ),
+    'legacy database migration',
+  );
+  assert(migrated.migrated === true, 'legacy migration did not report success');
+  assert(migrated.recordCount === 1, 'legacy migration record count was incorrect');
+  await selectProfile(run, paths, 'migrated');
+  await assertCredential(
+    run,
+    paths,
+    'migrated',
+    migrated.vaultId,
+    migrationPassphrase,
+    'legacy/item',
+  );
+
+  await selectProfile(run, paths, 'primary');
+  await assertCredential(
+    run,
+    paths,
+    'primary',
+    firstVaultId,
+    primaryPassphrase,
+    'service/first',
+  );
+  await assertCredential(
+    run,
+    paths,
+    'primary',
+    secondVaultId,
+    primaryPassphrase,
+    'service/second',
+  );
+}
+
+async function walkFiles(root, current = root) {
+  const entries = await readdir(current, { withFileTypes: true });
+  const files = [];
+  for (const entry of entries) {
+    const path = join(current, entry.name);
+    if (entry.isDirectory()) files.push(...(await walkFiles(root, path)));
+    else if (entry.isFile()) files.push(relative(root, path).replaceAll('\\', '/'));
+  }
+  return files;
+}
+
+function privatePathMarkers() {
+  const candidates = [workspaceRoot, dirname(workspaceRoot), homedir()];
+  return [...new Set(candidates.map((value) => value.replaceAll('\\', '/')))];
+}
+
+function assertNoPrivatePath(text, label) {
+  const normalized = text.replaceAll('\\', '/');
+  for (const marker of privatePathMarkers()) {
+    assert(!normalized.includes(marker), `${label} contains a private build path`);
+  }
+}
+
+async function scanPackage(packageRoot) {
+  const files = await walkFiles(packageRoot);
+  const unexpected = files.filter(
+    (file) =>
+      !(
+        file === 'package.json' ||
+        file === 'README.md' ||
+        file === 'LICENSE' ||
+        /^dist\/(?:.+\.js|.+\.d\.ts|[^/]+\.cdx\.json)$/u.test(file)
+      ),
+  );
+  assert(unexpected.length === 0, 'packed package contains unexpected files');
+  for (const file of files) {
+    const content = await readFile(join(packageRoot, file));
+    const text = content.toString('utf8');
+    assertNoSensitiveText(text, `package ${file}`);
+    assertNoPrivatePath(text, `package ${file}`);
+  }
+}
+
+async function scanArtifacts(paths) {
+  for (const path of [
+    join(paths.configDirectory, 'datastore-profiles.json'),
+    paths.primaryDataFile,
+    paths.primaryKeyFile,
+    `${paths.primaryKeyFile}.database-anchor`,
+    paths.databaseRecoveryFile,
+    `${paths.databaseRecoveryFile}.database-anchor`,
+    paths.secondDataFile,
+    paths.secondKeyFile,
+    `${paths.secondKeyFile}.database-anchor`,
+    paths.legacyDataFile,
+    paths.legacyKeyFile,
+    `${paths.legacyKeyFile}.anchor`,
+    paths.migratedDataFile,
+    paths.migratedKeyFile,
+    `${paths.migratedKeyFile}.database-anchor`,
+  ]) {
+    assert(existsSync(path), `expected acceptance artifact is missing: ${path}`);
+    const content = await readFile(path);
+    const text = content.toString('utf8');
+    assertNoSensitiveText(text, `artifact ${path}`);
+    assertNoPrivatePath(text, `artifact ${path}`);
+  }
+  for (const output of capturedOutputs) {
+    assertNoSensitiveText(output.stdout, `${output.label} stdout`);
+    assertNoSensitiveText(output.stderr, `${output.label} stderr`);
+    assertNoPrivatePath(output.stdout, `${output.label} stdout`);
+    assertNoPrivatePath(output.stderr, `${output.label} stderr`);
+  }
+  for (const invocation of capturedInvocations) {
+    assertNoSensitiveText(JSON.stringify(invocation), 'captured argv');
+    assertNoPrivatePath(JSON.stringify(invocation.args), 'captured argv');
+  }
+}
+
+async function stopActiveChildren() {
+  const failures = [];
+  for (const child of [...activeChildren]) {
+    try {
+      if (child.exitCode !== null || child.signalCode !== null) {
+        activeChildren.delete(child);
+        continue;
+      }
+      await new Promise((resolveStopped) => {
+        let settled = false;
+        let forceKill;
+        const finish = () => {
+          if (settled) return;
+          settled = true;
+          if (forceKill !== undefined) clearTimeout(forceKill);
+          activeChildren.delete(child);
+          resolveStopped();
+        };
+        child.once('close', finish);
+        child.kill('SIGTERM');
+        forceKill = setTimeout(() => {
+          child.kill('SIGKILL');
+          finish();
+        }, 1_000);
+      });
+    } catch {
+      failures.push(new Error('A child process could not be stopped.'));
+    }
+  }
+  if (failures.length > 0) throw new AggregateError(failures, 'Child cleanup failed.');
+}
+
+function redactedError(error, fallback) {
+  const source = error instanceof Error ? error.message : fallback;
+  let message = source;
+  for (const secret of sensitiveValues)
+    message = message.replaceAll(secret, '[REDACTED]');
+  for (const marker of privatePathMarkers())
+    message = message.replaceAll(marker, '[PATH]');
+  return new Error(message.length === 0 ? fallback : message);
+}
+
+async function main() {
+  let packRoot;
+  let installRoot;
+  let npmCache;
+  let previousNpmCache;
+  let interruptedSignal;
+  let operationError;
+  let verifiedVersion;
+  const onSignal = (signal) => {
+    interruptedSignal = signal;
+    for (const child of activeChildren) child.kill('SIGTERM');
+  };
+  const onSigint = () => onSignal('SIGINT');
+  const onSigterm = () => onSignal('SIGTERM');
+  process.once('SIGINT', onSigint);
+  process.once('SIGTERM', onSigterm);
+  try {
+    packRoot = await mkdtemp(join(tmpdir(), 'kavrix-database-pack-'));
+    installRoot = await mkdtemp(join(tmpdir(), 'kavrix-database-install-'));
+    npmCache = await mkdtemp(join(tmpdir(), 'kavrix-database-npm-cache-'));
+    previousNpmCache = process.env['npm_config_cache'];
+    process.env['npm_config_cache'] = npmCache;
+    const npmEnvironment = { ...process.env, npm_config_cache: npmCache };
+    await runProcess(
+      npmCommand,
+      [...npmArgsPrefix, 'pack', '--pack-destination', packRoot, '--ignore-scripts'],
+      { cwd: cliRoot, environment: npmEnvironment, label: 'npm pack kavrix' },
+    );
+    const archives = (await readdir(packRoot)).filter((file) => file.endsWith('.tgz'));
+    assert(archives.length === 1, 'npm pack did not create exactly one archive');
+    await runProcess(
+      npmCommand,
+      [
+        ...npmArgsPrefix,
+        'install',
+        '--ignore-scripts',
+        '--no-audit',
+        '--no-fund',
+        '--omit=dev',
+        '--prefix',
+        installRoot,
+        join(packRoot, archives[0]),
+      ],
+      {
+        cwd: installRoot,
+        environment: npmEnvironment,
+        label: 'npm install packed kavrix',
+      },
+    );
+
+    const packageRoot = join(installRoot, 'node_modules', 'kavrix');
+    const bin = join(packageRoot, 'dist', 'bin.js');
+    assert(existsSync(bin), 'packed kavrix executable is missing');
+    const manifest = JSON.parse(
+      await readFile(join(packageRoot, 'package.json'), 'utf8'),
+    );
+    verifiedVersion = manifest.version;
+    await scanPackage(packageRoot);
+
+    const paths = {
+      configDirectory: join(installRoot, 'profiles'),
+      primaryDataFile: join(installRoot, 'primary.database'),
+      primaryKeyFile: join(installRoot, 'primary.database.key'),
+      databaseRecoveryFile: join(installRoot, 'primary.database.recovery'),
+      secondDataFile: join(installRoot, 'secondary.database'),
+      secondKeyFile: join(installRoot, 'secondary.database.key'),
+      legacyDataFile: join(installRoot, 'legacy.vault'),
+      legacyKeyFile: join(installRoot, 'legacy.key'),
+      migratedDataFile: join(installRoot, 'migrated.database'),
+      migratedKeyFile: join(installRoot, 'migrated.database.key'),
+    };
+    await mkdir(paths.configDirectory, { recursive: true });
+    if (process.platform !== 'win32') await chmod(paths.configDirectory, 0o700);
+    const run = cliRunner(bin, installRoot);
+    const rootHelp = await run(['--help']);
+    assert(!/^\s*destroy(?:\s|$)/mu.test(rootHelp.stdout), 'destroy leaked into help');
+    await exerciseDatabaseContainer(run, paths);
+    await scanPackage(packageRoot);
+    await scanArtifacts(paths);
+    if (interruptedSignal !== undefined) {
+      fail(`Acceptance interrupted by ${interruptedSignal}`);
+    }
+  } catch (error) {
+    operationError = redactedError(error, 'Packed database acceptance failed.');
+  }
+  process.removeListener('SIGINT', onSigint);
+  process.removeListener('SIGTERM', onSigterm);
+
+  const cleanupErrors = [];
+  for (const [label, cleanup] of [
+    ['child processes', () => stopActiveChildren()],
+    [
+      'npm cache environment',
+      async () => {
+        if (previousNpmCache === undefined) delete process.env['npm_config_cache'];
+        else process.env['npm_config_cache'] = previousNpmCache;
+      },
+    ],
+    [
+      'installed package',
+      async () => {
+        if (installRoot !== undefined)
+          await rm(installRoot, { recursive: true, force: true });
+      },
+    ],
+    [
+      'packed archive',
+      async () => {
+        if (packRoot !== undefined)
+          await rm(packRoot, { recursive: true, force: true });
+      },
+    ],
+    [
+      'dedicated npm cache',
+      async () => {
+        if (npmCache !== undefined)
+          await rm(npmCache, { recursive: true, force: true });
+      },
+    ],
+  ]) {
+    try {
+      await cleanup();
+    } catch (error) {
+      cleanupErrors.push(redactedError(error, `${label} cleanup failed.`));
+    }
+  }
+  for (const [label, path] of [
+    ['installed package', installRoot],
+    ['packed archive', packRoot],
+    ['dedicated npm cache', npmCache],
+  ]) {
+    if (path !== undefined && existsSync(path)) {
+      cleanupErrors.push(new Error(`${label} cleanup did not remove its target.`));
+    }
+  }
+  if (operationError !== undefined && cleanupErrors.length > 0) {
+    throw new AggregateError(
+      [operationError, ...cleanupErrors],
+      'Packed database acceptance and cleanup failed.',
+    );
+  }
+  if (operationError !== undefined) throw operationError;
+  if (cleanupErrors.length > 0) {
+    throw new AggregateError(
+      cleanupErrors,
+      'Packed database acceptance cleanup failed.',
+    );
+  }
+  assert(
+    process.env['npm_config_cache'] === previousNpmCache,
+    'npm cache environment was not restored',
+  );
+  process.stdout.write(
+    `Packed kavrix ${verifiedVersion} database-container acceptance passed.\n`,
+  );
+}
+
+main().catch((error) => {
+  const message =
+    error instanceof AggregateError
+      ? error.message
+      : error instanceof Error
+        ? error.message
+        : 'Packed database acceptance failed.';
+  process.stderr.write(`${message}\n`);
+  process.exitCode = 1;
+});

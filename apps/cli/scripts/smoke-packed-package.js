@@ -256,8 +256,20 @@ async function main() {
       version.stdout.trim() === manifest.version,
       'Installed kavrix version does not match package.json',
     );
+    const rootHelp = run(process.execPath, [bin, '--help'], installRoot);
+    assertSafeText(rootHelp.stdout + rootHelp.stderr, 'kavrix --help output');
+    assert(rootHelp.stderr.trim() === '', 'kavrix --help wrote to stderr');
+    assert(
+      !/^\s*destroy(?:\s|$)/mu.test(rootHelp.stdout),
+      'hidden destroy command leaked into root help',
+    );
     for (const [args, marker] of [
       [['--help'], 'Local encrypted credential vault'],
+      [['db', '--help'], 'Database operations'],
+      [['db', 'profile', '--help'], 'datastore routing profiles'],
+      [['db', 'init', '--help'], 'encrypted multi-vault database'],
+      [['db', 'vault', '--help'], 'vaults in an encrypted database'],
+      [['migrate', 'database', '--help'], 'legacy version 2 vault'],
       [['recovery', '--help'], 'Create protected recovery kits'],
       [['key', '--help'], 'Protected key-file lifecycle'],
       [['view', '--help'], 'Show a readable vault dashboard'],

@@ -1,17 +1,17 @@
 # Cryptography
 
 This page documents the cryptography used by the supported local-file and
-direct-MongoDB vault.
+direct-MongoDB database container and the legacy version 2 vault format.
 It is a design description, not a claim of formal verification or independent
 audit.
 
 ## Active security boundary
 
 Kavrix creates, unwraps, and uses secret keys only in the local CLI process.
-MongoDB receives a versioned vault document containing public identifiers,
-revision metadata, wrapped key slots, recovery-slot metadata, and an encrypted
-payload. It does not receive a portable key, recovery key, passphrase, unwrapped
-vault root key, or plaintext credential value.
+MongoDB receives a versioned database document and per-vault documents containing
+opaque identifiers, revision metadata, wrapped key slots, recovery-slot metadata,
+and encrypted envelopes. It does not receive a portable key, recovery key,
+passphrase, DRK, VRK, private label, or plaintext credential value.
 
 ## Primitive suite
 
@@ -20,8 +20,9 @@ vault root key, or plaintext credential value.
   XChaCha20-Poly1305-IETF authenticated encryption with a fresh 24-byte nonce.
 - Passphrase-protected portable-key and recovery-kit files derive a key with
   Argon2id using bounded, serialized parameters and fresh salt.
-- Domain-separated key derivation and authenticated contexts prevent one key or
-  envelope type from being substituted for another.
+- HKDF-SHA-256 with versioned domains derives independent catalog, wrapping, and
+  anchor keys. Authenticated contexts prevent substitution across database,
+  vault, entity, purpose, version, and revision.
 - Revision anchors use a root-key-derived HMAC-SHA-256 authentication tag.
 - Comparisons of authentication material use constant-time byte comparison where
   the runtime API permits it.
@@ -29,7 +30,20 @@ vault root key, or plaintext credential value.
 Kavrix uses reviewed platform and libsodium primitives. It does not implement a
 custom cipher or password hash.
 
-## Key hierarchy
+## Database key hierarchy
+
+Database initialization generates a random 256-bit database root key (DRK). A
+random portable database key wraps the DRK and is stored in the protected owner
+key file. Database recovery kits contain independently protected recovery
+material whose slots wrap the same DRK.
+
+Every vault receives a separate random vault root key (VRK). A DRK-derived key
+wraps each VRK using exact database/vault associated data. Compromise of a VRK
+does not derive the DRK or another VRK. Database recovery preserves the DRK and
+therefore owner access to every independently wrapped vault; it does not rotate
+all VRKs or erase historical ciphertext.
+
+## Legacy version 2 key hierarchy
 
 A random vault root key encrypts the current vault payload. The protected
 portable key unwraps the root key through the document's active portable slot.
@@ -47,6 +61,14 @@ document, but it cannot erase old ciphertext snapshots held elsewhere.
 
 ## Authenticated vault document
 
+Database-container envelopes bind the database ID, vault ID when applicable,
+entity/purpose, schema/cryptographic/key versions, database or vault revision,
+and metadata digest. The private catalog binds its ordered vault mapping to the
+database revision. Wrapped VRKs cannot move between databases or vaults.
+
+The section below describes the retained version 2 single-vault compatibility
+format.
+
 Local-vault format version 2 binds payload ciphertext to:
 
 - vault identity and payload type;
@@ -60,15 +82,16 @@ the authenticated envelope. Altering a slot state, revision, binding, or payload
 context therefore fails authentication rather than changing behavior silently.
 Unknown or malformed versions fail closed.
 
-MongoDB updates use optimistic revision matching. Successful unlocks also read
-or advance a restrictive sidecar revision anchor stored beside the active key
-file. The anchor is authenticated with a key derived from the vault root key and
-contains the highest trusted revision and metadata digest. Lower revisions and
-same-revision forks are rejected before plaintext is returned.
+Database-container updates use exact expected revisions and MongoDB transactions
+for multi-document publication. Successful unlocks reconcile a restrictive
+sidecar authenticated by a DRK-derived key. It contains the database/catalog head
+and authenticated vault-head set; rollback, same-revision forks, and inconsistent
+vault presence fail before plaintext is returned. Legacy version 2 anchors retain
+their VRK-authenticated revision/digest contract.
 
-If the anchor is missing, normal unlock fails closed. `kavrix doctor health
---accept-current` can initialize it only as an explicit operator decision after
-the current database snapshot has been independently verified.
+If an anchor is missing, normal unlock fails closed. Legacy `kavrix doctor health
+--accept-current` applies only to a version 2 single-vault anchor; it is not a
+database-container bypass.
 
 ## Protected files
 

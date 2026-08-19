@@ -1,49 +1,85 @@
 # Datastore modes
 
-Kavrix stores one canonical encrypted local-vault document in a protected file
-or in the `kavrix_vaults` MongoDB collection by default. The datastore receives the document
-format, identifiers, revisions, timestamps, key-slot metadata, and encrypted
-payload. It does not receive plaintext credential values, portable keys,
-passphrases, recovery passphrases, or decrypted root keys.
+Kavrix stores one encrypted database container in a protected local file or as
+one database document plus per-vault documents in MongoDB. Storage receives
+opaque IDs, versions, revisions, timestamps, wrapped-key metadata, and encrypted
+envelopes. It does not receive plaintext labels, credential data, portable keys,
+passphrases, recovery secrets, DRKs, or VRKs.
 
-## Local encrypted file
+## Non-secret profiles
 
-Select the file adapter explicitly on every applicable command:
+Profiles prevent repeated routing flags without becoming a secret store:
 
 ```sh
-kavrix init --datastore file --data-file ./kavrix.vault
-kavrix put service/token --datastore file --data-file ./kavrix.vault
+kavrix db profile add local-work --datastore file \
+  --data-file ./work.kavrix --key-file ./work.kavrix.key
+kavrix db profile use local-work
+kavrix db profile status
 ```
 
-The adapter stores one vault per file and enforces a canonical bounded document,
-owner-only file permissions or Windows ACLs, link rejection, an exclusive sibling
-lock, expected-revision updates, restrictive temporary files, atomic publication,
-and directory synchronization. Credential names and values remain inside the
-authenticated encrypted payload. Vault ID, versions, revision, timestamps,
-envelope sizes, and key-slot metadata remain visible to a process that can read
-the file.
+A file profile stores only its alias, datastore type, data path, key path, and—
+after initialization—the expected opaque database ID. A MongoDB profile stores
+the alias, type, database name, database/vault collection names, key path, and
+expected opaque database ID. It never stores a URI, username, password, token,
+passphrase, label, or decrypted key. The protected registry is still permission
+checked because redirecting a route is security-sensitive.
 
-Kavrix does not persist the datastore choice. Repeat `--datastore file` and
-`--data-file` so every command names its target explicitly. MongoDB remains the
-default for backward compatibility.
+## Local encrypted database
 
-## MongoDB connection policy
+```sh
+kavrix db init --profile local-work
+kavrix db vault create --profile local-work
+kavrix put service/token --profile local-work --vault <vault-id>
+```
 
-- \`mongodb://localhost\`, \`mongodb://127.0.0.1\`, and \`mongodb://[::1]\` may use the local development connection without an explicit TLS query parameter.
-- Every non-local host, including \`mongodb+srv://\`, must explicitly set \`tls=true\` or \`ssl=true\`.
-- \`tls=false\`, \`ssl=false\`, \`sslValidate=false\`, and insecure certificate/hostname options are rejected.
-- Credentials belong in the MongoDB URI supplied through the masked prompt or protected environment integration, never in command arguments or committed files.
+The adapter stores a bounded database document and up to the schema's bounded
+number of opaque vault documents in one canonical file. It enforces owner-only
+POSIX permissions or Windows user-only ACLs, link rejection, an exclusive sibling
+lock, exact expected revisions, restrictive temporary files, atomic publication,
+and directory synchronization. Labels, credential names, and values remain in
+authenticated encrypted envelopes.
 
-The adapter uses bounded connection, server-selection, and socket timeouts and
-maps connection, validation, conflict, existence, and operation failures to
-generic fail-closed errors.
+Local sharing is all-or-nothing. A recipient needs exactly the encrypted database
+file and matching database-owner key file, plus the key-file passphrase through a
+separate secure channel. Possession of those grants access to every vault. Do not
+describe copied local files as a reader/editor grant, and do not assume Kavrix can
+revoke a copied key or snapshot.
 
-## Operational commands
+## MongoDB topology and connection policy
 
-Use \`kavrix db ping --database <name>\` to test reachability. \`kavrix init\`
-creates the first document and protected portable-key file. Subsequent commands
-unlock the local document, decrypt in memory, and persist an optimistic revision
-update.
+MongoDB stores database/catalog state in `kavrix_databases` and vault state in
+`kavrix_vaults` by default. A catalog-plus-vault update is transactional, so a
+replica set or sharded cluster with transaction support is required. A standalone
+server may answer `db ping` but cannot provide the required publication contract.
 
-No Kavrix server process, HTTP endpoint, migration daemon, or plaintext settings
-file is required by either mode.
+- `mongodb://localhost`, `mongodb://127.0.0.1`, and `mongodb://[::1]` may use a
+  local development connection without an explicit TLS query parameter.
+- Every non-local host, including `mongodb+srv://`, must explicitly set
+  `tls=true` or `ssl=true`.
+- `tls=false`, `ssl=false`, `sslValidate=false`, and insecure certificate or
+  hostname options are rejected.
+- Supply the URI only through the masked prompt or the command's exact protected
+  stdin frame. It is never a profile field, normal argument, or environment setting.
+
+The adapter uses bounded connection/server/socket timeouts and maps validation,
+conflict, existence, and dependency failures to generic fail-closed errors.
+
+## Switching and binding
+
+`kavrix db profile use <id>` changes only the current non-secret route. Every
+database session verifies the database ID in the protected owner key, observed
+database document, and bound profile before asking storage to decrypt. A key from
+another database therefore fails even when filenames, collection names, or vault
+IDs look similar. Explicit routing overrides cannot silently change the expected
+database ID.
+
+## Migration
+
+Legacy version 2 files are not silently rewritten. Register the legacy source
+and destination as separate profiles, then run `kavrix migrate database`. Use
+`--initialize` only for an unbound local destination. Migration authenticates the
+source key and anchor, copies the complete payload, verifies the new destination,
+and leaves the source intact.
+
+No Kavrix server, HTTP endpoint, migration daemon, or plaintext settings file is
+required by either mode.

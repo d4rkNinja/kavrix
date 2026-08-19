@@ -1,19 +1,21 @@
 # Kavrix
 
 Kavrix is a local, zero-knowledge credential vault for the terminal. It encrypts
-credential values on your machine and stores only authenticated ciphertext in a
-hardened local vault file or your MongoDB database. Kavrix does not start an API
-server, sync daemon, or web service.
+credential values and private labels on your machine and stores authenticated
+ciphertext in a hardened local database file or MongoDB. One database can hold
+multiple independently encrypted vaults. Kavrix does not start an API server,
+sync daemon, or web service.
 
 ## What you control
 
-- **Datastore:** a protected local file or supported local/remote MongoDB deployment.
-- **Unlock material:** a passphrase-protected portable key file.
-- **Recovery:** separately protected recovery kits that can replace a lost key.
+- **Datastore:** a protected local database file or supported MongoDB deployment.
+- **Routing:** protected profiles containing only non-secret paths, names, and opaque IDs.
+- **Unlock material:** a passphrase-protected database-owner key file.
+- **Recovery:** separately protected database recovery kits that can replace a lost owner key.
 - **Trust:** plaintext and root keys stay in the local Kavrix process.
 
-If every valid key file and recovery kit is lost, the vault is intentionally
-unrecoverable.
+If every valid database-owner key file and database recovery kit is lost, every
+vault in that database is intentionally unrecoverable.
 
 ## Install
 
@@ -26,21 +28,24 @@ kavrix --version
 kavrix --help
 ```
 
-## First vault
+## First database and vault
 
 ```sh
-# 1. Create a local encrypted vault file and protected key file.
-kavrix init --datastore file --data-file ./kavrix.vault
+# 1. Register and select a non-secret local route.
+kavrix db profile add work --datastore file \
+  --data-file ./work.kavrix --key-file ./work.kavrix.key
+kavrix db profile use work
 
-# 2. Add a credential value through the masked prompt.
-kavrix put github/token --datastore file --data-file ./kavrix.vault
+# 2. Initialize the database, then create a vault. Labels stay encrypted.
+kavrix db init --profile work
+kavrix db vault create --profile work
 
-# 3. Browse names without revealing values.
-kavrix list --datastore file --data-file ./kavrix.vault
-kavrix view --datastore file --data-file ./kavrix.vault
+# 3. Copy the returned opaque vault ID into the flat credential commands.
+kavrix put github/token --profile work --vault <vault-id>
+kavrix list --profile work --vault <vault-id>
 
 # 4. Reveal plaintext only when explicitly required.
-kavrix get github/token --reveal --datastore file --data-file ./kavrix.vault
+kavrix get github/token --reveal --profile work --vault <vault-id>
 ```
 
 Do not place passwords, portable keys, recovery secrets, or database credentials
@@ -51,8 +56,13 @@ flows shown by `kavrix <command> --help`.
 
 | Command                     | Purpose                                                     |
 | --------------------------- | ----------------------------------------------------------- |
+| `kavrix db profile ...`     | Add, select, inspect, or remove non-secret routes.          |
+| `kavrix db init`            | Create an encrypted database and protected owner key.       |
+| `kavrix db vault ...`       | Create, list, inspect, or rename database vaults.           |
+| `kavrix db recovery ...`    | Manage database-root recovery kits.                         |
+| `kavrix migrate database`   | Copy one legacy version 2 vault into a database.            |
 | `kavrix db ping`            | Test a direct MongoDB connection.                           |
-| `kavrix init`               | Create a vault and protected key file.                      |
+| `kavrix init`               | Create a legacy-compatible version 2 single vault.          |
 | `kavrix put <name>`         | Add a value; replacement requires explicit override.        |
 | `kavrix get <name>`         | Read metadata; `--reveal` is required for plaintext.        |
 | `kavrix list`               | List names without values.                                  |
@@ -74,22 +84,24 @@ version.
 
 ## Security model
 
-Kavrix uses versioned authenticated encryption. Vault payload encryption uses
-XChaCha20-Poly1305; passphrase-protected files use Argon2id-derived keys and
-XChaCha20-Poly1305. Associated data binds ciphertext to vault identity, format,
-key version, revision, and a digest of security-relevant metadata.
+Kavrix uses versioned authenticated encryption, not "unbreakable encryption."
+Vault payloads, the private database catalog, and wrapped keys use
+XChaCha20-Poly1305. Passphrase-protected files use Argon2id-derived keys and
+XChaCha20-Poly1305. HKDF-SHA-256 derives purpose-specific keys. Associated data
+binds ciphertext to the database, vault, purpose, key version, revision, and a
+digest of security-relevant metadata.
 
-A root-key-authenticated revision anchor is stored beside the active key file.
-Kavrix rejects older database revisions and same-revision metadata forks before
-returning plaintext. If the anchor is missing, normal unlock fails closed;
-`kavrix doctor health --accept-current` is an explicit trust decision and should
-only be used after independently verifying the database snapshot.
+A database-root-key-authenticated revision anchor is stored beside the active
+database-owner key file. Kavrix rejects lower database revisions,
+same-revision forks, and inconsistent catalog/vault heads before returning
+plaintext. A missing or invalid database anchor fails closed; there is no
+automatic database-container acceptance shortcut.
 
-Remote MongoDB connections must explicitly enable validated TLS. Kavrix rejects
-TLS-disablement and insecure certificate or hostname options. MongoDB can still
-observe vault identifiers, revisions, timestamps, ciphertext sizes, and access
-patterns. A process able to read the local vault file can observe the same
-authenticated metadata, but not credential names or values without unlocking.
+Remote MongoDB connections must explicitly enable validated TLS. Multi-document
+database/vault changes require a MongoDB replica set or sharded topology with
+transactions. MongoDB stores database documents and vault documents in two
+collections and can observe opaque IDs, revisions, timestamps, ciphertext
+sizes, and access patterns. It cannot read database, vault, or credential labels.
 
 Kavrix cannot protect an unlocked host from administrator access, same-user
 malware, keyloggers, terminal capture, process-memory inspection, or a user who
@@ -101,14 +113,16 @@ and [data model](docs/data-model.md).
 
 ## Recovery and backups
 
-Keep at least one recovery kit on a separate protected medium from the active
-key file. Back up datastore ciphertext and protected recovery material
-separately. A vault backup without a valid key or recovery kit is unusable; a
-key without the datastore does not contain the credentials.
+Keep at least one database recovery kit on a separate protected medium from the
+active owner key. Back up datastore ciphertext and protected recovery material
+separately. For local-file sharing, the database file and matching owner key
+file together grant full access to every vault once the key passphrase is known;
+there is no vault-scoped local sharing or revocation.
 
-Recovery-kit use rotates the vault root key for the current document. It cannot
-erase ciphertext from old database snapshots, so backup access controls and
-retention remain important.
+Database recovery recreates owner access to the same database root key; each
+vault still has an independent vault root key wrapped to that database root.
+Recovery cannot erase ciphertext or keys from old snapshots, so backup access
+controls and retention remain important.
 
 ## Documentation
 
@@ -126,6 +140,7 @@ Start with the [documentation index](docs/README.md). The most useful pages are:
 ```sh
 pnpm install --frozen-lockfile
 pnpm verify
+pnpm acceptance:database-container
 pnpm --filter kavrix package:smoke
 pnpm --filter kavrix pack:check
 pnpm audit --audit-level high

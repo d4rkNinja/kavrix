@@ -3,7 +3,11 @@ import type { Readable, Writable } from 'node:stream';
 import { MIN_PASSPHRASE_BYTES } from '@kavrix/crypto';
 
 const MAX_SECRET_BYTES = 1_048_576;
-const MAX_SECRET_FRAMES = 4;
+// MongoDB-to-new-local database migration is the widest supported command:
+// source URL, source passphrase, destination passphrase and confirmation,
+// database label, and vault label. MongoDB destination initialization is
+// rejected before secret input because rollback ownership is unavailable.
+const MAX_SECRET_FRAMES = 6;
 const UTF8_ENCODER = new TextEncoder();
 const STRICT_UTF8_DECODER = new TextDecoder('utf-8', { fatal: true });
 
