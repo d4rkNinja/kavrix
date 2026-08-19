@@ -1,15 +1,7 @@
 import type * as FsPromises from 'node:fs/promises';
 
 import { constants } from 'node:fs';
-import {
-  lstat,
-  mkdtemp,
-  readFile,
-  readdir,
-  realpath,
-  rm,
-  writeFile,
-} from 'node:fs/promises';
+import { lstat, readFile, readdir, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -37,6 +29,10 @@ import {
   PortableKeyFileError,
   type DatabaseRevisionAnchor,
 } from '../src/index.js';
+import {
+  createSecureTestDirectory as mkdtemp,
+  writeSecureTestFile as writeFile,
+} from './secure-temporary-directory.js';
 
 type FaultPhase =
   | 'none'
@@ -167,6 +163,67 @@ vi.mock('node:fs/promises', async (importOriginal) => {
           },
         });
       }
+      if (isCreateOpen) {
+        return new Proxy(handle, {
+          get(target, property) {
+            if (property === 'truncate') {
+              return async (length?: number) => {
+                if (
+                  candidatePath === fault.target &&
+                  fault.phase === 'cleanup-before-truncate'
+                ) {
+                  await substitutePublicPath(candidatePath);
+                }
+                await target.truncate(length);
+                if (candidatePath === fault.target && isCleanupFault()) {
+                  fault.neutralized = true;
+                }
+                if (
+                  candidatePath === fault.target &&
+                  fault.phase === 'cleanup-during-truncate'
+                ) {
+                  await substitutePublicPath(candidatePath);
+                }
+              };
+            }
+            if (property === 'sync') {
+              return async () => {
+                if (
+                  candidatePath === fault.target &&
+                  fault.phase === 'cleanup-sync-failure' &&
+                  !fault.fired
+                ) {
+                  fault.fired = true;
+                  throw injected();
+                }
+                if (
+                  candidatePath === fault.target &&
+                  fault.phase === 'cleanup-sync-substitution'
+                ) {
+                  await substitutePublicPath(candidatePath);
+                }
+                await target.sync();
+              };
+            }
+            if (property === 'stat') {
+              return async (...args: Parameters<FsPromises.FileHandle['stat']>) => {
+                const result = await target.stat(...args);
+                if (
+                  candidatePath === fault.target &&
+                  fault.phase === 'cleanup-post-inspection' &&
+                  fault.neutralized &&
+                  !fault.fired
+                ) {
+                  await substitutePublicPath(candidatePath);
+                }
+                return result;
+              };
+            }
+            const value: unknown = Reflect.get(target, property, target);
+            return typeof value === 'function' ? value.bind(target) : value;
+          },
+        });
+      }
       if (
         fault.phase !== 'directory-sync' ||
         candidatePath !== fault.directory ||
@@ -179,7 +236,6 @@ vi.mock('node:fs/promises', async (importOriginal) => {
           if (property === 'sync') {
             return async () => {
               fault.fired = true;
-              await target.sync();
               throw injected();
             };
           }

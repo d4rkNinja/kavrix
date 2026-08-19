@@ -16,6 +16,8 @@ import { homedir, tmpdir } from 'node:os';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { setWindowsUserOnlyAcl } from '../../../packages/key-files/dist/windows-acl.js';
+
 const workspaceRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 const cliRoot = join(workspaceRoot, 'apps', 'cli');
 const npmCommand = process.platform === 'win32' ? process.execPath : 'npm';
@@ -1152,6 +1154,11 @@ async function main() {
     npmCache = await registerRoot(
       await mkdtemp(join(tmpdir(), 'kavrix-database-npm-cache-')),
     );
+    if (process.platform === 'win32') {
+      await Promise.all(
+        [packRoot, installRoot, npmCache].map((root) => setWindowsUserOnlyAcl(root)),
+      );
+    }
     process.env['npm_config_cache'] = npmCache;
     const npmEnvironment = { ...process.env, npm_config_cache: npmCache };
     await runProcess(
@@ -1203,7 +1210,11 @@ async function main() {
       migratedKeyFile: join(installRoot, 'migrated.database.key'),
     };
     await mkdir(paths.configDirectory, { recursive: true });
-    if (process.platform !== 'win32') await chmod(paths.configDirectory, 0o700);
+    if (process.platform === 'win32') {
+      await setWindowsUserOnlyAcl(paths.configDirectory);
+    } else {
+      await chmod(paths.configDirectory, 0o700);
+    }
     const run = cliRunner(bin, installRoot);
     const rootHelp = await run(['--help']);
     assert(!/^\s*destroy(?:\s|$)/mu.test(rootHelp.stdout), 'destroy leaked into help');

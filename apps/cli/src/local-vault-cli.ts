@@ -139,6 +139,7 @@ export type LocalCliOptions = Readonly<{
   outputRecoveryFile?: string;
   collection: string;
   vault: string;
+  routingOverrides?: DatastoreProfileRoutingOverrides;
   overwrite?: boolean;
   acceptCurrent?: boolean;
   reveal?: boolean;
@@ -957,6 +958,27 @@ function getOptions(args: readonly unknown[]): LocalCliOptions {
         }
       }
     }
+    const sourceIsExplicit = (key: string): boolean =>
+      hierarchy.some((command) => {
+        const source = command.getOptionValueSource(key);
+        return source !== undefined && source !== 'default';
+      });
+    const options = merged as LocalCliOptions;
+    merged['routingOverrides'] = {
+      ...(sourceIsExplicit('datastore')
+        ? { datastore: parseExplicitDatastore(options.datastore) }
+        : {}),
+      ...(sourceIsExplicit('dataFile') && options.dataFile !== undefined
+        ? { dataFile: options.dataFile }
+        : {}),
+      ...(sourceIsExplicit('database') && options.database !== undefined
+        ? { database: options.database }
+        : {}),
+      ...(sourceIsExplicit('collection')
+        ? { vaultCollection: options.collection }
+        : {}),
+      ...(sourceIsExplicit('keyFile') ? { keyFile: options.keyFile } : {}),
+    };
     return merged as LocalCliOptions;
   }
   const candidate = args.find((value) => typeof value === 'object' && value !== null);

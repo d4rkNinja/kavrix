@@ -29,6 +29,7 @@ import {
   createOwnedSecureFile,
   readSecureFile,
   readSecureFileWhileExclusive,
+  releaseOwnedSecureFilePublication,
   replaceOwnedSecureFileWhileExclusive,
   replaceSecureFileWhileExclusive,
   withExclusiveSecureFile,
@@ -191,6 +192,12 @@ export async function cleanupOwnedDatabaseRevisionAnchor(
   publication: DatabaseRevisionAnchorPublication,
 ): Promise<void> {
   await cleanupOwnedSecureFilePublication(publication, 'database-revision-anchor');
+}
+
+export async function releaseOwnedDatabaseRevisionAnchor(
+  publication: DatabaseRevisionAnchorPublication,
+): Promise<void> {
+  await releaseOwnedSecureFilePublication(publication, 'database-revision-anchor');
 }
 
 /**

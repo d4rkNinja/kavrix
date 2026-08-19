@@ -1,4 +1,4 @@
-import { chmod, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, readFile, rm, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -23,6 +23,11 @@ import {
   writeDatabaseRevisionAnchor,
   type DatabaseRevisionAnchor,
 } from '../src/index.js';
+import {
+  createSecureTestDirectory as mkdtemp,
+  writeSecureTestFile as writeFile,
+} from './secure-temporary-directory.js';
+import { setWindowsUserOnlyAcl, verifyWindowsUserOnlyAcl } from '../src/windows-acl.js';
 
 let directory = '';
 beforeEach(async () => {
@@ -73,6 +78,14 @@ function anchorWithVaultCount(count: number, revision = 4): DatabaseRevisionAnch
 }
 
 describe('DRK-authenticated database revision anchors', () => {
+  it.runIf(process.platform === 'win32')(
+    'applies the Windows user-only ACL idempotently',
+    async () => {
+      await setWindowsUserOnlyAcl(directory);
+      await verifyWindowsUserOnlyAcl(directory);
+    },
+  );
+
   it('returns an opaque consumed ownership capability for create-only cleanup', async () => {
     const file = path();
     const drk = generateDatabaseRootKey();

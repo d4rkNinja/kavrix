@@ -1,4 +1,4 @@
-import { access, mkdtemp, readFile, stat } from 'node:fs/promises';
+import { access, readFile, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -10,6 +10,7 @@ import { buildLocalCli } from '../src/local-vault-cli.js';
 import { DatastoreProfileRegistry } from '../src/datastore-profiles.js';
 import { DatabaseSession } from '../src/database-session.js';
 import { LocalSecretInput, type LocalSecretKind } from '../src/local-secrets.js';
+import { createSecureTestDirectory as mkdtemp } from '../../../packages/key-files/test/secure-temporary-directory.js';
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -76,7 +77,7 @@ describe('database owner command composition', () => {
     const firstRecovery = join(directory, 'first.kavrix-db-recovery');
     const secondRecovery = join(directory, 'second.kavrix-db-recovery');
     const recoveredKey = join(directory, 'recovered.kavrix-db-key');
-    const localShareKey = join(directory, 'local-share.kavrix-db-key');
+    const localShareKey = join(directory, 'local-share-\u009b.kavrix-db-key');
     const otherDataFile = join(directory, 'other-database.kavrix');
     const otherKeyFile = join(directory, 'other-owner.kavrix-db-key');
     const passphrase = 'correct horse battery staple';
@@ -224,7 +225,7 @@ describe('database owner command composition', () => {
         '--output-key-file',
         localShareKey,
       ),
-    ).toEqual({ keyFile: localShareKey });
+    ).toEqual({ keyFile: localShareKey.replace('\u009b', '[CONTROL]') });
 
     const first = await execute(
       [passphrase, passphrase, passphrase],
@@ -364,6 +365,7 @@ describe('database owner command composition', () => {
     expect(allOutput.join('')).not.toContain('private-project-label');
     expect(allOutput.join('')).not.toContain('renamed-project-label');
     expect(allOutput.join('')).not.toContain('other-private-database-label');
+    expect(allOutput.join('')).not.toContain('\u009b');
     expect(errors.join('')).not.toContain(passphrase);
     expect(errors.join('')).not.toContain('private-database-label');
     expect(errors.join('')).not.toContain('private-project-label');
@@ -428,8 +430,7 @@ describe('database owner command composition', () => {
     }
     expect(thrown).toMatchObject({ code: 'authentication' });
     expect(serializeThrown(thrown)).not.toContain('profile-publication-secret-canary');
-    await expect(access(dataFile)).rejects.toMatchObject({ code: 'ENOENT' });
-    for (const path of [keyFile, keyFile + '.database-anchor']) {
+    for (const path of [dataFile, keyFile, keyFile + '.database-anchor']) {
       expect(await readFile(path)).toHaveLength(0);
       if (process.platform !== 'win32') {
         expect((await stat(path)).mode & 0o077).toBe(0);

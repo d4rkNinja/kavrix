@@ -30,6 +30,7 @@ pnpm install --frozen-lockfile
 pnpm verify
 pnpm --filter kavrix package:smoke
 pnpm acceptance:pre-ci
+pnpm acceptance:database-container
 pnpm --filter kavrix pack:check
 pnpm audit --audit-level high
 ```
@@ -39,7 +40,8 @@ checks the allowlist and SBOM, rejects plaintext canaries/private paths, execute
 the installed version/help commands, and removes every pack/install/cache root.
 `acceptance:pre-ci` installs the packed CLI, runs the local encrypted-file command
 lifecycle, and removes test-owned vault, key, anchor, recovery, and install files
-in `finally` on success or failure.
+in `finally` on success or failure. `acceptance:database-container` verifies the
+packed CLI's encrypted multi-vault database lifecycle and migration boundary.
 
 ## Release commit
 

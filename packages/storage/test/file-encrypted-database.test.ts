@@ -113,6 +113,69 @@ describe('FileEncryptedDatabaseStore', () => {
     await store.close();
   });
 
+  it('rolls back a fresh database through its exact handle and preserves a foreign replacement', async () => {
+    const target = await targetPath();
+    const databaseId = dbId('db_01JOWNEDROLLBACK');
+    const store = await FileEncryptedDatabaseStore.open(target);
+    await store.createDatabase(database(databaseId, 0));
+    const foreign = join(dirname(target), 'foreign.json');
+    await writeRestricted(foreign, 'foreign-file-canary');
+    await unlink(target);
+    await rename(foreign, target);
+
+    await store.rollbackOwnedInitialization(databaseId);
+
+    expect(await readFile(target, 'utf8')).toBe('foreign-file-canary');
+    await store.close();
+  });
+
+  it('leaves a protected zero-byte tombstone for the exact initialized object', async () => {
+    const target = await targetPath();
+    const databaseId = dbId('db_01JOWNEDTOMBSTONE');
+    const store = await FileEncryptedDatabaseStore.open(target);
+    await store.createDatabase(database(databaseId, 0));
+
+    await store.rollbackOwnedInitialization(databaseId);
+
+    expect(await readFile(target)).toEqual(Buffer.alloc(0));
+    const metadata = await lstat(target, { bigint: true });
+    expect(metadata.nlink).toBe(1n);
+    if (process.platform !== 'win32') expect(metadata.mode & 0o777n).toBe(0o600n);
+    await store.close();
+  });
+
+  it('rejects an initialization rollback for a different database ID', async () => {
+    const target = await targetPath();
+    const databaseId = dbId('db_01JOWNEDIDMATCH');
+    const store = await FileEncryptedDatabaseStore.open(target);
+    await store.createDatabase(database(databaseId, 0));
+    const before = await readFile(target);
+
+    await expect(
+      store.rollbackOwnedInitialization(dbId('db_01JOWNEDIDOTHER')),
+    ).rejects.toMatchObject({ code: 'invalid' });
+    expect(await readFile(target)).toEqual(before);
+    await store.rollbackOwnedInitialization(databaseId);
+    await store.close();
+  });
+
+  it('transfers initialization ownership to the latest successful vault publication', async () => {
+    const target = await targetPath();
+    const databaseId = dbId('db_01JOWNEDTRANSFER');
+    const store = await FileEncryptedDatabaseStore.open(target);
+    await store.createDatabase(database(databaseId, 0));
+    await store.createVault({
+      database: database(databaseId, 1),
+      expectedDatabaseRevision: revision(0),
+      vault: vault(databaseId, vaultId('vault_01JTRANSFER'), 1, 0),
+    });
+
+    await store.rollbackOwnedInitialization(databaseId);
+
+    expect(await readFile(target)).toEqual(Buffer.alloc(0));
+    await store.close();
+  });
+
   it('holds a sibling lock and rejects malformed, noncanonical, oversized, and unsafe targets', async () => {
     const target = await targetPath();
     const first = await FileEncryptedDatabaseStore.open(target);
@@ -288,7 +351,10 @@ describe('FileEncryptedDatabaseStore', () => {
   });
 
   it('fails closed and cleans publication artifacts for injected pre-publication phases', async () => {
-    const phases = ['write', 'sync', 'chmod', 'link', 'rename'] as const;
+    const phases =
+      process.platform === 'win32'
+        ? (['write', 'sync', 'link', 'rename'] as const)
+        : (['write', 'sync', 'chmod', 'link', 'rename'] as const);
     for (const phase of phases) {
       const target = await targetPath();
       const databaseId = dbId(`db_01JFAULT${phase.toUpperCase()}`);

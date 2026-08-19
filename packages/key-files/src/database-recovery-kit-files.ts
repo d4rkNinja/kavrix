@@ -24,6 +24,7 @@ import {
   cleanupOwnedSecureFilePublication,
   createOwnedSecureFile,
   readSecureFile,
+  releaseOwnedSecureFilePublication,
   writeSecureFile,
   type OwnedSecureFilePublication,
 } from './filesystem.js';
@@ -129,6 +130,12 @@ export async function cleanupOwnedDatabaseRecoveryKitFile(
   publication: DatabaseRecoveryKitFilePublication,
 ): Promise<void> {
   await cleanupOwnedSecureFilePublication(publication, 'database-recovery-kit-file');
+}
+
+export async function releaseOwnedDatabaseRecoveryKitFile(
+  publication: DatabaseRecoveryKitFilePublication,
+): Promise<void> {
+  await releaseOwnedSecureFilePublication(publication, 'database-recovery-kit-file');
 }
 
 async function serializeDatabaseRecoveryKitFile(

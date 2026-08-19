@@ -1,12 +1,4 @@
-import {
-  chmod,
-  link,
-  mkdtemp,
-  readFile,
-  rm,
-  symlink,
-  writeFile,
-} from 'node:fs/promises';
+import { chmod, link, readFile, rm, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -33,11 +25,16 @@ import {
   createOwnedDatabaseLocalShareKeyFile,
   readDatabaseKeyFile,
   readDatabaseKeyFileBinding,
+  releaseOwnedDatabaseKeyFile,
   writeDatabaseRecoveryKitFile,
   writeDatabaseKeyFile,
   type DatabaseKeyBinding,
   type DatabaseRevisionAnchor,
 } from '../src/index.js';
+import {
+  createSecureTestDirectory as mkdtemp,
+  writeSecureTestFile as writeFile,
+} from './secure-temporary-directory.js';
 
 let directory = '';
 const binding: DatabaseKeyBinding = {
@@ -160,6 +157,7 @@ describe('protected database key files', () => {
         zeroize(parsed.portableKey);
       }
 
+      await releaseOwnedDatabaseKeyFile(created.publication);
       await consumeDatabaseLocalShareBootstrap(file, key, binding, secret);
       const consumed = await readDatabaseKeyFile(file, secret, binding);
       try {

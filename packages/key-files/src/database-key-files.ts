@@ -28,6 +28,7 @@ import { PortableKeyFileError } from './errors.js';
 import {
   cleanupOwnedSecureFilePublication,
   createOwnedSecureFile,
+  releaseOwnedSecureFilePublication,
   readSecureFile,
   writeSecureFile,
   type OwnedSecureFilePublication,
@@ -224,6 +225,12 @@ export async function cleanupOwnedDatabaseKeyFile(
   publication: DatabaseKeyFilePublication,
 ): Promise<void> {
   await cleanupOwnedSecureFilePublication(publication, 'database-key-file');
+}
+
+export async function releaseOwnedDatabaseKeyFile(
+  publication: DatabaseKeyFilePublication,
+): Promise<void> {
+  await releaseOwnedSecureFilePublication(publication, 'database-key-file');
 }
 
 async function serializeDatabaseKeyFile(

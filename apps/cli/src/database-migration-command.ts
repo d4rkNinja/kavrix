@@ -1,6 +1,5 @@
 import {
   databaseRevisionAnchorPath,
-  deleteSecureFile,
   validateSecureFileDestination,
   validateSecureFileSource,
 } from '@kavrix/key-files';
@@ -137,17 +136,22 @@ export async function executeDatabaseMigrationCommand(
     throw new DatabaseMigrationCommandError('Vault is not initialized.');
   }
 
-  const openDestination = async (): Promise<EncryptedDatabaseStore> =>
-    destinationProfile.datastore === 'file'
-      ? FileEncryptedDatabaseStore.open(destinationProfile.dataFile)
-      : MongoEncryptedDatabaseStore.connect(
-          secret([destinationDatabaseUrl ?? ''], 0),
-          destinationProfile.database,
-          {
-            databaseCollectionName: destinationProfile.databaseCollection,
-            vaultCollectionName: destinationProfile.vaultCollection,
-          },
-        );
+  let initializedFileStore: FileEncryptedDatabaseStore | undefined;
+  const openDestination = async (): Promise<EncryptedDatabaseStore> => {
+    if (destinationProfile.datastore === 'file') {
+      const store = await FileEncryptedDatabaseStore.open(destinationProfile.dataFile);
+      initializedFileStore ??= store;
+      return store;
+    }
+    return MongoEncryptedDatabaseStore.connect(
+      secret([destinationDatabaseUrl ?? ''], 0),
+      destinationProfile.database,
+      {
+        databaseCollectionName: destinationProfile.databaseCollection,
+        vaultCollectionName: destinationProfile.vaultCollection,
+      },
+    );
+  };
   const result = await migrateLegacyVaultToDatabase({
     source: {
       document: sourceDocument,
@@ -173,12 +177,13 @@ export async function executeDatabaseMigrationCommand(
         : {
             initialize: {
               databaseLabel,
-              rollbackDatabase: async () => {
-                if (destinationProfile.datastore === 'file') {
-                  await deleteSecureFile(destinationProfile.dataFile);
-                  return;
+              rollbackDatabase: async (databaseId) => {
+                if (destinationProfile.datastore !== 'file') {
+                  throw new DatabaseSessionError('operation');
                 }
-                throw new DatabaseSessionError('operation');
+                const store = initializedFileStore;
+                if (store === undefined) throw new DatabaseSessionError('operation');
+                await store.rollbackOwnedInitialization(databaseId);
               },
               publishBinding: (databaseId: DatabaseId) =>
                 registry.bindDatabaseIdForInitialization(

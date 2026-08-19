@@ -3,7 +3,6 @@ import {
   chmod,
   copyFile,
   mkdir,
-  mkdtemp,
   readFile,
   rename,
   rm,
@@ -21,6 +20,7 @@ import {
   readDatabaseKeyFileBinding,
   readDatabaseRecoveryKitFileBinding,
 } from '@kavrix/key-files';
+import { setWindowsUserOnlyAcl } from '@kavrix/key-files/windows-acl';
 import {
   databaseIdSchema,
   sha256DigestSchema,
@@ -49,6 +49,7 @@ import {
   DatastoreProfileError,
   DatastoreProfileRegistry,
 } from '../src/datastore-profiles.js';
+import { createSecureTestDirectory as mkdtemp } from '../../../packages/key-files/test/secure-temporary-directory.js';
 
 const PASSPHRASE = Buffer.from('correct horse battery staple', 'utf8');
 
@@ -86,7 +87,10 @@ describe('DatabaseSession', () => {
     const recipientKey = join(recipient, 'database.key');
     await copyFile(dataFile, recipientData);
     await copyFile(shareKey, recipientKey);
-    if (process.platform !== 'win32') {
+    if (process.platform === 'win32') {
+      await setWindowsUserOnlyAcl(recipientData);
+      await setWindowsUserOnlyAcl(recipientKey);
+    } else {
       await chmod(recipientData, 0o600);
       await chmod(recipientKey, 0o600);
     }
@@ -118,7 +122,10 @@ describe('DatabaseSession', () => {
     const staleKey = join(staleRecipient, 'database.key');
     await copyFile(dataFile, staleData);
     await copyFile(shareKey, staleKey);
-    if (process.platform !== 'win32') {
+    if (process.platform === 'win32') {
+      await setWindowsUserOnlyAcl(staleData);
+      await setWindowsUserOnlyAcl(staleKey);
+    } else {
       await chmod(staleData, 0o600);
       await chmod(staleKey, 0o600);
     }
@@ -703,6 +710,71 @@ describe('DatabaseSession', () => {
     await second.close();
   });
 
+  it('poisons a stale session when a vault mutation applies before its adapter throws', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'kavrix-session-'));
+    const store = new MemoryDatabaseStore();
+    const keyFile = join(directory, 'owner.kavrix-db-key');
+    await DatabaseSession.initialize({
+      store,
+      keyFile,
+      passphrase: PASSPHRASE,
+      label: 'database',
+    });
+    const session = await DatabaseSession.open({
+      store,
+      keyFile,
+      passphrase: PASSPHRASE,
+    });
+    const vault = await session.createVault('vault');
+    store.afterVaultUpdate = () =>
+      Promise.reject(new EncryptedDatabaseStoreError('operation'));
+
+    await expect(
+      session.updateVault(vault.id, (payload) => ({
+        records: {
+          ...payload.records,
+          committed: { value: 'applied', updatedAt: new Date().toISOString() },
+        },
+      })),
+    ).rejects.toMatchObject({ code: 'ambiguous-commit' });
+    expect(() => session.status()).toThrow(
+      expect.objectContaining({ code: 'operation' }),
+    );
+    expect(store.vaults.get(vault.id)?.revision).toBe(1);
+  });
+
+  it('retains recovery artifacts when the database update applies before throwing', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'kavrix-session-'));
+    const store = new MemoryDatabaseStore();
+    const keyFile = join(directory, 'owner.kavrix-db-key');
+    const recoveryFile = join(directory, 'recovery.kavrix-db-recovery');
+    await DatabaseSession.initialize({
+      store,
+      keyFile,
+      passphrase: PASSPHRASE,
+      label: 'database',
+    });
+    const session = await DatabaseSession.open({
+      store,
+      keyFile,
+      passphrase: PASSPHRASE,
+    });
+    store.afterDatabaseUpdate = () =>
+      Promise.reject(new EncryptedDatabaseStoreError('operation'));
+
+    await expect(
+      session.createRecovery({ recoveryFile, passphrase: PASSPHRASE }),
+    ).rejects.toMatchObject({ code: 'ambiguous-commit' });
+    await expect(access(recoveryFile)).resolves.toBeUndefined();
+    await expect(
+      access(databaseRevisionAnchorPath(recoveryFile)),
+    ).resolves.toBeUndefined();
+    expect(store.database?.recoverySlots).toHaveLength(1);
+    expect(() => session.status()).toThrow(
+      expect.objectContaining({ code: 'operation' }),
+    );
+  });
+
   it('poisons after an ambiguous post-CAS anchor failure and rejects the stale anchor on reopen', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'kavrix-session-'));
     const store = new MemoryDatabaseStore();
@@ -858,6 +930,9 @@ describe('DatabaseSession', () => {
     const racedRecovery = join(directory, 'raced.kavrix-db-recovery');
     const racedOutput = join(directory, 'raced-owner.kavrix-db-key');
     await writeFile(racedRecovery, await readFile(firstRecovery), { mode: 0o600 });
+    if (process.platform === 'win32') {
+      await setWindowsUserOnlyAcl(racedRecovery);
+    }
     const expectedRaceBinding = await readDatabaseRecoveryKitFileBinding(racedRecovery);
     await writeFile(racedRecovery, await readFile(secondRecovery), { mode: 0o600 });
     await expect(

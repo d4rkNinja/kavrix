@@ -58,6 +58,14 @@ type ReadContainerResult = Readonly<{
   container: FileDatabaseContainer;
   identity: FileIdentity;
 }>;
+type RetainedFile = Readonly<{
+  handle: FileHandle;
+  identity: FileIdentity;
+}>;
+type OwnedInitialization = Readonly<{
+  databaseId: DatabaseId;
+  retained: RetainedFile;
+}>;
 
 /**
  * Opaque encrypted-database storage backed by one protected, canonical local
@@ -70,6 +78,8 @@ export class FileEncryptedDatabaseStore implements EncryptedDatabaseStore {
   readonly #directoryIdentity: FileIdentity;
   readonly #lockHandle: FileHandle;
   readonly #lockIdentity: FileIdentity;
+  #ownedInitialization: OwnedInitialization | undefined;
+  readonly #retiredInitializationHandles = new Set<FileHandle>();
   #closed = false;
 
   private constructor(
@@ -131,7 +141,7 @@ export class FileEncryptedDatabaseStore implements EncryptedDatabaseStore {
     if ((await this.#readContainer()) !== null) {
       throw new EncryptedDatabaseStoreError('exists');
     }
-    await publishContainer(
+    const retained = await publishContainer(
       this.#target(),
       this.#lockIdentity,
       canonicalizeContainer({
@@ -142,6 +152,106 @@ export class FileEncryptedDatabaseStore implements EncryptedDatabaseStore {
       }),
       'create',
     );
+    await this.#adoptPublishedHandle(database.id, retained, true);
+  }
+
+  /**
+   * Rolls back the database created by this store through its retained exact
+   * file object. The pathname is never used as an ownership capability.
+   */
+  async rollbackOwnedInitialization(databaseId: DatabaseId): Promise<void> {
+    this.#assertOpen();
+    const id = parseDatabaseId(databaseId);
+    const owned = this.#ownedInitialization;
+    if (owned?.databaseId !== id) {
+      throw new EncryptedDatabaseStoreError('invalid');
+    }
+    this.#ownedInitialization = undefined;
+    let failure = false;
+    let truncate = false;
+    try {
+      await assertTrustedPublicationState(
+        this.#target(),
+        this.#lockPath,
+        this.#lockIdentity,
+      );
+      const metadata = await owned.retained.handle.stat({ bigint: true });
+      assertRetainedFileMetadata(metadata);
+      if (metadata.nlink > 1n) throw new EncryptedDatabaseStoreError('invalid');
+      const current = await lstat(this.#targetPath, { bigint: true }).catch(
+        (error: unknown) => {
+          if (fileErrorCode(error) === 'ENOENT') return undefined;
+          throw error;
+        },
+      );
+      if (
+        current !== undefined &&
+        sameIdentity(identityOf(current), owned.retained.identity)
+      ) {
+        await assertOwnedPermissions(current, this.#targetPath, true);
+        if (current.nlink !== 1n) throw new EncryptedDatabaseStoreError('invalid');
+      }
+      truncate = true;
+    } catch {
+      failure = true;
+    }
+    if (truncate) {
+      try {
+        await fileEncryptedDatabaseEffects.truncate(owned.retained.handle);
+        await fileEncryptedDatabaseEffects.sync(owned.retained.handle);
+        await assertTrustedPublicationState(
+          this.#target(),
+          this.#lockPath,
+          this.#lockIdentity,
+        );
+      } catch {
+        failure = true;
+      }
+    }
+    try {
+      await fileEncryptedDatabaseEffects.closeOwned(owned.retained.handle);
+    } catch {
+      failure = true;
+    }
+    for (const handle of this.#retireInitializationHandles()) {
+      try {
+        await fileEncryptedDatabaseEffects.closeOwned(handle);
+      } catch {
+        failure = true;
+      }
+    }
+    if (!failure && truncate) {
+      try {
+        await assertTrustedPublicationState(
+          this.#target(),
+          this.#lockPath,
+          this.#lockIdentity,
+        );
+        const current = await lstat(this.#targetPath, { bigint: true }).catch(
+          (error: unknown) => {
+            if (fileErrorCode(error) === 'ENOENT') return undefined;
+            throw error;
+          },
+        );
+        if (
+          current !== undefined &&
+          sameIdentity(identityOf(current), owned.retained.identity)
+        ) {
+          await assertOwnedPermissions(current, this.#targetPath, true);
+          if (current.nlink !== 1n || current.size !== 0n) {
+            throw new EncryptedDatabaseStoreError('operation');
+          }
+        }
+        await assertTrustedPublicationState(
+          this.#target(),
+          this.#lockPath,
+          this.#lockIdentity,
+        );
+      } catch {
+        failure = true;
+      }
+    }
+    if (failure) throw new EncryptedDatabaseStoreError('operation');
   }
 
   async updateDatabase(
@@ -159,9 +269,8 @@ export class FileEncryptedDatabaseStore implements EncryptedDatabaseStore {
     ) {
       throw new EncryptedDatabaseStoreError('conflict');
     }
-    await publishContainer(
-      this.#target(),
-      this.#lockIdentity,
+    await this.#publishAndAdopt(
+      database.id,
       canonicalizeContainer({ ...current.container, database }),
       'replace',
       current.identity,
@@ -211,9 +320,8 @@ export class FileEncryptedDatabaseStore implements EncryptedDatabaseStore {
     if (current.container.vaults[vault.id] !== undefined) {
       throw new EncryptedDatabaseStoreError('exists');
     }
-    await publishContainer(
-      this.#target(),
-      this.#lockIdentity,
+    await this.#publishAndAdopt(
+      database.id,
       canonicalizeContainer({
         ...current.container,
         database,
@@ -235,9 +343,8 @@ export class FileEncryptedDatabaseStore implements EncryptedDatabaseStore {
     const existing = current.container.vaults[vault.id];
     if (existing?.revision !== expectedVaultRevision)
       throw new EncryptedDatabaseStoreError('conflict');
-    await publishContainer(
-      this.#target(),
-      this.#lockIdentity,
+    await this.#publishAndAdopt(
+      vault.databaseId,
       canonicalizeContainer({
         ...current.container,
         vaults: { ...current.container.vaults, [vault.id]: vault },
@@ -264,9 +371,8 @@ export class FileEncryptedDatabaseStore implements EncryptedDatabaseStore {
       throw new EncryptedDatabaseStoreError('conflict');
     const { [vaultId]: deletedVault, ...vaults } = current.container.vaults;
     void deletedVault;
-    await publishContainer(
-      this.#target(),
-      this.#lockIdentity,
+    await this.#publishAndAdopt(
+      database.id,
       canonicalizeContainer({ ...current.container, database, vaults }),
       'replace',
       current.identity,
@@ -277,6 +383,13 @@ export class FileEncryptedDatabaseStore implements EncryptedDatabaseStore {
     if (this.#closed) return;
     this.#closed = true;
     let failure = false;
+    for (const handle of this.#takeInitializationHandles()) {
+      try {
+        await fileEncryptedDatabaseEffects.closeOwned(handle);
+      } catch {
+        failure = true;
+      }
+    }
     try {
       await this.#assertTrusted();
     } catch {
@@ -311,6 +424,110 @@ export class FileEncryptedDatabaseStore implements EncryptedDatabaseStore {
   async #assertTrusted(): Promise<void> {
     await assertDirectoryIdentity(this.#target());
     await assertPathIdentity(this.#lockPath, this.#lockIdentity);
+  }
+
+  async #adoptPublishedHandle(
+    databaseId: DatabaseId,
+    retained: RetainedFile,
+    initialize = false,
+  ): Promise<void> {
+    const existing = this.#ownedInitialization;
+    if (initialize) {
+      if (existing !== undefined) {
+        await fileEncryptedDatabaseEffects
+          .closeOwned(retained.handle)
+          .catch(() => undefined);
+        throw new EncryptedDatabaseStoreError('operation');
+      }
+      this.#ownedInitialization = { databaseId, retained };
+      return;
+    }
+    if (existing === undefined) {
+      try {
+        await fileEncryptedDatabaseEffects.closeOwned(retained.handle);
+      } catch {
+        throw new EncryptedDatabaseStoreError('operation');
+      }
+      return;
+    }
+    if (existing.databaseId !== databaseId) {
+      await fileEncryptedDatabaseEffects
+        .closeOwned(retained.handle)
+        .catch(() => undefined);
+      throw new EncryptedDatabaseStoreError('invalid');
+    }
+    this.#ownedInitialization = { databaseId, retained };
+    try {
+      await fileEncryptedDatabaseEffects.closeOwned(existing.retained.handle);
+    } catch {
+      this.#retiredInitializationHandles.add(existing.retained.handle);
+      throw new EncryptedDatabaseStoreError('operation');
+    }
+  }
+
+  async #publishAndAdopt(
+    databaseId: DatabaseId,
+    container: FileDatabaseContainer,
+    mode: 'create' | 'replace',
+    expectedIdentity: FileIdentity,
+  ): Promise<void> {
+    const detached =
+      process.platform === 'win32'
+        ? await this.#detachInitializationForReplace()
+        : undefined;
+    try {
+      const retained = await publishContainer(
+        this.#target(),
+        this.#lockIdentity,
+        container,
+        mode,
+        expectedIdentity,
+      );
+      await this.#adoptPublishedHandle(databaseId, retained, detached !== undefined);
+    } catch (error) {
+      if (detached !== undefined) {
+        try {
+          const restored = await openRetainedFile(
+            this.#targetPath,
+            detached.retained.identity,
+          );
+          this.#ownedInitialization = {
+            databaseId: detached.databaseId,
+            retained: restored,
+          };
+        } catch {
+          throw new EncryptedDatabaseStoreError('operation');
+        }
+      }
+      throw error;
+    }
+  }
+
+  async #detachInitializationForReplace(): Promise<OwnedInitialization | undefined> {
+    const existing = this.#ownedInitialization;
+    if (existing === undefined) return undefined;
+    this.#ownedInitialization = undefined;
+    try {
+      await fileEncryptedDatabaseEffects.closeOwned(existing.retained.handle);
+    } catch {
+      this.#ownedInitialization = existing;
+      throw new EncryptedDatabaseStoreError('operation');
+    }
+    return existing;
+  }
+
+  #takeInitializationHandles(): FileHandle[] {
+    const handles = [...this.#retireInitializationHandles()];
+    const active = this.#ownedInitialization?.retained.handle;
+    this.#ownedInitialization = undefined;
+    if (active !== undefined) handles.unshift(active);
+    return handles;
+  }
+
+  #retireInitializationHandles(): Set<FileHandle> {
+    const handles = new Set(this.#retiredInitializationHandles);
+    this.#retiredInitializationHandles.clear();
+    return handles;
   }
 
   async #readContainer(): Promise<ReadContainerResult | null> {
@@ -652,7 +869,7 @@ async function publishContainer(
   container: FileDatabaseContainer,
   mode: 'create' | 'replace',
   expectedIdentity?: FileIdentity,
-): Promise<void> {
+): Promise<RetainedFile> {
   const { directoryPath, targetPath, lockPath } = target;
   await assertTrustedPublicationState(target, lockPath, lockIdentity);
   const contents = Buffer.from(serializeContainer(container), 'utf8');
@@ -752,7 +969,9 @@ async function publishContainer(
       await fileEncryptedDatabaseEffects.unlink(backupPath, 'backup-cleanup');
       backupIdentity = undefined;
     }
+    const retained = await openRetainedFile(targetPath, publishedIdentity);
     published = true;
+    return retained;
   } catch (error) {
     if (publishedIdentity !== undefined) {
       try {
@@ -833,6 +1052,27 @@ async function assertLinkedPublicationIdentity(
       throw new EncryptedDatabaseStoreError('invalid');
     }
   } catch (error) {
+    if (error instanceof EncryptedDatabaseStoreError) throw error;
+    throw new EncryptedDatabaseStoreError('operation');
+  }
+}
+
+async function openRetainedFile(
+  path: string,
+  expected: FileIdentity,
+): Promise<RetainedFile> {
+  let handle: FileHandle | undefined;
+  try {
+    handle = await open(path, noFollowReadWriteFlags());
+    const metadata = await handle.stat({ bigint: true });
+    await assertOwnedPermissions(metadata, path, true);
+    if (!sameIdentity(identityOf(metadata), expected)) {
+      throw new EncryptedDatabaseStoreError('operation');
+    }
+    await assertPathIdentity(path, expected);
+    return { handle, identity: expected };
+  } catch (error) {
+    await handle?.close().catch(() => undefined);
     if (error instanceof EncryptedDatabaseStoreError) throw error;
     throw new EncryptedDatabaseStoreError('operation');
   }
@@ -951,6 +1191,20 @@ async function assertOwnedPermissions(
   }
 }
 
+function assertRetainedFileMetadata(metadata: BigIntStats): void {
+  if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.nlink > 1n) {
+    throw new EncryptedDatabaseStoreError('invalid');
+  }
+  if (process.platform === 'win32') return;
+  const getuid = process.getuid;
+  if (getuid === undefined || metadata.uid !== BigInt(getuid())) {
+    throw new EncryptedDatabaseStoreError('invalid');
+  }
+  if ((metadata.mode & 0o777n) !== 0o600n) {
+    throw new EncryptedDatabaseStoreError('invalid');
+  }
+}
+
 async function assertPathIdentity(path: string, expected: FileIdentity): Promise<void> {
   try {
     const metadata = await lstat(path, { bigint: true });
@@ -1002,6 +1256,10 @@ function noFollowReadFlags(): number {
   return constants.O_RDONLY | (process.platform === 'win32' ? 0 : constants.O_NOFOLLOW);
 }
 
+function noFollowReadWriteFlags(): number {
+  return constants.O_RDWR | (process.platform === 'win32' ? 0 : constants.O_NOFOLLOW);
+}
+
 function identityOf(value: {
   readonly dev: bigint;
   readonly ino: bigint;
@@ -1039,6 +1297,7 @@ type FileEffectDirectorySyncPhase =
 type FileEncryptedDatabaseEffects = Readonly<{
   chmod: (handle: FileHandle, mode: number) => Promise<void>;
   close: (handle: FileHandle, role: 'lock' | 'temporary') => Promise<void>;
+  closeOwned: (handle: FileHandle) => Promise<void>;
   link: (
     existingPath: string,
     newPath: string,
@@ -1052,6 +1311,7 @@ type FileEncryptedDatabaseEffects = Readonly<{
   setAcl: (path: string, role: FileEffectFileRole) => Promise<void>;
   verifyAcl: (path: string, role: FileEffectFileRole) => Promise<void>;
   sync: (handle: FileHandle) => Promise<void>;
+  truncate: (handle: FileHandle) => Promise<void>;
   unlink: (path: string, phase: FileEffectUnlinkPhase) => Promise<void>;
   write: (handle: FileHandle, contents: Buffer) => Promise<void>;
   readFinal: typeof readContainerIfPresent;
@@ -1062,11 +1322,13 @@ type FileEncryptedDatabaseEffects = Readonly<{
 const defaultFileEncryptedDatabaseEffects: FileEncryptedDatabaseEffects = {
   chmod: (handle, mode) => handle.chmod(mode),
   close: (handle) => handle.close(),
+  closeOwned: (handle) => handle.close(),
   link: (existingPath, newPath) => link(existingPath, newPath),
   rename: (oldPath, newPath) => rename(oldPath, newPath),
   setAcl: (path) => setWindowsUserOnlyAcl(path),
   verifyAcl: (path) => verifyWindowsUserOnlyAcl(path),
   sync: (handle) => handle.sync(),
+  truncate: (handle) => handle.truncate(0),
   unlink: (path) => unlink(path),
   write: (handle, contents) => handle.writeFile(contents),
   readFinal: readContainerIfPresent,

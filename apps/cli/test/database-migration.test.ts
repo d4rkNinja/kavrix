@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { access, mkdir, mkdtemp, readFile, rename, rm, stat } from 'node:fs/promises';
+import { access, mkdir, readFile, rename, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -11,7 +11,6 @@ import {
 } from '@kavrix/crypto';
 import {
   databaseRevisionAnchorPath,
-  deleteSecureFile,
   readPortableKeyFile,
   writeRevisionAnchor,
 } from '@kavrix/key-files';
@@ -49,6 +48,7 @@ import { DatabaseSession } from '../src/database-session.js';
 import { DatastoreProfileRegistry } from '../src/datastore-profiles.js';
 import { buildLocalCli } from '../src/local-vault-cli.js';
 import { LocalSecretInput } from '../src/local-secrets.js';
+import { createSecureTestDirectory as mkdtemp } from '../../../packages/key-files/test/secure-temporary-directory.js';
 
 const SOURCE_PASSPHRASE = 'legacy passphrase';
 const DESTINATION_PASSPHRASE = Buffer.from('database passphrase', 'utf8');
@@ -813,6 +813,7 @@ describe('legacy version 2 database migration', () => {
       keyFile: destinationKeyFile,
     });
     const createVault = vi.spyOn(FileEncryptedDatabaseStore.prototype, 'createVault');
+    let initializedStore: FileEncryptedDatabaseStore | undefined;
 
     await expect(
       migrateLegacyVaultToDatabase({
@@ -822,13 +823,21 @@ describe('legacy version 2 database migration', () => {
           readPassphrase: async () => Buffer.from(SOURCE_PASSPHRASE, 'utf8'),
         },
         destination: {
-          openStore: async () => FileEncryptedDatabaseStore.open(destinationDataFile),
+          openStore: async () => {
+            const store = await FileEncryptedDatabaseStore.open(destinationDataFile);
+            initializedStore ??= store;
+            return store;
+          },
           keyFile: destinationKeyFile,
           vaultLabel: 'migrated',
           readPassphrase: async () => Uint8Array.from(DESTINATION_PASSPHRASE),
           initialize: {
             databaseLabel: 'new database',
-            rollbackDatabase: async () => deleteSecureFile(destinationDataFile),
+            rollbackDatabase: async (databaseId) => {
+              const store = initializedStore;
+              if (store === undefined) throw new Error('missing initialized store');
+              await store.rollbackOwnedInitialization(databaseId);
+            },
             publishBinding: async () =>
               registry.bindDatabaseIdForInitialization(
                 'destination' as never,
@@ -840,8 +849,11 @@ describe('legacy version 2 database migration', () => {
     ).rejects.toMatchObject({ code: 'invalid' });
 
     expect(createVault).toHaveBeenCalledTimes(1);
-    await expect(access(destinationDataFile)).rejects.toMatchObject({ code: 'ENOENT' });
-    for (const path of [destinationKeyFile, destinationKeyFile + '.database-anchor']) {
+    for (const path of [
+      destinationDataFile,
+      destinationKeyFile,
+      destinationKeyFile + '.database-anchor',
+    ]) {
       expect(await readFile(path)).toHaveLength(0);
       if (process.platform !== 'win32') {
         expect((await stat(path)).mode & 0o077).toBe(0);

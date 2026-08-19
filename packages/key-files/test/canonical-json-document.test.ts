@@ -1,4 +1,4 @@
-import { chmod, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, readFile, rm, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -12,6 +12,10 @@ import {
   writeProtectedJsonDocument,
 } from '../src/index.js';
 import * as keyFiles from '../src/index.js';
+import {
+  createSecureTestDirectory as mkdtemp,
+  writeSecureTestFile as writeFile,
+} from './secure-temporary-directory.js';
 
 const schema = z
   .object({

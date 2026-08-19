@@ -8,6 +8,8 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { setWindowsUserOnlyAcl } from '../../../packages/key-files/dist/windows-acl.js';
+
 const workspaceRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 const cliRoot = join(workspaceRoot, 'apps', 'cli');
 const npmCommand = process.platform === 'win32' ? process.execPath : 'npm';
@@ -539,6 +541,9 @@ async function main() {
   process.once('SIGTERM', onSigterm);
   try {
     temporaryRoot = await mkdtemp(join(tmpdir(), 'kavrix-pre-ci-'));
+    if (process.platform === 'win32') {
+      await setWindowsUserOnlyAcl(temporaryRoot);
+    }
     const packRoot = join(temporaryRoot, 'pack');
     const installRoot = join(temporaryRoot, 'install');
     const npmCache = join(temporaryRoot, 'npm-cache');
@@ -547,6 +552,11 @@ async function main() {
       mkdir(installRoot, { recursive: true }),
       mkdir(npmCache, { recursive: true }),
     ]);
+    if (process.platform === 'win32') {
+      await Promise.all(
+        [packRoot, installRoot, npmCache].map((root) => setWindowsUserOnlyAcl(root)),
+      );
+    }
     previousNpmCache = process.env['npm_config_cache'];
     process.env['npm_config_cache'] = npmCache;
     await runProcess(

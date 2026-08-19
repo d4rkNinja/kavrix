@@ -1,11 +1,13 @@
 import type * as FsPromises from 'node:fs/promises';
 
-import { mkdtemp, readFile, realpath, rm } from 'node:fs/promises';
+import { readFile, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
+
+import { createSecureTestDirectory as mkdtemp } from './secure-temporary-directory.js';
 
 type FaultPhase =
   | 'none'
@@ -87,7 +89,6 @@ vi.mock('node:fs/promises', async (importOriginal) => {
         get(target, property) {
           if (property === 'sync') {
             return async () => {
-              await target.sync();
               fault.fired = true;
               throw injected();
             };

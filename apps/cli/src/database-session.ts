@@ -35,6 +35,9 @@ import {
   readDatabaseKeyFileBinding,
   readDatabaseRecoveryKitFile,
   readDatabaseRevisionAnchor,
+  releaseOwnedDatabaseKeyFile,
+  releaseOwnedDatabaseRecoveryKitFile,
+  releaseOwnedDatabaseRevisionAnchor,
   transitionDatabaseRevisionAnchor,
   transitionOwnedDatabaseRevisionAnchor,
   validateSecureFileDestination,
@@ -261,6 +264,7 @@ export class DatabaseSession {
     let databaseMayExist = false;
     let anchorPublication: DatabaseRevisionAnchorPublication | undefined;
     let bindingPublicationUncertain = false;
+    let retainPublishedArtifacts = false;
     try {
       const database = await createInitialDatabase(
         databaseId,
@@ -349,10 +353,19 @@ export class DatabaseSession {
         });
         return { ...result, ownership } as typeof result;
       }
+      retainPublishedArtifacts = true;
+      await releaseOwnedPublications([
+        () => releaseOwnedDatabaseRevisionAnchor(createdAnchor.publication),
+        () => releaseOwnedDatabaseKeyFile(createdKey.publication),
+      ]);
       return result;
     } catch (error) {
       const cleanupErrors: DatabaseSessionError[] = [];
-      if (bindingPublicationUncertain) {
+      if (bindingPublicationUncertain || retainPublishedArtifacts) {
+        await releaseOwnedPublications(
+          ownerPublicationReleases(anchorPublication, keyPublication),
+          false,
+        );
         throw new DatabaseSessionError('ambiguous-commit');
       }
       if (databaseMayExist && options.rollbackDatabase !== undefined) {
@@ -379,7 +392,13 @@ export class DatabaseSession {
           );
         }
       }
-      if (databaseMayExist) throw new DatabaseSessionError('ambiguous-commit');
+      if (databaseMayExist) {
+        await releaseOwnedPublications(
+          ownerPublicationReleases(anchorPublication, keyPublication),
+          false,
+        );
+        throw new DatabaseSessionError('ambiguous-commit');
+      }
       if (cleanupErrors.length > 0)
         throw redactedAggregate(error, cleanupErrors, 'Database cleanup failed.');
       throw mapError(error);
@@ -414,10 +433,21 @@ export class DatabaseSession {
   }
 
   /** Consumes initialization rollback authority after verified publication. */
-  public static commitMigrationInitialization(
+  public static async commitMigrationInitialization(
     ownership: MigrationInitializationOwnership,
-  ): void {
-    requireMigrationInitializationOwnership(ownership);
+  ): Promise<void> {
+    await this.releaseMigrationInitializationOwnership(ownership);
+  }
+
+  /** Leaves ambiguous initialization artifacts intact while closing authority. */
+  public static async releaseMigrationInitializationOwnership(
+    ownership: MigrationInitializationOwnership,
+  ): Promise<void> {
+    const state = requireMigrationInitializationOwnership(ownership);
+    await releaseOwnedPublications([
+      () => releaseOwnedDatabaseRevisionAnchor(state.anchorPublication),
+      () => releaseOwnedDatabaseKeyFile(state.keyPublication),
+    ]);
     migrationInitializationOwnerships.delete(ownership);
   }
 
@@ -429,6 +459,14 @@ export class DatabaseSession {
     try {
       await state.rollbackDatabase(state.databaseId);
     } catch {
+      await releaseOwnedPublications(
+        [
+          () => releaseOwnedDatabaseRevisionAnchor(state.anchorPublication),
+          () => releaseOwnedDatabaseKeyFile(state.keyPublication),
+        ],
+        false,
+      );
+      migrationInitializationOwnerships.delete(ownership);
       throw new DatabaseSessionError('ambiguous-commit');
     }
     const cleanupErrors: DatabaseSessionError[] = [];
@@ -441,6 +479,14 @@ export class DatabaseSession {
       cleanupErrors,
     );
     if (cleanupErrors.length > 0) {
+      await releaseOwnedPublications(
+        [
+          () => releaseOwnedDatabaseRevisionAnchor(state.anchorPublication),
+          () => releaseOwnedDatabaseKeyFile(state.keyPublication),
+        ],
+        false,
+      );
+      migrationInitializationOwnerships.delete(ownership);
       throw new DatabaseSessionError('ambiguous-commit');
     }
     migrationInitializationOwnerships.delete(ownership);
@@ -685,7 +731,6 @@ export class DatabaseSession {
             vault,
           });
         },
-        verifyBeforePublication,
         ownedAnchorPublication,
       );
       this.#database = nextDatabase;
@@ -923,7 +968,17 @@ export class DatabaseSession {
       publication.databaseAdvanced = true;
       this.#database = next;
       const recoveryAnchor = await observedAnchor(this.#store, next);
-      await reconcileAnchor(recoveryAnchorFile, this.#rootKey, recoveryAnchor, true);
+      const transitionedRecoveryAnchor = await reconcileOwnedAnchor(
+        recoveryAnchorFile,
+        this.#rootKey,
+        recoveryAnchor,
+        createdAnchor.publication,
+      );
+      recoveryAnchorPublication = transitionedRecoveryAnchor;
+      await releaseOwnedPublications([
+        () => releaseOwnedDatabaseRevisionAnchor(transitionedRecoveryAnchor),
+        () => releaseOwnedDatabaseRecoveryKitFile(createdKit.publication),
+      ]);
       return { slotId, recoveryFile: options.recoveryFile };
     } catch (error) {
       const ambiguous =
@@ -944,6 +999,11 @@ export class DatabaseSession {
             cleanupErrors,
           );
         }
+      } else {
+        await releaseOwnedPublications(
+          recoveryPublicationReleases(recoveryAnchorPublication, kitPublication),
+          false,
+        );
       }
       if (cleanupErrors.length > 0)
         throw redactedAggregate(error, cleanupErrors, 'Recovery cleanup failed.');
@@ -978,7 +1038,13 @@ export class DatabaseSession {
         anchor,
         { protection: { kind: 'passphrase', passphrase } },
       );
-      if (created.status !== 'published') throw created.error;
+      if (created.status !== 'published') {
+        if (created.status === 'publication-uncertain') {
+          await releaseOwnedDatabaseKeyFile(created.publication).catch(() => undefined);
+        }
+        throw created.error;
+      }
+      await releaseOwnedDatabaseKeyFile(created.publication);
       return { keyFile: options.keyFile };
     } catch (error) {
       throw mapError(error);
@@ -1087,7 +1153,7 @@ export class DatabaseSession {
     let portableKey: PortableKey | undefined;
     let catalogBytes: Uint8Array | undefined;
     let destinationKeyPublication: DatabaseKeyFilePublication | undefined;
-    const publication = { databaseAdvanced: false };
+    const publication = { databaseAdvanced: false, mutationEntered: false };
     let destinationAnchorPublication: DatabaseRevisionAnchorPublication | undefined;
     try {
       parsed = await readDatabaseRecoveryKitFile(
@@ -1177,13 +1243,20 @@ export class DatabaseSession {
         root,
         observed,
         async () => {
+          publication.mutationEntered = true;
           await options.store.updateDatabase(next, database.revision);
           publication.databaseAdvanced = true;
           return { nextAnchor, result: undefined };
         },
         { requireExactVaultSet: true },
       );
-      await reconcileAnchor(anchorFile, root, nextAnchor, true);
+      const transitionedDestinationAnchor = await reconcileOwnedAnchor(
+        anchorFile,
+        root,
+        nextAnchor,
+        createdAnchor.publication,
+      );
+      destinationAnchorPublication = transitionedDestinationAnchor;
       const verified = await readDatabaseKeyFile(options.outputKeyFile, newPassphrase, {
         databaseId: database.id,
         keySlotId: slotId,
@@ -1192,10 +1265,16 @@ export class DatabaseSession {
       await readDatabaseRevisionAnchor(anchorFile, root, nextAnchor, {
         requireExactVaultSet: true,
       });
+      await releaseOwnedPublications([
+        () => releaseOwnedDatabaseRevisionAnchor(transitionedDestinationAnchor),
+        () => releaseOwnedDatabaseKeyFile(createdKey.publication),
+      ]);
       return { databaseId: database.id, keyFile: options.outputKeyFile, anchorFile };
     } catch (error) {
       const cleanupErrors: DatabaseSessionError[] = [];
-      if (!publication.databaseAdvanced) {
+      const mutationUncertain =
+        publication.mutationEntered && !isProvenRejectedMutation(error);
+      if (!publication.databaseAdvanced && !mutationUncertain) {
         if (destinationAnchorPublication !== undefined) {
           const ownedAnchor = destinationAnchorPublication;
           await cleanupOwned(
@@ -1210,8 +1289,16 @@ export class DatabaseSession {
             cleanupErrors,
           );
         }
+      } else {
+        await releaseOwnedPublications(
+          ownerPublicationReleases(
+            destinationAnchorPublication,
+            destinationKeyPublication,
+          ),
+          false,
+        );
       }
-      if (publication.databaseAdvanced)
+      if (publication.databaseAdvanced || mutationUncertain)
         throw new DatabaseSessionError('ambiguous-commit');
       if (cleanupErrors.length > 0)
         throw redactedAggregate(error, cleanupErrors, 'Recovery cleanup failed.');
@@ -1255,7 +1342,6 @@ export class DatabaseSession {
     before: DatabaseRevisionAnchor,
     after: DatabaseRevisionAnchor,
     mutate: () => Promise<void>,
-    retainOnUncertainMutationError = false,
     ownedAnchorPublication?: DatabaseRevisionAnchorPublication,
   ): Promise<DatabaseRevisionAnchorPublication | undefined> {
     const publication = { mutationEntered: false, storeAccepted: false };
@@ -1289,16 +1375,9 @@ export class DatabaseSession {
       );
       return undefined;
     } catch (error) {
-      const provenRejected =
-        error instanceof EncryptedDatabaseStoreError &&
-        (error.code === 'conflict' ||
-          error.code === 'exists' ||
-          error.code === 'invalid');
       if (
         publication.storeAccepted ||
-        (retainOnUncertainMutationError &&
-          publication.mutationEntered &&
-          !provenRejected)
+        (publication.mutationEntered && !isProvenRejectedMutation(error))
       ) {
         await this.#poison();
         throw new DatabaseSessionError('ambiguous-commit');
@@ -1612,6 +1691,27 @@ async function reconcileAnchor(
   throw new DatabaseSessionError('rollback');
 }
 
+async function reconcileOwnedAnchor(
+  path: string,
+  rootKey: DatabaseRootKey,
+  observed: DatabaseRevisionAnchor,
+  publication: DatabaseRevisionAnchorPublication,
+): Promise<DatabaseRevisionAnchorPublication> {
+  const trusted = await readDatabaseRevisionAnchor(path, rootKey, observed);
+  if (canonicalJson(trusted) === canonicalJson(observed)) return publication;
+  const transitioned = await transitionOwnedDatabaseRevisionAnchor(
+    path,
+    rootKey,
+    observed,
+    publication,
+    () => Promise.resolve({ nextAnchor: observed, result: undefined }),
+  );
+  await readDatabaseRevisionAnchor(path, rootKey, observed, {
+    requireExactVaultSet: true,
+  });
+  return transitioned.publication;
+}
+
 async function reconcileOpenAnchor(
   options: Readonly<{
     anchorFile: string;
@@ -1640,13 +1740,24 @@ async function reconcileOpenAnchor(
       options.rootKey,
       options.observed,
     );
-    if (created.status !== 'published') throw error;
-    await readDatabaseRevisionAnchor(
-      options.anchorFile,
-      options.rootKey,
-      options.observed,
-      { requireExactVaultSet: true },
-    );
+    if (created.status !== 'published') {
+      if (created.status === 'publication-uncertain') {
+        await releaseOwnedDatabaseRevisionAnchor(created.publication).catch(
+          () => undefined,
+        );
+      }
+      throw error;
+    }
+    try {
+      await readDatabaseRevisionAnchor(
+        options.anchorFile,
+        options.rootKey,
+        options.observed,
+        { requireExactVaultSet: true },
+      );
+    } finally {
+      await releaseOwnedDatabaseRevisionAnchor(created.publication);
+    }
   }
 
   if (options.localShareBootstrap !== null) {
@@ -1908,6 +2019,49 @@ async function cleanupOwned(
   } catch {
     errors.push(new DatabaseSessionError('operation'));
   }
+}
+
+async function releaseOwnedPublications(
+  releases: readonly (() => Promise<void>)[],
+  throwOnFailure = true,
+): Promise<void> {
+  const results = await Promise.allSettled(releases.map((release) => release()));
+  if (throwOnFailure && results.some((result) => result.status === 'rejected')) {
+    throw new DatabaseSessionError('operation');
+  }
+}
+
+function ownerPublicationReleases(
+  anchor: DatabaseRevisionAnchorPublication | undefined,
+  key: DatabaseKeyFilePublication | undefined,
+): (() => Promise<void>)[] {
+  const releases: (() => Promise<void>)[] = [];
+  if (anchor !== undefined) {
+    releases.push(() => releaseOwnedDatabaseRevisionAnchor(anchor));
+  }
+  if (key !== undefined) releases.push(() => releaseOwnedDatabaseKeyFile(key));
+  return releases;
+}
+
+function recoveryPublicationReleases(
+  anchor: DatabaseRevisionAnchorPublication | undefined,
+  kit: DatabaseRecoveryKitFilePublication | undefined,
+): (() => Promise<void>)[] {
+  const releases: (() => Promise<void>)[] = [];
+  if (anchor !== undefined) {
+    releases.push(() => releaseOwnedDatabaseRevisionAnchor(anchor));
+  }
+  if (kit !== undefined) {
+    releases.push(() => releaseOwnedDatabaseRecoveryKitFile(kit));
+  }
+  return releases;
+}
+
+function isProvenRejectedMutation(error: unknown): boolean {
+  return (
+    error instanceof EncryptedDatabaseStoreError &&
+    (error.code === 'conflict' || error.code === 'exists' || error.code === 'invalid')
+  );
 }
 
 function redactedAggregate(

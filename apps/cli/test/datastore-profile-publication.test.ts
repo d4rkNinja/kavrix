@@ -1,6 +1,6 @@
 import type * as FsPromises from 'node:fs/promises';
 
-import { mkdtemp, readFile, realpath, rm } from 'node:fs/promises';
+import { readFile, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -8,6 +8,7 @@ import { databaseIdSchema, profileIdSchema } from '@kavrix/schemas';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { validateDatastoreProfileBindingPublicationResult } from '../src/datastore-profiles.js';
+import { createSecureTestDirectory as mkdtemp } from '../../../packages/key-files/test/secure-temporary-directory.js';
 
 type FaultPhase =
   | 'none'
@@ -54,6 +55,11 @@ vi.mock('node:fs/promises', async (importOriginal) => {
       if (fault.phase === 'foreign-replacement') {
         await actual.unlink(newPath);
         await actual.writeFile(newPath, fault.foreignContents, { mode: 0o600 });
+        if (process.platform === 'win32') {
+          const { setWindowsUserOnlyAcl } =
+            await import('@kavrix/key-files/windows-acl');
+          await setWindowsUserOnlyAcl(String(newPath));
+        }
         fault.fired = true;
         throw injected();
       }
@@ -89,7 +95,6 @@ vi.mock('node:fs/promises', async (importOriginal) => {
         get(target, property) {
           if (property === 'sync') {
             return async () => {
-              await target.sync();
               fault.fired = true;
               throw injected();
             };

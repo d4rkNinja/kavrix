@@ -8,7 +8,9 @@ import {
 import { DatabaseSession } from './database-session.js';
 import {
   DatastoreProfileRegistry,
+  resolveDatastoreProfileRouting,
   type DatastoreProfile,
+  type DatastoreProfileRoutingOverrides,
 } from './datastore-profiles.js';
 import { LocalSecretInput, type LocalSecretKind } from './local-secrets.js';
 
@@ -25,6 +27,12 @@ export type DatabaseFlatCommandOptions = Readonly<{
   profile?: string;
   profileConfigDir?: string;
   vault: string;
+  datastore?: string;
+  dataFile?: string;
+  database?: string;
+  collection?: string;
+  keyFile?: string;
+  routingOverrides?: DatastoreProfileRoutingOverrides;
   databaseUrlStdin?: boolean;
   passphraseStdin?: boolean;
   valueStdin?: boolean;
@@ -147,7 +155,32 @@ async function selectedDatabaseProfile(
     options.profile === undefined
       ? await registry.current()
       : await registry.get(profileIdSchema.parse(options.profile));
-  return profile?.databaseId === undefined ? null : profile;
+  if (profile?.databaseId === undefined) return null;
+  return resolveSelectedProfileRouting(profile, options);
+}
+
+function resolveSelectedProfileRouting(
+  profile: DatastoreProfile,
+  options: DatabaseFlatCommandOptions,
+): DatastoreProfile {
+  const overrides = options.routingOverrides ?? {};
+  const effectiveDatastore = overrides.datastore ?? profile.datastore;
+
+  if (overrides.dataFile !== undefined && effectiveDatastore !== 'file') {
+    throw new DatabaseFlatCommandError('--data-file requires --datastore file.');
+  }
+  if (
+    (overrides.database !== undefined ||
+      overrides.databaseCollection !== undefined ||
+      overrides.vaultCollection !== undefined) &&
+    effectiveDatastore !== 'mongodb'
+  ) {
+    throw new DatabaseFlatCommandError(
+      'MongoDB routing options cannot be used with a file datastore.',
+    );
+  }
+
+  return resolveDatastoreProfileRouting(profile, overrides);
 }
 
 function required(value: string | undefined): string {

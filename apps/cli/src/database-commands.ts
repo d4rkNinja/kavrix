@@ -3,7 +3,6 @@ import type { Readable } from 'node:stream';
 import { zeroize } from '@kavrix/crypto';
 import {
   databaseRevisionAnchorPath,
-  deleteSecureFile,
   readDatabaseRecoveryKitFileBinding,
   validateSecureFileDestination,
   validateSecureFileSource,
@@ -568,10 +567,7 @@ async function openStore(
     const store = await FileEncryptedDatabaseStore.open(path);
     return {
       store,
-      rollbackDatabase: async () => {
-        await store.close();
-        await deleteSecureFile(path);
-      },
+      rollbackDatabase: (databaseId) => store.rollbackOwnedInitialization(databaseId),
     };
   }
   if (databaseUrl === undefined) throw new DatabaseSessionError('invalid');
@@ -659,5 +655,9 @@ function sanitize(value: string): string {
 }
 
 function writeOutput(value: unknown): void {
-  process.stdout.write(JSON.stringify(value) + '\n');
+  process.stdout.write(
+    JSON.stringify(value, (_key, entry: unknown) =>
+      typeof entry === 'string' ? sanitize(entry) : entry,
+    ) + '\n',
+  );
 }

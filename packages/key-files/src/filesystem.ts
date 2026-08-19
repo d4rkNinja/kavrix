@@ -49,13 +49,24 @@ export type OwnedSecureFileCreateResult =
       error: PortableKeyFileError;
     }>;
 
-type OwnedSecureFileState = Readonly<{
+type OwnedSecureFileLifecycle = 'active' | 'cleanup-complete' | 'disposed' | 'released';
+
+interface OwnedSecureFileHandle {
+  readonly handle: FileHandle;
+  closed: boolean;
+}
+
+interface OwnedSecureFileState {
   kind: OwnedSecureFileKind;
   directoryPath: string;
   targetPath: string;
-  identity: FileIdentity;
   maximumBytes: number;
-}>;
+  primary: OwnedSecureFileHandle;
+  identity?: FileIdentity;
+  lifecycle: OwnedSecureFileLifecycle;
+  operation: Promise<void>;
+  readonly retiredHandles: OwnedSecureFileHandle[];
+}
 
 const ownedSecureFileStates = new WeakMap<object, OwnedSecureFileState>();
 
@@ -243,16 +254,6 @@ async function verifyPathStillNamesFile(
 ): Promise<void> {
   const after = await lstat(targetPath, { bigint: true });
   if (!after.isFile() || !sameIdentity(after, identity)) {
-    throw new PortableKeyFileError('KEY_FILE_UNSAFE');
-  }
-}
-
-async function verifyPathStillNamesDirectory(
-  targetPath: string,
-  identity: FileIdentity,
-): Promise<void> {
-  const after = await lstat(targetPath, { bigint: true });
-  if (!after.isDirectory() || !sameIdentity(after, identity)) {
     throw new PortableKeyFileError('KEY_FILE_UNSAFE');
   }
 }
@@ -665,6 +666,32 @@ async function publishCreateNew(
   }
 }
 
+function ownedSecureFileError(): PortableKeyFileError {
+  return new PortableKeyFileError('KEY_FILE_OPERATION_FAILED');
+}
+
+function newOwnedSecureFileState(input: {
+  kind: OwnedSecureFileKind;
+  directoryPath: string;
+  targetPath: string;
+  maximumBytes: number;
+  handle: FileHandle;
+  identity?: FileIdentity;
+}): OwnedSecureFileState {
+  const state: OwnedSecureFileState = {
+    kind: input.kind,
+    directoryPath: input.directoryPath,
+    targetPath: input.targetPath,
+    maximumBytes: input.maximumBytes,
+    primary: { handle: input.handle, closed: false },
+    lifecycle: 'active',
+    operation: Promise.resolve(),
+    retiredHandles: [],
+    ...(input.identity === undefined ? {} : { identity: input.identity }),
+  };
+  return state;
+}
+
 function newOwnedSecureFilePublication(
   state: OwnedSecureFileState,
 ): OwnedSecureFilePublication {
@@ -673,6 +700,65 @@ function newOwnedSecureFilePublication(
   });
   ownedSecureFileStates.set(publication, state);
   return publication;
+}
+
+function assertOwnedSecureFileState(
+  publication: OwnedSecureFilePublication,
+  state: OwnedSecureFileState,
+): void {
+  if (ownedSecureFileStates.get(publication) !== state) {
+    throw ownedSecureFileError();
+  }
+}
+
+async function closeOwnedSecureFileHandle(entry: OwnedSecureFileHandle): Promise<void> {
+  if (entry.closed) return;
+  try {
+    await entry.handle.close();
+    entry.closed = true;
+  } catch {
+    throw ownedSecureFileError();
+  }
+}
+
+async function closeOwnedSecureFileState(state: OwnedSecureFileState): Promise<void> {
+  let firstError: PortableKeyFileError | undefined;
+  const handles = [state.primary, ...state.retiredHandles];
+  for (const entry of handles) {
+    try {
+      await closeOwnedSecureFileHandle(entry);
+    } catch (error) {
+      firstError ??= mappedFileError(error, 'KEY_FILE_OPERATION_FAILED');
+    }
+  }
+  if (firstError !== undefined) throw firstError;
+}
+
+function runOwnedSecureFileOperation<Result>(
+  publication: OwnedSecureFilePublication,
+  expectedKind: OwnedSecureFileKind,
+  operation: (state: OwnedSecureFileState) => Promise<Result>,
+): Promise<Result> {
+  const state = ownedSecureFileStates.get(publication);
+  if (state?.kind !== expectedKind) {
+    return Promise.reject(ownedSecureFileError());
+  }
+  const previous = state.operation;
+  const current = previous.then(
+    async () => {
+      assertOwnedSecureFileState(publication, state);
+      return operation(state);
+    },
+    async () => {
+      assertOwnedSecureFileState(publication, state);
+      return operation(state);
+    },
+  );
+  state.operation = current.then(
+    () => undefined,
+    () => undefined,
+  );
+  return current;
 }
 
 /**
@@ -715,39 +801,32 @@ export async function createOwnedSecureFile(
     };
   }
 
-  let identity: FileIdentity;
+  let identity: FileIdentity | undefined;
   try {
     identity = identityOf(await handle.stat({ bigint: true }));
-  } catch (error) {
-    await handle.close().catch(() => undefined);
-    return {
-      status: 'publication-uncertain',
-      publication: newOwnedSecureFilePublication({
-        kind,
-        directoryPath: resolved.directoryPath,
-        targetPath: resolved.targetPath,
-        identity: { dev: -1n, ino: -1n },
-        maximumBytes,
-      }),
-      error: mappedFileError(error, 'KEY_FILE_OPERATION_FAILED'),
-    };
+  } catch {
+    // The live descriptor is still retained. Cleanup can retry stat against the
+    // descriptor and compare it with the current pathname before mutating it.
   }
-  const publication = newOwnedSecureFilePublication({
-    kind,
-    directoryPath: resolved.directoryPath,
-    targetPath: resolved.targetPath,
-    identity,
-    maximumBytes,
-  });
+  const publication = newOwnedSecureFilePublication(
+    newOwnedSecureFileState({
+      kind,
+      directoryPath: resolved.directoryPath,
+      targetPath: resolved.targetPath,
+      maximumBytes,
+      handle,
+      ...(identity === undefined ? {} : { identity }),
+    }),
+  );
   try {
     await setAndVerifyCreatedFile(resolved.targetPath, handle);
     await handle.writeFile(contents);
     await handle.sync();
     const written = await handle.stat({ bigint: true });
-    if (
-      !sameIdentity(written, identity) ||
-      written.size !== BigInt(contents.byteLength)
-    ) {
+    identity = identityOf(written);
+    const state = ownedSecureFileStates.get(publication);
+    if (state !== undefined) state.identity = identity;
+    if (written.size !== BigInt(contents.byteLength)) {
       throw new PortableKeyFileError('KEY_FILE_OPERATION_FAILED');
     }
     const published = await lstat(resolved.targetPath, { bigint: true });
@@ -756,10 +835,8 @@ export async function createOwnedSecureFile(
     }
     await validateRegularFile(resolved.targetPath, published, maximumBytes);
     await syncDirectory(resolved.directoryPath);
-    await handle.close();
     return { status: 'published', publication };
   } catch (error) {
-    await handle.close().catch(() => undefined);
     return {
       status: 'publication-uncertain',
       publication,
@@ -771,17 +848,78 @@ export async function createOwnedSecureFile(
 async function neutralizeHeldFile(
   handle: FileHandle,
   identity: FileIdentity,
+  maximumBytes: number,
 ): Promise<void> {
   const before = await handle.stat({ bigint: true });
-  if (!before.isFile() || !sameIdentity(before, identity)) {
+  if (
+    !before.isFile() ||
+    !sameIdentity(before, identity) ||
+    before.nlink !== 1n ||
+    before.size > BigInt(maximumBytes)
+  ) {
     throw new PortableKeyFileError('KEY_FILE_UNSAFE');
   }
   await handle.truncate(0);
   await handle.sync();
   const after = await handle.stat({ bigint: true });
-  if (!after.isFile() || !sameIdentity(after, identity) || after.size !== 0n) {
+  if (
+    !after.isFile() ||
+    !sameIdentity(after, identity) ||
+    after.nlink !== 1n ||
+    after.size !== 0n
+  ) {
     throw new PortableKeyFileError('KEY_FILE_UNSAFE');
   }
+}
+
+async function verifyOwnedSecureFilePath(
+  state: OwnedSecureFileState,
+): Promise<FileIdentity> {
+  let resolved: ResolvedTarget;
+  try {
+    resolved = await resolveTarget(state.targetPath);
+  } catch (error) {
+    const mapped = mappedFileError(error, 'KEY_FILE_OPERATION_FAILED');
+    if (
+      mapped.code === 'KEY_FILE_NOT_FOUND' ||
+      mapped.code === 'KEY_FILE_INVALID_PATH' ||
+      mapped.code === 'KEY_FILE_UNSAFE'
+    ) {
+      throw new PortableKeyFileError('KEY_FILE_UNSAFE');
+    }
+    throw mapped;
+  }
+  if (
+    resolved.directoryPath !== state.directoryPath ||
+    resolved.targetPath !== state.targetPath
+  ) {
+    throw new PortableKeyFileError('KEY_FILE_UNSAFE');
+  }
+  try {
+    await validateWriteDirectory(state.directoryPath);
+  } catch {
+    throw new PortableKeyFileError('KEY_FILE_UNSAFE');
+  }
+  let current: BigIntStats;
+  try {
+    current = await lstat(state.targetPath, { bigint: true });
+  } catch (error) {
+    const mapped = mappedFileError(error, 'KEY_FILE_OPERATION_FAILED');
+    if (mapped.code === 'KEY_FILE_NOT_FOUND' || mapped.code === 'KEY_FILE_UNSAFE') {
+      throw new PortableKeyFileError('KEY_FILE_UNSAFE');
+    }
+    throw mapped;
+  }
+  const opened = await state.primary.handle.stat({ bigint: true });
+  if (!opened.isFile()) throw new PortableKeyFileError('KEY_FILE_UNSAFE');
+  const identity = identityOf(opened);
+  if (!current.isFile() || !sameIdentity(current, identity)) {
+    throw new PortableKeyFileError('KEY_FILE_UNSAFE');
+  }
+  await validateRegularFile(state.targetPath, current, state.maximumBytes, true);
+  await verifyPathStillNamesFile(state.targetPath, identity);
+  state.identity = identity;
+  return identity;
 }
 
 /**
@@ -797,80 +935,53 @@ export async function cleanupOwnedSecureFilePublication(
   publication: OwnedSecureFilePublication,
   expectedKind: OwnedSecureFileKind,
 ): Promise<void> {
-  const state = ownedSecureFileStates.get(publication);
-  if (state?.kind !== expectedKind) {
-    throw new PortableKeyFileError('KEY_FILE_OPERATION_FAILED');
-  }
-
-  let handle: FileHandle | undefined;
-  let directoryHandle: FileHandle | undefined;
-  try {
-    const resolved = await resolveTarget(state.targetPath);
-    if (
-      resolved.directoryPath !== state.directoryPath ||
-      resolved.targetPath !== state.targetPath
-    ) {
-      throw new PortableKeyFileError('KEY_FILE_UNSAFE');
+  return runOwnedSecureFileOperation(publication, expectedKind, async (state) => {
+    if (state.lifecycle === 'disposed' || state.lifecycle === 'released') {
+      throw ownedSecureFileError();
     }
-    await validateWriteDirectory(state.directoryPath);
+    if (state.lifecycle === 'cleanup-complete') {
+      await closeOwnedSecureFileState(state);
+      ownedSecureFileStates.delete(publication);
+      return;
+    }
 
-    let before: BigIntStats;
+    let identity: FileIdentity;
     try {
-      before = await lstat(state.targetPath, { bigint: true });
+      identity = await verifyOwnedSecureFilePath(state);
+      await neutralizeHeldFile(state.primary.handle, identity, state.maximumBytes);
     } catch (error) {
-      if (fileErrorCode(error) === 'ENOENT') {
-        throw new PortableKeyFileError('KEY_FILE_UNSAFE');
+      const mapped = mappedFileError(error, 'KEY_FILE_OPERATION_FAILED');
+      if (mapped.code === 'KEY_FILE_UNSAFE') {
+        state.lifecycle = 'disposed';
+        await closeOwnedSecureFileState(state).catch(() => undefined);
       }
-      throw error;
-    }
-    if (!before.isFile() || !sameIdentity(before, state.identity)) {
-      throw new PortableKeyFileError('KEY_FILE_UNSAFE');
-    }
-    handle = await open(state.targetPath, noFollowReadWriteFlags());
-    const opened = await handle.stat({ bigint: true });
-    if (!sameIdentity(opened, state.identity)) {
-      throw new PortableKeyFileError('KEY_FILE_UNSAFE');
-    }
-    await validateRegularFile(state.targetPath, opened, state.maximumBytes, true);
-    await verifyPathStillNamesFile(state.targetPath, state.identity);
-
-    const directoryBefore = await lstat(state.directoryPath, { bigint: true });
-    if (!directoryBefore.isDirectory()) {
-      throw new PortableKeyFileError('KEY_FILE_UNSAFE');
-    }
-    directoryHandle = await open(state.directoryPath, constants.O_RDONLY);
-    const openedDirectory = await directoryHandle.stat({ bigint: true });
-    if (
-      !openedDirectory.isDirectory() ||
-      !sameIdentity(openedDirectory, directoryBefore)
-    ) {
-      throw new PortableKeyFileError('KEY_FILE_UNSAFE');
-    }
-    await verifyPathStillNamesDirectory(
-      state.directoryPath,
-      identityOf(openedDirectory),
-    );
-
-    await neutralizeHeldFile(handle, state.identity);
-
-    try {
-      const publicPath = await lstat(state.targetPath, { bigint: true });
-      if (sameIdentity(publicPath, state.identity) && publicPath.size !== 0n) {
-        await neutralizeHeldFile(handle, state.identity);
-      }
-    } catch {
-      // Namespace inspection is observational only. The held inode is already
-      // zero and no pathname is mutated based on this result.
+      throw mapped;
     }
 
-    await neutralizeHeldFile(handle, state.identity);
+    state.lifecycle = 'cleanup-complete';
+    await closeOwnedSecureFileState(state);
     ownedSecureFileStates.delete(publication);
-  } catch (error) {
-    throw mappedFileError(error, 'KEY_FILE_OPERATION_FAILED');
-  } finally {
-    await handle?.close().catch(() => undefined);
-    await directoryHandle?.close().catch(() => undefined);
-  }
+  });
+}
+
+/**
+ * Releases an owned publication without touching the pathname or file bytes.
+ * The capability is consumed only after every retained descriptor is closed.
+ */
+export async function releaseOwnedSecureFilePublication(
+  publication: OwnedSecureFilePublication,
+  expectedKind: OwnedSecureFileKind,
+): Promise<void> {
+  return runOwnedSecureFileOperation(publication, expectedKind, async (state) => {
+    if (state.lifecycle === 'released') return;
+    if (state.lifecycle === 'disposed') {
+      await closeOwnedSecureFileState(state);
+      state.lifecycle = 'released';
+      return;
+    }
+    await closeOwnedSecureFileState(state);
+    state.lifecycle = 'released';
+  });
 }
 
 async function acquireReplacementLock(path: string): Promise<FileHandle> {
@@ -924,7 +1035,17 @@ async function publishReplacement(
   try {
     const expected = await validateReplacementTarget(targetPath, maximumBytes);
     await verifyPathStillNamesFile(targetPath, expected);
-    await rename(temporaryFile, targetPath);
+    if (process.platform === 'win32') {
+      await publishWindowsReplacement(
+        directoryPath,
+        targetPath,
+        temporaryFile,
+        expected,
+        maximumBytes,
+      );
+    } else {
+      await rename(temporaryFile, targetPath);
+    }
     const published = await lstat(targetPath, { bigint: true });
     await validateRegularFile(targetPath, published, maximumBytes);
     await syncDirectory(directoryPath);
@@ -947,6 +1068,65 @@ async function publishReplacement(
   }
   if (operationError !== undefined) {
     throw operationError;
+  }
+}
+
+async function publishWindowsReplacement(
+  directoryPath: string,
+  targetPath: string,
+  temporaryFile: string,
+  expected: FileIdentity,
+  maximumBytes: number,
+): Promise<void> {
+  const retained = await openVerifiedSecureFile(targetPath, maximumBytes);
+  if (!sameIdentity(retained.identity, expected)) {
+    await retained.handle.close();
+    throw new PortableKeyFileError('KEY_FILE_UNSAFE');
+  }
+
+  const displacedFile = join(
+    directoryPath,
+    `.kavrix-replaced-${String(process.pid)}-${randomBytes(TEMP_FILE_BYTES).toString('hex')}.tmp`,
+  );
+  let displaced = false;
+  let published = false;
+  try {
+    await rename(targetPath, displacedFile);
+    displaced = true;
+    const moved = await lstat(displacedFile, { bigint: true });
+    if (!moved.isFile() || !sameIdentity(moved, expected)) {
+      throw new PortableKeyFileError('KEY_FILE_UNSAFE');
+    }
+    await rename(temporaryFile, targetPath);
+    published = true;
+    const replacement = await lstat(targetPath, { bigint: true });
+    await validateRegularFile(targetPath, replacement, maximumBytes);
+    await syncDirectory(directoryPath);
+  } finally {
+    await retained.handle.close().catch(() => undefined);
+    if (displaced) {
+      if (published) {
+        const moved = await lstat(displacedFile, { bigint: true }).catch(
+          () => undefined,
+        );
+        if (moved !== undefined && moved.isFile() && sameIdentity(moved, expected)) {
+          await unlink(displacedFile);
+          await syncDirectory(directoryPath);
+        }
+      } else {
+        const current = await lstat(targetPath, { bigint: true }).catch(
+          () => undefined,
+        );
+        if (current === undefined) {
+          const moved = await lstat(displacedFile, { bigint: true }).catch(
+            () => undefined,
+          );
+          if (moved !== undefined && moved.isFile() && sameIdentity(moved, expected)) {
+            await rename(displacedFile, targetPath).catch(() => undefined);
+          }
+        }
+      }
+    }
   }
 }
 
@@ -1059,6 +1239,27 @@ export async function replaceSecureFileWhileExclusive(
   }
 }
 
+async function openVerifiedSecureFile(
+  targetPath: string,
+  maximumBytes: number,
+): Promise<Readonly<{ handle: FileHandle; identity: FileIdentity }>> {
+  let handle: FileHandle | undefined;
+  try {
+    const before = await lstatRegularIdentity(targetPath);
+    handle = await open(targetPath, noFollowReadWriteFlags());
+    const opened = await handle.stat({ bigint: true });
+    if (!sameIdentity(before, opened)) {
+      throw new PortableKeyFileError('KEY_FILE_UNSAFE');
+    }
+    await validateRegularFile(targetPath, opened, maximumBytes);
+    await verifyPathStillNamesFile(targetPath, before);
+    return { handle, identity: identityOf(opened) };
+  } catch (error) {
+    await handle?.close().catch(() => undefined);
+    throw mappedFileError(error, 'KEY_FILE_OPERATION_FAILED');
+  }
+}
+
 /**
  * Replaces the exact file named by an opaque ownership capability and returns
  * ownership of the replacement inode. The prior capability is consumed only
@@ -1070,28 +1271,132 @@ export async function replaceOwnedSecureFileWhileExclusive(
   publication: OwnedSecureFilePublication,
   expectedKind: OwnedSecureFileKind,
 ): Promise<OwnedSecureFilePublication> {
-  const state = ownedSecureFileStates.get(publication);
-  if (
-    state?.kind !== expectedKind ||
-    state.directoryPath !== lock.directoryPath ||
-    state.targetPath !== lock.targetPath ||
-    state.maximumBytes !== lock.maximumBytes
-  ) {
-    throw new PortableKeyFileError('KEY_FILE_OPERATION_FAILED');
-  }
-  const before = await lstat(state.targetPath, { bigint: true });
-  if (!sameIdentity(before, state.identity)) {
-    throw new PortableKeyFileError('KEY_FILE_UNSAFE');
-  }
-  await replaceSecureFileWhileExclusive(lock, contents);
-  const after = await lstat(state.targetPath, { bigint: true });
-  await validateRegularFile(state.targetPath, after, state.maximumBytes);
-  const next = newOwnedSecureFilePublication({
-    ...state,
-    identity: identityOf(after),
+  return runOwnedSecureFileOperation(publication, expectedKind, async (state) => {
+    if (
+      state.lifecycle !== 'active' ||
+      state.directoryPath !== lock.directoryPath ||
+      state.targetPath !== lock.targetPath ||
+      state.maximumBytes !== lock.maximumBytes
+    ) {
+      throw ownedSecureFileError();
+    }
+    if (contents.byteLength === 0 || contents.byteLength > lock.maximumBytes) {
+      throw ownedSecureFileError();
+    }
+
+    let temporaryFile: string | undefined;
+    let displacedFile: string | undefined;
+    let staged: OwnedSecureFileHandle | undefined;
+    let stagedIdentity: FileIdentity;
+    let originalIdentity: FileIdentity | undefined;
+    let transferred = false;
+    try {
+      originalIdentity = await verifyOwnedSecureFilePath(state);
+      temporaryFile = (await writeTemporaryFile(lock.directoryPath, contents)).path;
+      const opened = await openVerifiedSecureFile(temporaryFile, lock.maximumBytes);
+      staged = { handle: opened.handle, closed: false };
+      stagedIdentity = opened.identity;
+
+      // Recheck the retained original descriptor immediately before the rename.
+      const verifiedOriginal = await verifyOwnedSecureFilePath(state);
+      if (!sameIdentity(verifiedOriginal, originalIdentity)) {
+        throw new PortableKeyFileError('KEY_FILE_UNSAFE');
+      }
+      // Windows does not permit replacing an open pathname. The retained
+      // descriptor keeps the original object safe while its name is briefly
+      // absent; the exclusive lock prevents cooperating replacements, and the
+      // staged descriptor is verified immediately after the rename.
+      if (process.platform === 'win32') {
+        displacedFile = join(
+          lock.directoryPath,
+          `.kavrix-owned-replaced-${String(process.pid)}-${randomBytes(TEMP_FILE_BYTES).toString('hex')}.tmp`,
+        );
+        await rename(lock.targetPath, displacedFile);
+        const displaced = await lstat(displacedFile, { bigint: true });
+        if (!displaced.isFile() || !sameIdentity(displaced, originalIdentity)) {
+          await rename(displacedFile, lock.targetPath)
+            .then(() => {
+              displacedFile = undefined;
+            })
+            .catch(() => undefined);
+          throw new PortableKeyFileError('KEY_FILE_UNSAFE');
+        }
+      }
+      await rename(temporaryFile, lock.targetPath);
+      temporaryFile = undefined;
+
+      const published = await lstat(lock.targetPath, { bigint: true });
+      if (!published.isFile() || !sameIdentity(published, stagedIdentity)) {
+        throw new PortableKeyFileError('KEY_FILE_UNSAFE');
+      }
+      await validateRegularFile(lock.targetPath, published, lock.maximumBytes);
+      await verifyPathStillNamesFile(lock.targetPath, stagedIdentity);
+
+      // The staged descriptor is now the capability's primary object. Keep the
+      // original descriptor as a retired handle until directory sync succeeds.
+      const oldPrimary = state.primary;
+      state.primary = staged;
+      state.identity = stagedIdentity;
+      state.retiredHandles.push(oldPrimary, ...state.retiredHandles.splice(0));
+      transferred = true;
+
+      await syncDirectory(lock.directoryPath);
+
+      for (const retired of state.retiredHandles) {
+        await closeOwnedSecureFileHandle(retired).catch(() => undefined);
+      }
+      if (displacedFile !== undefined) {
+        const displaced = await lstat(displacedFile, { bigint: true });
+        if (!displaced.isFile() || !sameIdentity(displaced, originalIdentity)) {
+          throw new PortableKeyFileError('KEY_FILE_UNSAFE');
+        }
+        await unlink(displacedFile);
+        displacedFile = undefined;
+        await syncDirectory(lock.directoryPath);
+      }
+      const next = newOwnedSecureFilePublication(
+        newOwnedSecureFileState({
+          kind: state.kind,
+          directoryPath: state.directoryPath,
+          targetPath: state.targetPath,
+          maximumBytes: state.maximumBytes,
+          handle: staged.handle,
+          identity: stagedIdentity,
+        }),
+      );
+      const nextState = ownedSecureFileStates.get(next);
+      if (nextState === undefined) throw ownedSecureFileError();
+      // Preserve any retired descriptors whose close needs an explicit retry.
+      nextState.retiredHandles.push(...state.retiredHandles);
+      state.lifecycle = 'disposed';
+      ownedSecureFileStates.delete(publication);
+      staged = undefined;
+      return next;
+    } catch (error) {
+      if (
+        !transferred &&
+        displacedFile !== undefined &&
+        originalIdentity !== undefined
+      ) {
+        const candidate = await lstat(displacedFile, { bigint: true }).catch(
+          () => undefined,
+        );
+        if (candidate?.isFile() && sameIdentity(candidate, originalIdentity)) {
+          await rename(displacedFile, lock.targetPath)
+            .then(() => {
+              displacedFile = undefined;
+            })
+            .catch(() => undefined);
+        }
+      }
+      if (!transferred && staged !== undefined) {
+        await closeOwnedSecureFileHandle(staged).catch(() => undefined);
+      }
+      throw mappedFileError(error, 'KEY_FILE_OPERATION_FAILED');
+    } finally {
+      if (temporaryFile !== undefined) await removeIfPresent(temporaryFile);
+    }
   });
-  ownedSecureFileStates.delete(publication);
-  return next;
 }
 
 /**

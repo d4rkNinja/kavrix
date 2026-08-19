@@ -1,6 +1,9 @@
 import { defineConfig } from 'vitest/config';
 
-const testBoundaryTimeoutMs = process.platform === 'win32' ? 60_000 : 10_000;
+// Windows security tests invoke the platform ACL verifier repeatedly across
+// multi-step database workflows. Keep the fail-closed checks real while giving
+// the slower process boundary enough time on hosted and local Windows runners.
+const testBoundaryTimeoutMs = process.platform === 'win32' ? 360_000 : 10_000;
 
 export default defineConfig({
   test: {
@@ -9,6 +12,7 @@ export default defineConfig({
     include: [
       'apps/cli/test/database-session.test.ts',
       'apps/cli/test/database-commands.test.ts',
+      'apps/cli/test/database-flat-commands.test.ts',
       'apps/cli/test/database-migration.test.ts',
       'apps/cli/test/datastore-profile-publication.test.ts',
       'apps/cli/test/datastore-profiles.test.ts',

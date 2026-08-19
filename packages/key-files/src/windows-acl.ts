@@ -47,7 +47,7 @@ if ($isDirectory) {
 $propagation = [Security.AccessControl.PropagationFlags]::None
 $rule = [Security.AccessControl.FileSystemAccessRule]::new($sid, $fullControl, $inheritance, $propagation, $allow)
 [void]$acl.AddAccessRule($rule)
-$item.SetAccessControl($acl)
+Set-Acl -LiteralPath $target -AclObject $acl -ErrorAction Stop
 `;
 
 const VERIFY_USER_ONLY_ACL = String.raw`
@@ -122,6 +122,13 @@ async function runAclCommand(script: string, targetPath: string): Promise<void> 
 }
 
 export async function setWindowsUserOnlyAcl(targetPath: string): Promise<void> {
+  try {
+    await verifyWindowsUserOnlyAcl(targetPath);
+    return;
+  } catch {
+    // An already-hardened ACL can reject a second owner-setting operation on
+    // Windows. Only rewrite the ACL when verification shows that it is needed.
+  }
   await runAclCommand(SET_USER_ONLY_ACL, targetPath);
   await verifyWindowsUserOnlyAcl(targetPath);
 }

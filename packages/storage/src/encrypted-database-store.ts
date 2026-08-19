@@ -69,7 +69,9 @@ export type DeleteVaultInput = Readonly<{
  * the database document revision by exactly one. A successful vault mutation
  * advances the vault document revision by exactly one. Catalog-plus-vault
  * create and delete operations publish both supplied database state and vault
- * state atomically.
+ * state atomically. For a mutation, `conflict`, `exists`, and `invalid` prove
+ * that no write was accepted. Every other rejection after the adapter was
+ * entered has an unknown commit outcome and callers must fail closed.
  */
 export interface EncryptedDatabaseStore {
   ping(): Promise<void>;
