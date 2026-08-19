@@ -16,6 +16,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
   readDatabaseKeyFile,
+  readDatabaseKeyFileBinding,
   writeDatabaseKeyFile,
   type DatabaseKeyBinding,
 } from '../src/index.js';
@@ -55,6 +56,7 @@ describe('protected database key files', () => {
       expect(serialized).toContain('-----BEGIN KAVRIX DATABASE KEY-----');
       expect(serialized).not.toContain('database-key-canary');
       expect(serialized).not.toContain(Buffer.from(expected).toString('base64url'));
+      await expect(readDatabaseKeyFileBinding(file)).resolves.toEqual(binding);
       const parsed = await readDatabaseKeyFile(file, secret, binding);
       try {
         expect(parsed.binding).toEqual(binding);

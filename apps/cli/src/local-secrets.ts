@@ -7,6 +7,7 @@ const MAX_SECRET_FRAMES = 4;
 
 export type LocalSecretKind =
   | 'database-url'
+  | 'label'
   | 'passphrase'
   | 'recovery-passphrase'
   | 'new-passphrase'
@@ -19,6 +20,9 @@ export class LocalSecretInput {
     setRawMode?: (enabled: boolean) => void;
   };
   readonly #output: Writable;
+  #stdinIterator: AsyncIterator<unknown> | undefined;
+  #stdinPending: Uint8Array = new Uint8Array(0);
+  #stdinEnded = false;
 
   public constructor(
     input: Readable & {
@@ -35,11 +39,12 @@ export class LocalSecretInput {
   public async read(
     kinds: readonly LocalSecretKind[],
     fromStdin: boolean,
+    finalFrames = true,
   ): Promise<readonly string[]> {
     if (kinds.length === 0 || kinds.length > MAX_SECRET_FRAMES) {
       throw new LocalSecretInputError('Secret input request is invalid.');
     }
-    if (fromStdin) return this.#readStdin(kinds);
+    if (fromStdin) return this.#readStdin(kinds, finalFrames);
     const values: string[] = [];
     for (const kind of kinds) {
       values.push(await this.#readMasked(kind, labelFor(kind)));
@@ -47,43 +52,90 @@ export class LocalSecretInput {
     return values;
   }
 
-  async #readStdin(kinds: readonly LocalSecretKind[]): Promise<readonly string[]> {
-    const count = kinds.length;
-    const chunks: Uint8Array[] = [];
-    let length = 0;
+  async #readStdin(
+    kinds: readonly LocalSecretKind[],
+    finalFrames: boolean,
+  ): Promise<readonly string[]> {
+    const frames: string[] = [];
+    let frame: Uint8Array = new Uint8Array(0);
     try {
-      for await (const chunk of this.#input) {
-        const source =
-          typeof chunk === 'string'
-            ? Buffer.from(chunk)
-            : chunk instanceof Uint8Array
-              ? chunk
-              : undefined;
-        if (source === undefined) {
-          throw new LocalSecretInputError('Secret input contains invalid bytes.');
+      while (frames.length < kinds.length) {
+        const newline = this.#stdinPending.indexOf(10);
+        if (newline >= 0) {
+          frame = appendBytes(frame, this.#stdinPending.subarray(0, newline));
+          this.#consumePending(newline + 1);
+          frames.push(decodeFrame(frame, kinds[frames.length]));
+          zeroBytes(frame);
+          frame = new Uint8Array(0);
+          continue;
         }
-        const bytes = Uint8Array.from(source);
-        length += bytes.byteLength;
-        if (length > count * (MAX_SECRET_BYTES + 1)) {
+        frame = appendBytes(frame, this.#stdinPending);
+        this.#consumePending(this.#stdinPending.byteLength);
+        if (frame.byteLength > MAX_SECRET_BYTES) {
           throw new LocalSecretInputError('Secret input exceeds the supported size.');
         }
-        chunks.push(bytes);
+        const next = await this.#nextStdinChunk();
+        if (next === null) {
+          if (frame.byteLength === 0) {
+            throw new LocalSecretInputError(
+              'Secret input contains the wrong number of values.',
+            );
+          }
+          frames.push(decodeFrame(frame, kinds[frames.length]));
+          zeroBytes(frame);
+          frame = new Uint8Array(0);
+        }
       }
-      const text = Buffer.concat(
-        chunks.map((chunk) => Uint8Array.from(chunk)),
-        length,
-      ).toString('utf8');
-      const frames = text.replace(/\r\n/gu, '\n').split('\n');
-      if (frames.at(-1) === '') frames.pop();
-      if (frames.length !== count) {
-        throw new LocalSecretInputError(
-          'Secret input contains the wrong number of values.',
-        );
-      }
-      return frames.map((value, index) => validateSecret(value, kinds[index]));
+      if (finalFrames) await this.#requireStdinEnd();
+      return frames;
     } finally {
-      for (const chunk of chunks) chunk.fill(0);
+      zeroBytes(frame);
     }
+  }
+
+  async #nextStdinChunk(): Promise<Uint8Array | null> {
+    if (this.#stdinPending.byteLength > 0) return this.#stdinPending;
+    if (this.#stdinEnded) return null;
+    this.#stdinIterator ??= this.#input[Symbol.asyncIterator]();
+    for (;;) {
+      const next = await this.#stdinIterator.next();
+      if (next.done === true) {
+        this.#stdinEnded = true;
+        return null;
+      }
+      const source =
+        typeof next.value === 'string'
+          ? Buffer.from(next.value)
+          : next.value instanceof Uint8Array
+            ? next.value
+            : undefined;
+      if (source === undefined) {
+        throw new LocalSecretInputError('Secret input contains invalid bytes.');
+      }
+      const bytes = Uint8Array.from(source);
+      if (bytes.byteLength === 0) continue;
+      this.#stdinPending = bytes;
+      return bytes;
+    }
+  }
+
+  async #requireStdinEnd(): Promise<void> {
+    if (this.#stdinPending.byteLength > 0) {
+      throw new LocalSecretInputError(
+        'Secret input contains the wrong number of values.',
+      );
+    }
+    if ((await this.#nextStdinChunk()) !== null) {
+      throw new LocalSecretInputError(
+        'Secret input contains the wrong number of values.',
+      );
+    }
+  }
+
+  #consumePending(length: number): void {
+    const prior = this.#stdinPending;
+    this.#stdinPending = Uint8Array.from(prior.subarray(length));
+    zeroBytes(prior);
   }
 
   #readMasked(kind: LocalSecretKind, label: string): Promise<string> {
@@ -219,6 +271,7 @@ export class LocalSecretInputError extends Error {
 
 function labelFor(kind: LocalSecretKind): string {
   if (kind === 'database-url') return 'database URL';
+  if (kind === 'label') return 'private label';
   if (kind === 'field-value') return 'credential value';
   if (kind === 'recovery-passphrase') return 'recovery-kit passphrase';
   if (kind === 'new-passphrase') return 'new passphrase';
@@ -245,4 +298,24 @@ function validateSecret(value: string, kind?: LocalSecretKind): string {
     );
   }
   return value;
+}
+
+function appendBytes(left: Uint8Array, right: Uint8Array): Uint8Array {
+  if (left.byteLength + right.byteLength > MAX_SECRET_BYTES) {
+    throw new LocalSecretInputError('Secret input exceeds the supported size.');
+  }
+  const joined = new Uint8Array(left.byteLength + right.byteLength);
+  joined.set(left);
+  joined.set(right, left.byteLength);
+  zeroBytes(left);
+  return joined;
+}
+
+function decodeFrame(bytes: Uint8Array, kind?: LocalSecretKind): string {
+  const end = bytes.at(-1) === 13 ? bytes.byteLength - 1 : bytes.byteLength;
+  return validateSecret(Buffer.from(bytes.subarray(0, end)).toString('utf8'), kind);
+}
+
+function zeroBytes(bytes: Uint8Array): void {
+  bytes.fill(0);
 }

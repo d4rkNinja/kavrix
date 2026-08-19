@@ -68,6 +68,11 @@ import {
 import { Command } from 'commander';
 
 import {
+  addDatabaseOwnerCommands,
+  addDatabaseVaultCommands,
+} from './database-commands.js';
+import { DatabaseSessionError } from './database-session.js';
+import {
   DatastoreProfileError,
   DatastoreProfileRegistry,
   resolveDatastoreProfileRouting,
@@ -175,6 +180,7 @@ export function buildLocalCli(): Command {
 
   const db = program.command('db').description('Database operations.');
   addDatastoreProfileCommands(db);
+  addDatabaseOwnerCommands(db);
   const ping = db
     .command('ping')
     .description('Check direct MongoDB connectivity without unlocking a vault.');
@@ -392,21 +398,7 @@ export function buildLocalCli(): Command {
   const vault = program
     .command('vault')
     .description('Select and inspect encrypted vaults.');
-  const vaultList = vault
-    .command('list')
-    .description('List vault identifiers stored in the selected MongoDB collection.');
-  addDatabaseOnlyOptions(vaultList);
-  vaultList.action(async (...args: unknown[]) => {
-    await handleVaultList(getOptions(args));
-  });
-  const vaultStatus = vault
-    .command('status')
-    .description('Show non-secret metadata for the selected vault.');
-  addDatabaseOnlyOptions(vaultStatus);
-  addVaultOption(vaultStatus);
-  vaultStatus.action(async (...args: unknown[]) => {
-    await handleVaultStatus(getOptions(args));
-  });
+  addDatabaseVaultCommands(vault);
 
   const key = program
     .command('key')
@@ -458,9 +450,11 @@ export async function runLocalCli(argv: readonly string[]): Promise<void> {
             ? error.message
             : error instanceof DatastoreProfileError
               ? error.message
-              : error instanceof AggregateError
+              : error instanceof DatabaseSessionError
                 ? error.message
-                : 'Kavrix command failed.';
+                : error instanceof AggregateError
+                  ? error.message
+                  : 'Kavrix command failed.';
     process.stderr.write(colorizeError(message) + '\n');
     process.exitCode = 1;
   }
@@ -2282,44 +2276,6 @@ async function handleRecoveryUse(options: LocalCliOptions): Promise<void> {
     zeroize(recoveryPassphraseBytes);
     zeroize(passphraseBytes);
   }
-}
-
-async function handleVaultList(options: LocalCliOptions): Promise<void> {
-  const values = await readSecrets(['database-url'], options);
-  const databaseUrl = requiredSecret(values, 0);
-  await withStore(databaseUrl, options, async (store, target) => {
-    const vaults = await store.listVaultIds();
-    writeJson({ ...storeLocation(options, target), vaults });
-  });
-}
-
-async function handleVaultStatus(options: LocalCliOptions): Promise<void> {
-  const values = await readSecrets(['database-url'], options);
-  const databaseUrl = requiredSecret(values, 0);
-  await withStore(databaseUrl, options, async (store, target) => {
-    const document = await requireVault(store, options.vault);
-    writeJson({
-      ...storeLocation(options, target),
-      vaultId: document.id,
-      revision: document.revision,
-      currentKeyVersion: document.currentKeyVersion,
-      keySlot: {
-        id: document.keySlot.id,
-        type: document.keySlot.type,
-        state: document.keySlot.state,
-        keyVersion: document.keySlot.keyVersion,
-        createdAt: document.keySlot.createdAt,
-      },
-      recoverySlots: {
-        total: document.recoverySlots.length,
-        active: document.recoverySlots.filter((slot) => slot.state === 'active').length,
-        revoked: document.recoverySlots.filter((slot) => slot.state === 'revoked')
-          .length,
-      },
-      createdAt: document.createdAt,
-      updatedAt: document.updatedAt,
-    });
-  });
 }
 
 async function handleKeyStatus(options: LocalCliOptions): Promise<void> {

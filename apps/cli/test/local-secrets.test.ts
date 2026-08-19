@@ -86,6 +86,18 @@ describe('local secret input policy', () => {
     ).resolves.toEqual(['correct horse battery staple']);
   });
 
+  it('reads protected stdin incrementally without returning later frames early', async () => {
+    const reader = secretInput(
+      'mongodb://localhost/kavrix\ncorrect horse battery staple\n',
+    );
+    await expect(reader.read(['database-url'], true, false)).resolves.toEqual([
+      'mongodb://localhost/kavrix',
+    ]);
+    await expect(reader.read(['passphrase'], true)).resolves.toEqual([
+      'correct horse battery staple',
+    ]);
+  });
+
   it('preserves the terminal receiver and restores raw mode across sequential prompts', async () => {
     const input = new TestTerminalInput();
     const output = new TestTerminalOutput();

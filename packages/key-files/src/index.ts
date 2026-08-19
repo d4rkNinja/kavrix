@@ -48,6 +48,7 @@ export {
   type RevisionAnchor,
 } from './revision-anchor.js';
 export {
+  readDatabaseKeyFileBinding,
   readDatabaseKeyFile,
   writeDatabaseKeyFile,
   type DatabaseKeyBinding,
@@ -55,6 +56,7 @@ export {
   type ParsedDatabaseKeyFile,
 } from './database-key-files.js';
 export {
+  readDatabaseRecoveryKitFileBinding,
   readDatabaseRecoveryKitFile,
   writeDatabaseRecoveryKitFile,
   type DatabaseRecoveryBinding,

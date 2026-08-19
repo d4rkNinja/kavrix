@@ -166,6 +166,30 @@ export async function readDatabaseRecoveryKitFile(
   }
 }
 
+/**
+ * Reads only the protected envelope's untrusted public routing fields needed
+ * to select an opaque database document. This does not decrypt or request
+ * recovery material; callers must compare the binding with that document and
+ * pass it back to the full authenticated reader afterward.
+ */
+export async function readDatabaseRecoveryKitFileBinding(
+  path: string,
+): Promise<DatabaseRecoveryBinding> {
+  let file: Uint8Array | undefined;
+  try {
+    file = await readSecureFile(path, MAX_FILE_BYTES);
+    const envelope = parseEnvelope(file);
+    return {
+      databaseId: envelope.databaseId,
+      recoverySlotId: envelope.recoverySlotId,
+    };
+  } catch {
+    throw invalid();
+  } finally {
+    zeroize(file);
+  }
+}
+
 function parseEnvelope(file: Uint8Array): Envelope {
   try {
     const text = Buffer.from(file).toString('utf8');

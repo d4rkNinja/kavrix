@@ -48,6 +48,27 @@ export type ParsedDatabaseKeyFile = Readonly<{
   portableKey: PortableKey;
 }>;
 
+/**
+ * Reads only the protected envelope's untrusted public routing binding. The
+ * file still passes path, ownership, link, size, and canonical-format checks;
+ * callers must compare the binding with the outer database before requesting
+ * a passphrase and pass it back to the full authenticated reader afterward.
+ */
+export async function readDatabaseKeyFileBinding(
+  path: string,
+): Promise<DatabaseKeyBinding> {
+  let file: Uint8Array | undefined;
+  try {
+    file = await readSecureFile(path, MAX_FILE_BYTES);
+    const binding = parseFile(file).binding;
+    return { databaseId: binding.databaseId, keySlotId: binding.keySlotId };
+  } catch {
+    throw invalid();
+  } finally {
+    zeroize(file);
+  }
+}
+
 export async function writeDatabaseKeyFile(
   path: string,
   portableKey: Uint8Array,

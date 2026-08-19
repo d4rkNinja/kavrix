@@ -11,6 +11,8 @@
   },
   "include": [
     "src/bin.ts",
+    "src/database-commands.ts",
+    "src/database-session.ts",
     "src/datastore-profiles.ts",
     "src/index.ts",
     "src/local-secrets.ts",

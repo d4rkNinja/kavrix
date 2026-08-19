@@ -15,6 +15,7 @@ import { databaseIdSchema, keySlotIdSchema, vaultIdSchema } from '@kavrix/schema
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
+  readDatabaseRecoveryKitFileBinding,
   readDatabaseRecoveryKitFile,
   readRecoveryKitFile,
   writeDatabaseRecoveryKitFile,
@@ -57,6 +58,7 @@ describe('protected database recovery-kit files', () => {
       expect(serialized).toContain('"format":"kavrix-database-recovery-kit"');
       expect(serialized).not.toContain('database-recovery-canary');
       expect(serialized).not.toContain(Buffer.from(expected).toString('base64url'));
+      await expect(readDatabaseRecoveryKitFileBinding(file)).resolves.toEqual(binding);
       const parsed = await readDatabaseRecoveryKitFile(file, secret, binding);
       try {
         expect(parsed.binding).toEqual(binding);
