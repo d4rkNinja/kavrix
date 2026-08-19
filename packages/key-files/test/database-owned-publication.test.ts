@@ -1,5 +1,6 @@
 import type * as FsPromises from 'node:fs/promises';
 
+import { constants } from 'node:fs';
 import { mkdtemp, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -30,13 +31,23 @@ import {
 } from '../src/index.js';
 
 type FaultPhase =
-  'none' | 'post-link' | 'final-verify' | 'directory-sync' | 'cleanup-race';
+  | 'none'
+  | 'post-link'
+  | 'final-verify'
+  | 'directory-sync'
+  | 'cleanup-race'
+  | 'temporary-final-unlink'
+  | 'quarantine-final-unlink'
+  | 'restoration-final-unlink';
 
 const fault = vi.hoisted(() => ({
   phase: 'none' as FaultPhase,
   target: '',
   directory: '',
   fired: false,
+  primaryFailed: false,
+  foreignPath: '',
+  ownedRecoveryPath: '',
 }));
 
 vi.mock('node:fs/promises', async (importOriginal) => {
@@ -49,6 +60,18 @@ vi.mock('node:fs/promises', async (importOriginal) => {
   return {
     ...actual,
     link: async (existingPath: FsPromises.PathLike, newPath: FsPromises.PathLike) => {
+      if (
+        fault.phase === 'cleanup-race' &&
+        String(existingPath) === fault.target &&
+        String(newPath).includes('.kavrix-delete-') &&
+        !fault.fired
+      ) {
+        fault.fired = true;
+        await actual.unlink(existingPath);
+        await actual.writeFile(existingPath, 'foreign-during-cleanup', {
+          mode: 0o600,
+        });
+      }
       if (
         fault.phase === 'post-link' &&
         String(newPath) === fault.target &&
@@ -78,9 +101,39 @@ vi.mock('node:fs/promises', async (importOriginal) => {
       mode?: FsPromises.Mode,
     ) => {
       const handle = await actual.open(path, flags, mode);
+      const candidatePath = String(path);
+      const isDeleteQuarantine = candidatePath.includes('.kavrix-delete-');
+      const isTemporary =
+        candidatePath.includes('.kavrix-') &&
+        candidatePath.endsWith('.tmp') &&
+        !isDeleteQuarantine;
+      const shouldReplace =
+        !fault.fired &&
+        ((fault.phase === 'temporary-final-unlink' && isTemporary) ||
+          (fault.phase === 'quarantine-final-unlink' && isDeleteQuarantine) ||
+          (fault.phase === 'restoration-final-unlink' &&
+            fault.primaryFailed &&
+            isDeleteQuarantine));
+      const isCreateOpen =
+        typeof flags === 'number'
+          ? (flags & constants.O_CREAT) !== 0
+          : flags.includes('w') || flags.includes('a');
+      if (shouldReplace && !isCreateOpen) {
+        fault.fired = true;
+        if (fault.phase === 'quarantine-final-unlink') {
+          fault.ownedRecoveryPath = `${candidatePath}.owned-recovery`;
+          await actual.rename(candidatePath, fault.ownedRecoveryPath);
+        } else {
+          await actual.unlink(candidatePath);
+        }
+        await actual.writeFile(candidatePath, `foreign-${fault.phase}`, {
+          mode: 0o600,
+        });
+        fault.foreignPath = candidatePath;
+      }
       if (
         fault.phase !== 'directory-sync' ||
-        String(path) !== fault.directory ||
+        candidatePath !== fault.directory ||
         fault.fired
       ) {
         return handle;
@@ -99,17 +152,17 @@ vi.mock('node:fs/promises', async (importOriginal) => {
         },
       });
     },
-    rename: async (oldPath: FsPromises.PathLike, newPath: FsPromises.PathLike) => {
+    rename: actual.rename,
+    unlink: async (path: FsPromises.PathLike) => {
       if (
-        fault.phase === 'cleanup-race' &&
-        String(oldPath) === fault.target &&
-        !fault.fired
+        fault.phase === 'restoration-final-unlink' &&
+        String(path).includes('.kavrix-delete-') &&
+        !fault.primaryFailed
       ) {
-        fault.fired = true;
-        await actual.unlink(oldPath);
-        await actual.writeFile(oldPath, 'foreign-during-cleanup', { mode: 0o600 });
+        fault.primaryFailed = true;
+        throw injected();
       }
-      return actual.rename(oldPath, newPath);
+      return actual.unlink(path);
     },
   };
 });
@@ -150,6 +203,9 @@ function resetFault(): void {
   fault.target = '';
   fault.directory = '';
   fault.fired = false;
+  fault.primaryFailed = false;
+  fault.foreignPath = '';
+  fault.ownedRecoveryPath = '';
 }
 
 function armFault(phase: Exclude<FaultPhase, 'none'>, target: string): void {
@@ -305,6 +361,169 @@ describe('owned database-file publication', () => {
       await expectNoInternalArtifacts();
     } finally {
       zeroize(key);
+      zeroize(passphrase);
+    }
+  });
+
+  it('preserves foreign bytes at every final cleanup check-to-unlink boundary', async () => {
+    const key = generatePortableKey();
+    const passphrase = new TextEncoder().encode('final-unlink-race-passphrase');
+    try {
+      const temporaryTarget = join(directory, 'temporary-final-unlink');
+      armFault('temporary-final-unlink', temporaryTarget);
+      const temporaryResult = await createOwnedDatabaseKeyFile(
+        temporaryTarget,
+        key,
+        keyBinding,
+        { protection: { kind: 'passphrase', passphrase } },
+      );
+      expect(temporaryResult.status).toBe('publication-uncertain');
+      if (temporaryResult.status !== 'publication-uncertain') {
+        throw new Error('Expected an uncertain temporary cleanup');
+      }
+      const temporaryForeignPath = fault.foreignPath;
+      expect(temporaryResult.error).toMatchObject({ code: 'KEY_FILE_UNSAFE' });
+      expect(Object.hasOwn(temporaryResult.error, 'cause')).toBe(false);
+      await expect(readFile(temporaryForeignPath, 'utf8')).resolves.toBe(
+        'foreign-temporary-final-unlink',
+      );
+      resetFault();
+      await cleanupOwnedDatabaseKeyFile(temporaryResult.publication);
+      await expect(
+        cleanupOwnedDatabaseKeyFile(temporaryResult.publication),
+      ).rejects.toMatchObject({ code: 'KEY_FILE_OPERATION_FAILED' });
+      await expect(readFile(temporaryForeignPath, 'utf8')).resolves.toBe(
+        'foreign-temporary-final-unlink',
+      );
+
+      const quarantineTarget = join(directory, 'quarantine-final-unlink');
+      const quarantineResult = await createOwnedDatabaseKeyFile(
+        quarantineTarget,
+        key,
+        keyBinding,
+        { protection: { kind: 'passphrase', passphrase } },
+      );
+      if (quarantineResult.status !== 'published') {
+        throw new Error('Expected a published quarantine test file');
+      }
+      armFault('quarantine-final-unlink', quarantineTarget);
+      let quarantineError: unknown;
+      try {
+        await cleanupOwnedDatabaseKeyFile(quarantineResult.publication);
+      } catch (error) {
+        quarantineError = error;
+      }
+      const ownedRecoveryPath = fault.ownedRecoveryPath;
+      expect(quarantineError).toMatchObject({ code: 'KEY_FILE_UNSAFE' });
+      expect(Object.hasOwn(quarantineError as object, 'cause')).toBe(false);
+      await expect(readFile(quarantineTarget, 'utf8')).resolves.toBe(
+        'foreign-quarantine-final-unlink',
+      );
+      await expect(readFile(ownedRecoveryPath)).resolves.not.toHaveLength(0);
+      resetFault();
+      await expect(
+        cleanupOwnedDatabaseKeyFile(quarantineResult.publication),
+      ).rejects.toMatchObject({ code: 'KEY_FILE_UNSAFE' });
+      await expect(readFile(quarantineTarget, 'utf8')).resolves.toBe(
+        'foreign-quarantine-final-unlink',
+      );
+
+      const restorationTarget = join(directory, 'restoration-final-unlink');
+      const restorationResult = await createOwnedDatabaseKeyFile(
+        restorationTarget,
+        key,
+        keyBinding,
+        { protection: { kind: 'passphrase', passphrase } },
+      );
+      if (restorationResult.status !== 'published') {
+        throw new Error('Expected a published restoration test file');
+      }
+      armFault('restoration-final-unlink', restorationTarget);
+      let restorationError: unknown;
+      try {
+        await cleanupOwnedDatabaseKeyFile(restorationResult.publication);
+      } catch (error) {
+        restorationError = error;
+      }
+      const restorationForeignPath = fault.foreignPath;
+      expect(restorationError).toMatchObject({ code: 'KEY_FILE_OPERATION_FAILED' });
+      expect(Object.hasOwn(restorationError as object, 'cause')).toBe(false);
+      await expect(readFile(restorationTarget)).resolves.not.toHaveLength(0);
+      await expect(readFile(restorationForeignPath, 'utf8')).resolves.toBe(
+        'foreign-restoration-final-unlink',
+      );
+      resetFault();
+      await cleanupOwnedDatabaseKeyFile(restorationResult.publication);
+      await expect(
+        cleanupOwnedDatabaseKeyFile(restorationResult.publication),
+      ).rejects.toMatchObject({ code: 'KEY_FILE_OPERATION_FAILED' });
+      await expect(readFile(restorationForeignPath, 'utf8')).resolves.toBe(
+        'foreign-restoration-final-unlink',
+      );
+    } finally {
+      zeroize(key);
+      zeroize(passphrase);
+    }
+  });
+
+  it('rejects every pairwise cross-domain ownership capability substitution', async () => {
+    const key = generatePortableKey();
+    const recoveryKey = generateRecoveryKey();
+    const drk = generateDatabaseRootKey();
+    const passphrase = new TextEncoder().encode('cross-domain-passphrase');
+    try {
+      const keyResult = await createOwnedDatabaseKeyFile(
+        join(directory, 'domain-key'),
+        key,
+        keyBinding,
+        { protection: { kind: 'passphrase', passphrase } },
+      );
+      const recoveryResult = await createOwnedDatabaseRecoveryKitFile(
+        join(directory, 'domain-recovery'),
+        recoveryKey,
+        recoveryBinding,
+        { passphrase },
+      );
+      const anchorResult = await createOwnedDatabaseRevisionAnchor(
+        join(directory, 'domain-anchor'),
+        drk,
+        anchor,
+      );
+      if (
+        keyResult.status !== 'published' ||
+        recoveryResult.status !== 'published' ||
+        anchorResult.status !== 'published'
+      ) {
+        throw new Error('Expected all domain publications');
+      }
+
+      await expect(
+        cleanupOwnedDatabaseRecoveryKitFile(keyResult.publication as never),
+      ).rejects.toMatchObject({ code: 'KEY_FILE_OPERATION_FAILED' });
+      await expect(
+        cleanupOwnedDatabaseRevisionAnchor(keyResult.publication as never),
+      ).rejects.toMatchObject({ code: 'KEY_FILE_OPERATION_FAILED' });
+      await expect(
+        cleanupOwnedDatabaseKeyFile(recoveryResult.publication as never),
+      ).rejects.toMatchObject({ code: 'KEY_FILE_OPERATION_FAILED' });
+      await expect(
+        cleanupOwnedDatabaseRevisionAnchor(recoveryResult.publication as never),
+      ).rejects.toMatchObject({ code: 'KEY_FILE_OPERATION_FAILED' });
+      await expect(
+        cleanupOwnedDatabaseKeyFile(anchorResult.publication as never),
+      ).rejects.toMatchObject({ code: 'KEY_FILE_OPERATION_FAILED' });
+      await expect(
+        cleanupOwnedDatabaseRecoveryKitFile(anchorResult.publication as never),
+      ).rejects.toMatchObject({ code: 'KEY_FILE_OPERATION_FAILED' });
+
+      await cleanupOwnedDatabaseKeyFile(keyResult.publication);
+      await cleanupOwnedDatabaseRecoveryKitFile(recoveryResult.publication);
+      await cleanupOwnedDatabaseRevisionAnchor(anchorResult.publication);
+      await expectNoInternalArtifacts();
+    } finally {
+      zeroize(key);
+      zeroize(recoveryKey);
+      zeroize(drk);
       zeroize(passphrase);
     }
   });
