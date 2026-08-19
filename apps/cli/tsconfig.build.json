@@ -11,6 +11,7 @@
   },
   "include": [
     "src/bin.ts",
+    "src/datastore-profiles.ts",
     "src/index.ts",
     "src/local-secrets.ts",
     "src/local-vault-cli.ts",

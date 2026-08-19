@@ -10,9 +10,14 @@ export {
   MAX_SECURE_STREAM_FILE_BYTES,
   deleteSecureFile,
   readSecureFile,
+  readSecureFileWhileExclusive,
+  replaceSecureFileWhileExclusive,
   validateSecureFileDestination,
   validateSecureFileSource,
+  withExclusiveSecureFile,
+  writeSecureFile,
   writeSecureStreamFile,
+  type ExclusiveSecureFileLock,
   type SecureFileStreamWriteResult,
 } from './filesystem.js';
 export {

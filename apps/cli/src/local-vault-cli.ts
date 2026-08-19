@@ -38,6 +38,7 @@ import {
   CURRENT_SCHEMA_VERSION,
   associatedDataSchema,
   canonicalJson,
+  databaseIdSchema,
   keySlotIdSchema,
   keyVersionSchema,
   localVaultDocumentSchema,
@@ -46,13 +47,16 @@ import {
   supportedCryptographicVersionSchema,
   supportedSchemaVersionSchema,
   timestampSchema,
+  profileIdSchema,
   vaultIdSchema,
   vaultRevisionSchema,
   sha256DigestSchema,
   type AssociatedData,
+  type DatabaseId,
   type LocalRecoveryKeySlot,
   type LocalVaultDocument,
   type LocalVaultPayload,
+  type ProfileId,
   type Sha256Digest,
 } from '@kavrix/schemas';
 import {
@@ -64,6 +68,11 @@ import {
 import { Command } from 'commander';
 
 import {
+  DatastoreProfileError,
+  DatastoreProfileRegistry,
+  type DatastoreProfile,
+} from './datastore-profiles.js';
+import {
   LocalSecretInput,
   LocalSecretInputError,
   type LocalSecretKind,
@@ -73,6 +82,8 @@ import { CLI_VERSION } from './version.js';
 const DEFAULT_KEY_FILE = './kavrix.key';
 const DEFAULT_DATA_FILE = './kavrix.vault';
 const DEFAULT_COLLECTION = 'kavrix_vaults';
+const DEFAULT_DATABASE_PROFILE_COLLECTION = 'kavrix_databases';
+const DEFAULT_VAULT_PROFILE_COLLECTION = 'kavrix_vaults';
 const DEFAULT_VAULT_ID = 'default';
 const REDACTED = '[REDACTED]';
 const MAX_LOCAL_PAYLOAD_BYTES = 4 * 1024 * 1024;
@@ -159,6 +170,7 @@ export function buildLocalCli(): Command {
   });
 
   const db = program.command('db').description('Database operations.');
+  addDatastoreProfileCommands(db);
   const ping = db
     .command('ping')
     .description('Check direct MongoDB connectivity without unlocking a vault.');
@@ -439,9 +451,11 @@ export async function runLocalCli(argv: readonly string[]): Promise<void> {
           ? error.message
           : error instanceof EncryptedVaultStoreError
             ? error.message
-            : error instanceof AggregateError
+            : error instanceof DatastoreProfileError
               ? error.message
-              : 'Kavrix command failed.';
+              : error instanceof AggregateError
+                ? error.message
+                : 'Kavrix command failed.';
     process.stderr.write(colorizeError(message) + '\n');
     process.exitCode = 1;
   }
@@ -463,6 +477,233 @@ class InitializationRollbackError extends AggregateError {
     );
     this.name = 'InitializationRollbackError';
   }
+}
+
+type DatastoreProfileCommandOptions = Readonly<{
+  configDir?: string;
+  datastore?: string;
+  databaseId?: string;
+  dataFile?: string;
+  database?: string;
+  databaseCollection?: string;
+  vaultCollection?: string;
+  keyFile?: string;
+}>;
+
+function addDatastoreProfileCommands(db: Command): void {
+  const profile = db
+    .command('profile')
+    .description('Manage protected non-secret datastore routing profiles.');
+
+  const add = profile
+    .command('add <id>')
+    .description('Add a datastore route without storing connection credentials.');
+  addProfileConfigOption(add);
+  add
+    .requiredOption('--datastore <type>', 'Datastore type: mongodb or file.')
+    .option(
+      '--database-id <id>',
+      'Expected opaque database identifier after initialization.',
+    )
+    .option('--database <name>', 'MongoDB database routing name.')
+    .option('--database-collection <name>', 'MongoDB database document collection.')
+    .option('--vault-collection <name>', 'MongoDB vault document collection.')
+    .option('--data-file <path>', 'Encrypted local database file path.')
+    .requiredOption('--key-file <path>', 'Protected database-owner key file path.');
+  add.action(async (...args: unknown[]) => {
+    await handleProfileAdd(
+      getArgument(args, 'profile ID'),
+      profileCommandOptions(args),
+    );
+  });
+
+  const list = profile
+    .command('list')
+    .description('List registered datastore profiles.');
+  addProfileConfigOption(list);
+  list.action(async (...args: unknown[]) => {
+    await handleProfileList(profileCommandOptions(args));
+  });
+
+  const use = profile
+    .command('use <id>')
+    .description('Select one datastore profile without changing its routing.');
+  addProfileConfigOption(use);
+  use.action(async (...args: unknown[]) => {
+    await handleProfileUse(
+      getArgument(args, 'profile ID'),
+      profileCommandOptions(args),
+    );
+  });
+
+  const status = profile
+    .command('status')
+    .description('Show the selected non-secret datastore profile.');
+  addProfileConfigOption(status);
+  status.action(async (...args: unknown[]) => {
+    await handleProfileStatus(profileCommandOptions(args));
+  });
+
+  const remove = profile
+    .command('remove <id>')
+    .description(
+      'Remove one datastore profile; removing the current profile clears selection.',
+    );
+  addProfileConfigOption(remove);
+  remove.action(async (...args: unknown[]) => {
+    await handleProfileRemove(
+      getArgument(args, 'profile ID'),
+      profileCommandOptions(args),
+    );
+  });
+}
+
+function addProfileConfigOption(command: Command): void {
+  command.option(
+    '--config-dir <path>',
+    'Protected datastore-profile configuration directory.',
+  );
+}
+
+function profileCommandOptions(
+  args: readonly unknown[],
+): DatastoreProfileCommandOptions {
+  return getOptions(args);
+}
+
+async function handleProfileAdd(
+  id: string,
+  options: DatastoreProfileCommandOptions,
+): Promise<void> {
+  const registry = await openDatastoreProfileRegistry(options);
+  const profile = await registry.add(profileFromCommand(id, options));
+  writeJson({ added: true, profile: profileForOutput(profile) });
+}
+
+async function handleProfileList(
+  options: DatastoreProfileCommandOptions,
+): Promise<void> {
+  const registry = await openDatastoreProfileRegistry(options);
+  const profiles = await registry.list();
+  writeJson({ profiles: profiles.map(profileForOutput) });
+}
+
+async function handleProfileUse(
+  id: string,
+  options: DatastoreProfileCommandOptions,
+): Promise<void> {
+  const registry = await openDatastoreProfileRegistry(options);
+  const profile = await registry.use(parseCommandProfileId(id));
+  writeJson({ selected: profileForOutput(profile) });
+}
+
+async function handleProfileStatus(
+  options: DatastoreProfileCommandOptions,
+): Promise<void> {
+  const registry = await openDatastoreProfileRegistry(options);
+  const profile = await registry.current();
+  writeJson({ current: profile === null ? null : profileForOutput(profile) });
+}
+
+async function handleProfileRemove(
+  id: string,
+  options: DatastoreProfileCommandOptions,
+): Promise<void> {
+  const registry = await openDatastoreProfileRegistry(options);
+  const profile = await registry.remove(parseCommandProfileId(id));
+  writeJson({ removed: true, profile: profileForOutput(profile) });
+}
+
+async function openDatastoreProfileRegistry(
+  options: DatastoreProfileCommandOptions,
+): Promise<DatastoreProfileRegistry> {
+  return DatastoreProfileRegistry.open(
+    options.configDir === undefined ? {} : { configDirectory: options.configDir },
+  );
+}
+
+function profileFromCommand(
+  id: string,
+  options: DatastoreProfileCommandOptions,
+): DatastoreProfile {
+  const profileId = parseCommandProfileId(id);
+  const databaseId =
+    options.databaseId === undefined
+      ? undefined
+      : parseCommandDatabaseId(options.databaseId);
+  const keyFile = requiredOption(options.keyFile, '--key-file');
+  if (options.datastore === 'mongodb') {
+    if (options.dataFile !== undefined) {
+      throw new LocalCliError('--data-file requires --datastore file.');
+    }
+    return {
+      id: profileId,
+      datastore: 'mongodb',
+      database: requiredOption(options.database, '--database'),
+      databaseCollection:
+        options.databaseCollection ?? DEFAULT_DATABASE_PROFILE_COLLECTION,
+      vaultCollection: options.vaultCollection ?? DEFAULT_VAULT_PROFILE_COLLECTION,
+      keyFile,
+      ...(databaseId === undefined ? {} : { databaseId }),
+    };
+  }
+  if (options.datastore === 'file') {
+    if (
+      options.database !== undefined ||
+      options.databaseCollection !== undefined ||
+      options.vaultCollection !== undefined
+    ) {
+      throw new LocalCliError('MongoDB routing options require --datastore mongodb.');
+    }
+    return {
+      id: profileId,
+      datastore: 'file',
+      dataFile: requiredOption(options.dataFile, '--data-file'),
+      keyFile,
+      ...(databaseId === undefined ? {} : { databaseId }),
+    };
+  }
+  throw new LocalCliError('--datastore must be mongodb or file.');
+}
+
+function parseCommandProfileId(value: string): ProfileId {
+  try {
+    return profileIdSchema.parse(value);
+  } catch {
+    throw new LocalCliError('Profile ID is invalid.');
+  }
+}
+
+function parseCommandDatabaseId(value: string): DatabaseId {
+  try {
+    return databaseIdSchema.parse(value);
+  } catch {
+    throw new LocalCliError('Database ID is invalid.');
+  }
+}
+
+function profileForOutput(profile: DatastoreProfile): Record<string, string> {
+  return profile.datastore === 'mongodb'
+    ? {
+        id: sanitizeTerminalText(profile.id),
+        datastore: profile.datastore,
+        ...(profile.databaseId === undefined
+          ? {}
+          : { databaseId: sanitizeTerminalText(profile.databaseId) }),
+        database: sanitizeTerminalText(profile.database),
+        databaseCollection: sanitizeTerminalText(profile.databaseCollection),
+        vaultCollection: sanitizeTerminalText(profile.vaultCollection),
+        keyFile: sanitizeTerminalText(profile.keyFile),
+      }
+    : {
+        id: sanitizeTerminalText(profile.id),
+        datastore: profile.datastore,
+        ...(profile.databaseId === undefined
+          ? {}
+          : { databaseId: sanitizeTerminalText(profile.databaseId) }),
+        dataFile: sanitizeTerminalText(profile.dataFile),
+        keyFile: sanitizeTerminalText(profile.keyFile),
+      };
 }
 
 function addDatabaseOnlyOptions(command: Command): void {

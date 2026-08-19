@@ -7,6 +7,7 @@ export default defineConfig({
     fileParallelism: process.platform !== 'win32',
     hookTimeout: testBoundaryTimeoutMs,
     include: [
+      'apps/cli/test/datastore-profiles.test.ts',
       'apps/cli/test/local-vault-cli-view.test.ts',
       'apps/cli/test/local-secrets.test.ts',
       'apps/cli/test/package.test.ts',

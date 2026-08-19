@@ -30,6 +30,7 @@ describe('local vault command surface', () => {
     const commandNames = cli.commands.map((command) => command.name());
     expect(commandNames).toEqual(
       expect.arrayContaining([
+        'db',
         'view',
         'search',
         'stats',
@@ -43,6 +44,31 @@ describe('local vault command surface', () => {
         'rename',
         'doctor',
       ]),
+    );
+    const db = cli.commands.find((command) => command.name() === 'db');
+    const profile = db?.commands.find((command) => command.name() === 'profile');
+    expect(profile?.commands.map((command) => command.name())).toEqual([
+      'add',
+      'list',
+      'use',
+      'status',
+      'remove',
+    ]);
+    const profileAdd = profile?.commands.find((command) => command.name() === 'add');
+    expect(profileAdd?.options.map((option) => option.long)).toEqual(
+      expect.arrayContaining([
+        '--config-dir',
+        '--datastore',
+        '--database-id',
+        '--database',
+        '--database-collection',
+        '--vault-collection',
+        '--data-file',
+        '--key-file',
+      ]),
+    );
+    expect(profileAdd?.options.map((option) => option.long)).not.toContain(
+      '--database-url-stdin',
     );
     const doctor = cli.commands.find((command) => command.name() === 'doctor');
     expect(doctor?.commands.map((command) => command.name())).toContain('health');
