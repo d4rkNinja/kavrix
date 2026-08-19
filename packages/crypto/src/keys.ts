@@ -70,6 +70,7 @@ export type SecretKey<Kind extends string> = Uint8Array & {
 export type PortableKey = SecretKey<'portable'>;
 export type RecoveryKey = SecretKey<'recovery'>;
 export type DeviceKey = SecretKey<'device'>;
+export type DatabaseRootKey = SecretKey<'database-root'>;
 export type VaultRootKey = SecretKey<'vault-root'>;
 export type GroupKey = SecretKey<'group'>;
 export type ItemKey = SecretKey<'item'>;
@@ -86,6 +87,10 @@ export function generateRecoveryKey(): RecoveryKey {
 
 export function generateDeviceKey(): DeviceKey {
   return randomSecret<'device'>();
+}
+
+export function generateDatabaseRootKey(): DatabaseRootKey {
+  return randomSecret<'database-root'>();
 }
 
 export function generateVaultRootKey(): VaultRootKey {

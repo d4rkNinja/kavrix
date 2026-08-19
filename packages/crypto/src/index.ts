@@ -3,6 +3,7 @@ export {
   canonicalAttachmentChunkData,
   encryptAead,
 } from './aead.js';
+export * from './database-crypto.js';
 export * from './bytes.js';
 export * from './errors.js';
 export * from './hierarchy.js';
