@@ -34,6 +34,7 @@ import {
   readDatabaseRecoveryKitFile,
   readDatabaseRevisionAnchor,
   transitionDatabaseRevisionAnchor,
+  transitionOwnedDatabaseRevisionAnchor,
   validateSecureFileDestination,
   type DatabaseKeyFilePublication,
   type DatabaseRecoveryBinding,
@@ -557,30 +558,65 @@ export class DatabaseSession {
   }
 
   public async createVault(labelInput: string): Promise<DatabaseVaultCatalogEntry> {
-    return this.#createVaultWithPayload(
-      labelInput,
-      localVaultPayloadSchema.parse({ records: {} }),
-      false,
-    );
+    return (
+      await this.#createVaultWithPayload(
+        labelInput,
+        localVaultPayloadSchema.parse({ records: {} }),
+        false,
+      )
+    ).entry;
   }
 
   /** Prepares and verifies the complete payload before one atomic publication. */
   public async createMigrationVault(
     labelInput: string,
     stage: (empty: LocalVaultPayload) => LocalVaultPayload | Promise<LocalVaultPayload>,
+    initializationOwnership?: MigrationInitializationOwnership,
   ): Promise<DatabaseVaultCatalogEntry> {
     this.#assertOpen();
+    const ownershipState =
+      initializationOwnership === undefined
+        ? undefined
+        : requireMigrationInitializationOwnership(initializationOwnership);
+    if (
+      ownershipState !== undefined &&
+      ownershipState.databaseId !== this.#databaseId
+    ) {
+      throw new DatabaseSessionError('invalid');
+    }
     const payload = localVaultPayloadSchema.parse(
       await stage(structuredClone(localVaultPayloadSchema.parse({ records: {} }))),
     );
-    return this.#createVaultWithPayload(labelInput, payload, true);
+    const created = await this.#createVaultWithPayload(
+      labelInput,
+      payload,
+      true,
+      ownershipState?.anchorPublication,
+    );
+    if (
+      initializationOwnership !== undefined &&
+      ownershipState !== undefined &&
+      created.anchorPublication !== undefined
+    ) {
+      migrationInitializationOwnerships.set(initializationOwnership, {
+        ...ownershipState,
+        anchorPublication: created.anchorPublication,
+      });
+    }
+    return created.entry;
   }
 
   async #createVaultWithPayload(
     labelInput: string,
     payload: LocalVaultPayload,
     verifyBeforePublication: boolean,
-  ): Promise<DatabaseVaultCatalogEntry> {
+    ownedAnchorPublication?: DatabaseRevisionAnchorPublication,
+  ): Promise<
+    Readonly<{
+      entry: DatabaseVaultCatalogEntry;
+      anchorPublication?: DatabaseRevisionAnchorPublication;
+    }>
+  > {
     this.#assertOpen();
     const label = parseLabel(labelInput);
     if (this.#catalog.vaults.some((entry) => entry.label === label)) {
@@ -615,7 +651,7 @@ export class DatabaseSession {
       }
       const before = await observedAnchor(this.#store, this.#database);
       const after = anchorWithCreatedVault(before, nextDatabase, vault);
-      await this.#anchoredMutation(
+      const anchorPublication = await this.#anchoredMutation(
         before,
         after,
         async () => {
@@ -626,10 +662,14 @@ export class DatabaseSession {
           });
         },
         verifyBeforePublication,
+        ownedAnchorPublication,
       );
       this.#database = nextDatabase;
       this.#catalog = nextCatalog;
-      return { id, label, createdAt };
+      return {
+        entry: { id, label, createdAt },
+        ...(anchorPublication === undefined ? {} : { anchorPublication }),
+      };
     } catch (error) {
       throw mapError(error);
     } finally {
@@ -1161,21 +1201,38 @@ export class DatabaseSession {
     after: DatabaseRevisionAnchor,
     mutate: () => Promise<void>,
     retainOnUncertainMutationError = false,
-  ): Promise<void> {
+    ownedAnchorPublication?: DatabaseRevisionAnchorPublication,
+  ): Promise<DatabaseRevisionAnchorPublication | undefined> {
     const publication = { mutationEntered: false, storeAccepted: false };
     try {
+      const transition = async (): Promise<
+        Readonly<{ nextAnchor: DatabaseRevisionAnchor; result: undefined }>
+      > => {
+        publication.mutationEntered = true;
+        await mutate();
+        publication.storeAccepted = true;
+        return { nextAnchor: after, result: undefined };
+      };
+      if (ownedAnchorPublication !== undefined) {
+        return (
+          await transitionOwnedDatabaseRevisionAnchor(
+            this.#anchorFile,
+            this.#rootKey,
+            before,
+            ownedAnchorPublication,
+            transition,
+            { requireExactVaultSet: true },
+          )
+        ).publication;
+      }
       await transitionDatabaseRevisionAnchor(
         this.#anchorFile,
         this.#rootKey,
         before,
-        async () => {
-          publication.mutationEntered = true;
-          await mutate();
-          publication.storeAccepted = true;
-          return { nextAnchor: after, result: undefined };
-        },
+        transition,
         { requireExactVaultSet: true },
       );
+      return undefined;
     } catch (error) {
       const provenRejected =
         error instanceof EncryptedDatabaseStoreError &&

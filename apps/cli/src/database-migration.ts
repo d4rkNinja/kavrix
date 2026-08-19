@@ -115,6 +115,7 @@ export async function migrateLegacyVaultToDatabase(
   let destinationDatabaseId: DatabaseId | undefined;
   let migratedVaultId: VaultId | undefined;
   let vaultPublished = false;
+  let profilePublicationProvenAbsent = false;
   let failure: unknown;
   try {
     sourcePassphrase = await readSecretOnce(options.source.readPassphrase);
@@ -160,6 +161,7 @@ export async function migrateLegacyVaultToDatabase(
     const created = await activeSession.createMigrationVault(
       options.destination.vaultLabel,
       () => structuredClone(expectedPayload),
+      initializationOwnership,
     );
     migratedVaultId = created.id;
     vaultPublished = true;
@@ -196,6 +198,7 @@ export async function migrateLegacyVaultToDatabase(
           throw new DatabaseMigrationError('ambiguous-commit');
         }
         if (validated.status === 'not-published') {
+          profilePublicationProvenAbsent = true;
           throw new DatabaseMigrationError('invalid');
         }
       }
@@ -216,8 +219,28 @@ export async function migrateLegacyVaultToDatabase(
     failure = error;
   }
 
-  let terminalError: DatabaseMigrationError;
-  if (vaultPublished || isAmbiguous(failure)) {
+  let terminalError: Error;
+  if (profilePublicationProvenAbsent && initializationOwnership !== undefined) {
+    const cleanupErrors: DatabaseMigrationError[] = [];
+    try {
+      if (activeSession !== undefined) await activeSession.close();
+      else if (destinationStore !== undefined) await destinationStore.close();
+    } catch {
+      cleanupErrors.push(new DatabaseMigrationError('ambiguous-commit'));
+    }
+    activeSession = undefined;
+    destinationStore = undefined;
+    try {
+      await DatabaseSession.rollbackMigrationInitialization(initializationOwnership);
+      initializationOwnership = undefined;
+    } catch {
+      cleanupErrors.push(new DatabaseMigrationError('ambiguous-commit'));
+    }
+    terminalError =
+      cleanupErrors.length === 0
+        ? mapMigrationError(failure)
+        : redactedMigrationAggregate(failure, cleanupErrors);
+  } else if (vaultPublished || isAmbiguous(failure)) {
     await closeQuietly(activeSession, destinationStore);
     terminalError = new DatabaseMigrationError('ambiguous-commit');
   } else if (initializationOwnership !== undefined) {
@@ -372,6 +395,16 @@ function mapMigrationError(error: unknown): DatabaseMigrationError {
     }
   }
   return new DatabaseMigrationError('authentication');
+}
+
+function redactedMigrationAggregate(
+  primary: unknown,
+  cleanupErrors: readonly DatabaseMigrationError[],
+): AggregateError {
+  return new AggregateError(
+    [mapMigrationError(primary), ...cleanupErrors],
+    'Migration cleanup failed.',
+  );
 }
 
 async function closeQuietly(

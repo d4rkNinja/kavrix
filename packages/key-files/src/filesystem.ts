@@ -1060,6 +1060,41 @@ export async function replaceSecureFileWhileExclusive(
 }
 
 /**
+ * Replaces the exact file named by an opaque ownership capability and returns
+ * ownership of the replacement inode. The prior capability is consumed only
+ * after the replacement is fully verified.
+ */
+export async function replaceOwnedSecureFileWhileExclusive(
+  lock: ExclusiveSecureFileLock,
+  contents: Uint8Array,
+  publication: OwnedSecureFilePublication,
+  expectedKind: OwnedSecureFileKind,
+): Promise<OwnedSecureFilePublication> {
+  const state = ownedSecureFileStates.get(publication);
+  if (
+    state?.kind !== expectedKind ||
+    state.directoryPath !== lock.directoryPath ||
+    state.targetPath !== lock.targetPath ||
+    state.maximumBytes !== lock.maximumBytes
+  ) {
+    throw new PortableKeyFileError('KEY_FILE_OPERATION_FAILED');
+  }
+  const before = await lstat(state.targetPath, { bigint: true });
+  if (!sameIdentity(before, state.identity)) {
+    throw new PortableKeyFileError('KEY_FILE_UNSAFE');
+  }
+  await replaceSecureFileWhileExclusive(lock, contents);
+  const after = await lstat(state.targetPath, { bigint: true });
+  await validateRegularFile(state.targetPath, after, state.maximumBytes);
+  const next = newOwnedSecureFilePublication({
+    ...state,
+    identity: identityOf(after),
+  });
+  ownedSecureFileStates.delete(publication);
+  return next;
+}
+
+/**
  * Streams bounded contents to a hidden, restrictive sibling and publishes it
  * with create-only semantics. The destination is never replaced.
  */

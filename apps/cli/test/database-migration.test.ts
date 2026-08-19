@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, rename, rm } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readFile, rename, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -11,10 +11,12 @@ import {
 } from '@kavrix/crypto';
 import {
   databaseRevisionAnchorPath,
+  deleteSecureFile,
   readPortableKeyFile,
   writeRevisionAnchor,
 } from '@kavrix/key-files';
 import {
+  FileEncryptedDatabaseStore,
   FileLocalVaultStore,
   MongoEncryptedDatabaseStore,
   EncryptedDatabaseStoreError,
@@ -37,7 +39,10 @@ import {
 } from '@kavrix/schemas';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { migrateLegacyVaultToDatabase } from '../src/database-migration.js';
+import {
+  DatabaseMigrationError,
+  migrateLegacyVaultToDatabase,
+} from '../src/database-migration.js';
 import { DatabaseSession } from '../src/database-session.js';
 import { DatastoreProfileRegistry } from '../src/datastore-profiles.js';
 import { buildLocalCli } from '../src/local-vault-cli.js';
@@ -672,6 +677,141 @@ describe('legacy version 2 database migration', () => {
     ).toBeGreaterThan(0);
   });
 
+  it('rolls back the exact initialized file destination after authentic profile non-publication', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'kavrix-migration-profile-'));
+    const sourceDataFile = join(directory, 'source.vault');
+    const sourceKeyFile = join(directory, 'source.key');
+    const destinationDataFile = join(directory, 'destination.database');
+    const destinationKeyFile = join(directory, 'destination.key');
+    const source = await createLegacySource(sourceDataFile, sourceKeyFile, {
+      exact: {
+        value: 'profile-non-publication-source-canary',
+        updatedAt: '2026-08-18T02:03:04.000Z',
+      },
+    });
+    const sourceBytes = await Promise.all([
+      readFile(sourceDataFile),
+      readFile(sourceKeyFile),
+      readFile(sourceKeyFile + '.anchor'),
+    ]);
+    const registry = await DatastoreProfileRegistry.open({
+      configDirectory: directory,
+    });
+    await registry.add({
+      id: 'destination' as never,
+      datastore: 'file',
+      dataFile: destinationDataFile,
+      keyFile: destinationKeyFile,
+    });
+    const createVault = vi.spyOn(FileEncryptedDatabaseStore.prototype, 'createVault');
+
+    await expect(
+      migrateLegacyVaultToDatabase({
+        source: {
+          document: source,
+          keyFile: sourceKeyFile,
+          readPassphrase: async () => Buffer.from(SOURCE_PASSPHRASE, 'utf8'),
+        },
+        destination: {
+          openStore: async () => FileEncryptedDatabaseStore.open(destinationDataFile),
+          keyFile: destinationKeyFile,
+          vaultLabel: 'migrated',
+          readPassphrase: async () => Uint8Array.from(DESTINATION_PASSPHRASE),
+          initialize: {
+            databaseLabel: 'new database',
+            rollbackDatabase: async () => deleteSecureFile(destinationDataFile),
+            publishBinding: async () =>
+              registry.bindDatabaseIdForInitialization(
+                'destination' as never,
+                'invalid database id' as never,
+              ),
+          },
+        },
+      }),
+    ).rejects.toMatchObject({ code: 'invalid' });
+
+    expect(createVault).toHaveBeenCalledTimes(1);
+    await expect(access(destinationDataFile)).rejects.toMatchObject({ code: 'ENOENT' });
+    for (const path of [destinationKeyFile, destinationKeyFile + '.database-anchor']) {
+      expect(await readFile(path)).toHaveLength(0);
+      if (process.platform !== 'win32') {
+        expect((await stat(path)).mode & 0o077).toBe(0);
+      }
+    }
+    expect((await registry.get('destination' as never)).databaseId).toBeUndefined();
+    expect(
+      await Promise.all([
+        readFile(sourceDataFile),
+        readFile(sourceKeyFile),
+        readFile(sourceKeyFile + '.anchor'),
+      ]),
+    ).toEqual(sourceBytes);
+  });
+
+  it('aggregates only redacted errors when authentic non-publication cleanup fails', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'kavrix-migration-profile-'));
+    const sourceDataFile = join(directory, 'source.vault');
+    const sourceKeyFile = join(directory, 'source.key');
+    const destinationDataFile = join(directory, 'destination.database');
+    const destinationKeyFile = join(directory, 'destination.key');
+    const source = await createLegacySource(sourceDataFile, sourceKeyFile, {});
+    const registry = await DatastoreProfileRegistry.open({
+      configDirectory: directory,
+    });
+    await registry.add({
+      id: 'destination' as never,
+      datastore: 'file',
+      dataFile: destinationDataFile,
+      keyFile: destinationKeyFile,
+    });
+    let thrown: unknown;
+    try {
+      await migrateLegacyVaultToDatabase({
+        source: {
+          document: source,
+          keyFile: sourceKeyFile,
+          readPassphrase: async () => Buffer.from(SOURCE_PASSPHRASE, 'utf8'),
+        },
+        destination: {
+          openStore: async () => FileEncryptedDatabaseStore.open(destinationDataFile),
+          keyFile: destinationKeyFile,
+          vaultLabel: 'migrated',
+          readPassphrase: async () => Uint8Array.from(DESTINATION_PASSPHRASE),
+          initialize: {
+            databaseLabel: 'new database',
+            rollbackDatabase: async () => {
+              throw new Error('profile-cleanup-secret-canary');
+            },
+            publishBinding: async () =>
+              registry.bindDatabaseIdForInitialization(
+                'destination' as never,
+                'invalid database id' as never,
+              ),
+          },
+        },
+      });
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(AggregateError);
+    expect(serializeThrown(thrown)).not.toContain('profile-cleanup-secret-canary');
+    const aggregate = thrown as AggregateError;
+    expect(aggregate.errors).toEqual([
+      expect.objectContaining({ code: 'invalid' }),
+      expect.objectContaining({ code: 'ambiguous-commit' }),
+    ]);
+    expect(aggregate.errors).toSatisfy((errors: unknown[]) =>
+      errors.every((error) => error instanceof DatabaseMigrationError),
+    );
+    expect((await registry.get('destination' as never)).databaseId).toBeUndefined();
+    await expect(access(destinationDataFile)).resolves.toBeUndefined();
+    expect((await readFile(destinationKeyFile)).byteLength).toBeGreaterThan(0);
+    expect(
+      (await readFile(destinationKeyFile + '.database-anchor')).byteLength,
+    ).toBeGreaterThan(0);
+  });
+
   it('rolls back an explicitly initialized destination after a proven create conflict', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'kavrix-migration-init-'));
     const sourceDataFile = join(directory, 'source.vault');
@@ -951,4 +1091,15 @@ class MemoryDatabaseBackend {
       async close() {},
     };
   }
+}
+
+function serializeThrown(value: unknown, seen = new Set<unknown>()): string {
+  if (value === null || typeof value !== 'object') return String(value);
+  if (seen.has(value)) return '[cycle]';
+  seen.add(value);
+  const entries = Reflect.ownKeys(value).map((key) => {
+    const label = typeof key === 'symbol' ? (key.description ?? 'symbol') : key;
+    return `${label}:${serializeThrown(Reflect.get(value, key), seen)}`;
+  });
+  return entries.join('|');
 }

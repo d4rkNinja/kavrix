@@ -84,6 +84,7 @@ export {
   databaseVaultRevisionAnchorSchema,
   readDatabaseRevisionAnchor,
   transitionDatabaseRevisionAnchor,
+  transitionOwnedDatabaseRevisionAnchor,
   verifyDatabaseRevisionAnchor,
   writeDatabaseRevisionAnchor,
   type DatabaseRevisionAnchor,
@@ -92,4 +93,5 @@ export {
   type DatabaseRevisionAnchorVerificationOptions,
   type DatabaseRevisionAnchorTransitionResult,
   type DatabaseVaultRevisionAnchor,
+  type OwnedDatabaseRevisionAnchorTransitionResult,
 } from './database-revision-anchor.js';

@@ -29,6 +29,7 @@ import {
   createOwnedSecureFile,
   readSecureFile,
   readSecureFileWhileExclusive,
+  replaceOwnedSecureFileWhileExclusive,
   replaceSecureFileWhileExclusive,
   withExclusiveSecureFile,
   writeSecureFile,
@@ -100,6 +101,11 @@ export type DatabaseRevisionAnchorVerificationOptions = Readonly<{
 export type DatabaseRevisionAnchorTransitionResult<Result> = Readonly<{
   nextAnchor: DatabaseRevisionAnchor;
   result: Result;
+}>;
+
+export type OwnedDatabaseRevisionAnchorTransitionResult<Result> = Readonly<{
+  result: Result;
+  publication: DatabaseRevisionAnchorPublication;
 }>;
 
 declare const databaseRevisionAnchorPublicationBrand: unique symbol;
@@ -224,6 +230,55 @@ export async function transitionDatabaseRevisionAnchor<Result>(
   ) => Promise<DatabaseRevisionAnchorTransitionResult<Result>>,
   options: DatabaseRevisionAnchorVerificationOptions = {},
 ): Promise<Result> {
+  return (
+    await transitionDatabaseRevisionAnchorInternal(
+      path,
+      databaseRootKey,
+      observed,
+      callback,
+      options,
+    )
+  ).result;
+}
+
+/** Advances a monotonic anchor while transferring exact cleanup ownership. */
+export async function transitionOwnedDatabaseRevisionAnchor<Result>(
+  path: string,
+  databaseRootKey: Uint8Array,
+  observed: DatabaseRevisionAnchor,
+  publication: DatabaseRevisionAnchorPublication,
+  callback: (
+    trusted: DatabaseRevisionAnchor,
+  ) => Promise<DatabaseRevisionAnchorTransitionResult<Result>>,
+  options: DatabaseRevisionAnchorVerificationOptions = {},
+): Promise<OwnedDatabaseRevisionAnchorTransitionResult<Result>> {
+  const transitioned = await transitionDatabaseRevisionAnchorInternal(
+    path,
+    databaseRootKey,
+    observed,
+    callback,
+    options,
+    publication,
+  );
+  if (transitioned.publication === undefined) throw invalid();
+  return { result: transitioned.result, publication: transitioned.publication };
+}
+
+async function transitionDatabaseRevisionAnchorInternal<Result>(
+  path: string,
+  databaseRootKey: Uint8Array,
+  observed: DatabaseRevisionAnchor,
+  callback: (
+    trusted: DatabaseRevisionAnchor,
+  ) => Promise<DatabaseRevisionAnchorTransitionResult<Result>>,
+  options: DatabaseRevisionAnchorVerificationOptions,
+  publication?: DatabaseRevisionAnchorPublication,
+): Promise<
+  Readonly<{
+    result: Result;
+    publication?: DatabaseRevisionAnchorPublication;
+  }>
+> {
   requireByteLength(databaseRootKey, DRK_BYTES, 'database root key');
   return withExclusiveSecureFile(path, MAX_FILE_BYTES, async (lock) => {
     let file: Uint8Array | undefined;
@@ -241,8 +296,22 @@ export async function transitionDatabaseRevisionAnchor<Result>(
       verifyDatabaseRevisionAnchor(trusted, next);
       verifyDatabaseRevisionAnchor(observed, next);
       serialized = serializeAnchor(databaseRootKey, next);
-      await replaceSecureFileWhileExclusive(lock, serialized);
-      return transition.result;
+      const nextPublication =
+        publication === undefined
+          ? undefined
+          : ((await replaceOwnedSecureFileWhileExclusive(
+              lock,
+              serialized,
+              publication,
+              'database-revision-anchor',
+            )) as DatabaseRevisionAnchorPublication);
+      if (publication === undefined) {
+        await replaceSecureFileWhileExclusive(lock, serialized);
+      }
+      return {
+        result: transition.result,
+        ...(nextPublication === undefined ? {} : { publication: nextPublication }),
+      };
     } finally {
       zeroize(serialized);
       zeroize(file);
