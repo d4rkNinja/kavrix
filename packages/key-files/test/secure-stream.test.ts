@@ -1,4 +1,13 @@
-import { link, mkdir, mkdtemp, readFile, readdir, rm, symlink } from 'node:fs/promises';
+import {
+  link,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  realpath,
+  rm,
+  symlink,
+} from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -19,6 +28,7 @@ import {
   readSecureFile,
   validateSecureFileDestination,
   validateSecureFileSource,
+  writeSecureFile,
   writeSecureStreamFile,
 } from '../src/filesystem.js';
 
@@ -130,6 +140,34 @@ describe('protected streaming file publication', () => {
       'hard-link.cvkx',
       'target.cvkx',
     ]);
+  });
+
+  it('sets Windows ACLs on temporary and lock files and verifies the directory and final file', async () => {
+    const platform = Object.getOwnPropertyDescriptor(process, 'platform');
+    if (platform === undefined || !platform.configurable) return;
+    Object.defineProperty(process, 'platform', { value: 'win32' });
+    try {
+      const path = join(directory, 'windows-protected.cvkx');
+      await writeSecureFile(path, new Uint8Array([1]), 'create');
+      await writeSecureFile(path, new Uint8Array([2]), 'replace');
+      const canonicalDirectory = await realpath(directory);
+      const canonicalPath = join(canonicalDirectory, 'windows-protected.cvkx');
+
+      expect(mockedAcl.verify).toHaveBeenCalledWith(canonicalDirectory);
+      expect(mockedAcl.verify).toHaveBeenCalledWith(canonicalPath);
+      expect(
+        mockedAcl.set.mock.calls.some(([candidate]) =>
+          String(candidate).endsWith('.tmp'),
+        ),
+      ).toBe(true);
+      expect(
+        mockedAcl.set.mock.calls.some(([candidate]) =>
+          String(candidate).includes('.lock'),
+        ),
+      ).toBe(true);
+    } finally {
+      Object.defineProperty(process, 'platform', platform);
+    }
   });
 });
 

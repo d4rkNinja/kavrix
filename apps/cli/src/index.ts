@@ -4,6 +4,7 @@ export {
   DatastoreProfileRegistry,
   resolveDatastoreProfileRouting,
   resolveProfilePath,
+  verifyDatastoreProfileDatabaseId,
   type DatastoreProfile,
   type DatastoreProfileRoutingOverrides,
   type DatastoreProfileRegistryOptions,

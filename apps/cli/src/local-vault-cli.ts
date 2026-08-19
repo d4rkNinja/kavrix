@@ -70,7 +70,9 @@ import { Command } from 'commander';
 import {
   DatastoreProfileError,
   DatastoreProfileRegistry,
+  resolveDatastoreProfileRouting,
   type DatastoreProfile,
+  type DatastoreProfileRoutingOverrides,
 } from './datastore-profiles.js';
 import {
   LocalSecretInput,
@@ -103,6 +105,8 @@ export type LocalCliOptions = Readonly<{
   dataFile?: string;
   database?: string;
   databaseUrlStdin?: boolean;
+  profile?: string;
+  profileConfigDir?: string;
   passphraseStdin?: boolean;
   newPassphraseStdin?: boolean;
   recoveryPassphraseStdin?: boolean;
@@ -175,8 +179,9 @@ export function buildLocalCli(): Command {
     .command('ping')
     .description('Check direct MongoDB connectivity without unlocking a vault.');
   addDatabaseOnlyOptions(ping);
+  addDatastoreProfileSelectionOptions(ping);
   ping.action(async (...args: unknown[]) => {
-    await handlePing(getOptions(args));
+    await handlePing(getOptions(args), profileRoutingOverrides(args));
   });
 
   const put = program
@@ -704,6 +709,100 @@ function profileForOutput(profile: DatastoreProfile): Record<string, string> {
         dataFile: sanitizeTerminalText(profile.dataFile),
         keyFile: sanitizeTerminalText(profile.keyFile),
       };
+}
+
+function addDatastoreProfileSelectionOptions(command: Command): void {
+  command
+    .option('--profile <id>', 'Use one non-secret datastore profile for this command.')
+    .option(
+      '--profile-config-dir <path>',
+      'Protected datastore-profile configuration directory.',
+    );
+}
+
+function profileRoutingOverrides(
+  args: readonly unknown[],
+): DatastoreProfileRoutingOverrides & Readonly<{ collection?: string }> {
+  const command = args.at(-1);
+  if (!(command instanceof Command)) return {};
+  const options = getOptions(args);
+  const datastore =
+    command.getOptionValueSource('datastore') === 'default'
+      ? undefined
+      : parseExplicitDatastore(options.datastore);
+  return {
+    ...(datastore === undefined ? {} : { datastore }),
+    ...(command.getOptionValueSource('dataFile') === 'default' ||
+    options.dataFile === undefined
+      ? {}
+      : { dataFile: options.dataFile }),
+    ...(command.getOptionValueSource('database') === 'default' ||
+    options.database === undefined
+      ? {}
+      : { database: options.database }),
+    ...(command.getOptionValueSource('collection') === 'default'
+      ? {}
+      : { collection: options.collection }),
+  };
+}
+
+function parseExplicitDatastore(value: string | undefined): 'mongodb' | 'file' {
+  if (value === 'mongodb' || value === 'file') return value;
+  throw new LocalCliError('--datastore must be mongodb or file.');
+}
+
+async function resolveProfileForPing(
+  options: LocalCliOptions,
+  overrides: DatastoreProfileRoutingOverrides & Readonly<{ collection?: string }>,
+): Promise<Readonly<{ options: LocalCliOptions; profile: DatastoreProfile | null }>> {
+  const registryOptions =
+    options.profileConfigDir === undefined
+      ? {}
+      : { configDirectory: options.profileConfigDir };
+  const registry =
+    options.profile === undefined
+      ? await DatastoreProfileRegistry.openIfPresent(registryOptions)
+      : await DatastoreProfileRegistry.open(registryOptions);
+  if (registry === null) return { options, profile: null };
+  let profile: DatastoreProfile | null;
+  if (options.profile === undefined) {
+    profile = await registry.current();
+  } else {
+    profile = await registry.get(parseCommandProfileId(options.profile));
+  }
+  if (profile === null) return { options, profile: null };
+  if (profile.databaseId !== undefined) {
+    throw new LocalCliError(
+      'A database-bound datastore profile requires database container commands.',
+    );
+  }
+  const routing = resolveDatastoreProfileRouting(profile, {
+    ...(overrides.datastore === undefined ? {} : { datastore: overrides.datastore }),
+    ...(overrides.dataFile === undefined ? {} : { dataFile: overrides.dataFile }),
+    ...(overrides.database === undefined ? {} : { database: overrides.database }),
+    ...(overrides.collection === undefined
+      ? {}
+      : { vaultCollection: overrides.collection }),
+  });
+  if (routing.datastore !== 'mongodb') {
+    throw new LocalCliError(
+      'File datastore profiles require database container commands.',
+    );
+  }
+  if (overrides.dataFile !== undefined) {
+    throw new LocalCliError('--data-file requires --datastore file.');
+  }
+  const { dataFile: _dataFile, ...mongoOptions } = options;
+  void _dataFile;
+  return {
+    options: {
+      ...mongoOptions,
+      datastore: 'mongodb',
+      database: routing.database,
+      collection: routing.vaultCollection,
+    },
+    profile,
+  };
 }
 
 function addDatabaseOnlyOptions(command: Command): void {
@@ -1267,17 +1366,24 @@ async function readVisibleConfirmation(prompt: string): Promise<string> {
   }
 }
 
-async function handlePing(options: LocalCliOptions): Promise<void> {
-  if (datastoreFrom(options) !== 'mongodb') {
+async function handlePing(
+  options: LocalCliOptions,
+  overrides: DatastoreProfileRoutingOverrides & Readonly<{ collection?: string }> = {},
+): Promise<void> {
+  const resolved = await resolveProfileForPing(options, overrides);
+  if (datastoreFrom(resolved.options) !== 'mongodb') {
     throw new LocalCliError('db ping supports only the MongoDB datastore.');
   }
-  const values = await readSecrets(['database-url'], options);
+  const values = await readSecrets(['database-url'], resolved.options);
   const databaseUrl = requiredSecret(values, 0);
-  await withStore(databaseUrl, options, async (store, target) => {
+  await withStore(databaseUrl, resolved.options, async (store, target) => {
     await store.ping();
     writeJson({
       connected: true,
-      ...storeLocation(options, target),
+      ...(resolved.profile === null
+        ? {}
+        : { profile: sanitizeTerminalText(resolved.profile.id) }),
+      ...storeLocation(resolved.options, target),
     });
   });
 }

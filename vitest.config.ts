@@ -15,6 +15,8 @@ export default defineConfig({
       'packages/schemas/test/**/*.test.ts',
       'packages/crypto/test/**/*.test.ts',
       'packages/key-files/test/secure-stream.test.ts',
+      'packages/key-files/test/canonical-json-document.test.ts',
+      'packages/key-files/test/canonical-json-document-failure.test.ts',
       'packages/key-files/test/recovery-kit-files.test.ts',
       'packages/key-files/test/database-key-files.test.ts',
       'packages/key-files/test/database-recovery-kit-files.test.ts',

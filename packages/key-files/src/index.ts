@@ -10,16 +10,20 @@ export {
   MAX_SECURE_STREAM_FILE_BYTES,
   deleteSecureFile,
   readSecureFile,
-  readSecureFileWhileExclusive,
-  replaceSecureFileWhileExclusive,
   validateSecureFileDestination,
   validateSecureFileSource,
-  withExclusiveSecureFile,
-  writeSecureFile,
   writeSecureStreamFile,
-  type ExclusiveSecureFileLock,
   type SecureFileStreamWriteResult,
 } from './filesystem.js';
+export {
+  readProtectedJsonDocument,
+  transitionProtectedJsonDocument,
+  writeProtectedJsonDocument,
+  ProtectedJsonDocumentError,
+  type CanonicalJsonDocumentSchema,
+  type ProtectedJsonDocumentOptions,
+  type ProtectedJsonDocumentTransition,
+} from './canonical-json-document.js';
 export {
   readPortableKeyFile,
   validatePortableKeyFile,

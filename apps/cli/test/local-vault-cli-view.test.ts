@@ -70,6 +70,10 @@ describe('local vault command surface', () => {
     expect(profileAdd?.options.map((option) => option.long)).not.toContain(
       '--database-url-stdin',
     );
+    const ping = db?.commands.find((command) => command.name() === 'ping');
+    expect(ping?.options.map((option) => option.long)).toEqual(
+      expect.arrayContaining(['--profile', '--profile-config-dir']),
+    );
     const doctor = cli.commands.find((command) => command.name() === 'doctor');
     expect(doctor?.commands.map((command) => command.name())).toContain('health');
     const health = doctor?.commands.find((command) => command.name() === 'health');

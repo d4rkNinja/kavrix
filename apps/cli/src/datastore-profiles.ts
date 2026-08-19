@@ -3,17 +3,16 @@ import { homedir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 
 import {
+  ProtectedJsonDocumentError,
+  readProtectedJsonDocument,
+  transitionProtectedJsonDocument,
+  writeProtectedJsonDocument,
+  type CanonicalJsonDocumentSchema,
   PortableKeyFileError,
-  readSecureFile,
-  readSecureFileWhileExclusive,
-  replaceSecureFileWhileExclusive,
   setWindowsUserOnlyAcl,
   verifyWindowsUserOnlyAcl,
-  withExclusiveSecureFile,
-  writeSecureFile,
 } from '@kavrix/key-files';
 import {
-  canonicalJson,
   databaseIdSchema,
   profileIdSchema,
   type DatabaseId,
@@ -64,6 +63,14 @@ type DatastoreProfileRegistryDocument = Readonly<{
   current: ProfileId | null;
   profiles: readonly DatastoreProfile[];
 }>;
+
+const profileRegistryDocumentSchema: CanonicalJsonDocumentSchema<DatastoreProfileRegistryDocument> =
+  { parse: parseDocument };
+
+const profileRegistryDocumentOptions = {
+  schema: profileRegistryDocumentSchema,
+  maximumBytes: MAX_REGISTRY_BYTES,
+};
 
 export type DatastoreProfileRegistryOptions = Readonly<{
   configDirectory?: string;
@@ -136,6 +143,20 @@ export function resolveDatastoreProfileRouting(
   });
 }
 
+/** Fails closed when an observed database document is not the profile binding. */
+export function verifyDatastoreProfileDatabaseId(
+  profile: DatastoreProfile,
+  observedDatabaseId: DatabaseId,
+): void {
+  const observed = parseOptionalDatabaseId(observedDatabaseId);
+  if (
+    observed === undefined ||
+    (profile.databaseId !== undefined && profile.databaseId !== observed)
+  ) {
+    throw new DatastoreProfileError('PROFILE_INVALID');
+  }
+}
+
 /**
  * A versioned local registry for public datastore routing only. It is protected
  * like a key file because switching a profile must not be silently redirected.
@@ -160,6 +181,26 @@ export class DatastoreProfileRegistry {
     return registry;
   }
 
+  /** Opens an existing registry without creating configuration state for callers. */
+  static async openIfPresent(
+    options: DatastoreProfileRegistryOptions = {},
+  ): Promise<DatastoreProfileRegistry | null> {
+    const inputDirectory = options.configDirectory ?? defaultConfigDirectory();
+    try {
+      await lstat(resolve(inputDirectory));
+    } catch (error) {
+      if (errorCode(error) === 'ENOENT') return null;
+      throw new DatastoreProfileError('PROFILE_UNSAFE');
+    }
+    const directory = await secureConfigDirectory(inputDirectory);
+    const registry = new DatastoreProfileRegistry(
+      resolveProfilePath(directory, options.fileName),
+    );
+    if (!(await registryExists(registry.#path))) return null;
+    await registry.#readOrEmpty();
+    return registry;
+  }
+
   async add(profile: DatastoreProfile): Promise<DatastoreProfile> {
     const parsed = parseProfile(profile);
     return this.#mutate((document) => {
@@ -180,6 +221,14 @@ export class DatastoreProfileRegistry {
   async list(): Promise<readonly DatastoreProfile[]> {
     const document = await this.#readOrEmpty();
     return document.profiles.map(cloneProfile);
+  }
+
+  async get(id: ProfileId): Promise<DatastoreProfile> {
+    const parsedId = parseProfileId(id);
+    const document = await this.#readOrEmpty();
+    const profile = document.profiles.find((candidate) => candidate.id === parsedId);
+    if (profile === undefined) throw new DatastoreProfileError('PROFILE_NOT_FOUND');
+    return cloneProfile(profile);
   }
 
   async use(id: ProfileId): Promise<DatastoreProfile> {
@@ -250,7 +299,14 @@ export class DatastoreProfileRegistry {
 
   async #readOrEmpty(): Promise<DatastoreProfileRegistryDocument> {
     if (!(await registryExists(this.#path))) return emptyDocument();
-    return readDocument(await readRegistryBytes(this.#path));
+    try {
+      return await readProtectedJsonDocument(
+        this.#path,
+        profileRegistryDocumentOptions,
+      );
+    } catch (error) {
+      throw profileFilesystemError(error);
+    }
   }
 
   async #mutate<T>(
@@ -258,40 +314,52 @@ export class DatastoreProfileRegistry {
       document: DatastoreProfileRegistryDocument,
     ) => Readonly<{ document: DatastoreProfileRegistryDocument; result: T }>,
   ): Promise<T> {
-    for (let attempt = 0; attempt < 2; attempt += 1) {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
       if (!(await registryExists(this.#path))) {
         const transition = mutate(emptyDocument());
-        const serialized = serializeDocument(transition.document);
         try {
-          await writeSecureFile(this.#path, serialized, 'create', MAX_REGISTRY_BYTES);
+          await writeProtectedJsonDocument(
+            this.#path,
+            transition.document,
+            'create',
+            profileRegistryDocumentOptions,
+          );
           return transition.result;
         } catch (error) {
-          if (isKeyFileError(error, 'KEY_FILE_ALREADY_EXISTS')) continue;
+          if (isKeyFileError(error, 'KEY_FILE_ALREADY_EXISTS')) {
+            await yieldRegistryMutation();
+            continue;
+          }
           throw profileFilesystemError(error);
         }
       }
 
       try {
-        return await withExclusiveSecureFile(
+        return await transitionProtectedJsonDocument(
           this.#path,
-          MAX_REGISTRY_BYTES,
-          async (lock) => {
-            const document = readDocument(await readSecureFileWhileExclusive(lock));
+          profileRegistryDocumentOptions,
+          (document) => {
             const transition = mutate(document);
-            await replaceSecureFileWhileExclusive(
-              lock,
-              serializeDocument(transition.document),
-            );
-            return transition.result;
+            return transition;
           },
         );
       } catch (error) {
-        if (isKeyFileError(error, 'KEY_FILE_NOT_FOUND')) continue;
+        if (
+          isKeyFileError(error, 'KEY_FILE_NOT_FOUND') ||
+          isKeyFileError(error, 'KEY_FILE_BUSY')
+        ) {
+          await yieldRegistryMutation();
+          continue;
+        }
         throw profileFilesystemError(error);
       }
     }
     throw new DatastoreProfileError('PROFILE_OPERATION_FAILED');
   }
+}
+
+async function yieldRegistryMutation(): Promise<void> {
+  await new Promise<void>((resolve) => setImmediate(resolve));
 }
 
 function defaultConfigDirectory(): string {
@@ -364,44 +432,8 @@ async function registryExists(path: string): Promise<boolean> {
   }
 }
 
-async function readRegistryBytes(path: string): Promise<Uint8Array> {
-  try {
-    return await readSecureFile(path, MAX_REGISTRY_BYTES);
-  } catch (error) {
-    throw profileFilesystemError(error);
-  }
-}
-
 function emptyDocument(): DatastoreProfileRegistryDocument {
   return { version: REGISTRY_VERSION, current: null, profiles: [] };
-}
-
-function readDocument(bytes: Uint8Array): DatastoreProfileRegistryDocument {
-  try {
-    const text = Buffer.from(bytes).toString('utf8');
-    if (Buffer.byteLength(text, 'utf8') !== bytes.byteLength) {
-      throw new DatastoreProfileError('PROFILE_INVALID');
-    }
-    const parsed = parseDocument(JSON.parse(text) as unknown);
-    if (canonicalJson(parsed) !== text)
-      throw new DatastoreProfileError('PROFILE_INVALID');
-    return parsed;
-  } catch (error) {
-    if (error instanceof DatastoreProfileError) throw error;
-    throw new DatastoreProfileError('PROFILE_INVALID');
-  } finally {
-    bytes.fill(0);
-  }
-}
-
-function serializeDocument(document: DatastoreProfileRegistryDocument): Uint8Array {
-  const parsed = parseDocument(document);
-  const serialized = Buffer.from(canonicalJson(parsed), 'utf8');
-  if (serialized.byteLength === 0 || serialized.byteLength > MAX_REGISTRY_BYTES) {
-    serialized.fill(0);
-    throw new DatastoreProfileError('PROFILE_INVALID');
-  }
-  return serialized;
 }
 
 function parseDocument(value: unknown): DatastoreProfileRegistryDocument {
@@ -626,6 +658,9 @@ function isKeyFileError(error: unknown, code: string): boolean {
 
 function profileFilesystemError(error: unknown): DatastoreProfileError {
   if (error instanceof DatastoreProfileError) return error;
+  if (error instanceof ProtectedJsonDocumentError) {
+    return new DatastoreProfileError('PROFILE_INVALID');
+  }
   return new DatastoreProfileError('PROFILE_UNSAFE');
 }
 

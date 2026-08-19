@@ -11,12 +11,17 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { databaseIdSchema, profileIdSchema } from '@kavrix/schemas';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { MongoLocalVaultStore } from '@kavrix/storage';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   DatastoreProfileRegistry,
+  resolveDatastoreProfileRouting,
   resolveProfilePath,
+  verifyDatastoreProfileDatabaseId,
 } from '../src/datastore-profiles.js';
+import { buildLocalCli } from '../src/local-vault-cli.js';
+import { LocalSecretInput } from '../src/local-secrets.js';
 
 let directory = '';
 
@@ -55,6 +60,129 @@ function fileProfile(id = 'local') {
 }
 
 describe('datastore profiles', () => {
+  it('executes every profile CLI command with stable sanitized output', async () => {
+    const output: string[] = [];
+    const write = vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => {
+      output.push(String(chunk));
+      return true;
+    });
+    const execute = async (...args: string[]): Promise<Record<string, unknown>> => {
+      output.length = 0;
+      await buildLocalCli().parseAsync(['node', 'kavrix', ...args]);
+      const text = output.join('');
+      expect(text).not.toContain('\u001b');
+      expect(text).not.toMatch(/(?:uri|password|token)/iu);
+      return JSON.parse(text) as Record<string, unknown>;
+    };
+    try {
+      expect(
+        await execute(
+          'db',
+          'profile',
+          'add',
+          'work',
+          '--config-dir',
+          directory,
+          '--datastore',
+          'mongodb',
+          '--database',
+          'credentials',
+          '--key-file',
+          '/protected/work.kavrix-db-key',
+        ),
+      ).toMatchObject({ added: true, profile: { id: 'work', datastore: 'mongodb' } });
+      expect(
+        await execute(
+          'db',
+          'profile',
+          'add',
+          'local',
+          '--config-dir',
+          directory,
+          '--datastore',
+          'file',
+          '--data-file',
+          '/protected/local.kavrix-db',
+          '--key-file',
+          '/protected/local.kavrix-db-key',
+        ),
+      ).toMatchObject({ added: true, profile: { id: 'local', datastore: 'file' } });
+      expect(await execute('db', 'profile', 'list', '--config-dir', directory)).toEqual(
+        {
+          profiles: [
+            {
+              id: 'local',
+              datastore: 'file',
+              dataFile: '/protected/local.kavrix-db',
+              keyFile: '/protected/local.kavrix-db-key',
+            },
+            {
+              id: 'work',
+              datastore: 'mongodb',
+              database: 'credentials',
+              databaseCollection: 'kavrix_databases',
+              vaultCollection: 'kavrix_vaults',
+              keyFile: '/protected/work.kavrix-db-key',
+            },
+          ],
+        },
+      );
+      expect(
+        await execute('db', 'profile', 'use', 'work', '--config-dir', directory),
+      ).toMatchObject({
+        selected: { id: 'work' },
+      });
+      expect(
+        await execute('db', 'profile', 'status', '--config-dir', directory),
+      ).toMatchObject({
+        current: { id: 'work' },
+      });
+      expect(
+        await execute('db', 'profile', 'remove', 'work', '--config-dir', directory),
+      ).toMatchObject({
+        removed: true,
+        profile: { id: 'work' },
+      });
+      expect(
+        await execute('db', 'profile', 'status', '--config-dir', directory),
+      ).toEqual({
+        current: null,
+      });
+      await expect(
+        buildLocalCli().parseAsync([
+          'node',
+          'kavrix',
+          'db',
+          'profile',
+          'add',
+          'local',
+          '--config-dir',
+          directory,
+          '--datastore',
+          'file',
+          '--data-file',
+          '/protected/local.kavrix-db',
+          '--key-file',
+          '/protected/local.kavrix-db-key',
+        ]),
+      ).rejects.toThrow('already exists');
+      await expect(
+        buildLocalCli().parseAsync([
+          'node',
+          'kavrix',
+          'db',
+          'profile',
+          'remove',
+          'missing',
+          '--config-dir',
+          directory,
+        ]),
+      ).rejects.toThrow('was not found');
+    } finally {
+      write.mockRestore();
+    }
+  });
+
   it('stores strict canonical non-secret profiles and switches deterministically', async () => {
     const profiles = await registry();
     await profiles.add(mongoProfile());
@@ -93,6 +221,18 @@ describe('datastore profiles', () => {
     expect(await profiles.current()).toBeNull();
   });
 
+  it('handles a registry creation race without publishing duplicate aliases', async () => {
+    const first = await registry();
+    const second = await registry();
+    const results = await Promise.allSettled([
+      first.add(mongoProfile()),
+      second.add(mongoProfile()),
+    ]);
+    expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+    expect(results.filter((result) => result.status === 'rejected')).toHaveLength(1);
+    expect(await first.list()).toEqual([mongoProfile()]);
+  });
+
   it('binds an initialized opaque database ID once without changing routing', async () => {
     const profiles = await registry();
     const { databaseId: _databaseId, ...unbound } = mongoProfile();
@@ -111,6 +251,127 @@ describe('datastore profiles', () => {
         databaseIdSchema.parse('db_other'),
       ),
     ).rejects.toThrow('invalid');
+  });
+
+  it('preserves a profile database binding while explicit routing overrides win', async () => {
+    const profile = mongoProfile();
+    expect(
+      resolveDatastoreProfileRouting(profile, {
+        database: 'overridden',
+        vaultCollection: 'overridden_vaults',
+      }),
+    ).toEqual({
+      ...profile,
+      database: 'overridden',
+      vaultCollection: 'overridden_vaults',
+    });
+    expect(() =>
+      verifyDatastoreProfileDatabaseId(profile, databaseIdSchema.parse('db_other')),
+    ).toThrow('invalid');
+    expect(() =>
+      verifyDatastoreProfileDatabaseId(profile, databaseIdSchema.parse('db_work')),
+    ).not.toThrow();
+  });
+
+  it('composes an explicit profile into db ping and gives explicit routing precedence', async () => {
+    const profiles = await registry();
+    const { databaseId: _databaseId, ...unbound } = mongoProfile();
+    await profiles.add(unbound);
+    const ping = vi.fn(async () => undefined);
+    const close = vi.fn(async () => undefined);
+    const connect = vi
+      .spyOn(MongoLocalVaultStore, 'connect')
+      .mockResolvedValue({ ping, close } as never);
+    vi.spyOn(LocalSecretInput.prototype, 'read').mockResolvedValue([
+      'mongodb://localhost/ignored-by-explicit-routing',
+    ]);
+    const output: string[] = [];
+    const write = vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => {
+      output.push(String(chunk));
+      return true;
+    });
+    try {
+      await buildLocalCli().parseAsync([
+        'node',
+        'kavrix',
+        'db',
+        'ping',
+        '--profile',
+        'work',
+        '--profile-config-dir',
+        directory,
+        '--database',
+        'explicit_database',
+        '--collection',
+        'explicit_collection',
+      ]);
+      expect(connect).toHaveBeenCalledWith(
+        'mongodb://localhost/ignored-by-explicit-routing',
+        'explicit_database',
+        { collectionName: 'explicit_collection' },
+      );
+      expect(ping).toHaveBeenCalledOnce();
+      expect(close).toHaveBeenCalledOnce();
+      expect(JSON.parse(output.join(''))).toEqual({
+        connected: true,
+        profile: 'work',
+        database: 'explicit_database',
+        collection: 'explicit_collection',
+      });
+    } finally {
+      write.mockRestore();
+      vi.restoreAllMocks();
+    }
+  });
+
+  it('uses the current unbound profile for db ping without creating absent profile state', async () => {
+    const profiles = await registry();
+    const { databaseId: _databaseId, ...unbound } = mongoProfile();
+    await profiles.add(unbound);
+    await profiles.use(profileIdSchema.parse('work'));
+    const connect = vi.spyOn(MongoLocalVaultStore, 'connect').mockResolvedValue({
+      ping: async () => undefined,
+      close: async () => undefined,
+    } as never);
+    vi.spyOn(LocalSecretInput.prototype, 'read').mockResolvedValue([
+      'mongodb://localhost/ignored-by-profile-routing',
+    ]);
+    const write = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    try {
+      await buildLocalCli().parseAsync([
+        'node',
+        'kavrix',
+        'db',
+        'ping',
+        '--profile-config-dir',
+        directory,
+      ]);
+      expect(connect).toHaveBeenCalledWith(
+        'mongodb://localhost/ignored-by-profile-routing',
+        'credentials',
+        { collectionName: 'kavrix_vaults' },
+      );
+    } finally {
+      write.mockRestore();
+      vi.restoreAllMocks();
+    }
+  });
+
+  it('fails closed before secret input when db ping receives a database-bound profile', async () => {
+    const profiles = await registry();
+    await profiles.add(mongoProfile());
+    await expect(
+      buildLocalCli().parseAsync([
+        'node',
+        'kavrix',
+        'db',
+        'ping',
+        '--profile',
+        'work',
+        '--profile-config-dir',
+        directory,
+      ]),
+    ).rejects.toThrow('requires database container commands');
   });
 
   it('rejects unsafe registry filesystem state and preserves the last valid publication', async () => {
