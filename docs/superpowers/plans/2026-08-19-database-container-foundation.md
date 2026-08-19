@@ -14,7 +14,7 @@
 
 - Never persist, transmit, log, or place in process arguments plaintext portable keys, passphrases, recovery keys, DRKs, VRKs, MongoDB credentials, or decrypted credential data.
 - MongoDB may receive only the limited routing metadata and authenticated ciphertext approved in the specification.
-- Local mode stores multiple vaults in one database file and grants full access to anyone holding that file, its matching database-owner key file, and the passphrase.
+- Local mode stores multiple vaults in one database file. Sharing requires a fresh `kavrix db key create` share key, its exact matching database snapshot, and the separately delivered passphrase; the primary owner key is not the two-file sharing artifact.
 - User identities, grants, roles, and recipient discovery are not implemented in this foundation; local mode must reject those future commands explicitly when they arrive.
 - Use XChaCha20-Poly1305-IETF, Argon2id, and HKDF-SHA-256 through existing reviewed libraries; do not invent a primitive.
 - Preserve the current version 2 local-vault format and stable credential commands until an explicit copy-first migration succeeds.
