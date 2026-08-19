@@ -156,6 +156,34 @@ describe('FileEncryptedDatabaseStore', () => {
   );
 
   it.skipIf(process.platform === 'win32')(
+    'rejects symlinked and hard-linked database targets through open and validatePath',
+    async () => {
+      const target = await targetPath();
+      const source = `${target}.source`;
+      await writeRestricted(source, '{}\n');
+      await symlink(source, target);
+      await expect(
+        FileEncryptedDatabaseStore.validatePath(target),
+      ).rejects.toMatchObject({
+        code: 'invalid',
+      });
+      await expect(FileEncryptedDatabaseStore.open(target)).rejects.toMatchObject({
+        code: 'invalid',
+      });
+      await unlink(target);
+      await link(source, target);
+      await expect(
+        FileEncryptedDatabaseStore.validatePath(target),
+      ).rejects.toMatchObject({
+        code: 'invalid',
+      });
+      await expect(FileEncryptedDatabaseStore.open(target)).rejects.toMatchObject({
+        code: 'invalid',
+      });
+    },
+  );
+
+  it.skipIf(process.platform === 'win32')(
     'fails closed when its lock or containing directory is replaced',
     async () => {
       const target = await targetPath();

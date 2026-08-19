@@ -721,10 +721,10 @@ async function publishContainer(
     }
     if (process.platform === 'win32') {
       await fileEncryptedDatabaseEffects.setAcl(targetPath);
-      await verifyWindowsUserOnlyAcl(targetPath);
+      await fileEncryptedDatabaseEffects.verifyAcl(targetPath);
       await assertPathIdentity(targetPath, finalIdentity);
     }
-    const final = await readContainerIfPresent(targetPath);
+    const final = await fileEncryptedDatabaseEffects.readFinal(targetPath);
     if (
       final === null ||
       serializeContainer(final.container) !== contents.toString('utf8')
@@ -978,9 +978,11 @@ type FileEncryptedDatabaseEffects = Readonly<{
   link: typeof link;
   rename: typeof rename;
   setAcl: typeof setWindowsUserOnlyAcl;
+  verifyAcl: typeof verifyWindowsUserOnlyAcl;
   sync: (handle: FileHandle) => Promise<void>;
   unlink: typeof unlink;
   write: (handle: FileHandle, contents: Buffer) => Promise<void>;
+  readFinal: typeof readContainerIfPresent;
   syncDirectory: typeof syncDirectory;
 }>;
 
@@ -990,9 +992,11 @@ const defaultFileEncryptedDatabaseEffects: FileEncryptedDatabaseEffects = {
   link,
   rename,
   setAcl: setWindowsUserOnlyAcl,
+  verifyAcl: verifyWindowsUserOnlyAcl,
   sync: (handle) => handle.sync(),
   unlink,
   write: (handle, contents) => handle.writeFile(contents),
+  readFinal: readContainerIfPresent,
   syncDirectory,
 };
 
