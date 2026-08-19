@@ -899,7 +899,7 @@ export class DatabaseSession {
       publication.databaseAdvanced = true;
       this.#database = next;
       const recoveryAnchor = await observedAnchor(this.#store, next);
-      await reconcileAnchor(recoveryAnchorFile, this.#rootKey, recoveryAnchor);
+      await reconcileAnchor(recoveryAnchorFile, this.#rootKey, recoveryAnchor, true);
       return { slotId, recoveryFile: options.recoveryFile };
     } catch (error) {
       const ambiguous =
@@ -983,6 +983,7 @@ export class DatabaseSession {
         databaseRevisionAnchorPath(options.recoveryFile),
         root,
         observed,
+        true,
       );
       return slot.id;
     } catch (error) {
@@ -1070,7 +1071,7 @@ export class DatabaseSession {
         root,
       );
       const sourceAnchor = databaseRevisionAnchorPath(options.recoveryFile);
-      await reconcileAnchor(sourceAnchor, root, observed);
+      await reconcileAnchor(sourceAnchor, root, observed, true);
       portableKey = generatePortableKey();
       const slotId = keySlotIdSchema.parse(`slot_${randomUUID()}`);
       const nextRevision = databaseRevisionSchema.parse(database.revision + 1);
@@ -1129,7 +1130,7 @@ export class DatabaseSession {
         },
         { requireExactVaultSet: true },
       );
-      await reconcileAnchor(anchorFile, root, nextAnchor);
+      await reconcileAnchor(anchorFile, root, nextAnchor, true);
       const verified = await readDatabaseKeyFile(options.outputKeyFile, newPassphrase, {
         databaseId: database.id,
         keySlotId: slotId,
@@ -1540,15 +1541,20 @@ async function reconcileAnchor(
   path: string,
   rootKey: DatabaseRootKey,
   observed: DatabaseRevisionAnchor,
+  allowAdvance = false,
 ): Promise<void> {
   const trusted = await readDatabaseRevisionAnchor(path, rootKey, observed);
   if (canonicalJson(trusted) === canonicalJson(observed)) return;
-  await transitionDatabaseRevisionAnchor(path, rootKey, observed, () =>
-    Promise.resolve({ nextAnchor: observed, result: undefined }),
-  );
-  await readDatabaseRevisionAnchor(path, rootKey, observed, {
-    requireExactVaultSet: true,
-  });
+  if (allowAdvance) {
+    await transitionDatabaseRevisionAnchor(path, rootKey, observed, () =>
+      Promise.resolve({ nextAnchor: observed, result: undefined }),
+    );
+    await readDatabaseRevisionAnchor(path, rootKey, observed, {
+      requireExactVaultSet: true,
+    });
+    return;
+  }
+  throw new DatabaseSessionError('rollback');
 }
 
 function anchorWithCreatedVault(

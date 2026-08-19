@@ -91,15 +91,11 @@ export async function executeDatabaseMigrationCommand(
   );
   await prevalidateProfiles(sourceProfile, destinationProfile, options.initialize);
 
-  const kinds: LocalSecretKind[] = [
-    ...(sourceProfile.datastore === 'mongodb' ? (['database-url'] as const) : []),
-    ...(destinationProfile.datastore === 'mongodb' ? (['database-url'] as const) : []),
-    'passphrase',
-    ...(options.initialize === true
-      ? (['new-passphrase', 'new-passphrase', 'label'] as const)
-      : (['passphrase'] as const)),
-    'label',
-  ];
+  const kinds = databaseMigrationSecretKinds(
+    sourceProfile.datastore,
+    destinationProfile.datastore,
+    options.initialize === true,
+  );
   const values = await new LocalSecretInput(process.stdin, process.stderr).read(
     kinds,
     options.secretsStdin === true,
@@ -186,6 +182,22 @@ export async function executeDatabaseMigrationCommand(
     },
   });
   return { migrated: true, ...result };
+}
+
+export function databaseMigrationSecretKinds(
+  sourceDatastore: 'file' | 'mongodb',
+  destinationDatastore: 'file' | 'mongodb',
+  initialize: boolean,
+): LocalSecretKind[] {
+  return [
+    ...(sourceDatastore === 'mongodb' ? (['database-url'] as const) : []),
+    ...(destinationDatastore === 'mongodb' ? (['database-url'] as const) : []),
+    'passphrase',
+    ...(initialize
+      ? (['new-passphrase', 'new-passphrase', 'label'] as const)
+      : (['passphrase'] as const)),
+    'label',
+  ];
 }
 
 async function prevalidateProfiles(

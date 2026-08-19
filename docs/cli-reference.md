@@ -61,9 +61,9 @@ profile is bound to the new database ID only after publication succeeds.
 For controlled file-mode automation, `db init --secrets-stdin` expects exactly:
 
 ```text
-<database label>\n
-<new key-file passphrase>\n
-<same passphrase>\n
+<database label>
+<new key-file passphrase>
+<same passphrase>
 ```
 
 MongoDB mode prepends one `<MongoDB URI>\n` frame. Passphrases must be at least
@@ -196,8 +196,8 @@ kavrix migrate database \
 For an unbound local destination, `--initialize --secrets-stdin` expects exactly
 the source passphrase, destination passphrase, destination confirmation, private
 database label, and private migrated-vault label. A MongoDB source URI frame,
-when applicable, comes first. The reader has a strict maximum of six frames,
-matching MongoDB-source migration into a newly initialized local database.
+when applicable, comes first. The reader has a strict maximum of seven frames,
+matching the widest migration secret construction.
 
 Kavrix authenticates the version 2 source key, anchor, metadata, and payload;
 creates a new VRK-bound destination vault; reopens the destination; and compares
@@ -292,5 +292,5 @@ stops destruction before anything is deleted.
 The command never drops a MongoDB database or collection. Kavrix cannot discover
 or erase undeclared or unavailable key copies, recovery kits, MongoDB oplogs or
 backups, provider snapshots, filesystem snapshots, SSD-remapped blocks, or
-offline copies. Supply every known local artifact explicitly and destroy
+offline copies. Supply every known local artifact explicitly and remove
 remaining copies separately under their owning retention policies.

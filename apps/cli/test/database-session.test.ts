@@ -618,7 +618,7 @@ describe('DatabaseSession', () => {
     await second.close();
   });
 
-  it('poisons after an ambiguous post-CAS anchor failure and reconciles on reopen', async () => {
+  it('poisons after an ambiguous post-CAS anchor failure and rejects the stale anchor on reopen', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'kavrix-session-'));
     const store = new MemoryDatabaseStore();
     const keyFile = join(directory, 'owner.kavrix-db-key');
@@ -664,18 +664,13 @@ describe('DatabaseSession', () => {
       expect.objectContaining({ code: 'operation' }),
     );
 
-    const reopened = await DatabaseSession.open({
-      store,
-      keyFile,
-      passphrase: PASSPHRASE,
-    });
-    let recovered = '';
-    await reopened.updateVault(vault.id, (payload) => {
-      recovered = payload.records['committed']?.value ?? '';
-      return payload;
-    });
-    expect(recovered).toBe('ambiguous-value');
-    await reopened.close();
+    await expect(
+      DatabaseSession.open({
+        store,
+        keyFile,
+        passphrase: PASSPHRASE,
+      }),
+    ).rejects.toMatchObject({ code: 'rollback' });
   });
 
   it('poisons when recovery companion-anchor publication fails after database CAS', async () => {

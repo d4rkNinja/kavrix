@@ -43,6 +43,7 @@ import {
   DatabaseMigrationError,
   migrateLegacyVaultToDatabase,
 } from '../src/database-migration.js';
+import { databaseMigrationSecretKinds } from '../src/database-migration-command.js';
 import { DatabaseSession } from '../src/database-session.js';
 import { DatastoreProfileRegistry } from '../src/datastore-profiles.js';
 import { buildLocalCli } from '../src/local-vault-cli.js';
@@ -54,6 +55,18 @@ const DESTINATION_PASSPHRASE = Buffer.from('database passphrase', 'utf8');
 afterEach(() => vi.restoreAllMocks());
 
 describe('legacy version 2 database migration', () => {
+  it('constructs exactly the seven-frame widest migration request', () => {
+    expect(databaseMigrationSecretKinds('mongodb', 'mongodb', true)).toEqual([
+      'database-url',
+      'database-url',
+      'passphrase',
+      'new-passphrase',
+      'new-passphrase',
+      'label',
+      'label',
+    ]);
+  });
+
   it('routes an existing mocked Mongo destination through the explicit command', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'kavrix-migrate-mongo-'));
     const sourceDataFile = join(directory, 'source.vault');

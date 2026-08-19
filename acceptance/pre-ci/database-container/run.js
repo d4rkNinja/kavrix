@@ -29,6 +29,70 @@ const activeChildren = new Set();
 const capturedInvocations = [];
 const capturedOutputs = [];
 const sensitiveValues = new Set();
+const expectedPackageFiles = Object.freeze([
+  'LICENSE',
+  'README.md',
+  'dist/bin.js',
+  'dist/index.d.ts',
+  'dist/index.js',
+  'dist/kavrix.cdx.json',
+  'package.json',
+]);
+const packedRecordVerifierSource = `import process from 'node:process';
+
+const chunks = [];
+let total = 0;
+for await (const chunk of process.stdin) {
+  const copy = Buffer.from(chunk);
+  total += copy.byteLength;
+  if (total > 2 * 1024 * 1024) {
+    copy.fill(0);
+    throw new Error('input');
+  }
+  chunks.push(copy);
+}
+let joined;
+let passphrase;
+let session;
+let store;
+try {
+  joined = Buffer.concat(chunks);
+  for (const chunk of chunks) chunk.fill(0);
+  chunks.length = 0;
+  const frames = joined.toString('utf8').replaceAll('\\r\\n', '\\n').split('\\n');
+  if (frames.at(-1) === '') frames.pop();
+  if (frames.length !== 5) throw new Error('frames');
+  const [dataFile, keyFile, vaultId, passphraseText, expectedText] = frames;
+  if ([dataFile, keyFile, vaultId, passphraseText, expectedText].some((value) => typeof value !== 'string' || value.length === 0)) throw new Error('frames');
+  const expected = JSON.parse(expectedText);
+  if (typeof expected !== 'object' || expected === null) throw new Error('request');
+  passphrase = Buffer.from(passphraseText, 'utf8');
+  const api = await import(new URL('./node_modules/kavrix/dist/index.js', import.meta.url).href);
+  if (typeof api.FileEncryptedDatabaseStore?.open !== 'function' || typeof api.DatabaseSession?.open !== 'function') throw new Error('api');
+  store = await api.FileEncryptedDatabaseStore.open(dataFile);
+  session = await api.DatabaseSession.open({ store, keyFile, passphrase });
+  let matches = false;
+  await session.inspectVault(vaultId, (payload) => {
+    const records = Object.entries(payload.records);
+    const record = payload.records[expected.name];
+    matches = records.length === expected.count && record?.value === expected.value && record?.updatedAt === expected.updatedAt;
+  });
+  if (!matches) throw new Error('mismatch');
+  process.stdout.write('PACKED_RECORD_MATCH\\n');
+} catch {
+  process.stderr.write('PACKED_RECORD_FAIL\\n');
+  process.exitCode = 1;
+} finally {
+  joined?.fill(0);
+  passphrase?.fill(0);
+  try {
+    if (session !== undefined) await session.close();
+    else if (store !== undefined) await store.close();
+  } catch {
+    process.exitCode = 1;
+  }
+}
+`;
 
 function fail(message) {
   throw new Error(message);
@@ -274,6 +338,72 @@ async function putCredential(run, paths, profile, vaultId, passphrase, name, val
     `put ${name}`,
   );
   assert(result.saved === true, `credential ${name} was not saved`);
+  assert(
+    typeof result.updatedAt === 'string' &&
+      new Date(result.updatedAt).toISOString() === result.updatedAt,
+    `credential ${name} did not return a canonical timestamp`,
+  );
+  return result.updatedAt;
+}
+
+async function verifyPackedRecord(
+  verifierPath,
+  dataFile,
+  keyFile,
+  vaultId,
+  passphrase,
+  expected,
+) {
+  const result = await runProcess(process.execPath, [verifierPath], {
+    cwd: dirname(verifierPath),
+    input: stdinFrames([
+      dataFile,
+      keyFile,
+      vaultId,
+      passphrase,
+      JSON.stringify(expected),
+    ]),
+    label: 'installed package in-memory record verification',
+  });
+  assert(
+    result.stdout === 'PACKED_RECORD_MATCH\n' && result.stderr === '',
+    'installed package record verification did not return the fixed success token',
+  );
+}
+
+async function exerciseWithPackedVerifier(run, paths, installRoot) {
+  const verifierPath = join(installRoot, 'packed-record-verifier.mjs');
+  assertNoSensitiveText(packedRecordVerifierSource, 'packed verifier source');
+  assertNoPrivatePath(packedRecordVerifierSource, 'packed verifier source');
+  await writeFile(verifierPath, packedRecordVerifierSource, {
+    encoding: 'utf8',
+    mode: 0o600,
+    flag: 'wx',
+  });
+  let operationError;
+  try {
+    await exerciseDatabaseContainer(run, paths, verifierPath);
+  } catch (error) {
+    operationError = error;
+  }
+  let cleanupError;
+  try {
+    const helper = await readFile(verifierPath, 'utf8');
+    assertNoSensitiveText(helper, 'packed verifier artifact');
+    assertNoPrivatePath(helper, 'packed verifier artifact');
+    await rm(verifierPath, { force: true });
+    assert(!existsSync(verifierPath), 'packed verifier artifact was not removed');
+  } catch (error) {
+    cleanupError = error;
+  }
+  if (operationError !== undefined && cleanupError !== undefined) {
+    throw new AggregateError(
+      [operationError, cleanupError],
+      'Packed record verification and helper cleanup failed.',
+    );
+  }
+  if (operationError !== undefined) throw operationError;
+  if (cleanupError !== undefined) throw cleanupError;
 }
 
 async function assertCredential(run, paths, profile, vaultId, passphrase, name) {
@@ -317,7 +447,7 @@ async function exerciseConcurrentConflict(run, paths, profile, passphrase, label
   assert(failures.length === 1, 'concurrent vault creation did not fail closed');
 }
 
-async function exerciseDatabaseContainer(run, paths) {
+async function exerciseDatabaseContainer(run, paths, verifierPath) {
   const primaryPassphrase = ephemeralSecret('primary-passphrase');
   const secondPassphrase = ephemeralSecret('second-passphrase');
   const legacyPassphrase = ephemeralSecret('legacy-passphrase');
@@ -387,7 +517,7 @@ async function exerciseDatabaseContainer(run, paths) {
     'vault labels were visible without an explicit reveal flow',
   );
 
-  await putCredential(
+  const firstUpdatedAt = await putCredential(
     run,
     paths,
     'primary',
@@ -396,7 +526,7 @@ async function exerciseDatabaseContainer(run, paths) {
     'service/first',
     canaryA,
   );
-  await putCredential(
+  const secondUpdatedAt = await putCredential(
     run,
     paths,
     'primary',
@@ -420,6 +550,22 @@ async function exerciseDatabaseContainer(run, paths) {
     secondVaultId,
     primaryPassphrase,
     'service/second',
+  );
+  await verifyPackedRecord(
+    verifierPath,
+    paths.primaryDataFile,
+    paths.primaryKeyFile,
+    firstVaultId,
+    primaryPassphrase,
+    { name: 'service/first', value: canaryA, updatedAt: firstUpdatedAt, count: 1 },
+  );
+  await verifyPackedRecord(
+    verifierPath,
+    paths.primaryDataFile,
+    paths.primaryKeyFile,
+    secondVaultId,
+    primaryPassphrase,
+    { name: 'service/second', value: canaryB, updatedAt: secondUpdatedAt, count: 1 },
   );
 
   await run(
@@ -467,7 +613,7 @@ async function exerciseDatabaseContainer(run, paths) {
     secondDatabaseVaultLabel,
   );
 
-  await run(
+  const wrongDatabaseBinding = await run(
     [
       'db',
       'status',
@@ -476,8 +622,13 @@ async function exerciseDatabaseContainer(run, paths) {
       paths.primaryKeyFile,
       '--secrets-stdin',
     ],
-    [secondPassphrase],
+    [primaryPassphrase],
     { allowFailure: true, expectFailure: true },
+  );
+  assert(
+    wrongDatabaseBinding.stdout === '' &&
+      wrongDatabaseBinding.stderr === 'Database binding validation failed.\n',
+    'wrong database/key pairing did not fail with the exact redacted binding error',
   );
 
   await selectProfile(run, paths, 'primary');
@@ -512,12 +663,36 @@ async function exerciseDatabaseContainer(run, paths) {
   assert(!staleAnchor.equals(currentAnchor), 'database anchor did not advance');
   const currentDatabase = await readFile(paths.primaryDataFile);
   try {
-    await writeFile(paths.primaryDataFile, staleDatabase);
-    if (process.platform !== 'win32') await chmod(paths.primaryDataFile, 0o600);
-    await run(
+    await writeFile(anchorPath, staleAnchor);
+    if (process.platform !== 'win32') await chmod(anchorPath, 0o600);
+    const staleAnchorFailure = await run(
       ['db', 'status', ...profileRoute(paths, 'primary'), '--secrets-stdin'],
       [primaryPassphrase],
       { allowFailure: true, expectFailure: true },
+    );
+    assert(
+      staleAnchorFailure.stdout === '' &&
+        staleAnchorFailure.stderr ===
+          'The database snapshot was rejected as stale or forked.\n',
+      'an authentic stale database anchor did not fail with the rollback error',
+    );
+  } finally {
+    await writeFile(anchorPath, currentAnchor);
+    if (process.platform !== 'win32') await chmod(anchorPath, 0o600);
+  }
+
+  try {
+    await writeFile(paths.primaryDataFile, staleDatabase);
+    if (process.platform !== 'win32') await chmod(paths.primaryDataFile, 0o600);
+    const rollbackFailure = await run(
+      ['db', 'status', ...profileRoute(paths, 'primary'), '--secrets-stdin'],
+      [primaryPassphrase],
+      { allowFailure: true, expectFailure: true },
+    );
+    assert(
+      rollbackFailure.stdout === '' &&
+        rollbackFailure.stderr === 'Database authentication failed.\n',
+      'a stale database snapshot did not fail with the redacted authentication error',
     );
   } finally {
     await writeFile(paths.primaryDataFile, currentDatabase);
@@ -530,10 +705,15 @@ async function exerciseDatabaseContainer(run, paths) {
     tamperedAnchor[tamperedAnchor.byteLength - 1] ^= 1;
     await writeFile(anchorPath, tamperedAnchor);
     if (process.platform !== 'win32') await chmod(anchorPath, 0o600);
-    await run(
+    const tamperedAnchorFailure = await run(
       ['db', 'status', ...profileRoute(paths, 'primary'), '--secrets-stdin'],
       [primaryPassphrase],
       { allowFailure: true, expectFailure: true },
+    );
+    assert(
+      tamperedAnchorFailure.stdout === '' &&
+        tamperedAnchorFailure.stderr === 'Database authentication failed.\n',
+      'a tampered database anchor did not fail with the authentication error',
     );
   } finally {
     await writeFile(anchorPath, currentAnchor);
@@ -569,16 +749,20 @@ async function exerciseDatabaseContainer(run, paths) {
     ],
     [legacyPassphrase, legacyPassphrase],
   );
-  await run(
-    [
-      'put',
-      'legacy/item',
-      ...legacyFileArgs(paths.legacyDataFile, paths.legacyKeyFile, 'legacy-v2'),
-      '--passphrase-stdin',
-      '--value-stdin',
-    ],
-    [legacyPassphrase, legacyCanary],
+  const legacyPut = parseJson(
+    await run(
+      [
+        'put',
+        'legacy/item',
+        ...legacyFileArgs(paths.legacyDataFile, paths.legacyKeyFile, 'legacy-v2'),
+        '--passphrase-stdin',
+        '--value-stdin',
+      ],
+      [legacyPassphrase, legacyCanary],
+    ),
+    'legacy put',
   );
+  assert(typeof legacyPut.updatedAt === 'string', 'legacy put timestamp missing');
 
   await addFileProfile(
     run,
@@ -624,6 +808,19 @@ async function exerciseDatabaseContainer(run, paths) {
     migrationPassphrase,
     'legacy/item',
   );
+  await verifyPackedRecord(
+    verifierPath,
+    paths.migratedDataFile,
+    paths.migratedKeyFile,
+    migrated.vaultId,
+    migrationPassphrase,
+    {
+      name: 'legacy/item',
+      value: legacyCanary,
+      updatedAt: legacyPut.updatedAt,
+      count: 1,
+    },
+  );
 
   await selectProfile(run, paths, 'primary');
   await assertCredential(
@@ -668,23 +865,34 @@ function assertNoPrivatePath(text, label) {
 }
 
 async function scanPackage(packageRoot) {
-  const files = await walkFiles(packageRoot);
-  const unexpected = files.filter(
-    (file) =>
-      !(
-        file === 'package.json' ||
-        file === 'README.md' ||
-        file === 'LICENSE' ||
-        /^dist\/(?:.+\.js|.+\.d\.ts|[^/]+\.cdx\.json)$/u.test(file)
-      ),
-  );
-  assert(unexpected.length === 0, 'packed package contains unexpected files');
+  const files = (await walkFiles(packageRoot)).sort();
+  assertExactPackageFiles(files);
   for (const file of files) {
     const content = await readFile(join(packageRoot, file));
     const text = content.toString('utf8');
     assertNoSensitiveText(text, `package ${file}`);
     assertNoPrivatePath(text, `package ${file}`);
   }
+}
+
+function assertExactPackageFiles(files) {
+  const normalized = [
+    ...new Set(files.map((file) => file.replaceAll('\\', '/'))),
+  ].sort();
+  assert(
+    JSON.stringify(normalized) === JSON.stringify(expectedPackageFiles),
+    'packed package does not match the exact public file allowlist',
+  );
+}
+
+function provePackageAllowlistRejectsExtras() {
+  let rejected = false;
+  try {
+    assertExactPackageFiles([...expectedPackageFiles, 'dist/private/debug.js']);
+  } catch {
+    rejected = true;
+  }
+  assert(rejected, 'package allowlist accepted a private debug artifact');
 }
 
 async function scanArtifacts(paths) {
@@ -765,6 +973,156 @@ function redactedError(error, fallback) {
   return new Error(message.length === 0 ? fallback : message);
 }
 
+async function runSignalProbeChild(signal) {
+  if (signal !== 'SIGINT' && signal !== 'SIGTERM') process.exit(2);
+  const previousNpmCache = process.env['npm_config_cache'];
+  const roots = await Promise.all([
+    mkdtemp(join(tmpdir(), 'kavrix-signal-install-')),
+    mkdtemp(join(tmpdir(), 'kavrix-signal-pack-')),
+    mkdtemp(join(tmpdir(), 'kavrix-signal-cache-')),
+  ]);
+  process.env['npm_config_cache'] = roots[2];
+  let releaseBarrier;
+  const barrier = new Promise((resolveBarrier) => {
+    releaseBarrier = resolveBarrier;
+  });
+  let cleanupPromise;
+  let cleanupStarts = 0;
+  let finalizing = false;
+  const cleanup = () => {
+    if (cleanupPromise !== undefined) return cleanupPromise;
+    cleanupStarts += 1;
+    cleanupPromise = (async () => {
+      const errors = [];
+      for (let index = 0; index < roots.length; index += 1) {
+        try {
+          await rm(roots[index], { recursive: true, force: true });
+        } catch {
+          errors.push(new Error('target cleanup failed'));
+        }
+        if (index === 0) {
+          process.send?.({ type: 'cleanup-paused' });
+          await barrier;
+        }
+      }
+      try {
+        if (previousNpmCache === undefined) delete process.env['npm_config_cache'];
+        else process.env['npm_config_cache'] = previousNpmCache;
+      } catch {
+        errors.push(new Error('cache restoration failed'));
+      }
+      if (errors.length > 0) throw new AggregateError(errors, 'cleanup failed');
+    })();
+    return cleanupPromise;
+  };
+  const finish = async () => {
+    if (finalizing) return;
+    finalizing = true;
+    let passed;
+    try {
+      await cleanup();
+      passed =
+        cleanupStarts === 1 &&
+        roots.every((root) => !existsSync(root)) &&
+        process.env['npm_config_cache'] === previousNpmCache;
+    } catch {
+      passed = false;
+    }
+    process.removeListener('SIGINT', onSigint);
+    process.removeListener('SIGTERM', onSigterm);
+    process.send?.({ type: passed ? 'cleanup-complete' : 'cleanup-failed' });
+    process.disconnect?.();
+    if (!passed) process.exitCode = 1;
+  };
+  const onNamedSignal = () => {
+    releaseBarrier?.();
+    void finish();
+  };
+  const onSigint = () => onNamedSignal();
+  const onSigterm = () => onNamedSignal();
+  process.on('SIGINT', onSigint);
+  process.on('SIGTERM', onSigterm);
+  process.on('message', (message) => {
+    if (message?.type === 'begin-cleanup') void cleanup();
+    if (message?.type === 'deliver-signal') process.emit(signal);
+  });
+  process.send?.({ type: 'ready', roots });
+}
+
+async function exerciseSignalCleanupProbe(signal) {
+  const child = spawn(
+    process.execPath,
+    [fileURLToPath(import.meta.url), '--signal-probe-child', signal],
+    {
+      env: process.env,
+      shell: false,
+      stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
+      windowsHide: true,
+    },
+  );
+  activeChildren.add(child);
+  const roots = [];
+  let completed = false;
+  try {
+    await new Promise((resolveProbe, rejectProbe) => {
+      let timeout;
+      const finish = (error) => {
+        if (timeout !== undefined) clearTimeout(timeout);
+        if (error === undefined) resolveProbe();
+        else rejectProbe(error);
+      };
+      child.on('message', (message) => {
+        if (message?.type === 'ready') {
+          if (
+            !Array.isArray(message.roots) ||
+            message.roots.length !== 3 ||
+            message.roots.some(
+              (root) =>
+                typeof root !== 'string' ||
+                !resolve(root).startsWith(
+                  `${resolve(tmpdir())}${process.platform === 'win32' ? '\\' : '/'}`,
+                ),
+            )
+          ) {
+            finish(new Error('signal probe announced invalid cleanup roots'));
+            return;
+          }
+          roots.push(...message.roots);
+          child.send({ type: 'begin-cleanup' });
+        } else if (message?.type === 'cleanup-paused') {
+          if (process.platform === 'win32') child.send({ type: 'deliver-signal' });
+          else child.kill(signal);
+        } else if (message?.type === 'cleanup-complete') {
+          completed = true;
+        } else if (message?.type === 'cleanup-failed') {
+          finish(new Error(`${signal} cleanup probe reported failure`));
+        }
+      });
+      child.once('error', () => finish(new Error(`${signal} cleanup probe failed`)));
+      child.once('close', (code, childSignal) => {
+        activeChildren.delete(child);
+        if (!completed || code !== 0 || childSignal !== null) {
+          finish(new Error(`${signal} cleanup probe exited before verification`));
+          return;
+        }
+        finish();
+      });
+      timeout = setTimeout(() => {
+        child.kill('SIGKILL');
+        finish(new Error(`${signal} cleanup probe timed out`));
+      }, 20_000);
+    });
+    assert(roots.length === 3, `${signal} cleanup probe did not announce every root`);
+    assert(
+      roots.every((root) => !existsSync(root)),
+      `${signal} cleanup probe left an announced root behind`,
+    );
+  } finally {
+    activeChildren.delete(child);
+    for (const root of roots) await rm(root, { recursive: true, force: true });
+  }
+}
+
 async function main() {
   let packRoot;
   let installRoot;
@@ -773,18 +1131,91 @@ async function main() {
   let interruptedSignal;
   let operationError;
   let verifiedVersion;
+  let cleanupPromise;
   const onSignal = (signal) => {
-    interruptedSignal = signal;
+    interruptedSignal ??= signal;
     for (const child of activeChildren) child.kill('SIGTERM');
+    void cleanup();
   };
   const onSigint = () => onSignal('SIGINT');
   const onSigterm = () => onSignal('SIGTERM');
-  process.once('SIGINT', onSigint);
-  process.once('SIGTERM', onSigterm);
+  const cleanup = () => {
+    if (cleanupPromise !== undefined) return cleanupPromise;
+    cleanupPromise = (async () => {
+      const cleanupErrors = [];
+      for (const [label, cleanupTarget] of [
+        ['child processes', () => stopActiveChildren()],
+        [
+          'npm cache environment',
+          async () => {
+            if (previousNpmCache === undefined) delete process.env['npm_config_cache'];
+            else process.env['npm_config_cache'] = previousNpmCache;
+          },
+        ],
+        [
+          'installed package',
+          async () => {
+            if (installRoot !== undefined)
+              await rm(installRoot, { recursive: true, force: true });
+          },
+        ],
+        [
+          'packed archive',
+          async () => {
+            if (packRoot !== undefined)
+              await rm(packRoot, { recursive: true, force: true });
+          },
+        ],
+        [
+          'dedicated npm cache',
+          async () => {
+            if (npmCache !== undefined)
+              await rm(npmCache, { recursive: true, force: true });
+          },
+        ],
+      ]) {
+        try {
+          await cleanupTarget();
+        } catch (error) {
+          cleanupErrors.push(redactedError(error, `${label} cleanup failed.`));
+        }
+      }
+      for (const [label, path] of [
+        ['installed package', installRoot],
+        ['packed archive', packRoot],
+        ['dedicated npm cache', npmCache],
+      ]) {
+        if (path !== undefined && existsSync(path)) {
+          cleanupErrors.push(new Error(`${label} cleanup did not remove its target.`));
+        }
+      }
+      if (process.env['npm_config_cache'] !== previousNpmCache) {
+        cleanupErrors.push(new Error('npm cache environment was not restored.'));
+      }
+      return cleanupErrors;
+    })();
+    return cleanupPromise;
+  };
+  const registerRoot = async (root) => {
+    if (interruptedSignal === undefined) return root;
+    await rm(root, { recursive: true, force: true });
+    throw new Error(`Acceptance interrupted by ${interruptedSignal}`);
+  };
+  process.on('SIGINT', onSigint);
+  process.on('SIGTERM', onSigterm);
   try {
-    packRoot = await mkdtemp(join(tmpdir(), 'kavrix-database-pack-'));
-    installRoot = await mkdtemp(join(tmpdir(), 'kavrix-database-install-'));
-    npmCache = await mkdtemp(join(tmpdir(), 'kavrix-database-npm-cache-'));
+    provePackageAllowlistRejectsExtras();
+    await exerciseSignalCleanupProbe('SIGINT');
+    await exerciseSignalCleanupProbe('SIGTERM');
+    packRoot = await registerRoot(
+      await mkdtemp(join(tmpdir(), 'kavrix-database-pack-')),
+    );
+    installRoot = await registerRoot(
+      await mkdtemp(join(tmpdir(), 'kavrix-database-install-')),
+    );
+    npmCache = await registerRoot(
+      await mkdtemp(join(tmpdir(), 'kavrix-database-npm-cache-')),
+    );
     previousNpmCache = process.env['npm_config_cache'];
     process.env['npm_config_cache'] = npmCache;
     const npmEnvironment = { ...process.env, npm_config_cache: npmCache };
@@ -841,7 +1272,7 @@ async function main() {
     const run = cliRunner(bin, installRoot);
     const rootHelp = await run(['--help']);
     assert(!/^\s*destroy(?:\s|$)/mu.test(rootHelp.stdout), 'destroy leaked into help');
-    await exerciseDatabaseContainer(run, paths);
+    await exerciseWithPackedVerifier(run, paths, installRoot);
     await scanPackage(packageRoot);
     await scanArtifacts(paths);
     if (interruptedSignal !== undefined) {
@@ -850,56 +1281,12 @@ async function main() {
   } catch (error) {
     operationError = redactedError(error, 'Packed database acceptance failed.');
   }
+  const cleanupErrors = await cleanup();
+  if (interruptedSignal !== undefined && operationError === undefined) {
+    operationError = new Error(`Acceptance interrupted by ${interruptedSignal}`);
+  }
   process.removeListener('SIGINT', onSigint);
   process.removeListener('SIGTERM', onSigterm);
-
-  const cleanupErrors = [];
-  for (const [label, cleanup] of [
-    ['child processes', () => stopActiveChildren()],
-    [
-      'npm cache environment',
-      async () => {
-        if (previousNpmCache === undefined) delete process.env['npm_config_cache'];
-        else process.env['npm_config_cache'] = previousNpmCache;
-      },
-    ],
-    [
-      'installed package',
-      async () => {
-        if (installRoot !== undefined)
-          await rm(installRoot, { recursive: true, force: true });
-      },
-    ],
-    [
-      'packed archive',
-      async () => {
-        if (packRoot !== undefined)
-          await rm(packRoot, { recursive: true, force: true });
-      },
-    ],
-    [
-      'dedicated npm cache',
-      async () => {
-        if (npmCache !== undefined)
-          await rm(npmCache, { recursive: true, force: true });
-      },
-    ],
-  ]) {
-    try {
-      await cleanup();
-    } catch (error) {
-      cleanupErrors.push(redactedError(error, `${label} cleanup failed.`));
-    }
-  }
-  for (const [label, path] of [
-    ['installed package', installRoot],
-    ['packed archive', packRoot],
-    ['dedicated npm cache', npmCache],
-  ]) {
-    if (path !== undefined && existsSync(path)) {
-      cleanupErrors.push(new Error(`${label} cleanup did not remove its target.`));
-    }
-  }
   if (operationError !== undefined && cleanupErrors.length > 0) {
     throw new AggregateError(
       [operationError, ...cleanupErrors],
@@ -913,16 +1300,16 @@ async function main() {
       'Packed database acceptance cleanup failed.',
     );
   }
-  assert(
-    process.env['npm_config_cache'] === previousNpmCache,
-    'npm cache environment was not restored',
-  );
   process.stdout.write(
     `Packed kavrix ${verifiedVersion} database-container acceptance passed.\n`,
   );
 }
 
-main().catch((error) => {
+const entryMode = process.argv[2];
+const entryPromise =
+  entryMode === '--signal-probe-child' ? runSignalProbeChild(process.argv[3]) : main();
+
+entryPromise.catch((error) => {
   const message =
     error instanceof AggregateError
       ? error.message

@@ -42,14 +42,12 @@ describe('npm package contract', () => {
 
   it('contains only compiled artifacts and release metadata', () => {
     expect(existsSync(distRoot)).toBe(true);
-    const files = listFiles(distRoot);
-    expect(files).toContain('bin.js');
-    expect(files).toContain('index.js');
-    expect(files).toContain('index.d.ts');
-    expect(files).toContain('kavrix.cdx.json');
-    expect(
-      files.every((file) => /^(?:.+\.js|.+\.d\.ts|[^/]+\.cdx\.json)$/.test(file)),
-    ).toBe(true);
+    expect(listFiles(distRoot).sort()).toEqual([
+      'bin.js',
+      'index.d.ts',
+      'index.js',
+      'kavrix.cdx.json',
+    ]);
     expect(existsSync(join(cliRoot, 'README.md'))).toBe(true);
     expect(existsSync(join(cliRoot, 'LICENSE'))).toBe(true);
     const readme = readFileSync(join(cliRoot, 'README.md'), 'utf8');

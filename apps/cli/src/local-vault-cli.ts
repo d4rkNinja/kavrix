@@ -1444,6 +1444,7 @@ async function handlePut(name: string, options: LocalCliOptions): Promise<void> 
   if (await usesDatabaseContainer(options)) {
     const values = await readDatabaseFlatSecrets(options, ['field-value']);
     const value = requiredSecret(values.extras, 0);
+    const updatedAt = now();
     await withDatabaseFlatVault(options, values, async (session, vaultId) => {
       const updated = await session.updateVault(vaultId, (payload) => {
         if (Object.hasOwn(payload.records, name) && options.overwrite !== true) {
@@ -1451,10 +1452,10 @@ async function handlePut(name: string, options: LocalCliOptions): Promise<void> 
             'Credential already exists. Re-run with --overwrite to replace it.',
           );
         }
-        payload.records[name] = { value, updatedAt: now() };
+        payload.records[name] = { value, updatedAt };
         return payload;
       });
-      writeJson({ saved: true, name, revision: updated.revision });
+      writeJson({ saved: true, name, revision: updated.revision, updatedAt });
     });
     return;
   }
@@ -1465,6 +1466,7 @@ async function handlePut(name: string, options: LocalCliOptions): Promise<void> 
   const databaseUrl = requiredSecret(values, 0);
   const passphrase = requiredSecret(values, 1);
   const value = requiredSecret(values, 2);
+  const updatedAt = now();
   await withStore(databaseUrl, options, async (store) => {
     const document = await requireVault(store, options.vault);
     const rootKey = await unlockVault(document, options.keyFile, passphrase);
@@ -1477,7 +1479,7 @@ async function handlePut(name: string, options: LocalCliOptions): Promise<void> 
       }
       payload.records[name] = {
         value,
-        updatedAt: now(),
+        updatedAt,
       };
       const updated = await encryptUpdatedDocument(document, payload, rootKey);
       await persistUpdatedDocument(
@@ -1487,7 +1489,7 @@ async function handlePut(name: string, options: LocalCliOptions): Promise<void> 
         options.keyFile,
         rootKey,
       );
-      writeJson({ saved: true, name, revision: updated.revision });
+      writeJson({ saved: true, name, revision: updated.revision, updatedAt });
     } finally {
       zeroize(rootKey);
     }

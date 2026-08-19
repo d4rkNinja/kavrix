@@ -13,6 +13,15 @@ const npmArgsPrefix =
   process.platform === 'win32'
     ? [join(dirname(process.execPath), 'node_modules', 'npm', 'bin', 'npm-cli.js')]
     : [];
+const expectedPackageFiles = Object.freeze([
+  'LICENSE',
+  'README.md',
+  'dist/bin.js',
+  'dist/index.d.ts',
+  'dist/index.js',
+  'dist/kavrix.cdx.json',
+  'package.json',
+]);
 
 function fail(message) {
   throw new Error(message);
@@ -20,6 +29,26 @@ function fail(message) {
 
 function assert(condition, message) {
   if (!condition) fail(message);
+}
+
+function assertExactPackageFiles(files) {
+  const normalized = [
+    ...new Set(files.map((file) => file.replaceAll('\\', '/'))),
+  ].sort();
+  assert(
+    JSON.stringify(normalized) === JSON.stringify(expectedPackageFiles),
+    'Packed package does not match the exact public file allowlist',
+  );
+}
+
+function provePackageAllowlistRejectsExtras() {
+  let rejected = false;
+  try {
+    assertExactPackageFiles([...expectedPackageFiles, 'dist/private/debug.js']);
+  } catch {
+    rejected = true;
+  }
+  assert(rejected, 'Package allowlist accepted a private debug artifact');
 }
 
 function run(command, args, cwd) {
@@ -107,6 +136,7 @@ async function resolveArchive(argument, packDirectory) {
 }
 
 async function main() {
+  provePackageAllowlistRejectsExtras();
   const npmCache = await mkdtemp(join(tmpdir(), 'kavrix-npm-cache-'));
   const previousNpmCache = process.env['npm_config_cache'];
   process.env['npm_config_cache'] = npmCache;
@@ -171,31 +201,8 @@ async function main() {
       'Workspace package dependency leaked into the packed manifest',
     );
 
-    const files = await walkFiles(packageRoot);
-    const unexpected = files.filter(
-      (file) =>
-        !(
-          file === 'package.json' ||
-          file === 'README.md' ||
-          file === 'LICENSE' ||
-          /^dist\/(?:.+\.js|.+\.d\.ts|[^/]+\.cdx\.json)$/.test(file)
-        ),
-    );
-    assert(
-      unexpected.length === 0,
-      `Unexpected files in package: ${unexpected.join(', ')}`,
-    );
-    assert(files.includes('README.md'), 'README.md is missing from the package');
-    assert(files.includes('LICENSE'), 'LICENSE is missing from the package');
-    assert(files.includes('dist/bin.js'), 'dist/bin.js is missing from the package');
-    assert(
-      files.includes('dist/index.js'),
-      'dist/index.js is missing from the package',
-    );
-    assert(
-      files.includes('dist/index.d.ts'),
-      'dist/index.d.ts is missing from the package',
-    );
+    const files = (await walkFiles(packageRoot)).sort();
+    assertExactPackageFiles(files);
     for (const file of files) {
       assertSafeText(await readFile(join(packageRoot, file), 'utf8'), file);
     }
