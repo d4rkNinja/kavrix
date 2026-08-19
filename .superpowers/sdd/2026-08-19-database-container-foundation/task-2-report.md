@@ -37,15 +37,15 @@ code was added.
 All commands below were run from
 `/Users/radheykrishnaaa/Documents/GitHub/oss/kavrix/.worktrees/database-container-foundation`.
 
-| Check | Result |
-| --- | --- |
-| `pnpm exec vitest run packages/crypto/test/database-crypto.test.ts` | Passed: 1 file, 13 tests |
-| `pnpm --filter @kavrix/crypto typecheck` | Passed |
-| `pnpm --filter @kavrix/crypto build` | Passed |
-| `pnpm --filter @kavrix/crypto test` | Passed: 9 files, 101 tests |
-| `pnpm exec eslint packages/crypto/src/database-crypto.ts packages/crypto/src/keys.ts packages/crypto/src/index.ts packages/crypto/test/database-crypto.test.ts` | Passed with zero warnings |
-| `pnpm exec prettier --check packages/crypto/src/database-crypto.ts packages/crypto/src/keys.ts packages/crypto/src/index.ts packages/crypto/test/database-crypto.test.ts` | Passed |
-| `git diff --check` | Passed |
+| Check                                                                                                                                                                     | Result                     |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------- |
+| `pnpm exec vitest run packages/crypto/test/database-crypto.test.ts`                                                                                                       | Passed: 1 file, 13 tests   |
+| `pnpm --filter @kavrix/crypto typecheck`                                                                                                                                  | Passed                     |
+| `pnpm --filter @kavrix/crypto build`                                                                                                                                      | Passed                     |
+| `pnpm --filter @kavrix/crypto test`                                                                                                                                       | Passed: 9 files, 101 tests |
+| `pnpm exec eslint packages/crypto/src/database-crypto.ts packages/crypto/src/keys.ts packages/crypto/src/index.ts packages/crypto/test/database-crypto.test.ts`           | Passed with zero warnings  |
+| `pnpm exec prettier --check packages/crypto/src/database-crypto.ts packages/crypto/src/keys.ts packages/crypto/src/index.ts packages/crypto/test/database-crypto.test.ts` | Passed                     |
+| `git diff --check`                                                                                                                                                        | Passed                     |
 
 The full crypto suite includes the existing AEAD known-answer-vector coverage;
 all 35 AEAD tests and all 101 crypto tests passed unchanged.
@@ -86,3 +86,25 @@ all 35 AEAD tests and all 101 crypto tests passed unchanged.
 
 Implementation commit SHA: `7d19e50` (the implementation commit before this
 evidence-reference amendment).
+
+## Wrong-key coverage follow-up
+
+An independent review identified missing misuse coverage for distinct but valid
+32-byte keys. No production change was needed: the existing implementation
+already returned only `AuthenticationError` for these failure paths.
+
+- Added a direct envelope-decryption test using a second generated database
+  root key and asserting generic `AuthenticationError` equality.
+- Added portable-slot and database-recovery-slot unlock tests using distinct
+  generated valid keys and asserting generic `AuthenticationError` equality.
+- The follow-up test secrets use `try`/`finally` cleanup and zeroize every
+  generated portable, recovery, and database-root key on all terminal paths.
+
+Follow-up verification:
+
+| Check                                                               | Result                     |
+| ------------------------------------------------------------------- | -------------------------- |
+| `pnpm exec vitest run packages/crypto/test/database-crypto.test.ts` | Passed: 1 file, 15 tests   |
+| `pnpm --filter @kavrix/crypto test`                                 | Passed: 9 files, 103 tests |
+| changed-file ESLint and Prettier check                              | Passed with zero warnings  |
+| `git diff --check`                                                  | Passed                     |

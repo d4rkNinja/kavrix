@@ -218,9 +218,64 @@ describe('database-domain authenticated encryption', () => {
     ).rejects.toBeInstanceOf(AuthenticationError);
     zeroize(databaseRootKey);
   });
+
+  it('maps a distinct valid database root key failure to AuthenticationError', async () => {
+    const databaseRootKey = generateDatabaseRootKey();
+    const wrongDatabaseRootKey = generateDatabaseRootKey();
+    const context = catalogContext();
+    try {
+      const envelope = await encryptDatabaseAead(canary, databaseRootKey, context);
+
+      await expect(
+        decryptDatabaseAead(envelope, wrongDatabaseRootKey, context),
+      ).rejects.toEqual(new AuthenticationError());
+    } finally {
+      zeroize(databaseRootKey);
+      zeroize(wrongDatabaseRootKey);
+    }
+  });
 });
 
 describe('database root and vault root hierarchy', () => {
+  it('maps distinct valid portable and recovery key failures to AuthenticationError', async () => {
+    const portableKey = generatePortableKey();
+    const wrongPortableKey = generatePortableKey();
+    const databaseRootKey = generateDatabaseRootKey();
+    const wrongRecoveryKey = generateRecoveryKey();
+    let recoveryKey: Uint8Array | undefined;
+    try {
+      const portableSlot = await createDatabaseKeySlot(
+        databaseSlotIdentity,
+        portableKey,
+        databaseRootKey,
+      );
+      await expect(
+        unlockDatabaseKeySlot(portableSlot, wrongPortableKey, databaseSlotBinding),
+      ).rejects.toEqual(new AuthenticationError());
+
+      const recovery = await createDatabaseRecoverySlot(
+        {
+          ...databaseSlotIdentity,
+          slotId: keySlotIdSchema.parse('wrong-key-recovery'),
+        },
+        databaseRootKey,
+      );
+      recoveryKey = recovery.recoveryKey;
+      await expect(
+        unlockDatabaseRecoverySlot(recovery.slot, wrongRecoveryKey, {
+          ...databaseSlotBinding,
+          slotId: recovery.slot.id,
+        }),
+      ).rejects.toEqual(new AuthenticationError());
+    } finally {
+      zeroize(portableKey);
+      zeroize(wrongPortableKey);
+      zeroize(databaseRootKey);
+      zeroize(wrongRecoveryKey);
+      zeroize(recoveryKey);
+    }
+  });
+
   it('uses dedicated portable and recovery database slots', async () => {
     const portableKey = generatePortableKey();
     const databaseRootKey = generateDatabaseRootKey();
