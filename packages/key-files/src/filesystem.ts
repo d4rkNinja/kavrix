@@ -31,6 +31,14 @@ type ResolvedTarget = Readonly<{
   targetPath: string;
 }>;
 
+const exclusiveSecureFileLockBrand = Symbol('exclusiveSecureFileLock');
+export type ExclusiveSecureFileLock = Readonly<{
+  readonly [exclusiveSecureFileLockBrand]: true;
+  readonly targetPath: string;
+  readonly directoryPath: string;
+  readonly maximumBytes: number;
+}>;
+
 export type SecureFileStreamWriteResult = Readonly<{
   bytes: number;
 }>;
@@ -620,7 +628,10 @@ async function acquireReplacementLock(path: string): Promise<FileHandle> {
   }
 }
 
-async function validateReplacementTarget(targetPath: string): Promise<FileIdentity> {
+async function validateReplacementTarget(
+  targetPath: string,
+  maximumBytes = MAX_PORTABLE_KEY_FILE_BYTES,
+): Promise<FileIdentity> {
   const identity = await lstatRegularIdentity(targetPath);
   const handle = await open(targetPath, noFollowReadFlags());
   try {
@@ -628,7 +639,7 @@ async function validateReplacementTarget(targetPath: string): Promise<FileIdenti
     if (!sameIdentity(identity, opened)) {
       throw new PortableKeyFileError('KEY_FILE_UNSAFE');
     }
-    await validateRegularFile(targetPath, opened);
+    await validateRegularFile(targetPath, opened, maximumBytes);
     await verifyPathStillNamesFile(targetPath, identity);
     return identity;
   } finally {
@@ -640,6 +651,7 @@ async function publishReplacement(
   directoryPath: string,
   targetPath: string,
   temporaryFile: string,
+  maximumBytes = MAX_PORTABLE_KEY_FILE_BYTES,
 ): Promise<void> {
   let canonicalExistingTarget: string;
   try {
@@ -651,11 +663,11 @@ async function publishReplacement(
   const lock = await acquireReplacementLock(replacementLockPath);
   let operationError: PortableKeyFileError | undefined;
   try {
-    const expected = await validateReplacementTarget(targetPath);
+    const expected = await validateReplacementTarget(targetPath, maximumBytes);
     await verifyPathStillNamesFile(targetPath, expected);
     await rename(temporaryFile, targetPath);
     const published = await lstat(targetPath, { bigint: true });
-    await validateRegularFile(targetPath, published);
+    await validateRegularFile(targetPath, published, maximumBytes);
     await syncDirectory(directoryPath);
   } catch (error) {
     operationError = mappedFileError(error, 'KEY_FILE_OPERATION_FAILED');
@@ -683,11 +695,13 @@ export async function writeSecureFile(
   inputPath: string,
   contents: Uint8Array,
   mode: 'create' | 'replace',
+  maximumBytes = MAX_PORTABLE_KEY_FILE_BYTES,
 ): Promise<void> {
   if (!isWriteMode(mode)) {
     throw new PortableKeyFileError('KEY_FILE_OPERATION_FAILED');
   }
-  if (contents.byteLength === 0 || contents.byteLength > MAX_PORTABLE_KEY_FILE_BYTES) {
+  assertSecureFileMaximum(maximumBytes);
+  if (contents.byteLength === 0 || contents.byteLength > maximumBytes) {
     throw new PortableKeyFileError('KEY_FILE_OPERATION_FAILED');
   }
   const { directoryPath, targetPath } = await resolveTarget(inputPath);
@@ -696,10 +710,90 @@ export async function writeSecureFile(
   try {
     temporaryFile = await writeTemporaryFile(directoryPath, contents);
     if (mode === 'create') {
-      await publishCreateNew(directoryPath, targetPath, temporaryFile);
+      await publishCreateNew(directoryPath, targetPath, temporaryFile, maximumBytes);
     } else {
-      await publishReplacement(directoryPath, targetPath, temporaryFile);
+      await publishReplacement(directoryPath, targetPath, temporaryFile, maximumBytes);
     }
+    temporaryFile = undefined;
+  } finally {
+    if (temporaryFile !== undefined) await removeIfPresent(temporaryFile);
+  }
+}
+
+/** Internal primitive for a higher-level protected state transition. It is not
+ * re-exported from this package: callers receive no filesystem paths or handles. */
+export async function withExclusiveSecureFile<T>(
+  inputPath: string,
+  maximumBytes: number,
+  callback: (lock: ExclusiveSecureFileLock) => Promise<T>,
+): Promise<T> {
+  assertSecureFileMaximum(maximumBytes);
+  const { directoryPath, targetPath } = await resolveTarget(inputPath);
+  await validateWriteDirectory(directoryPath);
+  await validateReplacementTarget(targetPath, maximumBytes);
+  const canonicalTarget = await realpath(targetPath);
+  const replacementLockPath = lockPath(directoryPath, canonicalTarget);
+  const handle = await acquireReplacementLock(replacementLockPath);
+  let callbackError: unknown;
+  let result: T | undefined;
+  try {
+    await validateReplacementTarget(targetPath, maximumBytes);
+    result = await callback({
+      [exclusiveSecureFileLockBrand]: true,
+      targetPath,
+      directoryPath,
+      maximumBytes,
+    });
+  } catch (error) {
+    callbackError = error;
+  }
+  let cleanupError: unknown;
+  try {
+    await handle.close();
+  } catch (error) {
+    cleanupError = error;
+  }
+  try {
+    await removeIfPresent(replacementLockPath);
+  } catch (error) {
+    cleanupError ??= error;
+  }
+  if (cleanupError !== undefined) {
+    throw new PortableKeyFileError('KEY_FILE_OPERATION_FAILED');
+  }
+  if (callbackError !== undefined) {
+    if (callbackError instanceof Error) throw callbackError;
+    throw new PortableKeyFileError('KEY_FILE_OPERATION_FAILED');
+  }
+  return result as T;
+}
+
+export async function readSecureFileWhileExclusive(
+  lock: ExclusiveSecureFileLock,
+): Promise<Buffer> {
+  return readSecureFile(lock.targetPath, lock.maximumBytes);
+}
+
+export async function replaceSecureFileWhileExclusive(
+  lock: ExclusiveSecureFileLock,
+  contents: Uint8Array,
+): Promise<void> {
+  if (contents.byteLength === 0 || contents.byteLength > lock.maximumBytes) {
+    throw new PortableKeyFileError('KEY_FILE_OPERATION_FAILED');
+  }
+  await validateWriteDirectory(lock.directoryPath);
+  let temporaryFile: string | undefined;
+  try {
+    temporaryFile = await writeTemporaryFile(lock.directoryPath, contents);
+    const expected = await validateReplacementTarget(
+      lock.targetPath,
+      lock.maximumBytes,
+    );
+    await verifyPathStillNamesFile(lock.targetPath, expected);
+    await rename(temporaryFile, lock.targetPath);
+    const published = await lstat(lock.targetPath, { bigint: true });
+    await validateRegularFile(lock.targetPath, published, lock.maximumBytes);
+    await syncDirectory(lock.directoryPath);
     temporaryFile = undefined;
   } finally {
     if (temporaryFile !== undefined) await removeIfPresent(temporaryFile);

@@ -57,9 +57,11 @@ export {
   databaseRevisionAnchorSchema,
   databaseVaultRevisionAnchorSchema,
   readDatabaseRevisionAnchor,
+  transitionDatabaseRevisionAnchor,
   verifyDatabaseRevisionAnchor,
   writeDatabaseRevisionAnchor,
   type DatabaseRevisionAnchor,
   type DatabaseRevisionAnchorVerificationOptions,
+  type DatabaseRevisionAnchorTransitionResult,
   type DatabaseVaultRevisionAnchor,
 } from './database-revision-anchor.js';

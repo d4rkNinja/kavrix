@@ -24,7 +24,13 @@ import {
 import { z } from 'zod';
 
 import { PortableKeyFileError } from './errors.js';
-import { readSecureFile, writeSecureFile } from './filesystem.js';
+import {
+  readSecureFile,
+  readSecureFileWhileExclusive,
+  replaceSecureFileWhileExclusive,
+  withExclusiveSecureFile,
+  writeSecureFile,
+} from './filesystem.js';
 
 const FORMAT = 'kavrix-database-revision-anchor';
 const VERSION = 1;
@@ -88,6 +94,11 @@ export type DatabaseRevisionAnchorVerificationOptions = Readonly<{
   requireExactVaultSet?: boolean;
 }>;
 
+export type DatabaseRevisionAnchorTransitionResult<Result> = Readonly<{
+  nextAnchor: DatabaseRevisionAnchor;
+  result: Result;
+}>;
+
 export function databaseRevisionAnchorPath(databaseKeyFilePath: string): string {
   if (typeof databaseKeyFilePath !== 'string' || databaseKeyFilePath.length === 0) {
     throw new PortableKeyFileError('KEY_FILE_INVALID_PATH');
@@ -102,26 +113,18 @@ export async function writeDatabaseRevisionAnchor(
   mode: 'create' | 'replace',
 ): Promise<void> {
   requireByteLength(databaseRootKey, DRK_BYTES, 'database root key');
-  const normalized = normalizeAnchor(anchor);
-  let message: Uint8Array | undefined;
-  let tag: Uint8Array | undefined;
+  let normalized: DatabaseRevisionAnchor;
+  try {
+    normalized = normalizeAnchor(anchor);
+  } catch {
+    throw invalid();
+  }
   let serialized: Uint8Array | undefined;
   try {
-    message = anchorMessage(normalized);
-    tag = hmac(databaseRootKey, message);
-    const envelope = databaseRevisionAnchorSchema.parse({
-      format: FORMAT,
-      version: VERSION,
-      ...normalized,
-      authenticationTag: encodeBase64Url(tag),
-    });
-    serialized = Buffer.from(`${canonicalJson(envelope)}\n`, 'utf8');
-    if (serialized.byteLength > MAX_FILE_BYTES) throw invalid();
-    await writeSecureFile(path, serialized, mode);
+    serialized = serializeAnchor(databaseRootKey, normalized);
+    await writeSecureFile(path, serialized, mode, MAX_FILE_BYTES);
   } finally {
     zeroize(serialized);
-    zeroize(tag);
-    zeroize(message);
   }
 }
 
@@ -138,30 +141,53 @@ export async function readDatabaseRevisionAnchor(
 ): Promise<DatabaseRevisionAnchor> {
   requireByteLength(databaseRootKey, DRK_BYTES, 'database root key');
   let file: Uint8Array | undefined;
-  let suppliedTag: Uint8Array | undefined;
-  let expectedTag: Uint8Array | undefined;
-  let message: Uint8Array | undefined;
   try {
     file = await readSecureFile(path, MAX_FILE_BYTES);
-    const envelope = parseEnvelope(file);
-    const trusted = toAnchor(envelope);
-    message = anchorMessage(trusted);
-    suppliedTag = decodeBase64Url(envelope.authenticationTag, {
-      exactBytes: TAG_BYTES,
-    });
-    expectedTag = hmac(databaseRootKey, message);
-    if (!constantTimeEqual(suppliedTag, expectedTag)) throw invalid();
-    if (observed !== undefined)
-      verifyDatabaseRevisionAnchor(trusted, observed, options);
-    return trusted;
+    return parseAuthenticatedAnchor(file, databaseRootKey, observed, options);
   } catch {
     throw invalid();
   } finally {
-    zeroize(message);
-    zeroize(expectedTag);
-    zeroize(suppliedTag);
     zeroize(file);
   }
+}
+
+/**
+ * Runs the whole trusted anchor transition under one private protected-file
+ * lock. The caller receives only the authenticated current state, returns its
+ * accepted next state, and cannot publish through an unguarded filesystem API.
+ */
+export async function transitionDatabaseRevisionAnchor<Result>(
+  path: string,
+  databaseRootKey: Uint8Array,
+  observed: DatabaseRevisionAnchor,
+  callback: (
+    trusted: DatabaseRevisionAnchor,
+  ) => Promise<DatabaseRevisionAnchorTransitionResult<Result>>,
+  options: DatabaseRevisionAnchorVerificationOptions = {},
+): Promise<Result> {
+  requireByteLength(databaseRootKey, DRK_BYTES, 'database root key');
+  return withExclusiveSecureFile(path, MAX_FILE_BYTES, async (lock) => {
+    let file: Uint8Array | undefined;
+    let serialized: Uint8Array | undefined;
+    try {
+      file = await readSecureFileWhileExclusive(lock);
+      const trusted = parseAuthenticatedAnchor(
+        file,
+        databaseRootKey,
+        observed,
+        options,
+      );
+      const transition = await callback(trusted);
+      const next = normalizeAnchor(transition.nextAnchor);
+      verifyDatabaseRevisionAnchor(trusted, next);
+      serialized = serializeAnchor(databaseRootKey, next);
+      await replaceSecureFileWhileExclusive(lock, serialized);
+      return transition.result;
+    } finally {
+      zeroize(serialized);
+      zeroize(file);
+    }
+  });
 }
 
 /**
@@ -202,6 +228,61 @@ export function verifyDatabaseRevisionAnchor(
     for (const id of currentIds) {
       if (prior.vaultHeads[id as VaultId] === undefined) throw invalid();
     }
+  }
+}
+
+function serializeAnchor(
+  databaseRootKey: Uint8Array,
+  anchor: DatabaseRevisionAnchor,
+): Uint8Array {
+  let message: Uint8Array | undefined;
+  let tag: Uint8Array | undefined;
+  try {
+    message = anchorMessage(anchor);
+    tag = hmac(databaseRootKey, message);
+    const envelope = databaseRevisionAnchorSchema.parse({
+      format: FORMAT,
+      version: VERSION,
+      ...anchor,
+      authenticationTag: encodeBase64Url(tag),
+    });
+    const serialized = Buffer.from(`${canonicalJson(envelope)}\n`, 'utf8');
+    if (serialized.byteLength > MAX_FILE_BYTES) {
+      zeroize(serialized);
+      throw invalid();
+    }
+    return serialized;
+  } finally {
+    zeroize(tag);
+    zeroize(message);
+  }
+}
+
+function parseAuthenticatedAnchor(
+  file: Uint8Array,
+  databaseRootKey: Uint8Array,
+  observed?: DatabaseRevisionAnchor,
+  options: DatabaseRevisionAnchorVerificationOptions = {},
+): DatabaseRevisionAnchor {
+  let suppliedTag: Uint8Array | undefined;
+  let expectedTag: Uint8Array | undefined;
+  let message: Uint8Array | undefined;
+  try {
+    const envelope = parseEnvelope(file);
+    const trusted = toAnchor(envelope);
+    message = anchorMessage(trusted);
+    suppliedTag = decodeBase64Url(envelope.authenticationTag, {
+      exactBytes: TAG_BYTES,
+    });
+    expectedTag = hmac(databaseRootKey, message);
+    if (!constantTimeEqual(suppliedTag, expectedTag)) throw invalid();
+    if (observed !== undefined)
+      verifyDatabaseRevisionAnchor(trusted, observed, options);
+    return trusted;
+  } finally {
+    zeroize(message);
+    zeroize(expectedTag);
+    zeroize(suppliedTag);
   }
 }
 

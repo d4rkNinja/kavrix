@@ -9,12 +9,14 @@ import {
   sha256DigestSchema,
   vaultIdSchema,
   vaultRevisionSchema,
+  type VaultId,
 } from '@kavrix/schemas';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
   databaseRevisionAnchorPath,
   readDatabaseRevisionAnchor,
+  transitionDatabaseRevisionAnchor,
   verifyDatabaseRevisionAnchor,
   writeDatabaseRevisionAnchor,
   type DatabaseRevisionAnchor,
@@ -54,7 +56,112 @@ function path(name = 'database.anchor'): string {
   return join(directory, name);
 }
 
+function anchorWithVaultCount(count: number, revision = 4): DatabaseRevisionAnchor {
+  const vaultHeads: Record<string, DatabaseRevisionAnchor['vaultHeads'][VaultId]> = {};
+  for (let index = 0; index < count; index += 1) {
+    vaultHeads[`vault_${String(index).padStart(4, '0')}`] = {
+      revision: vaultRevisionSchema.parse(index + 1),
+      metadataDigest: digest(String.fromCharCode(65 + (index % 20))),
+    };
+  }
+  return {
+    ...anchor(revision),
+    vaultHeads: vaultHeads as DatabaseRevisionAnchor['vaultHeads'],
+  };
+}
+
 describe('DRK-authenticated database revision anchors', () => {
+  it('writes, reads, and verifies all 1,000 bounded vault heads while rejecting count and byte excess', async () => {
+    const file = path();
+    const drk = generateDatabaseRootKey();
+    try {
+      const maximum = anchorWithVaultCount(1_000);
+      await writeDatabaseRevisionAnchor(file, drk, maximum, 'create');
+      await expect(
+        readDatabaseRevisionAnchor(file, drk, maximum, { requireExactVaultSet: true }),
+      ).resolves.toEqual(maximum);
+      await expect(
+        writeDatabaseRevisionAnchor(
+          path('too-many.anchor'),
+          drk,
+          anchorWithVaultCount(1_001),
+          'create',
+        ),
+      ).rejects.toMatchObject({ code: 'KEY_FILE_UNSAFE' });
+      await writeFile(path('oversized.anchor'), Buffer.alloc(128 * 1024 + 1), {
+        mode: 0o600,
+      });
+      await expect(
+        readDatabaseRevisionAnchor(path('oversized.anchor'), drk),
+      ).rejects.toMatchObject({ code: 'KEY_FILE_UNSAFE' });
+    } finally {
+      zeroize(drk);
+    }
+  });
+
+  it('holds one exclusive protected transition across verification, callback, and publication', async () => {
+    const file = path();
+    const drk = generateDatabaseRootKey();
+    let begin!: () => void;
+    let release!: () => void;
+    const entered = new Promise<void>((resolve) => {
+      begin = resolve;
+    });
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    try {
+      const initial = anchor();
+      const newer = anchor(5, 8);
+      await writeDatabaseRevisionAnchor(file, drk, initial, 'create');
+      const first = transitionDatabaseRevisionAnchor(file, drk, initial, async () => {
+        begin();
+        await blocked;
+        return { nextAnchor: newer, result: 'advanced' };
+      });
+      await entered;
+      await expect(
+        transitionDatabaseRevisionAnchor(file, drk, initial, async () => ({
+          nextAnchor: anchor(5, 9),
+          result: 'stale',
+        })),
+      ).rejects.toMatchObject({ code: 'KEY_FILE_BUSY' });
+      release();
+      await expect(first).resolves.toBe('advanced');
+      await expect(
+        transitionDatabaseRevisionAnchor(file, drk, initial, async () => ({
+          nextAnchor: anchor(6, 10),
+          result: 'stale-retry',
+        })),
+      ).rejects.toMatchObject({ code: 'KEY_FILE_UNSAFE' });
+      await expect(readDatabaseRevisionAnchor(file, drk)).resolves.toEqual(newer);
+    } finally {
+      zeroize(drk);
+    }
+  });
+
+  it('cleans the exclusive transition lock after a callback failure', async () => {
+    const file = path();
+    const drk = generateDatabaseRootKey();
+    try {
+      const initial = anchor();
+      await writeDatabaseRevisionAnchor(file, drk, initial, 'create');
+      await expect(
+        transitionDatabaseRevisionAnchor(file, drk, initial, async () => {
+          throw new Error('callback failed');
+        }),
+      ).rejects.toThrow('callback failed');
+      await expect(
+        transitionDatabaseRevisionAnchor(file, drk, initial, async () => ({
+          nextAnchor: anchor(5),
+          result: undefined,
+        })),
+      ).resolves.toBeUndefined();
+      await expect(readDatabaseRevisionAnchor(file, drk)).resolves.toEqual(anchor(5));
+    } finally {
+      zeroize(drk);
+    }
+  });
   it('writes a canonical sorted bounded anchor, authenticates it, and derives an adjacent path', async () => {
     const file = path();
     const drk = generateDatabaseRootKey();
