@@ -38,62 +38,6 @@ const expectedPackageFiles = Object.freeze([
   'dist/kavrix.cdx.json',
   'package.json',
 ]);
-const packedRecordVerifierSource = `import process from 'node:process';
-
-const chunks = [];
-let total = 0;
-for await (const chunk of process.stdin) {
-  const copy = Buffer.from(chunk);
-  total += copy.byteLength;
-  if (total > 2 * 1024 * 1024) {
-    copy.fill(0);
-    throw new Error('input');
-  }
-  chunks.push(copy);
-}
-let joined;
-let passphrase;
-let session;
-let store;
-try {
-  joined = Buffer.concat(chunks);
-  for (const chunk of chunks) chunk.fill(0);
-  chunks.length = 0;
-  const frames = joined.toString('utf8').replaceAll('\\r\\n', '\\n').split('\\n');
-  if (frames.at(-1) === '') frames.pop();
-  if (frames.length !== 5) throw new Error('frames');
-  const [dataFile, keyFile, vaultId, passphraseText, expectedText] = frames;
-  if ([dataFile, keyFile, vaultId, passphraseText, expectedText].some((value) => typeof value !== 'string' || value.length === 0)) throw new Error('frames');
-  const expected = JSON.parse(expectedText);
-  if (typeof expected !== 'object' || expected === null) throw new Error('request');
-  passphrase = Buffer.from(passphraseText, 'utf8');
-  const api = await import(new URL('./node_modules/kavrix/dist/index.js', import.meta.url).href);
-  if (typeof api.FileEncryptedDatabaseStore?.open !== 'function' || typeof api.DatabaseSession?.open !== 'function') throw new Error('api');
-  store = await api.FileEncryptedDatabaseStore.open(dataFile);
-  session = await api.DatabaseSession.open({ store, keyFile, passphrase });
-  let matches = false;
-  await session.inspectVault(vaultId, (payload) => {
-    const records = Object.entries(payload.records);
-    const record = payload.records[expected.name];
-    matches = records.length === expected.count && record?.value === expected.value && record?.updatedAt === expected.updatedAt;
-  });
-  if (!matches) throw new Error('mismatch');
-  process.stdout.write('PACKED_RECORD_MATCH\\n');
-} catch {
-  process.stderr.write('PACKED_RECORD_FAIL\\n');
-  process.exitCode = 1;
-} finally {
-  joined?.fill(0);
-  passphrase?.fill(0);
-  try {
-    if (session !== undefined) await session.close();
-    else if (store !== undefined) await store.close();
-  } catch {
-    process.exitCode = 1;
-  }
-}
-`;
-
 function fail(message) {
   throw new Error(message);
 }
@@ -179,7 +123,19 @@ async function runProcess(command, args, options = {}) {
         stdout: Buffer.concat(stdout).toString('utf8'),
         stderr: Buffer.concat(stderr).toString('utf8'),
       };
-      capturedOutputs.push({ label, stdout: result.stdout, stderr: result.stderr });
+      const expectedSensitiveStdout = options.expectedSensitiveStdout;
+      const sensitiveOutputMatches =
+        expectedSensitiveStdout === undefined ||
+        (result.stdout === expectedSensitiveStdout && result.stderr === '');
+      capturedOutputs.push({
+        label,
+        stdout: expectedSensitiveStdout === undefined ? result.stdout : '[VERIFIED]\n',
+        stderr: result.stderr,
+      });
+      if (!sensitiveOutputMatches) {
+        finish(new Error(`${label} returned unexpected guarded output`));
+        return;
+      }
       if (options.allowFailure === true) {
         finish(undefined, result);
       } else if (code !== 0 || signal !== null) {
@@ -234,8 +190,10 @@ function cliRunner(bin, installRoot) {
       input: stdinFrames(frames),
       label: `packed kavrix ${args.slice(0, 3).join(' ')}`,
       allowFailure: options.allowFailure,
+      expectedSensitiveStdout: options.expectedSensitiveStdout,
     });
-    assertNoSensitiveText(result.stdout, `kavrix ${args.join(' ')} stdout`);
+    if (options.expectedSensitiveStdout === undefined)
+      assertNoSensitiveText(result.stdout, `kavrix ${args.join(' ')} stdout`);
     assertNoSensitiveText(result.stderr, `kavrix ${args.join(' ')} stderr`);
     if (options.expectFailure === true) {
       assert(
@@ -338,72 +296,6 @@ async function putCredential(run, paths, profile, vaultId, passphrase, name, val
     `put ${name}`,
   );
   assert(result.saved === true, `credential ${name} was not saved`);
-  assert(
-    typeof result.updatedAt === 'string' &&
-      new Date(result.updatedAt).toISOString() === result.updatedAt,
-    `credential ${name} did not return a canonical timestamp`,
-  );
-  return result.updatedAt;
-}
-
-async function verifyPackedRecord(
-  verifierPath,
-  dataFile,
-  keyFile,
-  vaultId,
-  passphrase,
-  expected,
-) {
-  const result = await runProcess(process.execPath, [verifierPath], {
-    cwd: dirname(verifierPath),
-    input: stdinFrames([
-      dataFile,
-      keyFile,
-      vaultId,
-      passphrase,
-      JSON.stringify(expected),
-    ]),
-    label: 'installed package in-memory record verification',
-  });
-  assert(
-    result.stdout === 'PACKED_RECORD_MATCH\n' && result.stderr === '',
-    'installed package record verification did not return the fixed success token',
-  );
-}
-
-async function exerciseWithPackedVerifier(run, paths, installRoot) {
-  const verifierPath = join(installRoot, 'packed-record-verifier.mjs');
-  assertNoSensitiveText(packedRecordVerifierSource, 'packed verifier source');
-  assertNoPrivatePath(packedRecordVerifierSource, 'packed verifier source');
-  await writeFile(verifierPath, packedRecordVerifierSource, {
-    encoding: 'utf8',
-    mode: 0o600,
-    flag: 'wx',
-  });
-  let operationError;
-  try {
-    await exerciseDatabaseContainer(run, paths, verifierPath);
-  } catch (error) {
-    operationError = error;
-  }
-  let cleanupError;
-  try {
-    const helper = await readFile(verifierPath, 'utf8');
-    assertNoSensitiveText(helper, 'packed verifier artifact');
-    assertNoPrivatePath(helper, 'packed verifier artifact');
-    await rm(verifierPath, { force: true });
-    assert(!existsSync(verifierPath), 'packed verifier artifact was not removed');
-  } catch (error) {
-    cleanupError = error;
-  }
-  if (operationError !== undefined && cleanupError !== undefined) {
-    throw new AggregateError(
-      [operationError, cleanupError],
-      'Packed record verification and helper cleanup failed.',
-    );
-  }
-  if (operationError !== undefined) throw operationError;
-  if (cleanupError !== undefined) throw cleanupError;
 }
 
 async function assertCredential(run, paths, profile, vaultId, passphrase, name) {
@@ -423,6 +315,31 @@ async function assertCredential(run, paths, profile, vaultId, passphrase, name) 
     `get ${name}`,
   );
   assert(read.value === '[REDACTED]', `credential ${name} was revealed by default`);
+}
+
+async function assertCredentialExact(
+  run,
+  paths,
+  profile,
+  vaultId,
+  passphrase,
+  name,
+  expected,
+) {
+  const result = await run(
+    [
+      'get',
+      name,
+      ...profileRoute(paths, profile),
+      '--vault',
+      vaultId,
+      '--passphrase-stdin',
+      '--reveal',
+    ],
+    [passphrase],
+    { expectedSensitiveStdout: `${expected}\n` },
+  );
+  assert(result.code === 0 && result.signal === null, `get ${name} did not succeed`);
 }
 
 async function exerciseConcurrentConflict(run, paths, profile, passphrase, label) {
@@ -447,7 +364,7 @@ async function exerciseConcurrentConflict(run, paths, profile, passphrase, label
   assert(failures.length === 1, 'concurrent vault creation did not fail closed');
 }
 
-async function exerciseDatabaseContainer(run, paths, verifierPath) {
+async function exerciseDatabaseContainer(run, paths) {
   const primaryPassphrase = ephemeralSecret('primary-passphrase');
   const secondPassphrase = ephemeralSecret('second-passphrase');
   const legacyPassphrase = ephemeralSecret('legacy-passphrase');
@@ -517,7 +434,7 @@ async function exerciseDatabaseContainer(run, paths, verifierPath) {
     'vault labels were visible without an explicit reveal flow',
   );
 
-  const firstUpdatedAt = await putCredential(
+  await putCredential(
     run,
     paths,
     'primary',
@@ -526,7 +443,7 @@ async function exerciseDatabaseContainer(run, paths, verifierPath) {
     'service/first',
     canaryA,
   );
-  const secondUpdatedAt = await putCredential(
+  await putCredential(
     run,
     paths,
     'primary',
@@ -551,21 +468,23 @@ async function exerciseDatabaseContainer(run, paths, verifierPath) {
     primaryPassphrase,
     'service/second',
   );
-  await verifyPackedRecord(
-    verifierPath,
-    paths.primaryDataFile,
-    paths.primaryKeyFile,
+  await assertCredentialExact(
+    run,
+    paths,
+    'primary',
     firstVaultId,
     primaryPassphrase,
-    { name: 'service/first', value: canaryA, updatedAt: firstUpdatedAt, count: 1 },
+    'service/first',
+    canaryA,
   );
-  await verifyPackedRecord(
-    verifierPath,
-    paths.primaryDataFile,
-    paths.primaryKeyFile,
+  await assertCredentialExact(
+    run,
+    paths,
+    'primary',
     secondVaultId,
     primaryPassphrase,
-    { name: 'service/second', value: canaryB, updatedAt: secondUpdatedAt, count: 1 },
+    'service/second',
+    canaryB,
   );
 
   await run(
@@ -749,20 +668,16 @@ async function exerciseDatabaseContainer(run, paths, verifierPath) {
     ],
     [legacyPassphrase, legacyPassphrase],
   );
-  const legacyPut = parseJson(
-    await run(
-      [
-        'put',
-        'legacy/item',
-        ...legacyFileArgs(paths.legacyDataFile, paths.legacyKeyFile, 'legacy-v2'),
-        '--passphrase-stdin',
-        '--value-stdin',
-      ],
-      [legacyPassphrase, legacyCanary],
-    ),
-    'legacy put',
+  await run(
+    [
+      'put',
+      'legacy/item',
+      ...legacyFileArgs(paths.legacyDataFile, paths.legacyKeyFile, 'legacy-v2'),
+      '--passphrase-stdin',
+      '--value-stdin',
+    ],
+    [legacyPassphrase, legacyCanary],
   );
-  assert(typeof legacyPut.updatedAt === 'string', 'legacy put timestamp missing');
 
   await addFileProfile(
     run,
@@ -789,6 +704,7 @@ async function exerciseDatabaseContainer(run, paths, verifierPath) {
       ],
       [
         legacyPassphrase,
+        'legacy-v2',
         migrationPassphrase,
         migrationPassphrase,
         migratedDatabaseLabel,
@@ -808,18 +724,14 @@ async function exerciseDatabaseContainer(run, paths, verifierPath) {
     migrationPassphrase,
     'legacy/item',
   );
-  await verifyPackedRecord(
-    verifierPath,
-    paths.migratedDataFile,
-    paths.migratedKeyFile,
+  await assertCredentialExact(
+    run,
+    paths,
+    'migrated',
     migrated.vaultId,
     migrationPassphrase,
-    {
-      name: 'legacy/item',
-      value: legacyCanary,
-      updatedAt: legacyPut.updatedAt,
-      count: 1,
-    },
+    'legacy/item',
+    legacyCanary,
   );
 
   await selectProfile(run, paths, 'primary');
@@ -973,15 +885,14 @@ function redactedError(error, fallback) {
   return new Error(message.length === 0 ? fallback : message);
 }
 
-async function runSignalProbeChild(signal) {
-  if (signal !== 'SIGINT' && signal !== 'SIGTERM') process.exit(2);
+async function runSignalProbeChild(signal, stage) {
+  if (
+    (signal !== 'SIGINT' && signal !== 'SIGTERM') ||
+    (stage !== 'startup' && stage !== 'cleanup')
+  )
+    process.exit(2);
   const previousNpmCache = process.env['npm_config_cache'];
-  const roots = await Promise.all([
-    mkdtemp(join(tmpdir(), 'kavrix-signal-install-')),
-    mkdtemp(join(tmpdir(), 'kavrix-signal-pack-')),
-    mkdtemp(join(tmpdir(), 'kavrix-signal-cache-')),
-  ]);
-  process.env['npm_config_cache'] = roots[2];
+  let roots = [];
   let releaseBarrier;
   const barrier = new Promise((resolveBarrier) => {
     releaseBarrier = resolveBarrier;
@@ -1000,7 +911,7 @@ async function runSignalProbeChild(signal) {
         } catch {
           errors.push(new Error('target cleanup failed'));
         }
-        if (index === 0) {
+        if (stage === 'cleanup' && index === 0) {
           process.send?.({ type: 'cleanup-paused' });
           await barrier;
         }
@@ -1043,16 +954,51 @@ async function runSignalProbeChild(signal) {
   process.on('SIGINT', onSigint);
   process.on('SIGTERM', onSigterm);
   process.on('message', (message) => {
+    if (message?.type === 'configure') {
+      if (
+        roots.length !== 0 ||
+        !Array.isArray(message.roots) ||
+        message.roots.length !== 3 ||
+        message.roots.some(
+          (root) =>
+            typeof root !== 'string' ||
+            !resolve(root).startsWith(
+              `${resolve(tmpdir())}${process.platform === 'win32' ? '\\' : '/'}`,
+            ),
+        )
+      ) {
+        process.send?.({ type: 'cleanup-failed' });
+        return;
+      }
+      roots = [...message.roots];
+      if (stage === 'startup') {
+        process.send?.({ type: 'startup-paused' });
+        return;
+      }
+      void (async () => {
+        try {
+          for (const root of roots) await mkdir(root, { mode: 0o700 });
+          process.env['npm_config_cache'] = roots[2];
+          process.send?.({ type: 'ready' });
+        } catch {
+          await finish();
+        }
+      })();
+    }
     if (message?.type === 'begin-cleanup') void cleanup();
     if (message?.type === 'deliver-signal') process.emit(signal);
   });
-  process.send?.({ type: 'ready', roots });
+  process.send?.({ type: 'handlers-ready' });
 }
 
-async function exerciseSignalCleanupProbe(signal) {
+async function exerciseSignalCleanupProbe(signal, stage) {
+  const nonce = randomBytes(16).toString('hex');
+  const roots = ['install', 'pack', 'cache'].map((kind) =>
+    join(tmpdir(), `kavrix-signal-${kind}-${nonce}`),
+  );
   const child = spawn(
     process.execPath,
-    [fileURLToPath(import.meta.url), '--signal-probe-child', signal],
+    [fileURLToPath(import.meta.url), '--signal-probe-child', signal, stage],
     {
       env: process.env,
       shell: false,
@@ -1061,7 +1007,6 @@ async function exerciseSignalCleanupProbe(signal) {
     },
   );
   activeChildren.add(child);
-  const roots = [];
   let completed = false;
   try {
     await new Promise((resolveProbe, rejectProbe) => {
@@ -1072,22 +1017,12 @@ async function exerciseSignalCleanupProbe(signal) {
         else rejectProbe(error);
       };
       child.on('message', (message) => {
-        if (message?.type === 'ready') {
-          if (
-            !Array.isArray(message.roots) ||
-            message.roots.length !== 3 ||
-            message.roots.some(
-              (root) =>
-                typeof root !== 'string' ||
-                !resolve(root).startsWith(
-                  `${resolve(tmpdir())}${process.platform === 'win32' ? '\\' : '/'}`,
-                ),
-            )
-          ) {
-            finish(new Error('signal probe announced invalid cleanup roots'));
-            return;
-          }
-          roots.push(...message.roots);
+        if (message?.type === 'handlers-ready') {
+          child.send({ type: 'configure', roots });
+        } else if (message?.type === 'startup-paused') {
+          if (process.platform === 'win32') child.send({ type: 'deliver-signal' });
+          else child.kill(signal);
+        } else if (message?.type === 'ready') {
           child.send({ type: 'begin-cleanup' });
         } else if (message?.type === 'cleanup-paused') {
           if (process.platform === 'win32') child.send({ type: 'deliver-signal' });
@@ -1095,27 +1030,26 @@ async function exerciseSignalCleanupProbe(signal) {
         } else if (message?.type === 'cleanup-complete') {
           completed = true;
         } else if (message?.type === 'cleanup-failed') {
-          finish(new Error(`${signal} cleanup probe reported failure`));
+          finish(new Error(`${signal} ${stage} probe reported failure`));
         }
       });
-      child.once('error', () => finish(new Error(`${signal} cleanup probe failed`)));
+      child.once('error', () => finish(new Error(`${signal} ${stage} probe failed`)));
       child.once('close', (code, childSignal) => {
         activeChildren.delete(child);
         if (!completed || code !== 0 || childSignal !== null) {
-          finish(new Error(`${signal} cleanup probe exited before verification`));
+          finish(new Error(`${signal} ${stage} probe exited before verification`));
           return;
         }
         finish();
       });
       timeout = setTimeout(() => {
         child.kill('SIGKILL');
-        finish(new Error(`${signal} cleanup probe timed out`));
+        finish(new Error(`${signal} ${stage} probe timed out`));
       }, 20_000);
     });
-    assert(roots.length === 3, `${signal} cleanup probe did not announce every root`);
     assert(
       roots.every((root) => !existsSync(root)),
-      `${signal} cleanup probe left an announced root behind`,
+      `${signal} ${stage} probe left a potential root behind`,
     );
   } finally {
     activeChildren.delete(child);
@@ -1127,7 +1061,7 @@ async function main() {
   let packRoot;
   let installRoot;
   let npmCache;
-  let previousNpmCache;
+  const previousNpmCache = process.env['npm_config_cache'];
   let interruptedSignal;
   let operationError;
   let verifiedVersion;
@@ -1205,8 +1139,10 @@ async function main() {
   process.on('SIGTERM', onSigterm);
   try {
     provePackageAllowlistRejectsExtras();
-    await exerciseSignalCleanupProbe('SIGINT');
-    await exerciseSignalCleanupProbe('SIGTERM');
+    await exerciseSignalCleanupProbe('SIGINT', 'startup');
+    await exerciseSignalCleanupProbe('SIGTERM', 'startup');
+    await exerciseSignalCleanupProbe('SIGINT', 'cleanup');
+    await exerciseSignalCleanupProbe('SIGTERM', 'cleanup');
     packRoot = await registerRoot(
       await mkdtemp(join(tmpdir(), 'kavrix-database-pack-')),
     );
@@ -1216,7 +1152,6 @@ async function main() {
     npmCache = await registerRoot(
       await mkdtemp(join(tmpdir(), 'kavrix-database-npm-cache-')),
     );
-    previousNpmCache = process.env['npm_config_cache'];
     process.env['npm_config_cache'] = npmCache;
     const npmEnvironment = { ...process.env, npm_config_cache: npmCache };
     await runProcess(
@@ -1272,7 +1207,7 @@ async function main() {
     const run = cliRunner(bin, installRoot);
     const rootHelp = await run(['--help']);
     assert(!/^\s*destroy(?:\s|$)/mu.test(rootHelp.stdout), 'destroy leaked into help');
-    await exerciseWithPackedVerifier(run, paths, installRoot);
+    await exerciseDatabaseContainer(run, paths);
     await scanPackage(packageRoot);
     await scanArtifacts(paths);
     if (interruptedSignal !== undefined) {
@@ -1307,7 +1242,9 @@ async function main() {
 
 const entryMode = process.argv[2];
 const entryPromise =
-  entryMode === '--signal-probe-child' ? runSignalProbeChild(process.argv[3]) : main();
+  entryMode === '--signal-probe-child'
+    ? runSignalProbeChild(process.argv[3], process.argv[4])
+    : main();
 
 entryPromise.catch((error) => {
   const message =

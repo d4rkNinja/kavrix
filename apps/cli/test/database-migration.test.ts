@@ -19,6 +19,7 @@ import {
   FileEncryptedDatabaseStore,
   FileLocalVaultStore,
   MongoEncryptedDatabaseStore,
+  MongoLocalVaultStore,
   EncryptedDatabaseStoreError,
   type CreateVaultInput,
   type DeleteVaultInput,
@@ -56,13 +57,19 @@ afterEach(() => vi.restoreAllMocks());
 
 describe('legacy version 2 database migration', () => {
   it('constructs exactly the seven-frame widest migration request', () => {
-    expect(databaseMigrationSecretKinds('mongodb', 'mongodb', true)).toEqual([
-      'database-url',
+    expect(databaseMigrationSecretKinds('mongodb', 'file', true)).toEqual([
       'database-url',
       'passphrase',
+      'label',
       'new-passphrase',
       'new-passphrase',
       'label',
+      'label',
+    ]);
+    expect(databaseMigrationSecretKinds('file', 'mongodb', false)).toEqual([
+      'database-url',
+      'passphrase',
+      'passphrase',
       'label',
     ]);
   });
@@ -187,7 +194,7 @@ describe('legacy version 2 database migration', () => {
     expect(read).not.toHaveBeenCalled();
   });
 
-  it('executes explicit file migration initialization, binds the profile, and verifies through flat list', async () => {
+  it('reads the supported seven-frame Mongo-source initialization, binds the file profile, and verifies through flat list', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'kavrix-migrate-command-'));
     const sourceDataFile = join(directory, 'source.vault');
     const sourceKeyFile = join(directory, 'source.key');
@@ -208,12 +215,17 @@ describe('legacy version 2 database migration', () => {
       '--config-dir',
       directory,
       '--datastore',
-      'file',
-      '--data-file',
-      sourceDataFile,
+      'mongodb',
+      '--database',
+      'legacy',
+      '--vault-collection',
+      'vaults',
       '--key-file',
       sourceKeyFile,
     ]);
+    vi.spyOn(MongoLocalVaultStore, 'connect').mockImplementation(
+      async () => (await FileLocalVaultStore.open(sourceDataFile)) as never,
+    );
     await buildLocalCli().parseAsync([
       'node',
       'kavrix',
@@ -232,7 +244,9 @@ describe('legacy version 2 database migration', () => {
     ]);
     const frames = [
       [
+        'mongodb://user:password@example.invalid/legacy',
         SOURCE_PASSPHRASE,
+        'legacy',
         'new database passphrase',
         'new database passphrase',
         'private database label',
@@ -276,7 +290,9 @@ describe('legacy version 2 database migration', () => {
     };
     expect(migrated).toMatchObject({ migrated: true, recordCount: 1 });
     expect(requests[0]).toEqual([
+      'database-url',
       'passphrase',
+      'label',
       'new-passphrase',
       'new-passphrase',
       'label',
@@ -318,6 +334,47 @@ describe('legacy version 2 database migration', () => {
         'command-value-canary',
       );
     }
+  });
+
+  it('rejects a mismatched protected source-vault label after authentication and zeroizes it', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'kavrix-migrate-label-'));
+    const sourceDataFile = join(directory, 'source.vault');
+    const sourceKeyFile = join(directory, 'source.key');
+    const destinationDataFile = join(directory, 'destination.database');
+    const destinationKeyFile = join(directory, 'destination.key');
+    await createLegacySource(sourceDataFile, sourceKeyFile, {});
+    const sourceDocument = localVaultDocumentSchema.parse(
+      JSON.parse(await readFile(sourceDataFile, 'utf8')),
+    );
+    const expectedLabel = Buffer.from('wrong-source-label', 'utf8');
+    let destinationOpened = false;
+
+    await expect(
+      migrateLegacyVaultToDatabase({
+        source: {
+          document: sourceDocument,
+          keyFile: sourceKeyFile,
+          readPassphrase: () => Promise.resolve(Buffer.from(SOURCE_PASSPHRASE, 'utf8')),
+          readExpectedVaultLabel: () => Promise.resolve(expectedLabel),
+        },
+        destination: {
+          openStore: async () => {
+            destinationOpened = true;
+            return FileEncryptedDatabaseStore.open(destinationDataFile);
+          },
+          keyFile: destinationKeyFile,
+          vaultLabel: 'migrated',
+          readPassphrase: () =>
+            Promise.resolve(Buffer.from('new database passphrase', 'utf8')),
+          initialize: {
+            databaseLabel: 'database',
+            rollbackDatabase: async () => undefined,
+          },
+        },
+      }),
+    ).rejects.toMatchObject({ code: 'invalid' });
+    expect(destinationOpened).toBe(false);
+    expect([...expectedLabel]).toEqual(new Array(expectedLabel.byteLength).fill(0));
   });
 
   it('routes every flat credential and doctor command through an explicitly selected database vault', async () => {
@@ -402,6 +459,40 @@ describe('legacy version 2 database migration', () => {
     expect(await run([passphrase], 'get', 'alpha', ...flatRoute)).toMatchObject({
       value: '[REDACTED]',
     });
+    const hostileValue = 'safe\u001B]52;c;owned\u0007\u009B31m\nnext';
+    await run(
+      [passphrase, hostileValue],
+      'put',
+      'terminal-hostile',
+      ...flatRoute,
+      '--value-stdin',
+    );
+    queued.push([passphrase]);
+    output.length = 0;
+    const stdoutTty = Object.getOwnPropertyDescriptor(process.stdout, 'isTTY');
+    try {
+      Object.defineProperty(process.stdout, 'isTTY', {
+        configurable: true,
+        value: true,
+      });
+      await buildLocalCli().parseAsync([
+        'node',
+        'kavrix',
+        'get',
+        'terminal-hostile',
+        ...flatRoute,
+        '--reveal',
+      ]);
+    } finally {
+      if (stdoutTty === undefined) delete (process.stdout as { isTTY?: boolean }).isTTY;
+      else Object.defineProperty(process.stdout, 'isTTY', stdoutTty);
+    }
+    expect(output.join('')).toBe(
+      'safe[CONTROL]]52;c;owned[CONTROL][CONTROL]31m[CONTROL]next\n',
+    );
+    expect(
+      await run([passphrase], 'remove', 'terminal-hostile', ...flatRoute),
+    ).toMatchObject({ removed: true });
     expect(await run([passphrase], 'list', ...flatRoute)).toMatchObject({
       names: ['alpha'],
     });
@@ -462,11 +553,13 @@ describe('legacy version 2 database migration', () => {
     });
     let sourceReads = 0;
     let destinationReads = 0;
+    const expectedSourceLabel = Buffer.from(source.id, 'utf8');
 
     const result = await migrateLegacyVaultToDatabase({
       source: {
         document: source,
         keyFile: sourceKeyFile,
+        readExpectedVaultLabel: () => Promise.resolve(expectedSourceLabel),
         readPassphrase: async () => {
           sourceReads += 1;
           return Buffer.from(SOURCE_PASSPHRASE, 'utf8');
@@ -486,6 +579,9 @@ describe('legacy version 2 database migration', () => {
     expect(result.recordCount).toBe(2);
     expect(sourceReads).toBe(1);
     expect(destinationReads).toBe(1);
+    expect([...expectedSourceLabel]).toEqual(
+      new Array(expectedSourceLabel.byteLength).fill(0),
+    );
     expect(backend.createVaultCalls).toBe(1);
     expect(backend.updateVaultCalls).toBe(0);
     expect(backend.getVaultCalls).toBe(1);

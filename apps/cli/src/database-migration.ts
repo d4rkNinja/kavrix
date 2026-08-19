@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, timingSafeEqual } from 'node:crypto';
 
 import {
   decryptPayload,
@@ -51,6 +51,7 @@ export type LegacyMigrationSource = Readonly<{
   document: LocalVaultDocument;
   keyFile: string;
   anchorFile?: string;
+  readExpectedVaultLabel?: () => Promise<Uint8Array>;
   readPassphrase: () => Promise<Uint8Array>;
 }>;
 
@@ -107,6 +108,7 @@ export async function migrateLegacyVaultToDatabase(
   }
 
   let sourcePassphrase: Uint8Array | undefined;
+  let expectedSourceVaultLabel: Uint8Array | undefined;
   let destinationPassphrase: Uint8Array | undefined;
   let sourcePayload: LocalVaultPayload | undefined;
   let initializationOwnership: MigrationInitializationOwnership | undefined;
@@ -126,6 +128,12 @@ export async function migrateLegacyVaultToDatabase(
       sourceAnchor,
       sourcePassphrase,
     );
+    if (options.source.readExpectedVaultLabel !== undefined) {
+      expectedSourceVaultLabel = await readSecretOnce(
+        options.source.readExpectedVaultLabel,
+      );
+      assertExpectedSourceVaultLabel(expectedSourceVaultLabel, sourceDocument.id);
+    }
 
     destinationStore = await options.destination.openStore();
     if (options.destination.initialize !== undefined) {
@@ -213,6 +221,7 @@ export async function migrateLegacyVaultToDatabase(
     await activeSession.close();
     activeSession = undefined;
     zeroize(sourcePassphrase);
+    zeroize(expectedSourceVaultLabel);
     zeroize(destinationPassphrase);
     return result;
   } catch (error) {
@@ -259,8 +268,23 @@ export async function migrateLegacyVaultToDatabase(
   }
   await closeQuietly(activeSession, destinationStore);
   zeroize(sourcePassphrase);
+  zeroize(expectedSourceVaultLabel);
   zeroize(destinationPassphrase);
   throw terminalError;
+}
+
+function assertExpectedSourceVaultLabel(expected: Uint8Array, actual: string): void {
+  const observed = Buffer.from(actual, 'utf8');
+  try {
+    if (
+      expected.byteLength !== observed.byteLength ||
+      !timingSafeEqual(expected, observed)
+    ) {
+      throw new DatabaseMigrationError('invalid');
+    }
+  } finally {
+    zeroize(observed);
+  }
 }
 
 async function openLegacyPayload(

@@ -72,7 +72,7 @@ const bundle = await build({
   bundle: true,
   chunkNames: 'chunks/chunk-[hash]',
   entryNames: '[name]',
-  entryPoints: { bin: 'src/bin.ts', index: 'src/index.ts' },
+  entryPoints: { bin: 'src/bin.ts' },
   format: 'esm',
   legalComments: 'none',
   metafile: true,
@@ -81,7 +81,7 @@ const bundle = await build({
   platform: 'node',
   sourcemap: 'inline',
   sourcesContent: false,
-  splitting: false,
+  splitting: true,
   external: [...externalRuntimePackages],
   // Must track the engines floor, not the newest supported runtime: emitted
   // syntax has to parse on the oldest Node the manifest admits.
@@ -89,30 +89,12 @@ const bundle = await build({
   treeShaking: true,
 });
 
-const publicDeclaration = `export declare const CLI_VERSION: ${JSON.stringify(manifest.version)};
-export declare class FileEncryptedDatabaseStore {
-  static open(path: string): Promise<FileEncryptedDatabaseStore>;
-  close(): Promise<void>;
-}
-export declare class DatabaseSession {
-  static open(options: Readonly<{
-    store: FileEncryptedDatabaseStore;
-    keyFile: string;
-    passphrase: Uint8Array;
-    expectedDatabaseId?: string;
-    anchorFile?: string;
-  }>): Promise<DatabaseSession>;
-  inspectVault(
-    id: string,
-    inspect: (payload: Readonly<{ records: Readonly<Record<string, Readonly<{ value: string; updatedAt: string }>>> }>) => void | Promise<void>,
-  ): Promise<unknown>;
-  close(): Promise<void>;
-}
-export declare class DatabaseSessionError extends Error {
-  readonly code: string;
-}
-`;
-await writeFile(resolve(outputDirectory, 'index.d.ts'), publicDeclaration, 'utf8');
+const publicModule = `export const CLI_VERSION = ${JSON.stringify(manifest.version)};\n`;
+const publicDeclaration = `export declare const CLI_VERSION: ${JSON.stringify(manifest.version)};\n`;
+await Promise.all([
+  writeFile(resolve(outputDirectory, 'index.js'), publicModule, 'utf8'),
+  writeFile(resolve(outputDirectory, 'index.d.ts'), publicDeclaration, 'utf8'),
+]);
 
 const includedPackages = includedExternalPackages(
   bundle.metafile,
@@ -332,23 +314,14 @@ function validateBundleImports(metafile) {
 function validateSplitOutputs(metafile, reviewedPackages) {
   const outputs = Object.entries(metafile.outputs);
   const entryOutputs = outputs.filter(
-    ([path]) =>
-      normalizeRelativePath(path) === 'dist/bin.js' ||
-      normalizeRelativePath(path) === 'dist/index.js',
+    ([path]) => normalizeRelativePath(path) === 'dist/bin.js',
   );
-  if (
-    entryOutputs.length !== 2 ||
-    entryOutputs.some(([, output]) => output.entryPoint === undefined)
-  ) {
-    throw new Error('The public bundle must contain exactly two entry points.');
+  if (entryOutputs.length !== 1 || entryOutputs[0][1].entryPoint === undefined) {
+    throw new Error('The CLI bundle must contain exactly one executable entry point.');
   }
   const chunks = outputs.filter(([path]) => {
     const normalized = normalizeRelativePath(path);
-    return (
-      normalized !== 'dist/bin.js' &&
-      normalized !== 'dist/index.js' &&
-      normalized.endsWith('.js')
-    );
+    return normalized !== 'dist/bin.js' && normalized.endsWith('.js');
   });
   if (
     chunks.some(
@@ -371,7 +344,7 @@ function validateSplitOutputs(metafile, reviewedPackages) {
       );
     });
   if (
-    entryOutputs.some(([, output]) => hasCryptoInput(output)) ||
+    hasCryptoInput(entryOutputs[0][1]) ||
     !chunks.some(([, output]) => hasCryptoInput(output))
   ) {
     throw new Error('The portable-key crypto graph was not isolated from the entry.');

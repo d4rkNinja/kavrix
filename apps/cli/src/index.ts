@@ -34,4 +34,3 @@ export {
   type DatastoreProfileRegistryOptions,
 } from './datastore-profiles.js';
 export { CLI_VERSION } from './version.js';
-export { FileEncryptedDatabaseStore } from '@kavrix/storage';

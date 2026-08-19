@@ -206,6 +206,16 @@ async function main() {
     for (const file of files) {
       assertSafeText(await readFile(join(packageRoot, file), 'utf8'), file);
     }
+    assert(
+      (await readFile(join(packageRoot, 'dist', 'index.js'), 'utf8')) ===
+        `export const CLI_VERSION = ${JSON.stringify(manifest.version)};\n`,
+      'Packed runtime public API is not the version-only contract',
+    );
+    assert(
+      (await readFile(join(packageRoot, 'dist', 'index.d.ts'), 'utf8')) ===
+        `export declare const CLI_VERSION: ${JSON.stringify(manifest.version)};\n`,
+      'Packed declaration public API does not match runtime',
+    );
 
     const readme = await readFile(join(packageRoot, 'README.md'), 'utf8');
     assert(

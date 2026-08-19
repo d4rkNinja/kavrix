@@ -106,6 +106,8 @@ export async function executeDatabaseMigrationCommand(
   const destinationDatabaseUrl =
     destinationProfile.datastore === 'mongodb' ? values[offset++] : undefined;
   const sourcePassphrase = secret(values, offset++);
+  const expectedSourceVaultLabel =
+    options.initialize === true ? secret(values, offset++) : undefined;
   const destinationPassphrase = secret(values, offset++);
   if (
     options.initialize === true &&
@@ -150,6 +152,12 @@ export async function executeDatabaseMigrationCommand(
     source: {
       document: sourceDocument,
       keyFile: sourceProfile.keyFile,
+      ...(expectedSourceVaultLabel === undefined
+        ? {}
+        : {
+            readExpectedVaultLabel: () =>
+              Promise.resolve(Buffer.from(expectedSourceVaultLabel, 'utf8')),
+          }),
       readPassphrase: () => Promise.resolve(Buffer.from(sourcePassphrase, 'utf8')),
     },
     destination: {
@@ -194,7 +202,7 @@ export function databaseMigrationSecretKinds(
     ...(destinationDatastore === 'mongodb' ? (['database-url'] as const) : []),
     'passphrase',
     ...(initialize
-      ? (['new-passphrase', 'new-passphrase', 'label'] as const)
+      ? (['label', 'new-passphrase', 'new-passphrase', 'label'] as const)
       : (['passphrase'] as const)),
     'label',
   ];

@@ -1444,7 +1444,6 @@ async function handlePut(name: string, options: LocalCliOptions): Promise<void> 
   if (await usesDatabaseContainer(options)) {
     const values = await readDatabaseFlatSecrets(options, ['field-value']);
     const value = requiredSecret(values.extras, 0);
-    const updatedAt = now();
     await withDatabaseFlatVault(options, values, async (session, vaultId) => {
       const updated = await session.updateVault(vaultId, (payload) => {
         if (Object.hasOwn(payload.records, name) && options.overwrite !== true) {
@@ -1452,10 +1451,10 @@ async function handlePut(name: string, options: LocalCliOptions): Promise<void> 
             'Credential already exists. Re-run with --overwrite to replace it.',
           );
         }
-        payload.records[name] = { value, updatedAt };
+        payload.records[name] = { value, updatedAt: now() };
         return payload;
       });
-      writeJson({ saved: true, name, revision: updated.revision, updatedAt });
+      writeJson({ saved: true, name, revision: updated.revision });
     });
     return;
   }
@@ -1466,7 +1465,6 @@ async function handlePut(name: string, options: LocalCliOptions): Promise<void> 
   const databaseUrl = requiredSecret(values, 0);
   const passphrase = requiredSecret(values, 1);
   const value = requiredSecret(values, 2);
-  const updatedAt = now();
   await withStore(databaseUrl, options, async (store) => {
     const document = await requireVault(store, options.vault);
     const rootKey = await unlockVault(document, options.keyFile, passphrase);
@@ -1479,7 +1477,7 @@ async function handlePut(name: string, options: LocalCliOptions): Promise<void> 
       }
       payload.records[name] = {
         value,
-        updatedAt,
+        updatedAt: now(),
       };
       const updated = await encryptUpdatedDocument(document, payload, rootKey);
       await persistUpdatedDocument(
@@ -1489,7 +1487,7 @@ async function handlePut(name: string, options: LocalCliOptions): Promise<void> 
         options.keyFile,
         rootKey,
       );
-      writeJson({ saved: true, name, revision: updated.revision, updatedAt });
+      writeJson({ saved: true, name, revision: updated.revision });
     } finally {
       zeroize(rootKey);
     }
@@ -1506,8 +1504,12 @@ async function handleGet(name: string, options: LocalCliOptions): Promise<void> 
         found = payload.records[name];
       });
       if (found === undefined) throw new LocalCliError('Credential was not found.');
-      if (options.reveal === true) process.stdout.write(found.value + '\n');
-      else writeJson({ name, value: REDACTED, revision: document.revision });
+      if (options.reveal === true) {
+        const value = process.stdout.isTTY
+          ? sanitizeTerminalText(found.value)
+          : found.value;
+        process.stdout.write(value + '\n');
+      } else writeJson({ name, value: REDACTED, revision: document.revision });
     });
     return;
   }

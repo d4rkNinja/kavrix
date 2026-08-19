@@ -50,6 +50,12 @@ describe('npm package contract', () => {
     ]);
     expect(existsSync(join(cliRoot, 'README.md'))).toBe(true);
     expect(existsSync(join(cliRoot, 'LICENSE'))).toBe(true);
+    expect(readFileSync(join(distRoot, 'index.js'), 'utf8')).toBe(
+      `export const CLI_VERSION = ${JSON.stringify(packageManifest.version)};\n`,
+    );
+    expect(readFileSync(join(distRoot, 'index.d.ts'), 'utf8')).toBe(
+      `export declare const CLI_VERSION: ${JSON.stringify(packageManifest.version)};\n`,
+    );
     const readme = readFileSync(join(cliRoot, 'README.md'), 'utf8');
     expect(readme).toContain(
       'https://www.eff.org/files/2016/09/08/eff_short_wordlist_1.txt',

@@ -3,10 +3,10 @@ import type { Readable, Writable } from 'node:stream';
 import { MIN_PASSPHRASE_BYTES } from '@kavrix/crypto';
 
 const MAX_SECRET_BYTES = 1_048_576;
-// Database migration is the widest command construction: source URL,
-// destination URL, source passphrase, destination passphrase and confirmation,
-// database label, and vault label. Unsupported routing combinations are still
-// rejected before secret input.
+// MongoDB-source migration into a new local database is the widest supported
+// command: source URL, source passphrase, expected source-vault label,
+// destination passphrase and confirmation, database label, and vault label.
+// MongoDB destination initialization is rejected before secret input.
 const MAX_SECRET_FRAMES = 7;
 const UTF8_ENCODER = new TextEncoder();
 const STRICT_UTF8_DECODER = new TextDecoder('utf-8', { fatal: true });
