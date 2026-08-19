@@ -334,6 +334,46 @@ export function defineEncryptedDatabaseStoreContractTests(
         'closed',
       );
     });
+
+    it('rejects malformed runtime IDs without reflecting them', async () => {
+      const store = await createStore();
+      const databaseId = makeDatabaseId('db_01JRUNTIMEBOUNDARY');
+      const vaultId = makeVaultId('vault_01JRUNTIMEBOUNDARY');
+      const malformedDatabaseId = 'database id with spaces / value' as DatabaseId;
+      const malformedVaultId = 'vault id with spaces / value' as VaultId;
+
+      await expectStoreError(
+        store.getDatabase(malformedDatabaseId),
+        'invalid',
+        malformedDatabaseId,
+      );
+      await expectStoreError(
+        store.listVaults(malformedDatabaseId),
+        'invalid',
+        malformedDatabaseId,
+      );
+      await expectStoreError(
+        store.getVault(malformedDatabaseId, vaultId),
+        'invalid',
+        malformedDatabaseId,
+      );
+      await expectStoreError(
+        store.getVault(databaseId, malformedVaultId),
+        'invalid',
+        malformedVaultId,
+      );
+      await expectStoreError(
+        store.deleteVault({
+          database: databaseDocument(databaseId, databaseRevision(1)),
+          expectedDatabaseRevision: databaseRevision(0),
+          vaultId: malformedVaultId,
+          expectedVaultRevision: vaultRevision(0),
+        }),
+        'invalid',
+        malformedVaultId,
+      );
+      await store.close();
+    });
   });
 }
 
@@ -348,7 +388,8 @@ class InMemoryEncryptedDatabaseStoreContractFixture implements EncryptedDatabase
 
   async getDatabase(databaseId: DatabaseId): Promise<EncryptedDatabaseDocument | null> {
     this.#assertOpen();
-    const document = this.#databases.get(databaseId);
+    const id = parseDatabaseId(databaseId);
+    const document = this.#databases.get(id);
     return document === undefined ? null : parseDatabaseDocument(document);
   }
 
@@ -377,8 +418,9 @@ class InMemoryEncryptedDatabaseStoreContractFixture implements EncryptedDatabase
 
   async listVaults(databaseId: DatabaseId): Promise<readonly DatabaseVaultDocument[]> {
     this.#assertOpen();
+    const id = parseDatabaseId(databaseId);
     return [...this.#vaults.values()]
-      .filter((vault) => vault.databaseId === databaseId)
+      .filter((vault) => vault.databaseId === id)
       .sort((left, right) => compareOpaqueIds(left.id, right.id))
       .map((vault) => parseVaultDocument(vault));
   }
@@ -388,7 +430,9 @@ class InMemoryEncryptedDatabaseStoreContractFixture implements EncryptedDatabase
     vaultId: VaultId,
   ): Promise<DatabaseVaultDocument | null> {
     this.#assertOpen();
-    const vault = this.#vaults.get(vaultKey(databaseId, vaultId));
+    const database = parseDatabaseId(databaseId);
+    const id = parseVaultId(vaultId);
+    const vault = this.#vaults.get(vaultKey(database, id));
     return vault === undefined ? null : parseVaultDocument(vault);
   }
 
@@ -439,6 +483,7 @@ class InMemoryEncryptedDatabaseStoreContractFixture implements EncryptedDatabase
     const expectedDatabaseRevision = parseDatabaseRevision(
       input.expectedDatabaseRevision,
     );
+    const vaultId = parseVaultId(input.vaultId);
     const expectedVaultRevision = parseVaultRevision(input.expectedVaultRevision);
     if (database.revision !== expectedDatabaseRevision + 1) {
       throw new EncryptedDatabaseStoreError('invalid');
@@ -450,7 +495,7 @@ class InMemoryEncryptedDatabaseStoreContractFixture implements EncryptedDatabase
     ) {
       throw new EncryptedDatabaseStoreError('conflict');
     }
-    const key = vaultKey(database.id, input.vaultId);
+    const key = vaultKey(database.id, vaultId);
     const currentVault = this.#vaults.get(key);
     if (currentVault === undefined || currentVault.revision !== expectedVaultRevision) {
       throw new EncryptedDatabaseStoreError('conflict');
@@ -616,9 +661,25 @@ function parseDatabaseDocument(value: unknown): EncryptedDatabaseDocument {
   }
 }
 
+function parseDatabaseId(value: unknown): DatabaseId {
+  try {
+    return databaseIdSchema.parse(value);
+  } catch {
+    throw new EncryptedDatabaseStoreError('invalid');
+  }
+}
+
 function parseVaultDocument(value: unknown): DatabaseVaultDocument {
   try {
     return databaseVaultDocumentSchema.parse(structuredClone(value));
+  } catch {
+    throw new EncryptedDatabaseStoreError('invalid');
+  }
+}
+
+function parseVaultId(value: unknown): VaultId {
+  try {
+    return vaultIdSchema.parse(value);
   } catch {
     throw new EncryptedDatabaseStoreError('invalid');
   }
@@ -651,6 +712,7 @@ function compareOpaqueIds(left: string, right: string): number {
 async function expectStoreError(
   operation: Promise<unknown>,
   code: EncryptedDatabaseStoreErrorCode,
+  sensitiveValue?: string,
 ): Promise<void> {
   try {
     await operation;
@@ -666,6 +728,7 @@ async function expectStoreError(
       'Mongo',
       'ciphertext',
       CIPHERTEXT,
+      ...(sensitiveValue === undefined ? [] : [sensitiveValue]),
     ]) {
       expect(storageError.message).not.toContain(forbidden);
     }
