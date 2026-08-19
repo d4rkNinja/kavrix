@@ -119,6 +119,10 @@ export function addDatabaseOwnerCommands(db: Command): void {
     )
     .option('--anchor-file <path>', 'Fresh trusted anchor destination.');
   use.action(async (...args: unknown[]) => handleRecoveryUse(optionsFrom(args)));
+
+  addDatabaseVaultCommands(
+    db.command('vault').description('Manage vaults in an encrypted database.'),
+  );
 }
 
 export function addDatabaseVaultCommands(vault: Command): void {
@@ -158,6 +162,7 @@ export function addDatabaseVaultCommands(vault: Command): void {
 
 async function handleDatabaseInit(options: DatabaseCommandOptions): Promise<void> {
   const route = await resolveRoute(options);
+  if (route.expectedDatabaseId !== undefined) throw new DatabaseSessionError('binding');
   await DatabaseSession.validateInitializationDestinations(route.keyFile);
   if (route.datastore === 'file')
     await FileEncryptedDatabaseStore.validatePath(route.dataFile ?? DEFAULT_DATA_FILE);
@@ -171,6 +176,8 @@ async function handleDatabaseInit(options: DatabaseCommandOptions): Promise<void
     throw new DatabaseSessionError('invalid');
   const passphraseBytes = Buffer.from(passphrase, 'utf8');
   const opened = await openStore(route, values[0]);
+  const registry = route.registry;
+  const profile = route.profile;
   try {
     const result = await DatabaseSession.initialize({
       store: opened.store,
@@ -180,9 +187,14 @@ async function handleDatabaseInit(options: DatabaseCommandOptions): Promise<void
       ...(opened.rollbackDatabase === undefined
         ? {}
         : { rollbackDatabase: opened.rollbackDatabase }),
+      ...(registry === null || profile === null
+        ? {}
+        : {
+            publishBinding: async (databaseId: DatabaseId) => {
+              await registry.bindDatabaseId(profile.id, databaseId);
+            },
+          }),
     });
-    if (route.registry !== null && route.profile !== null)
-      await route.registry.bindDatabaseId(route.profile.id, result.databaseId);
     writeOutput({ initialized: true, ...result });
   } finally {
     zeroize(passphraseBytes);
@@ -220,10 +232,15 @@ async function handleRecoveryVerify(options: DatabaseCommandOptions): Promise<vo
   if (options.recoveryFile === undefined) throw new DatabaseSessionError('invalid');
   const recoveryFile = options.recoveryFile;
   await validateSecureFileSource(recoveryFile);
+  const expectedBinding = await readDatabaseRecoveryKitFileBinding(recoveryFile);
   await withOwnerSession(options, ['recovery-passphrase'], async (session, extras) => {
     const bytes = Buffer.from(extras[0] ?? '', 'utf8');
     try {
-      const slotId = await session.verifyRecovery({ recoveryFile, passphrase: bytes });
+      const slotId = await session.verifyRecovery({
+        recoveryFile,
+        passphrase: bytes,
+        expectedBinding,
+      });
       writeOutput({ valid: true, slotId });
     } finally {
       zeroize(bytes);
@@ -298,7 +315,7 @@ async function handleRecoveryUse(options: DatabaseCommandOptions): Promise<void>
         outputKeyFile: options.outputKeyFile,
         newPassphrase,
         ...(options.anchorFile === undefined ? {} : { anchorFile: options.anchorFile }),
-        expectedDatabaseId: binding.databaseId,
+        expectedBinding: binding,
       }),
     );
   } finally {
@@ -321,7 +338,7 @@ async function handleVaultList(options: DatabaseCommandOptions): Promise<void> {
       vaults: session.listVaults().map((entry) => ({
         id: entry.id,
         createdAt: entry.createdAt,
-        label: process.stdout.isTTY ? sanitize(entry.label) : REDACTED_LABEL,
+        label: REDACTED_LABEL,
       })),
     });
   });
@@ -333,11 +350,11 @@ async function handleVaultStatus(
 ): Promise<void> {
   await withOwnerSession(options, [], async (session) => {
     const id = vaultIdSchema.parse(vaultId);
-    const entry = await session.getVault(id);
+    await session.getVault(id);
     const document = await session.getVaultDocument(id);
     writeOutput({
       vaultId: id,
-      label: process.stdout.isTTY ? sanitize(entry.label) : REDACTED_LABEL,
+      label: REDACTED_LABEL,
       revision: document.revision,
     });
   });

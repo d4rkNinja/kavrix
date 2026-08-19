@@ -7,6 +7,7 @@ export {
   type DatabaseOpenWithSecretOptions,
   type DatabaseRecoveryCreateOptions,
   type DatabaseRecoveryUseOptions,
+  type DatabaseRecoveryVerifyOptions,
   type DatabaseSessionErrorCode,
   type DatabaseVaultCatalogEntry,
 } from './database-session.js';

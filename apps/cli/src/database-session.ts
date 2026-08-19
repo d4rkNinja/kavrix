@@ -1,4 +1,4 @@
-import { createHash, createHmac, hkdfSync, randomUUID } from 'node:crypto';
+import { createHmac, hkdfSync, randomUUID } from 'node:crypto';
 
 import {
   createDatabaseKeySlot,
@@ -23,17 +23,23 @@ import {
 } from '@kavrix/crypto';
 import {
   databaseRevisionAnchorPath,
-  deleteSecureFile,
+  cleanupOwnedDatabaseKeyFile,
+  cleanupOwnedDatabaseRecoveryKitFile,
+  cleanupOwnedDatabaseRevisionAnchor,
+  createOwnedDatabaseKeyFile,
+  createOwnedDatabaseRecoveryKitFile,
+  createOwnedDatabaseRevisionAnchor,
   readDatabaseKeyFile,
   readDatabaseKeyFileBinding,
   readDatabaseRecoveryKitFile,
   readDatabaseRevisionAnchor,
   transitionDatabaseRevisionAnchor,
   validateSecureFileDestination,
-  writeDatabaseKeyFile,
-  writeDatabaseRecoveryKitFile,
-  writeDatabaseRevisionAnchor,
+  type DatabaseKeyFilePublication,
+  type DatabaseRecoveryBinding,
+  type DatabaseRecoveryKitFilePublication,
   type DatabaseRevisionAnchor,
+  type DatabaseRevisionAnchorPublication,
 } from '@kavrix/key-files';
 import {
   CURRENT_CRYPTOGRAPHIC_VERSION,
@@ -62,6 +68,7 @@ import {
   type DatabaseRevision,
   type DatabaseVaultDocument,
   type EncryptedDatabaseDocument,
+  type LocalVaultPayload,
   type AssociatedData,
   type Sha256Digest,
   type VaultId,
@@ -72,6 +79,7 @@ import {
 } from '@kavrix/storage';
 
 const MAX_LABEL_BYTES = 1_024;
+let zeroizationObserver: ((cleared: true) => void) | undefined;
 const DATABASE_VAULT_DELETION_AUTHORIZATION = Symbol(
   'database-vault-deletion-authorization',
 );
@@ -80,6 +88,7 @@ type DatabaseVaultDeletionAuthorization = Readonly<{
 }>;
 
 export type DatabaseSessionErrorCode =
+  | 'ambiguous-commit'
   | 'authentication'
   | 'binding'
   | 'close'
@@ -97,6 +106,13 @@ export class DatabaseSessionError extends Error {
   }
 }
 
+/** @internal Test-only observation without exposing key bytes. */
+export function setDatabaseSessionZeroizationObserverForTest(
+  observer: ((cleared: true) => void) | undefined,
+): void {
+  zeroizationObserver = observer;
+}
+
 export type DatabaseVaultCatalogEntry = Readonly<{
   id: VaultId;
   label: string;
@@ -110,7 +126,7 @@ export type DatabaseInitializationOptions = Readonly<{
   label: string;
   anchorFile?: string;
   rollbackDatabase?: (databaseId: DatabaseId) => Promise<void>;
-  onRootKeyOwned?: (key: Uint8Array) => void;
+  publishBinding?: (databaseId: DatabaseId) => Promise<void>;
 }>;
 
 export type DatabaseOpenOptions = Readonly<{
@@ -119,7 +135,6 @@ export type DatabaseOpenOptions = Readonly<{
   passphrase: Uint8Array;
   expectedDatabaseId?: DatabaseId;
   anchorFile?: string;
-  onRootKeyOwned?: (key: Uint8Array) => void;
 }>;
 
 export type DatabaseOpenWithSecretOptions = Omit<DatabaseOpenOptions, 'passphrase'> &
@@ -130,6 +145,9 @@ export type DatabaseRecoveryCreateOptions = Readonly<{
   passphrase: Uint8Array;
 }>;
 
+export type DatabaseRecoveryVerifyOptions = DatabaseRecoveryCreateOptions &
+  Readonly<{ expectedBinding?: DatabaseRecoveryBinding }>;
+
 export type DatabaseRecoveryUseOptions = Readonly<{
   store: EncryptedDatabaseStore;
   recoveryFile: string;
@@ -137,7 +155,7 @@ export type DatabaseRecoveryUseOptions = Readonly<{
   outputKeyFile: string;
   newPassphrase: Uint8Array;
   anchorFile?: string;
-  expectedDatabaseId?: DatabaseId;
+  expectedBinding: DatabaseRecoveryBinding;
 }>;
 
 export class DatabaseSession {
@@ -202,10 +220,9 @@ export class DatabaseSession {
     const slotId = keySlotIdSchema.parse(`slot_${randomUUID()}`);
     const portableKey = generatePortableKey();
     const rootKey = generateDatabaseRootKey();
-    options.onRootKeyOwned?.(rootKey);
-    let keyWritten = false;
+    let keyPublication: DatabaseKeyFilePublication | undefined;
     let databaseMayExist = false;
-    let anchorWritten = false;
+    let anchorPublication: DatabaseRevisionAnchorPublication | undefined;
     try {
       const database = await createInitialDatabase(
         databaseId,
@@ -214,13 +231,15 @@ export class DatabaseSession {
         portableKey,
         rootKey,
       );
-      await writeDatabaseKeyFile(
+      const createdKey = await createOwnedDatabaseKeyFile(
         options.keyFile,
         portableKey,
         { databaseId, keySlotId: slotId },
         { protection: { kind: 'passphrase', passphrase } },
       );
-      keyWritten = true;
+      if (createdKey.status !== 'not-published')
+        keyPublication = createdKey.publication;
+      if (createdKey.status !== 'published') throw createdKey.error;
       databaseMayExist = true;
       try {
         await options.store.createDatabase(database);
@@ -235,40 +254,52 @@ export class DatabaseSession {
         throw error;
       }
       const anchor = await observedAnchor(options.store, database);
-      await writeDatabaseRevisionAnchor(anchorFile, rootKey, anchor, 'create');
-      anchorWritten = true;
+      const createdAnchor = await createOwnedDatabaseRevisionAnchor(
+        anchorFile,
+        rootKey,
+        anchor,
+      );
+      if (createdAnchor.status !== 'not-published')
+        anchorPublication = createdAnchor.publication;
+      if (createdAnchor.status !== 'published') throw createdAnchor.error;
       await readDatabaseRevisionAnchor(anchorFile, rootKey, anchor, {
         requireExactVaultSet: true,
       });
+      await options.publishBinding?.(databaseId);
       return { databaseId, keyFile: options.keyFile, anchorFile };
     } catch (error) {
-      const cleanupErrors: Error[] = [];
-      if (anchorWritten) await cleanupFile(anchorFile, cleanupErrors);
+      const cleanupErrors: DatabaseSessionError[] = [];
       if (databaseMayExist && options.rollbackDatabase !== undefined) {
         try {
           await options.rollbackDatabase(databaseId);
           databaseMayExist = false;
         } catch {
-          cleanupErrors.push(new Error('Datastore rollback failed.'));
+          cleanupErrors.push(new DatabaseSessionError('operation'));
         }
       }
-      if (databaseMayExist && options.rollbackDatabase === undefined) {
-        cleanupErrors.push(new Error('Datastore rollback could not be proven.'));
+      if (!databaseMayExist) {
+        if (anchorPublication !== undefined) {
+          const ownedAnchor = anchorPublication;
+          await cleanupOwned(
+            () => cleanupOwnedDatabaseRevisionAnchor(ownedAnchor),
+            cleanupErrors,
+          );
+        }
+        if (keyPublication !== undefined) {
+          const ownedKey = keyPublication;
+          await cleanupOwned(
+            () => cleanupOwnedDatabaseKeyFile(ownedKey),
+            cleanupErrors,
+          );
+        }
       }
-      // Retain the owner key whenever the datastore may still contain the new
-      // database. It is the only recovery-capable artifact.
-      if (keyWritten && !databaseMayExist)
-        await cleanupFile(options.keyFile, cleanupErrors);
-      if (cleanupErrors.length > 0) {
-        throw new AggregateError(
-          [safeError(error), ...cleanupErrors],
-          'Database initialization failed and rollback was incomplete.',
-          { cause: error },
-        );
-      }
+      if (databaseMayExist) throw new DatabaseSessionError('ambiguous-commit');
+      if (cleanupErrors.length > 0)
+        throw redactedAggregate(error, cleanupErrors, 'Database cleanup failed.');
       throw mapError(error);
     } finally {
       zeroize(rootKey);
+      observeCleared(rootKey);
       zeroize(portableKey);
       zeroize(passphrase);
     }
@@ -277,7 +308,7 @@ export class DatabaseSession {
   public static async open(options: DatabaseOpenOptions): Promise<DatabaseSession> {
     return this.openWithSecret({
       ...options,
-      readPassphrase: () => Promise.resolve(Uint8Array.from(options.passphrase)),
+      readPassphrase: () => Promise.resolve(options.passphrase),
     });
   }
 
@@ -315,7 +346,6 @@ export class DatabaseSession {
         portableKey,
         slotBinding(database, database.keySlot),
       );
-      options.onRootKeyOwned?.(rootKey);
       catalogBytes = await decryptDatabaseCatalog(
         database.encryptedCatalog,
         rootKey,
@@ -324,14 +354,13 @@ export class DatabaseSession {
       const catalog = decodeCatalog(catalogBytes);
       const anchorFile =
         options.anchorFile ?? databaseRevisionAnchorPath(options.keyFile);
-      const observed = await observedAnchor(options.store, database);
-      await transitionDatabaseRevisionAnchor(
-        anchorFile,
+      const observed = await authenticateDatabaseState(
+        options.store,
+        database,
+        catalog,
         rootKey,
-        observed,
-        () => Promise.resolve({ nextAnchor: observed, result: undefined }),
-        { requireExactVaultSet: true },
       );
+      await reconcileAnchor(anchorFile, rootKey, observed);
       const session = new DatabaseSession({
         store: options.store,
         anchorFile,
@@ -346,6 +375,7 @@ export class DatabaseSession {
     } finally {
       zeroize(catalogBytes);
       zeroize(rootKey);
+      if (rootKey !== undefined) observeCleared(rootKey);
       zeroize(portableKey);
       zeroize(passphrase);
     }
@@ -425,20 +455,13 @@ export class DatabaseSession {
       );
       const before = await observedAnchor(this.#store, this.#database);
       const after = anchorWithCreatedVault(before, nextDatabase, vault);
-      await transitionDatabaseRevisionAnchor(
-        this.#anchorFile,
-        this.#rootKey,
-        before,
-        async () => {
-          await this.#store.createVault({
-            database: nextDatabase,
-            expectedDatabaseRevision: this.#database.revision,
-            vault,
-          });
-          return { nextAnchor: after, result: undefined };
-        },
-        { requireExactVaultSet: true },
-      );
+      await this.#anchoredMutation(before, after, async () => {
+        await this.#store.createVault({
+          database: nextDatabase,
+          expectedDatabaseRevision: this.#database.revision,
+          vault,
+        });
+      });
       this.#database = nextDatabase;
       this.#catalog = nextCatalog;
       return { id, label, createdAt };
@@ -473,20 +496,19 @@ export class DatabaseSession {
     this.#catalog = nextCatalog;
   }
 
-  /** Re-encrypts the current authenticated payload at the next independent CAS. */
+  /** Updates authenticated plaintext while keeping the VRK inside the session. */
   public async updateVault(
-    documentInput: DatabaseVaultDocument,
+    idInput: VaultId,
+    update: (
+      current: LocalVaultPayload,
+    ) => LocalVaultPayload | Promise<LocalVaultPayload>,
   ): Promise<DatabaseVaultDocument> {
     this.#assertOpen();
-    const requestedId = vaultIdSchema.parse(documentInput.id);
-    const requestedRevision = vaultRevisionSchema.parse(documentInput.revision);
+    const requestedId = vaultIdSchema.parse(idInput);
     const current = await this.getVaultDocument(requestedId);
-    if (requestedRevision <= current.revision)
-      throw new DatabaseSessionError('conflict');
-    if (requestedRevision !== current.revision + 1)
-      throw new DatabaseSessionError('invalid');
     let root: VaultRootKey | undefined;
     let plaintext: Uint8Array | undefined;
+    let nextPlaintext: Uint8Array | undefined;
     try {
       root = await unwrapVaultRootForDatabase(
         current.wrappedVaultRoot,
@@ -498,6 +520,13 @@ export class DatabaseSession {
         root,
         current.encryptedPayload.aad,
       );
+      const currentPayload = localVaultPayloadSchema.parse(
+        JSON.parse(Buffer.from(plaintext).toString('utf8')) as unknown,
+      );
+      const nextPayload = localVaultPayloadSchema.parse(
+        await update(structuredClone(currentPayload)),
+      );
+      nextPlaintext = Buffer.from(canonicalJson(nextPayload), 'utf8');
       const updatedAt = now();
       const revision = vaultRevisionSchema.parse(current.revision + 1);
       const metadata = {
@@ -505,9 +534,9 @@ export class DatabaseSession {
         revision,
         updatedAt,
       };
-      const payloadMetadataDigest = vaultMetadataDigest(metadata, root, plaintext);
+      const payloadMetadataDigest = vaultMetadataDigest(metadata, root, nextPlaintext);
       const encryptedPayload = await encryptPayload(
-        plaintext,
+        nextPlaintext,
         root,
         vaultPayloadContext(current, revision, payloadMetadataDigest),
       );
@@ -518,24 +547,18 @@ export class DatabaseSession {
       });
       const before = await observedAnchor(this.#store, this.#database);
       const after = anchorWithUpdatedVault(before, updated);
-      await transitionDatabaseRevisionAnchor(
-        this.#anchorFile,
-        this.#rootKey,
-        before,
-        async () => {
-          await this.#store.updateVault({
-            vault: updated,
-            expectedVaultRevision: current.revision,
-          });
-          return { nextAnchor: after, result: undefined };
-        },
-        { requireExactVaultSet: true },
+      await this.#anchoredMutation(before, after, async () =>
+        this.#store.updateVault({
+          vault: updated,
+          expectedVaultRevision: current.revision,
+        }),
       );
       return updated;
     } catch (error) {
       throw mapError(error);
     } finally {
       zeroize(plaintext);
+      zeroize(nextPlaintext);
       zeroize(root);
     }
   }
@@ -561,21 +584,14 @@ export class DatabaseSession {
     );
     const before = await observedAnchor(this.#store, this.#database);
     const after = anchorWithoutVault(before, nextDatabase, id);
-    await transitionDatabaseRevisionAnchor(
-      this.#anchorFile,
-      this.#rootKey,
-      before,
-      async () => {
-        await this.#store.deleteVault({
-          database: nextDatabase,
-          expectedDatabaseRevision: this.#database.revision,
-          vaultId: id,
-          expectedVaultRevision: vault.revision,
-        });
-        return { nextAnchor: after, result: undefined };
-      },
-      { requireExactVaultSet: true },
-    );
+    await this.#anchoredMutation(before, after, async () => {
+      await this.#store.deleteVault({
+        database: nextDatabase,
+        expectedDatabaseRevision: this.#database.revision,
+        vaultId: id,
+        expectedVaultRevision: vault.revision,
+      });
+    });
     this.#database = nextDatabase;
     this.#catalog = nextCatalog;
   }
@@ -589,8 +605,9 @@ export class DatabaseSession {
     const passphrase = Uint8Array.from(options.passphrase);
     const slotId = keySlotIdSchema.parse(`recovery_${randomUUID()}`);
     let recoveryKey: RecoveryKey | undefined;
-    let kitWritten = false;
-    let databaseAdvanced = false;
+    let kitPublication: DatabaseRecoveryKitFilePublication | undefined;
+    let recoveryAnchorPublication: DatabaseRevisionAnchorPublication | undefined;
+    const publication = { databaseAdvanced: false };
     try {
       const nextRevision = databaseRevisionSchema.parse(this.#database.revision + 1);
       const created = await createDatabaseRecoverySlot(
@@ -600,19 +617,38 @@ export class DatabaseSession {
           schemaVersion: this.#database.schemaVersion,
           keyVersion: this.#database.currentKeyVersion,
           revision: nextRevision,
-          metadataDigest: recoverySlotDigest(this.#database, slotId),
+          metadataDigest: slotMetadataDigest(
+            'kavrix/database-recovery-slot-metadata-digest/v1',
+            this.#database,
+            slotId,
+            this.#rootKey,
+          ),
           createdAt: now(),
         },
         this.#rootKey,
       );
       recoveryKey = created.recoveryKey;
-      await writeDatabaseRecoveryKitFile(
+      const createdKit = await createOwnedDatabaseRecoveryKitFile(
         options.recoveryFile,
         recoveryKey,
         { databaseId: this.#databaseId, recoverySlotId: slotId },
         { passphrase },
       );
-      kitWritten = true;
+      if (createdKit.status !== 'not-published')
+        kitPublication = createdKit.publication;
+      if (createdKit.status !== 'published') throw createdKit.error;
+      const before = await observedAnchor(this.#store, this.#database);
+      const createdAnchor = await createOwnedDatabaseRevisionAnchor(
+        recoveryAnchorFile,
+        this.#rootKey,
+        before,
+      );
+      if (createdAnchor.status !== 'not-published')
+        recoveryAnchorPublication = createdAnchor.publication;
+      if (createdAnchor.status !== 'published') throw createdAnchor.error;
+      await readDatabaseRevisionAnchor(recoveryAnchorFile, this.#rootKey, before, {
+        requireExactVaultSet: true,
+      });
       const next = await reencryptCatalog(
         {
           ...this.#database,
@@ -622,25 +658,37 @@ export class DatabaseSession {
         this.#rootKey,
       );
       await this.#databaseMutation(next);
-      databaseAdvanced = true;
+      publication.databaseAdvanced = true;
       this.#database = next;
       const recoveryAnchor = await observedAnchor(this.#store, next);
-      await writeDatabaseRevisionAnchor(
-        recoveryAnchorFile,
-        this.#rootKey,
-        recoveryAnchor,
-        'create',
-      );
-      await readDatabaseRevisionAnchor(
-        recoveryAnchorFile,
-        this.#rootKey,
-        recoveryAnchor,
-        { requireExactVaultSet: true },
-      );
+      await reconcileAnchor(recoveryAnchorFile, this.#rootKey, recoveryAnchor);
       return { slotId, recoveryFile: options.recoveryFile };
     } catch (error) {
-      if (kitWritten && !databaseAdvanced)
-        await deleteSecureFile(options.recoveryFile).catch(() => undefined);
+      const ambiguous =
+        error instanceof DatabaseSessionError && error.code === 'ambiguous-commit';
+      const cleanupErrors: DatabaseSessionError[] = [];
+      if (!publication.databaseAdvanced && !ambiguous) {
+        if (recoveryAnchorPublication !== undefined) {
+          const ownedAnchor = recoveryAnchorPublication;
+          await cleanupOwned(
+            () => cleanupOwnedDatabaseRevisionAnchor(ownedAnchor),
+            cleanupErrors,
+          );
+        }
+        if (kitPublication !== undefined) {
+          const ownedKit = kitPublication;
+          await cleanupOwned(
+            () => cleanupOwnedDatabaseRecoveryKitFile(ownedKit),
+            cleanupErrors,
+          );
+        }
+      }
+      if (cleanupErrors.length > 0)
+        throw redactedAggregate(error, cleanupErrors, 'Recovery cleanup failed.');
+      if (publication.databaseAdvanced) {
+        await this.#poison();
+        throw new DatabaseSessionError('ambiguous-commit');
+      }
       throw mapError(error);
     } finally {
       zeroize(recoveryKey);
@@ -658,13 +706,20 @@ export class DatabaseSession {
     };
   }
 
-  public async verifyRecovery(options: DatabaseRecoveryCreateOptions): Promise<string> {
+  public async verifyRecovery(options: DatabaseRecoveryVerifyOptions): Promise<string> {
     this.#assertOpen();
     const passphrase = Uint8Array.from(options.passphrase);
     let parsed: Awaited<ReturnType<typeof readDatabaseRecoveryKitFile>> | undefined;
     let root: DatabaseRootKey | undefined;
+    let catalogBytes: Uint8Array | undefined;
     try {
-      parsed = await readDatabaseRecoveryKitFile(options.recoveryFile, passphrase);
+      parsed = await readDatabaseRecoveryKitFile(
+        options.recoveryFile,
+        passphrase,
+        options.expectedBinding,
+      );
+      if (parsed.binding.databaseId !== this.#databaseId)
+        throw new DatabaseSessionError('binding');
       const slot = this.#database.recoverySlots.find(
         (candidate) => candidate.id === parsed?.binding.recoverySlotId,
       );
@@ -674,24 +729,29 @@ export class DatabaseSession {
         parsed.recoveryKey,
         slotBinding(this.#database, slot),
       );
-      await decryptDatabaseCatalog(
+      catalogBytes = await decryptDatabaseCatalog(
         this.#database.encryptedCatalog,
         root,
         this.#database.encryptedCatalog.aad,
       );
-      await readDatabaseRevisionAnchor(
-        this.#anchorFile,
+      const catalog = decodeCatalog(catalogBytes);
+      const observed = await authenticateDatabaseState(
+        this.#store,
+        this.#database,
+        catalog,
         root,
-        await observedAnchor(this.#store, this.#database),
-        {
-          requireExactVaultSet: true,
-        },
+      );
+      await reconcileAnchor(
+        databaseRevisionAnchorPath(options.recoveryFile),
+        root,
+        observed,
       );
       return slot.id;
     } catch (error) {
       throw mapError(error);
     } finally {
       zeroize(root);
+      zeroize(catalogBytes);
       zeroize(parsed?.recoveryKey);
       zeroize(passphrase);
     }
@@ -734,17 +794,18 @@ export class DatabaseSession {
     let root: DatabaseRootKey | undefined;
     let portableKey: PortableKey | undefined;
     let catalogBytes: Uint8Array | undefined;
-    let destinationKeyWritten = false;
+    let destinationKeyPublication: DatabaseKeyFilePublication | undefined;
     const publication = { databaseAdvanced: false };
-    let destinationAnchorWritten = false;
+    let destinationAnchorPublication: DatabaseRevisionAnchorPublication | undefined;
     try {
       parsed = await readDatabaseRecoveryKitFile(
         options.recoveryFile,
         recoveryPassphrase,
+        options.expectedBinding,
       );
       if (
-        options.expectedDatabaseId !== undefined &&
-        parsed.binding.databaseId !== options.expectedDatabaseId
+        parsed.binding.databaseId !== options.expectedBinding.databaseId ||
+        parsed.binding.recoverySlotId !== options.expectedBinding.recoverySlotId
       )
         throw new DatabaseSessionError('binding');
       const database = await options.store.getDatabase(parsed.binding.databaseId);
@@ -764,12 +825,14 @@ export class DatabaseSession {
         database.encryptedCatalog.aad,
       );
       const catalog = decodeCatalog(catalogBytes);
-      const observed = await observedAnchor(options.store, database);
+      const observed = await authenticateDatabaseState(
+        options.store,
+        database,
+        catalog,
+        root,
+      );
       const sourceAnchor = databaseRevisionAnchorPath(options.recoveryFile);
-      // A recovery kit is valid only against an existing trusted owner anchor.
-      await readDatabaseRevisionAnchor(sourceAnchor, root, observed, {
-        requireExactVaultSet: true,
-      });
+      await reconcileAnchor(sourceAnchor, root, observed);
       portableKey = generatePortableKey();
       const slotId = keySlotIdSchema.parse(`slot_${randomUUID()}`);
       const nextRevision = databaseRevisionSchema.parse(database.revision + 1);
@@ -780,20 +843,38 @@ export class DatabaseSession {
           schemaVersion: database.schemaVersion,
           keyVersion: database.currentKeyVersion,
           revision: nextRevision,
-          metadataDigest: recoverySlotDigest(database, slotId),
+          metadataDigest: slotMetadataDigest(
+            'kavrix/database-owner-slot-metadata-digest/v1',
+            database,
+            slotId,
+            root,
+          ),
           createdAt: now(),
         },
         portableKey,
         root,
       );
       const next = await reencryptCatalog({ ...database, keySlot }, catalog, root);
-      await writeDatabaseKeyFile(
+      const createdKey = await createOwnedDatabaseKeyFile(
         options.outputKeyFile,
         portableKey,
         { databaseId: database.id, keySlotId: slotId },
         { protection: { kind: 'passphrase', passphrase: newPassphrase } },
       );
-      destinationKeyWritten = true;
+      if (createdKey.status !== 'not-published')
+        destinationKeyPublication = createdKey.publication;
+      if (createdKey.status !== 'published') throw createdKey.error;
+      const createdAnchor = await createOwnedDatabaseRevisionAnchor(
+        anchorFile,
+        root,
+        observed,
+      );
+      if (createdAnchor.status !== 'not-published')
+        destinationAnchorPublication = createdAnchor.publication;
+      if (createdAnchor.status !== 'published') throw createdAnchor.error;
+      await readDatabaseRevisionAnchor(anchorFile, root, observed, {
+        requireExactVaultSet: true,
+      });
       const nextAnchor = {
         ...observed,
         databaseRevision: next.revision,
@@ -810,8 +891,7 @@ export class DatabaseSession {
         },
         { requireExactVaultSet: true },
       );
-      await writeDatabaseRevisionAnchor(anchorFile, root, nextAnchor, 'create');
-      destinationAnchorWritten = true;
+      await reconcileAnchor(anchorFile, root, nextAnchor);
       const verified = await readDatabaseKeyFile(options.outputKeyFile, newPassphrase, {
         databaseId: database.id,
         keySlotId: slotId,
@@ -822,12 +902,27 @@ export class DatabaseSession {
       });
       return { databaseId: database.id, keyFile: options.outputKeyFile, anchorFile };
     } catch (error) {
+      const cleanupErrors: DatabaseSessionError[] = [];
       if (!publication.databaseAdvanced) {
-        if (destinationAnchorWritten)
-          await deleteSecureFile(anchorFile).catch(() => undefined);
-        if (destinationKeyWritten)
-          await deleteSecureFile(options.outputKeyFile).catch(() => undefined);
+        if (destinationAnchorPublication !== undefined) {
+          const ownedAnchor = destinationAnchorPublication;
+          await cleanupOwned(
+            () => cleanupOwnedDatabaseRevisionAnchor(ownedAnchor),
+            cleanupErrors,
+          );
+        }
+        if (destinationKeyPublication !== undefined) {
+          const ownedKey = destinationKeyPublication;
+          await cleanupOwned(
+            () => cleanupOwnedDatabaseKeyFile(ownedKey),
+            cleanupErrors,
+          );
+        }
       }
+      if (publication.databaseAdvanced)
+        throw new DatabaseSessionError('ambiguous-commit');
+      if (cleanupErrors.length > 0)
+        throw redactedAggregate(error, cleanupErrors, 'Recovery cleanup failed.');
       throw mapError(error);
     } finally {
       zeroize(catalogBytes);
@@ -843,6 +938,7 @@ export class DatabaseSession {
     if (this.#closed) return;
     this.#closed = true;
     zeroize(this.#rootKey);
+    observeCleared(this.#rootKey);
     try {
       await this.#store.close();
     } catch {
@@ -857,20 +953,44 @@ export class DatabaseSession {
       databaseRevision: next.revision,
       catalogMetadataDigest: next.catalogMetadataDigest,
     };
+    await this.#anchoredMutation(before, after, async () => {
+      await this.#store.updateDatabase(next, this.#database.revision);
+    });
+  }
+
+  async #anchoredMutation(
+    before: DatabaseRevisionAnchor,
+    after: DatabaseRevisionAnchor,
+    mutate: () => Promise<void>,
+  ): Promise<void> {
+    const publication = { storeAccepted: false };
     try {
       await transitionDatabaseRevisionAnchor(
         this.#anchorFile,
         this.#rootKey,
         before,
         async () => {
-          await this.#store.updateDatabase(next, this.#database.revision);
+          await mutate();
+          publication.storeAccepted = true;
           return { nextAnchor: after, result: undefined };
         },
         { requireExactVaultSet: true },
       );
     } catch (error) {
+      if (publication.storeAccepted) {
+        await this.#poison();
+        throw new DatabaseSessionError('ambiguous-commit');
+      }
       throw mapError(error);
     }
+  }
+
+  async #poison(): Promise<void> {
+    if (this.#closed) return;
+    this.#closed = true;
+    zeroize(this.#rootKey);
+    observeCleared(this.#rootKey);
+    await this.#store.close().catch(() => undefined);
   }
 
   #assertOpen(): void {
@@ -1068,6 +1188,59 @@ async function observedAnchor(
   database: EncryptedDatabaseDocument,
 ): Promise<DatabaseRevisionAnchor> {
   const vaults = await store.listVaults(database.id);
+  return anchorFromVaults(database, vaults);
+}
+
+async function authenticateDatabaseState(
+  store: EncryptedDatabaseStore,
+  database: EncryptedDatabaseDocument,
+  catalog: DatabaseCatalogPayload,
+  rootKey: DatabaseRootKey,
+): Promise<DatabaseRevisionAnchor> {
+  const vaults = await store.listVaults(database.id);
+  const catalogIds = [...catalog.vaults.map((entry) => entry.id)].sort();
+  const storedIds = [...vaults.map((vault) => vault.id)].sort();
+  if (
+    catalogIds.length !== storedIds.length ||
+    catalogIds.some((id, index) => id !== storedIds[index])
+  )
+    throw new DatabaseSessionError('authentication');
+  for (const vault of vaults) await authenticateVault(vault, rootKey);
+  return anchorFromVaults(database, vaults);
+}
+
+async function authenticateVault(
+  vault: DatabaseVaultDocument,
+  databaseRootKey: DatabaseRootKey,
+): Promise<void> {
+  let root: VaultRootKey | undefined;
+  let plaintext: Uint8Array | undefined;
+  try {
+    root = await unwrapVaultRootForDatabase(
+      vault.wrappedVaultRoot,
+      databaseRootKey,
+      vault.wrappedVaultRoot.aad,
+    );
+    plaintext = await decryptPayload(
+      vault.encryptedPayload,
+      root,
+      vault.encryptedPayload.aad,
+    );
+    localVaultPayloadSchema.parse(
+      JSON.parse(Buffer.from(plaintext).toString('utf8')) as unknown,
+    );
+    if (vaultMetadataDigest(vault, root, plaintext) !== vault.payloadMetadataDigest)
+      throw new DatabaseSessionError('authentication');
+  } finally {
+    zeroize(plaintext);
+    zeroize(root);
+  }
+}
+
+function anchorFromVaults(
+  database: EncryptedDatabaseDocument,
+  vaults: readonly DatabaseVaultDocument[],
+): DatabaseRevisionAnchor {
   const vaultHeads: Record<
     string,
     { revision: DatabaseVaultDocument['revision']; metadataDigest: Sha256Digest }
@@ -1086,6 +1259,19 @@ async function observedAnchor(
     catalogMetadataDigest: database.catalogMetadataDigest,
     vaultHeads,
   };
+}
+
+async function reconcileAnchor(
+  path: string,
+  rootKey: DatabaseRootKey,
+  observed: DatabaseRevisionAnchor,
+): Promise<void> {
+  await transitionDatabaseRevisionAnchor(path, rootKey, observed, () =>
+    Promise.resolve({ nextAnchor: observed, result: undefined }),
+  );
+  await readDatabaseRevisionAnchor(path, rootKey, observed, {
+    requireExactVaultSet: true,
+  });
 }
 
 function anchorWithCreatedVault(
@@ -1223,24 +1409,21 @@ function vaultMetadataDigest(
   );
 }
 
-function recoverySlotDigest(
+function slotMetadataDigest(
+  domain: string,
   database: EncryptedDatabaseDocument,
   slotId: string,
+  rootKey: DatabaseRootKey,
 ): Sha256Digest {
-  return digest('kavrix/database-slot-public-metadata/v1', {
-    databaseId: database.id,
-    slotId,
-    keyVersion: database.currentKeyVersion,
-  });
-}
-
-function digest(domain: string, value: unknown): Sha256Digest {
-  return sha256DigestSchema.parse(
-    createHash('sha256')
-      .update(domain, 'utf8')
-      .update('\0')
-      .update(canonicalJson(value), 'utf8')
-      .digest('base64url'),
+  return keyedDigest(
+    domain,
+    rootKey,
+    {
+      databaseId: database.id,
+      slotId,
+      keyVersion: database.currentKeyVersion,
+    },
+    new Uint8Array(0),
   );
 }
 
@@ -1316,22 +1499,38 @@ function mapError(error: unknown): DatabaseSessionError {
   return new DatabaseSessionError('authentication');
 }
 
-function safeError(error: unknown): Error {
-  return error instanceof DatabaseSessionError
-    ? error
-    : new DatabaseSessionError('operation');
+async function cleanupOwned(
+  cleanup: () => Promise<void>,
+  errors: DatabaseSessionError[],
+): Promise<void> {
+  try {
+    await cleanup();
+  } catch {
+    errors.push(new DatabaseSessionError('operation'));
+  }
 }
 
-async function cleanupFile(path: string, errors: Error[]): Promise<void> {
+function redactedAggregate(
+  primary: unknown,
+  cleanupErrors: readonly DatabaseSessionError[],
+  message: string,
+): AggregateError {
+  return new AggregateError([mapError(primary), ...cleanupErrors], message);
+}
+
+function observeCleared(key: Uint8Array): void {
+  if (!key.every((byte) => byte === 0)) throw new DatabaseSessionError('operation');
+  if (zeroizationObserver === undefined) return;
   try {
-    await deleteSecureFile(path);
+    zeroizationObserver(true);
   } catch {
-    errors.push(new Error('Protected artifact cleanup failed.'));
+    throw new DatabaseSessionError('operation');
   }
 }
 
 function messageFor(code: DatabaseSessionErrorCode): string {
   const messages: Record<DatabaseSessionErrorCode, string> = {
+    'ambiguous-commit': 'The database may have changed; reopen it before continuing.',
     authentication: 'Database authentication failed.',
     binding: 'Database binding validation failed.',
     close: 'Database session cleanup failed.',

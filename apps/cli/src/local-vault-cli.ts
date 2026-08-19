@@ -67,10 +67,7 @@ import {
 } from '@kavrix/storage';
 import { Command } from 'commander';
 
-import {
-  addDatabaseOwnerCommands,
-  addDatabaseVaultCommands,
-} from './database-commands.js';
+import { addDatabaseOwnerCommands } from './database-commands.js';
 import { DatabaseSessionError } from './database-session.js';
 import {
   DatastoreProfileError,
@@ -398,7 +395,21 @@ export function buildLocalCli(): Command {
   const vault = program
     .command('vault')
     .description('Select and inspect encrypted vaults.');
-  addDatabaseVaultCommands(vault);
+  const vaultList = vault
+    .command('list')
+    .description('List vault identifiers stored in the selected MongoDB collection.');
+  addDatabaseOnlyOptions(vaultList);
+  vaultList.action(async (...args: unknown[]) => {
+    await handleVaultList(getOptions(args));
+  });
+  const vaultStatus = vault
+    .command('status')
+    .description('Show non-secret metadata for the selected vault.');
+  addDatabaseOnlyOptions(vaultStatus);
+  addVaultOption(vaultStatus);
+  vaultStatus.action(async (...args: unknown[]) => {
+    await handleVaultStatus(getOptions(args));
+  });
 
   const key = program
     .command('key')
@@ -472,7 +483,6 @@ class InitializationRollbackError extends AggregateError {
     super(
       [asError(operationError), asError(cleanupError)],
       'Vault initialization failed and datastore rollback was incomplete.',
-      { cause: asError(operationError) },
     );
     this.name = 'InitializationRollbackError';
   }
@@ -2278,6 +2288,44 @@ async function handleRecoveryUse(options: LocalCliOptions): Promise<void> {
   }
 }
 
+async function handleVaultList(options: LocalCliOptions): Promise<void> {
+  const values = await readSecrets(['database-url'], options);
+  const databaseUrl = requiredSecret(values, 0);
+  await withStore(databaseUrl, options, async (store, target) => {
+    const vaults = await store.listVaultIds();
+    writeJson({ ...storeLocation(options, target), vaults });
+  });
+}
+
+async function handleVaultStatus(options: LocalCliOptions): Promise<void> {
+  const values = await readSecrets(['database-url'], options);
+  const databaseUrl = requiredSecret(values, 0);
+  await withStore(databaseUrl, options, async (store, target) => {
+    const document = await requireVault(store, options.vault);
+    writeJson({
+      ...storeLocation(options, target),
+      vaultId: document.id,
+      revision: document.revision,
+      currentKeyVersion: document.currentKeyVersion,
+      keySlot: {
+        id: document.keySlot.id,
+        type: document.keySlot.type,
+        state: document.keySlot.state,
+        keyVersion: document.keySlot.keyVersion,
+        createdAt: document.keySlot.createdAt,
+      },
+      recoverySlots: {
+        total: document.recoverySlots.length,
+        active: document.recoverySlots.filter((slot) => slot.state === 'active').length,
+        revoked: document.recoverySlots.filter((slot) => slot.state === 'revoked')
+          .length,
+      },
+      createdAt: document.createdAt,
+      updatedAt: document.updatedAt,
+    });
+  });
+}
+
 async function handleKeyStatus(options: LocalCliOptions): Promise<void> {
   const keyFile = options.source ?? options.keyFile;
   const values = await readSecrets(['passphrase'], options);
@@ -2909,7 +2957,16 @@ function requiredSecret(values: readonly string[], index: number): string {
 }
 
 function asError(error: unknown): Error {
-  return error instanceof Error ? error : new LocalCliError('Kavrix operation failed.');
+  if (
+    error instanceof LocalCliError ||
+    error instanceof LocalSecretInputError ||
+    error instanceof PortableKeyFileError ||
+    error instanceof EncryptedVaultStoreError ||
+    error instanceof DatastoreProfileError ||
+    error instanceof DatabaseSessionError
+  )
+    return error;
+  return new LocalCliError('Kavrix operation failed.');
 }
 
 function requiredOption(value: string | undefined, name: string): string {
