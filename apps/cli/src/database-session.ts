@@ -79,6 +79,8 @@ import {
 } from '@kavrix/storage';
 
 const MAX_LABEL_BYTES = 1_024;
+const UTF8_ENCODER = new TextEncoder();
+const STRICT_UTF8_DECODER = new TextDecoder('utf-8', { fatal: true });
 let zeroizationObserver: ((cleared: true) => void) | undefined;
 const DATABASE_VAULT_DELETION_AUTHORIZATION = Symbol(
   'database-vault-deletion-authorization',
@@ -521,12 +523,12 @@ export class DatabaseSession {
         current.encryptedPayload.aad,
       );
       const currentPayload = localVaultPayloadSchema.parse(
-        JSON.parse(Buffer.from(plaintext).toString('utf8')) as unknown,
+        JSON.parse(decodeSecretUtf8(plaintext)) as unknown,
       );
       const nextPayload = localVaultPayloadSchema.parse(
         await update(structuredClone(currentPayload)),
       );
-      nextPlaintext = Buffer.from(canonicalJson(nextPayload), 'utf8');
+      nextPlaintext = UTF8_ENCODER.encode(canonicalJson(nextPayload));
       const updatedAt = now();
       const revision = vaultRevisionSchema.parse(current.revision + 1);
       const metadata = {
@@ -1131,9 +1133,8 @@ async function createEmptyVault(
   };
   let plaintext: Uint8Array | undefined;
   try {
-    plaintext = Buffer.from(
+    plaintext = UTF8_ENCODER.encode(
       canonicalJson(localVaultPayloadSchema.parse({ records: {} })),
-      'utf8',
     );
     const payloadMetadataDigest = keyedDigest(
       'kavrix/database-vault-payload-digest/v1',
@@ -1226,9 +1227,7 @@ async function authenticateVault(
       root,
       vault.encryptedPayload.aad,
     );
-    localVaultPayloadSchema.parse(
-      JSON.parse(Buffer.from(plaintext).toString('utf8')) as unknown,
-    );
+    localVaultPayloadSchema.parse(JSON.parse(decodeSecretUtf8(plaintext)) as unknown);
     if (vaultMetadataDigest(vault, root, plaintext) !== vault.payloadMetadataDigest)
       throw new DatabaseSessionError('authentication');
   } finally {
@@ -1458,17 +1457,24 @@ function keyedDigest(
 }
 
 function encodeCatalog(catalog: DatabaseCatalogPayload): Uint8Array {
-  return Buffer.from(
+  return UTF8_ENCODER.encode(
     canonicalJson(databaseCatalogPayloadSchema.parse(catalog)),
-    'utf8',
   );
 }
 
 function decodeCatalog(bytes: Uint8Array): DatabaseCatalogPayload {
   try {
     return databaseCatalogPayloadSchema.parse(
-      JSON.parse(Buffer.from(bytes).toString('utf8')) as unknown,
+      JSON.parse(decodeSecretUtf8(bytes)) as unknown,
     );
+  } catch {
+    throw new DatabaseSessionError('authentication');
+  }
+}
+
+function decodeSecretUtf8(bytes: Uint8Array): string {
+  try {
+    return STRICT_UTF8_DECODER.decode(bytes);
   } catch {
     throw new DatabaseSessionError('authentication');
   }

@@ -86,6 +86,20 @@ describe('local secret input policy', () => {
     ).resolves.toEqual(['correct horse battery staple']);
   });
 
+  it('rejects malformed and partial UTF-8 stdin frames and clears consumed chunks', async () => {
+    for (const malformed of [
+      Buffer.from([0xc3, 0x28, 0x0a]),
+      Buffer.from([0x63, 0x6f, 0x72, 0x72, 0x65, 0x63, 0x74, 0xc3]),
+    ]) {
+      const input = Readable.from([malformed]);
+      const output = new TestTerminalOutput();
+      await expect(
+        new LocalSecretInput(input, output).read(['database-url'], true),
+      ).rejects.toThrow('Secret input contains invalid bytes.');
+      expect([...malformed]).toEqual(new Array(malformed.byteLength).fill(0));
+    }
+  });
+
   it('reads protected stdin incrementally without returning later frames early', async () => {
     const reader = secretInput(
       'mongodb://localhost/kavrix\ncorrect horse battery staple\n',
@@ -156,14 +170,48 @@ describe('local secret input policy', () => {
     expect(input.isRaw).toBe(false);
   });
 
+  it('accepts UTF-8 split across masked chunks and clears each consumed buffer', async () => {
+    const input = new TestTerminalInput();
+    const output = new TestTerminalOutput();
+    const reading = new LocalSecretInput(input, output).read(['passphrase'], false);
+    const first = Buffer.from([
+      ...new TextEncoder().encode('correct horse battery staple-'),
+      0xe5,
+      0xaf,
+    ]);
+    const second = Buffer.from([0x86, 0xe7, 0xa0, 0x81, 13]);
+
+    input.enter(first);
+    input.enter(second);
+
+    await expect(reading).resolves.toEqual(['correct horse battery staple-密码']);
+    expect([...first]).toEqual(new Array(first.byteLength).fill(0));
+    expect([...second]).toEqual(new Array(second.byteLength).fill(0));
+  });
+
+  it('rejects malformed masked UTF-8 generically and clears the input buffer', async () => {
+    const input = new TestTerminalInput();
+    const output = new TestTerminalOutput();
+    const reading = new LocalSecretInput(input, output).read(['database-url'], false);
+    const malformed = Buffer.from([0xc3, 0x28, 13]);
+
+    input.enter(malformed);
+
+    await expect(reading).rejects.toThrow('Secret input contains invalid bytes.');
+    expect([...malformed]).toEqual(new Array(malformed.byteLength).fill(0));
+    expect(input.isRaw).toBe(false);
+  });
+
   it('restores terminal state when secret entry is cancelled', async () => {
     const input = new TestTerminalInput();
     const output = new TestTerminalOutput();
     const reading = new LocalSecretInput(input, output).read(['passphrase'], false);
 
-    input.enter(Buffer.from([3]));
+    const cancellation = Buffer.from([3]);
+    input.enter(cancellation);
 
     await expect(reading).rejects.toThrow('Secret entry was cancelled.');
+    expect([...cancellation]).toEqual([0]);
     expect(input.rawModeChanges).toEqual([true, false]);
     expect(input.isRaw).toBe(false);
     expect(output.text()).toBe('Enter passphrase (input hidden): \n');

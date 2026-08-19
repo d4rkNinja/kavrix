@@ -4,6 +4,8 @@ import { MIN_PASSPHRASE_BYTES } from '@kavrix/crypto';
 
 const MAX_SECRET_BYTES = 1_048_576;
 const MAX_SECRET_FRAMES = 4;
+const UTF8_ENCODER = new TextEncoder();
+const STRICT_UTF8_DECODER = new TextDecoder('utf-8', { fatal: true });
 
 export type LocalSecretKind =
   | 'database-url'
@@ -88,6 +90,9 @@ export class LocalSecretInput {
       }
       if (finalFrames) await this.#requireStdinEnd();
       return frames;
+    } catch (error) {
+      this.#clearPending();
+      throw error;
     } finally {
       zeroBytes(frame);
     }
@@ -103,16 +108,15 @@ export class LocalSecretInput {
         this.#stdinEnded = true;
         return null;
       }
-      const source =
-        typeof next.value === 'string'
-          ? Buffer.from(next.value)
-          : next.value instanceof Uint8Array
-            ? next.value
-            : undefined;
-      if (source === undefined) {
+      let bytes: Uint8Array;
+      if (typeof next.value === 'string') {
+        bytes = UTF8_ENCODER.encode(next.value);
+      } else if (next.value instanceof Uint8Array) {
+        bytes = Uint8Array.from(next.value);
+        zeroBytes(next.value);
+      } else {
         throw new LocalSecretInputError('Secret input contains invalid bytes.');
       }
-      const bytes = Uint8Array.from(source);
       if (bytes.byteLength === 0) continue;
       this.#stdinPending = bytes;
       return bytes;
@@ -135,6 +139,12 @@ export class LocalSecretInput {
   #consumePending(length: number): void {
     const prior = this.#stdinPending;
     this.#stdinPending = Uint8Array.from(prior.subarray(length));
+    zeroBytes(prior);
+  }
+
+  #clearPending(): void {
+    const prior = this.#stdinPending;
+    this.#stdinPending = new Uint8Array(0);
     zeroBytes(prior);
   }
 
@@ -179,23 +189,28 @@ export class LocalSecretInput {
             cleanupFailed = true;
           }
         }
-        const value = Buffer.from(bytes).toString('utf8');
-        bytes.fill(0);
         if ((cleanupFailed || cleanupStreamFailed) && error === undefined) {
           error = new LocalSecretInputError('Secret input terminal cleanup failed.');
         }
-        if (error !== undefined) reject(error);
-        else {
+        let value: string | undefined;
+        if (error === undefined) {
+          const encoded = Uint8Array.from(bytes);
           try {
-            resolve(validateSecret(value, kind));
-          } catch (validationError) {
-            reject(
-              validationError instanceof Error
-                ? validationError
-                : new LocalSecretInputError('Secret input is invalid.'),
-            );
+            value = decodeFrame(encoded, kind);
+          } catch (decodeError) {
+            error =
+              decodeError instanceof Error
+                ? decodeError
+                : new LocalSecretInputError('Secret input contains invalid bytes.');
+          } finally {
+            zeroBytes(encoded);
           }
         }
+        bytes.fill(0);
+        bytes.length = 0;
+        if (error !== undefined) reject(error);
+        else if (value !== undefined) resolve(value);
+        else reject(new LocalSecretInputError('Secret input is invalid.'));
       };
       const onEnd = (): void => {
         finish(
@@ -216,7 +231,7 @@ export class LocalSecretInput {
         );
       };
       const onData = (chunk: Buffer | string): void => {
-        const incoming = Buffer.from(chunk);
+        const incoming = typeof chunk === 'string' ? UTF8_ENCODER.encode(chunk) : chunk;
         try {
           for (const byte of incoming) {
             if (byte === 3) {
@@ -228,6 +243,7 @@ export class LocalSecretInput {
               return;
             }
             if (byte === 8 || byte === 127) {
+              if (bytes.length > 0) bytes[bytes.length - 1] = 0;
               bytes.pop();
               continue;
             }
@@ -313,7 +329,13 @@ function appendBytes(left: Uint8Array, right: Uint8Array): Uint8Array {
 
 function decodeFrame(bytes: Uint8Array, kind?: LocalSecretKind): string {
   const end = bytes.at(-1) === 13 ? bytes.byteLength - 1 : bytes.byteLength;
-  return validateSecret(Buffer.from(bytes.subarray(0, end)).toString('utf8'), kind);
+  let value: string;
+  try {
+    value = STRICT_UTF8_DECODER.decode(bytes.subarray(0, end));
+  } catch {
+    throw new LocalSecretInputError('Secret input contains invalid bytes.');
+  }
+  return validateSecret(value, kind);
 }
 
 function zeroBytes(bytes: Uint8Array): void {

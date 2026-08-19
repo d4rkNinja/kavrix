@@ -33,7 +33,7 @@ import {
   type EncryptedDatabaseStore,
   type UpdateVaultInput,
 } from '@kavrix/storage';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   DatabaseSession,
@@ -103,6 +103,64 @@ describe('DatabaseSession', () => {
     expect(outer).not.toContain('database-label-canary');
     expect(outer).not.toContain('alpha-label-canary');
     expect(outer).not.toContain('renamed-label-canary');
+  });
+
+  it('decodes authenticated catalog and vault plaintext without Buffer copies', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'kavrix-session-'));
+    const store = new MemoryDatabaseStore();
+    const keyFile = join(directory, 'owner.kavrix-db-key');
+    await DatabaseSession.initialize({
+      store,
+      keyFile,
+      passphrase: PASSPHRASE,
+      label: 'catalog-copy-canary',
+    });
+    const session = await DatabaseSession.open({
+      store,
+      keyFile,
+      passphrase: PASSPHRASE,
+    });
+    const vault = await session.createVault('vault');
+    await session.updateVault(vault.id, (payload) => ({
+      records: {
+        ...payload.records,
+        copyProbe: {
+          value: 'vault-copy-canary',
+          updatedAt: new Date().toISOString(),
+        },
+      },
+    }));
+    await session.close();
+
+    const originalFrom = Buffer.from;
+    let copiedSecretPlaintext = false;
+    const fromSpy = vi.spyOn(Buffer, 'from').mockImplementation(((
+      value: unknown,
+      ...arguments_: unknown[]
+    ) => {
+      if (value instanceof Uint8Array) {
+        const decoded = new TextDecoder().decode(value);
+        if (
+          decoded.includes('catalog-copy-canary') ||
+          decoded.includes('vault-copy-canary')
+        ) {
+          copiedSecretPlaintext = true;
+        }
+      }
+      return Reflect.apply(originalFrom, Buffer, [value, ...arguments_]) as Buffer;
+    }) as typeof Buffer.from);
+    try {
+      const reopened = await DatabaseSession.open({
+        store,
+        keyFile,
+        passphrase: PASSPHRASE,
+      });
+      await reopened.updateVault(vault.id, (payload) => payload);
+      expect(copiedSecretPlaintext).toBe(false);
+      await reopened.close();
+    } finally {
+      fromSpy.mockRestore();
+    }
   });
 
   it('fails generically on a wrong passphrase before catalog decryption', async () => {
