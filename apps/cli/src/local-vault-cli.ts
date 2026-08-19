@@ -214,7 +214,10 @@ export function buildLocalCli(): Command {
     .requiredOption('--destination-profile <id>', 'Bound database profile.')
     .requiredOption('--source-vault <id>', 'Legacy source vault identifier.')
     .option('--profile-config-dir <path>', 'Protected profile configuration directory.')
-    .option('--initialize', 'Explicitly initialize the unbound destination profile.')
+    .option(
+      '--initialize',
+      'Explicitly initialize an unbound file destination profile.',
+    )
     .option('--secrets-stdin', 'Read every migration secret from exact stdin frames.');
   migrateDatabase.action(async (...args: unknown[]) => {
     await handleMigrateDatabase(getOptions(args));

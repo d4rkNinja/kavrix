@@ -29,7 +29,6 @@ import {
   DatabaseSession,
   DatabaseSessionError,
   type MigrationInitializationOwnership,
-  type MigrationVaultOwnership,
 } from './database-session.js';
 import {
   validateDatastoreProfileBindingPublicationResult,
@@ -110,12 +109,12 @@ export async function migrateLegacyVaultToDatabase(
   let sourcePassphrase: Uint8Array | undefined;
   let destinationPassphrase: Uint8Array | undefined;
   let sourcePayload: LocalVaultPayload | undefined;
-  let ownership: MigrationVaultOwnership | undefined;
   let initializationOwnership: MigrationInitializationOwnership | undefined;
   let activeSession: DatabaseSession | undefined;
   let destinationStore: EncryptedDatabaseStore | undefined;
   let destinationDatabaseId: DatabaseId | undefined;
   let migratedVaultId: VaultId | undefined;
+  let vaultPublished = false;
   let failure: unknown;
   try {
     sourcePassphrase = await readSecretOnce(options.source.readPassphrase);
@@ -157,15 +156,13 @@ export async function migrateLegacyVaultToDatabase(
     });
     destinationStore = undefined;
     destinationDatabaseId = activeSession.databaseId;
+    const expectedPayload = structuredClone(sourcePayload);
     const created = await activeSession.createMigrationVault(
       options.destination.vaultLabel,
+      () => structuredClone(expectedPayload),
     );
-    ownership = created.ownership;
-    migratedVaultId = created.entry.id;
-    const expectedPayload = structuredClone(sourcePayload);
-    await activeSession.updateMigrationVault(ownership, () =>
-      structuredClone(expectedPayload),
-    );
+    migratedVaultId = created.id;
+    vaultPublished = true;
     await activeSession.close();
     activeSession = undefined;
 
@@ -185,8 +182,6 @@ export async function migrateLegacyVaultToDatabase(
       verification.matches = canonicalJson(observed) === canonicalJson(expectedPayload);
     });
     if (!verification.matches) throw new DatabaseMigrationError('verification');
-    activeSession.commitMigrationVault(ownership);
-    ownership = undefined;
     if (initializationOwnership !== undefined) {
       if (options.destination.initialize?.publishBinding !== undefined) {
         let publication: unknown;
@@ -222,50 +217,19 @@ export async function migrateLegacyVaultToDatabase(
   }
 
   let terminalError: DatabaseMigrationError;
-  if (ownership !== undefined || initializationOwnership !== undefined) {
-    if (isAmbiguous(failure)) {
+  if (vaultPublished || isAmbiguous(failure)) {
+    await closeQuietly(activeSession, destinationStore);
+    terminalError = new DatabaseMigrationError('ambiguous-commit');
+  } else if (initializationOwnership !== undefined) {
+    try {
       await closeQuietly(activeSession, destinationStore);
+      activeSession = undefined;
+      destinationStore = undefined;
+      await DatabaseSession.rollbackMigrationInitialization(initializationOwnership);
+      initializationOwnership = undefined;
+      terminalError = mapMigrationError(failure);
+    } catch {
       terminalError = new DatabaseMigrationError('ambiguous-commit');
-    } else {
-      try {
-        if (initializationOwnership !== undefined) {
-          await closeQuietly(activeSession, destinationStore);
-          activeSession = undefined;
-          destinationStore = undefined;
-          await DatabaseSession.rollbackMigrationInitialization(
-            initializationOwnership,
-          );
-          initializationOwnership = undefined;
-          ownership = undefined;
-        } else if (activeSession === undefined && ownership !== undefined) {
-          if (
-            destinationDatabaseId === undefined ||
-            destinationPassphrase === undefined
-          ) {
-            throw new DatabaseMigrationError('ambiguous-commit');
-          }
-          destinationStore = await options.destination.openStore();
-          activeSession = await DatabaseSession.open({
-            store: destinationStore,
-            keyFile: options.destination.keyFile,
-            passphrase: destinationPassphrase,
-            expectedDatabaseId: destinationDatabaseId,
-            ...(options.destination.anchorFile === undefined
-              ? {}
-              : { anchorFile: options.destination.anchorFile }),
-          });
-          destinationStore = undefined;
-        }
-        if (ownership !== undefined) {
-          if (activeSession === undefined) {
-            throw new DatabaseMigrationError('ambiguous-commit');
-          }
-          await activeSession.rollbackMigrationVault(ownership);
-        }
-        terminalError = mapMigrationError(failure);
-      } catch {
-        terminalError = new DatabaseMigrationError('ambiguous-commit');
-      }
     }
   } else {
     terminalError = mapMigrationError(failure);

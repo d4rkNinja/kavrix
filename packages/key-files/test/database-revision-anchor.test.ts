@@ -211,7 +211,7 @@ describe('DRK-authenticated database revision anchors', () => {
     }
   });
 
-  it('permits only the explicitly identified vault head to be removed in one transition', async () => {
+  it('keeps public transitions strictly monotonic and rejects every removed vault head', async () => {
     const file = path();
     const drk = generateDatabaseRootKey();
     try {
@@ -230,24 +230,10 @@ describe('DRK-authenticated database revision anchors', () => {
           drk,
           initial,
           async () => ({ nextAnchor: removed, result: 'removed' }),
-          {
-            requireExactVaultSet: true,
-            authorizeRemovedVault: (candidate) => candidate === 'vault_a',
-          },
-        ),
-      ).resolves.toBe('removed');
-      await expect(readDatabaseRevisionAnchor(file, drk)).resolves.toEqual(removed);
-
-      await writeDatabaseRevisionAnchor(path('wrong.anchor'), drk, initial, 'create');
-      await expect(
-        transitionDatabaseRevisionAnchor(
-          path('wrong.anchor'),
-          drk,
-          initial,
-          async () => ({ nextAnchor: removed, result: 'wrong' }),
-          { authorizeRemovedVault: (candidate) => candidate === 'vault_missing' },
+          { requireExactVaultSet: true },
         ),
       ).rejects.toMatchObject({ code: 'KEY_FILE_UNSAFE' });
+      await expect(readDatabaseRevisionAnchor(file, drk)).resolves.toEqual(initial);
     } finally {
       zeroize(drk);
     }

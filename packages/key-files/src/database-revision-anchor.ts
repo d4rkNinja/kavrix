@@ -95,8 +95,6 @@ export type DatabaseRevisionAnchor = Readonly<{
 
 export type DatabaseRevisionAnchorVerificationOptions = Readonly<{
   requireExactVaultSet?: boolean;
-  /** @internal Narrow authorization supplied after opaque session ownership checks. */
-  authorizeRemovedVault?: (vaultId: VaultId) => boolean;
 }>;
 
 export type DatabaseRevisionAnchorTransitionResult<Result> = Readonly<{
@@ -240,12 +238,8 @@ export async function transitionDatabaseRevisionAnchor<Result>(
       );
       const transition = await callback(trusted);
       const next = normalizeAnchor(transition.nextAnchor);
-      const transitionOptions =
-        options.authorizeRemovedVault === undefined
-          ? {}
-          : { authorizeRemovedVault: options.authorizeRemovedVault };
-      verifyDatabaseRevisionAnchor(trusted, next, transitionOptions);
-      verifyDatabaseRevisionAnchor(observed, next, transitionOptions);
+      verifyDatabaseRevisionAnchor(trusted, next);
+      verifyDatabaseRevisionAnchor(observed, next);
       serialized = serializeAnchor(databaseRootKey, next);
       await replaceSecureFileWhileExclusive(lock, serialized);
       return transition.result;
@@ -277,26 +271,11 @@ export function verifyDatabaseRevisionAnchor(
     throw invalid();
   const priorIds = Object.keys(prior.vaultHeads);
   const currentIds = Object.keys(current.vaultHeads);
-  const removedIds = priorIds.filter(
-    (id) => current.vaultHeads[id as VaultId] === undefined,
-  );
-  const removedId = removedIds[0] as VaultId | undefined;
-  if (
-    removedIds.length > 1 ||
-    (removedId !== undefined && !options.authorizeRemovedVault?.(removedId))
-  )
-    throw invalid();
-  const expectedCurrentIds =
-    removedId === undefined ? priorIds : priorIds.filter((id) => id !== removedId);
-  if (
-    (options.requireExactVaultSet === true || removedId !== undefined) &&
-    !sameSet(expectedCurrentIds, currentIds)
-  )
+  if (options.requireExactVaultSet === true && !sameSet(priorIds, currentIds))
     throw invalid();
   for (const id of priorIds) {
     const before = prior.vaultHeads[id as VaultId];
     const after = current.vaultHeads[id as VaultId];
-    if (id === removedId && after === undefined) continue;
     if (before === undefined || after === undefined) throw invalid();
     if (after.revision < before.revision) throw invalid();
     if (

@@ -81,6 +81,11 @@ export async function executeDatabaseMigrationCommand(
         : 'Use one legacy source profile and one initialized database destination profile.',
     );
   }
+  if (options.initialize === true && destinationProfile.datastore === 'mongodb') {
+    throw new DatabaseMigrationCommandError(
+      'MongoDB destination initialization is unavailable without ownership-bound cleanup.',
+    );
+  }
   const sourceVaultId = vaultIdSchema.parse(
     required(options.sourceVault, '--source-vault'),
   );

@@ -94,17 +94,6 @@ const DATABASE_VAULT_DELETION_AUTHORIZATION = Symbol(
 type DatabaseVaultDeletionAuthorization = Readonly<{
   token: typeof DATABASE_VAULT_DELETION_AUTHORIZATION;
 }>;
-declare const migrationVaultOwnershipBrand: unique symbol;
-export type MigrationVaultOwnership = Readonly<{
-  readonly [migrationVaultOwnershipBrand]: true;
-}>;
-interface MigrationVaultOwnershipState {
-  databaseId: DatabaseId;
-  vaultId: VaultId;
-  revision: DatabaseVaultDocument['revision'];
-  payloadMetadataDigest: Sha256Digest;
-}
-const migrationVaultOwnerships = new WeakMap<object, MigrationVaultOwnershipState>();
 declare const migrationInitializationOwnershipBrand: unique symbol;
 export type MigrationInitializationOwnership = Readonly<{
   readonly [migrationInitializationOwnershipBrand]: true;
@@ -568,6 +557,30 @@ export class DatabaseSession {
   }
 
   public async createVault(labelInput: string): Promise<DatabaseVaultCatalogEntry> {
+    return this.#createVaultWithPayload(
+      labelInput,
+      localVaultPayloadSchema.parse({ records: {} }),
+      false,
+    );
+  }
+
+  /** Prepares and verifies the complete payload before one atomic publication. */
+  public async createMigrationVault(
+    labelInput: string,
+    stage: (empty: LocalVaultPayload) => LocalVaultPayload | Promise<LocalVaultPayload>,
+  ): Promise<DatabaseVaultCatalogEntry> {
+    this.#assertOpen();
+    const payload = localVaultPayloadSchema.parse(
+      await stage(structuredClone(localVaultPayloadSchema.parse({ records: {} }))),
+    );
+    return this.#createVaultWithPayload(labelInput, payload, true);
+  }
+
+  async #createVaultWithPayload(
+    labelInput: string,
+    payload: LocalVaultPayload,
+    verifyBeforePublication: boolean,
+  ): Promise<DatabaseVaultCatalogEntry> {
     this.#assertOpen();
     const label = parseLabel(labelInput);
     if (this.#catalog.vaults.some((entry) => entry.label === label)) {
@@ -586,22 +599,34 @@ export class DatabaseSession {
     );
     const root = generateVaultRootKey();
     try {
-      const vault = await createEmptyVault(
+      const vault = await createVaultDocument(
         nextDatabase,
         id,
         createdAt,
         root,
         this.#rootKey,
+        payload,
       );
+      if (verifyBeforePublication) {
+        const observed = await decryptAuthenticatedVaultPayload(vault, this.#rootKey);
+        if (canonicalJson(observed) !== canonicalJson(payload)) {
+          throw new DatabaseSessionError('authentication');
+        }
+      }
       const before = await observedAnchor(this.#store, this.#database);
       const after = anchorWithCreatedVault(before, nextDatabase, vault);
-      await this.#anchoredMutation(before, after, async () => {
-        await this.#store.createVault({
-          database: nextDatabase,
-          expectedDatabaseRevision: this.#database.revision,
-          vault,
-        });
-      });
+      await this.#anchoredMutation(
+        before,
+        after,
+        async () => {
+          await this.#store.createVault({
+            database: nextDatabase,
+            expectedDatabaseRevision: this.#database.revision,
+            vault,
+          });
+        },
+        verifyBeforePublication,
+      );
       this.#database = nextDatabase;
       this.#catalog = nextCatalog;
       return { id, label, createdAt };
@@ -610,24 +635,6 @@ export class DatabaseSession {
     } finally {
       zeroize(root);
     }
-  }
-
-  /** Creates a vault with an opaque cleanup capability for copy-first migration. */
-  public async createMigrationVault(
-    labelInput: string,
-  ): Promise<
-    Readonly<{ entry: DatabaseVaultCatalogEntry; ownership: MigrationVaultOwnership }>
-  > {
-    const entry = await this.createVault(labelInput);
-    const document = await this.getVaultDocument(entry.id);
-    const ownership = Object.freeze({}) as MigrationVaultOwnership;
-    migrationVaultOwnerships.set(ownership, {
-      databaseId: this.#databaseId,
-      vaultId: entry.id,
-      revision: document.revision,
-      payloadMetadataDigest: document.payloadMetadataDigest,
-    });
-    return { entry, ownership };
   }
 
   public async renameVault(idInput: VaultId, labelInput: string): Promise<void> {
@@ -721,27 +728,6 @@ export class DatabaseSession {
     }
   }
 
-  /** Stages migration plaintext and advances only the matching owned vault. */
-  public async updateMigrationVault(
-    ownership: MigrationVaultOwnership,
-    update: (
-      current: LocalVaultPayload,
-    ) => LocalVaultPayload | Promise<LocalVaultPayload>,
-  ): Promise<DatabaseVaultDocument> {
-    const state = requireMigrationOwnership(ownership, this.#databaseId);
-    const current = await this.getVaultDocument(state.vaultId);
-    if (
-      current.revision !== state.revision ||
-      current.payloadMetadataDigest !== state.payloadMetadataDigest
-    ) {
-      throw new DatabaseSessionError('ambiguous-commit');
-    }
-    const updated = await this.updateVault(state.vaultId, update);
-    state.revision = updated.revision;
-    state.payloadMetadataDigest = updated.payloadMetadataDigest;
-    return updated;
-  }
-
   /** Locally decrypts one vault for bounded verification without mutating it. */
   public async inspectVault(
     idInput: VaultId,
@@ -773,53 +759,6 @@ export class DatabaseSession {
       zeroize(plaintext);
       zeroize(root);
     }
-  }
-
-  /** Removes only an unchanged vault proven to have been created by migration. */
-  public async rollbackMigrationVault(
-    ownership: MigrationVaultOwnership,
-  ): Promise<void> {
-    const state = requireMigrationOwnership(ownership, this.#databaseId);
-    const current = await this.getVaultDocument(state.vaultId);
-    if (
-      current.revision !== state.revision ||
-      current.payloadMetadataDigest !== state.payloadMetadataDigest
-    ) {
-      throw new DatabaseSessionError('ambiguous-commit');
-    }
-    const nextCatalog = databaseCatalogPayloadSchema.parse({
-      ...this.#catalog,
-      vaults: this.#catalog.vaults.filter((entry) => entry.id !== state.vaultId),
-    });
-    const nextDatabase = await reencryptCatalog(
-      this.#database,
-      nextCatalog,
-      this.#rootKey,
-    );
-    const before = await observedAnchor(this.#store, this.#database);
-    const after = anchorWithoutVault(before, nextDatabase, state.vaultId);
-    await this.#anchoredMutation(
-      before,
-      after,
-      async () => {
-        await this.#store.deleteVault({
-          database: nextDatabase,
-          expectedDatabaseRevision: this.#database.revision,
-          vaultId: state.vaultId,
-          expectedVaultRevision: current.revision,
-        });
-      },
-      { authorizeRemovedVault: (candidate) => candidate === state.vaultId },
-    );
-    this.#database = nextDatabase;
-    this.#catalog = nextCatalog;
-    migrationVaultOwnerships.delete(ownership);
-  }
-
-  /** Consumes migration cleanup authority after independent verification. */
-  public commitMigrationVault(ownership: MigrationVaultOwnership): void {
-    requireMigrationOwnership(ownership, this.#databaseId);
-    migrationVaultOwnerships.delete(ownership);
   }
 
   /** Internal policy port; no unguarded CLI command is registered in this task. */
@@ -1221,25 +1160,34 @@ export class DatabaseSession {
     before: DatabaseRevisionAnchor,
     after: DatabaseRevisionAnchor,
     mutate: () => Promise<void>,
-    verification: Readonly<{
-      authorizeRemovedVault?: (vaultId: VaultId) => boolean;
-    }> = {},
+    retainOnUncertainMutationError = false,
   ): Promise<void> {
-    const publication = { storeAccepted: false };
+    const publication = { mutationEntered: false, storeAccepted: false };
     try {
       await transitionDatabaseRevisionAnchor(
         this.#anchorFile,
         this.#rootKey,
         before,
         async () => {
+          publication.mutationEntered = true;
           await mutate();
           publication.storeAccepted = true;
           return { nextAnchor: after, result: undefined };
         },
-        { requireExactVaultSet: true, ...verification },
+        { requireExactVaultSet: true },
       );
     } catch (error) {
-      if (publication.storeAccepted) {
+      const provenRejected =
+        error instanceof EncryptedDatabaseStoreError &&
+        (error.code === 'conflict' ||
+          error.code === 'exists' ||
+          error.code === 'invalid');
+      if (
+        publication.storeAccepted ||
+        (retainOnUncertainMutationError &&
+          publication.mutationEntered &&
+          !provenRejected)
+      ) {
         await this.#poison();
         throw new DatabaseSessionError('ambiguous-commit');
       }
@@ -1372,12 +1320,13 @@ async function reencryptCatalog(
   }
 }
 
-async function createEmptyVault(
+async function createVaultDocument(
   database: EncryptedDatabaseDocument,
   id: VaultId,
   createdAt: string,
   root: VaultRootKey,
   databaseRoot: DatabaseRootKey,
+  payloadInput: LocalVaultPayload,
 ): Promise<DatabaseVaultDocument> {
   const revision = vaultRevisionSchema.parse(0);
   const metadataBase = {
@@ -1394,7 +1343,7 @@ async function createEmptyVault(
   let plaintext: Uint8Array | undefined;
   try {
     plaintext = UTF8_ENCODER.encode(
-      canonicalJson(localVaultPayloadSchema.parse({ records: {} })),
+      canonicalJson(localVaultPayloadSchema.parse(payloadInput)),
     );
     const payloadMetadataDigest = keyedDigest(
       'kavrix/database-vault-payload-digest/v1',
@@ -1474,6 +1423,13 @@ async function authenticateVault(
   vault: DatabaseVaultDocument,
   databaseRootKey: DatabaseRootKey,
 ): Promise<void> {
+  await decryptAuthenticatedVaultPayload(vault, databaseRootKey);
+}
+
+async function decryptAuthenticatedVaultPayload(
+  vault: DatabaseVaultDocument,
+  databaseRootKey: DatabaseRootKey,
+): Promise<LocalVaultPayload> {
   let root: VaultRootKey | undefined;
   let plaintext: Uint8Array | undefined;
   try {
@@ -1487,9 +1443,12 @@ async function authenticateVault(
       root,
       vault.encryptedPayload.aad,
     );
-    localVaultPayloadSchema.parse(JSON.parse(decodeSecretUtf8(plaintext)) as unknown);
+    const payload = localVaultPayloadSchema.parse(
+      JSON.parse(decodeSecretUtf8(plaintext)) as unknown,
+    );
     if (vaultMetadataDigest(vault, root, plaintext) !== vault.payloadMetadataDigest)
       throw new DatabaseSessionError('authentication');
+    return payload;
   } finally {
     zeroize(plaintext);
     zeroize(root);
@@ -1765,17 +1724,6 @@ function mapError(error: unknown): DatabaseSessionError {
     return new DatabaseSessionError('operation');
   }
   return new DatabaseSessionError('authentication');
-}
-
-function requireMigrationOwnership(
-  ownership: MigrationVaultOwnership,
-  databaseId: DatabaseId,
-): MigrationVaultOwnershipState {
-  const state = migrationVaultOwnerships.get(ownership);
-  if (state?.databaseId !== databaseId) {
-    throw new DatabaseSessionError('invalid');
-  }
-  return state;
 }
 
 function requireMigrationInitializationOwnership(

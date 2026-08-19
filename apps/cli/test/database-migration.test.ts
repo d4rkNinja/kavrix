@@ -1,7 +1,19 @@
-import { mkdtemp, readFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { mkdir, mkdtemp, readFile, rename, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import {
+  encryptPayload,
+  unlockPortableKeySlotBytes,
+  zeroize,
+  type VaultRootKey,
+} from '@kavrix/crypto';
+import {
+  databaseRevisionAnchorPath,
+  readPortableKeyFile,
+  writeRevisionAnchor,
+} from '@kavrix/key-files';
 import {
   FileLocalVaultStore,
   MongoEncryptedDatabaseStore,
@@ -11,10 +23,17 @@ import {
   type EncryptedDatabaseStore,
   type UpdateVaultInput,
 } from '@kavrix/storage';
-import type {
-  DatabaseVaultDocument,
-  EncryptedDatabaseDocument,
-  VaultId,
+import {
+  associatedDataSchema,
+  canonicalJson,
+  localVaultDocumentSchema,
+  localVaultPayloadSchema,
+  sha256DigestSchema,
+  vaultRevisionSchema,
+  type DatabaseVaultDocument,
+  type EncryptedDatabaseDocument,
+  type LocalVaultDocument,
+  type VaultId,
 } from '@kavrix/schemas';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -101,6 +120,53 @@ describe('legacy version 2 database migration', () => {
     expect(JSON.stringify([...backend.vaults.values()])).not.toContain(
       'mocked-mongo-canary',
     );
+  });
+
+  it('rejects explicit Mongo initialization before reading any secret frame', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'kavrix-migrate-mongo-init-'));
+    const sourceDataFile = join(directory, 'source.vault');
+    const sourceKeyFile = join(directory, 'source.key');
+    await createLegacySource(sourceDataFile, sourceKeyFile, {});
+    vi.restoreAllMocks();
+    const registry = await DatastoreProfileRegistry.open({
+      configDirectory: directory,
+    });
+    await registry.add({
+      id: 'legacy' as never,
+      datastore: 'file',
+      dataFile: sourceDataFile,
+      keyFile: sourceKeyFile,
+    });
+    await registry.add({
+      id: 'mongo' as never,
+      datastore: 'mongodb',
+      database: 'kavrix',
+      databaseCollection: 'databases',
+      vaultCollection: 'vaults',
+      keyFile: join(directory, 'mongo.key'),
+    });
+    const read = vi.spyOn(LocalSecretInput.prototype, 'read');
+    await expect(
+      buildLocalCli().parseAsync([
+        'node',
+        'kavrix',
+        'migrate',
+        'database',
+        '--source-profile',
+        'legacy',
+        '--destination-profile',
+        'mongo',
+        '--source-vault',
+        'legacy',
+        '--profile-config-dir',
+        directory,
+        '--initialize',
+        '--secrets-stdin',
+      ]),
+    ).rejects.toThrow(
+      'MongoDB destination initialization is unavailable without ownership-bound cleanup.',
+    );
+    expect(read).not.toHaveBeenCalled();
   });
 
   it('executes explicit file migration initialization, binds the profile, and verifies through flat list', async () => {
@@ -402,6 +468,9 @@ describe('legacy version 2 database migration', () => {
     expect(result.recordCount).toBe(2);
     expect(sourceReads).toBe(1);
     expect(destinationReads).toBe(1);
+    expect(backend.createVaultCalls).toBe(1);
+    expect(backend.updateVaultCalls).toBe(0);
+    expect(backend.getVaultCalls).toBe(1);
     expect(
       await Promise.all([
         readFile(sourceDataFile),
@@ -470,11 +539,11 @@ describe('legacy version 2 database migration', () => {
     expect(fixture.backend.vaults.size).toBe(1);
   });
 
-  it('cleans an owned staged vault after a proven pre-publication conflict', async () => {
+  it('leaves no vault or anchor head after a proven pre-publication conflict', async () => {
     const fixture = await migrationFixture({
       secret: { value: 'canary', updatedAt: '' },
     });
-    fixture.backend.updateFailure = 'before';
+    fixture.backend.createVaultFailure = 'before';
     await expect(migrateLegacyVaultToDatabase(fixture.options)).rejects.toMatchObject({
       code: 'conflict',
     });
@@ -485,14 +554,14 @@ describe('legacy version 2 database migration', () => {
     const fixture = await migrationFixture({
       secret: { value: 'canary', updatedAt: '' },
     });
-    fixture.backend.updateFailure = 'after';
+    fixture.backend.createVaultFailure = 'after';
     await expect(migrateLegacyVaultToDatabase(fixture.options)).rejects.toMatchObject({
       code: 'ambiguous-commit',
     });
     expect(fixture.backend.vaults.size).toBe(1);
   });
 
-  it('removes the owned destination vault after an exact verification mismatch', async () => {
+  it('retains the published destination and reports ambiguity after verification mismatch', async () => {
     const fixture = await migrationFixture({
       secret: { value: 'verification-canary', updatedAt: '' },
     });
@@ -513,9 +582,50 @@ describe('legacy version 2 database migration', () => {
       },
     );
     await expect(migrateLegacyVaultToDatabase(fixture.options)).rejects.toMatchObject({
-      code: 'verification',
+      code: 'ambiguous-commit',
     });
-    expect(fixture.backend.vaults.size).toBe(0);
+    expect(fixture.backend.vaults.size).toBe(1);
+  });
+
+  it('retains a published vault and reports ambiguity when the post-create read fails', async () => {
+    const fixture = await migrationFixture({
+      secret: {
+        value: 'post-create-read-canary',
+        updatedAt: '2026-08-18T00:00:00.000Z',
+      },
+    });
+    fixture.backend.failNextVaultReadAfterCreate = true;
+    await expect(migrateLegacyVaultToDatabase(fixture.options)).rejects.toMatchObject({
+      code: 'ambiguous-commit',
+    });
+    expect(fixture.backend.vaults.size).toBe(1);
+    expect(fixture.backend.updateVaultCalls).toBe(0);
+  });
+
+  it('retains a published vault and reports ambiguity when anchor publication fails', async () => {
+    const fixture = await migrationFixture({
+      secret: {
+        value: 'post-create-anchor-canary',
+        updatedAt: '2026-08-18T00:00:00.000Z',
+      },
+    });
+    const anchorFile = databaseRevisionAnchorPath(fixture.options.destination.keyFile);
+    const savedAnchor = anchorFile + '.saved';
+    fixture.backend.afterVaultCreate = async () => {
+      await rename(anchorFile, savedAnchor);
+      await mkdir(anchorFile);
+    };
+    try {
+      await expect(migrateLegacyVaultToDatabase(fixture.options)).rejects.toMatchObject(
+        {
+          code: 'ambiguous-commit',
+        },
+      );
+      expect(fixture.backend.vaults.size).toBe(1);
+    } finally {
+      await rm(anchorFile, { recursive: true });
+      await rename(savedAnchor, anchorFile);
+    }
   });
 
   it('retains initialized recovery artifacts when profile publication is ambiguous', async () => {
@@ -571,7 +681,7 @@ describe('legacy version 2 database migration', () => {
       secret: { value: 'verify-canary', updatedAt: '' },
     });
     const backend = new MemoryDatabaseBackend();
-    backend.createVaultFailure = true;
+    backend.createVaultFailure = 'before';
     await expect(
       migrateLegacyVaultToDatabase({
         source: {
@@ -636,10 +746,7 @@ async function createLegacySource(
   keyFile: string,
   records: Readonly<Record<string, Readonly<{ value: string; updatedAt: string }>>>,
 ) {
-  const frames = [
-    [SOURCE_PASSPHRASE, SOURCE_PASSPHRASE],
-    ...Object.entries(records).map(([, record]) => [SOURCE_PASSPHRASE, record.value]),
-  ];
+  const frames = [[SOURCE_PASSPHRASE, SOURCE_PASSPHRASE]];
   vi.spyOn(LocalSecretInput.prototype, 'read').mockImplementation(async () => {
     const frame = frames.shift();
     if (frame === undefined) throw new Error('missing secret frame');
@@ -659,43 +766,130 @@ async function createLegacySource(
     'legacy',
     '--passphrase-stdin',
   ]);
-  for (const name of Object.keys(records)) {
-    await buildLocalCli().parseAsync([
-      'node',
-      'kavrix',
-      'put',
-      name,
-      '--datastore',
-      'file',
-      '--data-file',
-      dataFile,
-      '--key-file',
-      keyFile,
-      '--vault',
-      'legacy',
-      '--passphrase-stdin',
-      '--value-stdin',
-    ]);
-  }
   const store = await FileLocalVaultStore.open(dataFile);
-  const document = await store.get('legacy');
-  await store.close();
-  if (document === null) throw new Error('legacy fixture missing');
-  return document;
+  let portable: Awaited<ReturnType<typeof readPortableKeyFile>> | undefined;
+  let root: VaultRootKey | undefined;
+  let plaintext: Uint8Array | undefined;
+  try {
+    const document = await store.get('legacy');
+    if (document === null) throw new Error('legacy fixture missing');
+    const passphrase = Buffer.from(SOURCE_PASSPHRASE, 'utf8');
+    try {
+      portable = await readPortableKeyFile(
+        keyFile,
+        { kind: 'passphrase', passphrase },
+        {
+          kind: 'bound',
+          vaultId: document.id,
+          keySlotId: document.keySlot.id,
+        },
+      );
+    } finally {
+      zeroize(passphrase);
+    }
+    root = await unlockPortableKeySlotBytes(document.keySlot, portable.key, {
+      vaultId: document.id,
+      slotId: document.keySlot.id,
+      schemaVersion: document.schemaVersion,
+      keyVersion: document.currentKeyVersion,
+    });
+    const payload = localVaultPayloadSchema.parse({
+      records: Object.fromEntries(
+        Object.entries(records).map(([name, record]) => [
+          name,
+          {
+            ...record,
+            updatedAt:
+              record.updatedAt === '' ? '2026-08-18T00:00:00.000Z' : record.updatedAt,
+          },
+        ]),
+      ),
+    });
+    const updatedMetadata = {
+      ...document,
+      revision: vaultRevisionSchema.parse(document.revision + 1),
+      updatedAt: '2026-08-18T11:20:30.000Z',
+    };
+    const metadataDigest = legacyMetadataDigest(updatedMetadata);
+    plaintext = new TextEncoder().encode(canonicalJson(payload));
+    const encryptedPayload = await encryptPayload(
+      plaintext,
+      root,
+      associatedDataSchema.parse({
+        version: 1,
+        vaultId: document.id,
+        entityType: 'vault-preferences',
+        entityId: document.id,
+        purpose: 'vault-preferences',
+        schemaVersion: document.schemaVersion,
+        keyVersion: document.currentKeyVersion,
+        revision: updatedMetadata.revision,
+        metadataDigest,
+      }),
+    );
+    const updated = localVaultDocumentSchema.parse({
+      ...updatedMetadata,
+      encryptedPayload,
+    });
+    await store.update(updated, document.revision);
+    await writeRevisionAnchor(
+      keyFile + '.anchor',
+      root,
+      {
+        vaultId: updated.id,
+        keySlotId: updated.keySlot.id,
+        revision: updated.revision,
+        metadataDigest,
+      },
+      'replace',
+    );
+    return updated;
+  } finally {
+    await store.close();
+    zeroize(plaintext);
+    zeroize(root);
+    zeroize(portable?.key);
+  }
+}
+
+function legacyMetadataDigest(document: LocalVaultDocument) {
+  const metadata = {
+    format: document.format,
+    version: document.version,
+    id: document.id,
+    schemaVersion: document.schemaVersion,
+    cryptographicVersion: document.cryptographicVersion,
+    currentKeyVersion: document.currentKeyVersion,
+    keySlot: document.keySlot,
+    recoverySlots: document.recoverySlots,
+    revision: document.revision,
+    createdAt: document.createdAt,
+    updatedAt: document.updatedAt,
+  };
+  return sha256DigestSchema.parse(
+    createHash('sha256')
+      .update('kavrix/local-vault-metadata/v1\0', 'utf8')
+      .update(canonicalJson(metadata), 'utf8')
+      .digest('base64url'),
+  );
 }
 
 function sourceRecords(): unknown {
   return {
-    'emoji-🔐': { value: '値🌍', updatedAt: expect.any(String) },
-    ['x'.repeat(256)]: { value: '', updatedAt: expect.any(String) },
+    'emoji-🔐': { value: '値🌍', updatedAt: '2026-08-18T09:20:30.000Z' },
+    ['x'.repeat(256)]: { value: '', updatedAt: '2026-08-18T10:20:30.000Z' },
   };
 }
 
 class MemoryDatabaseBackend {
   database: EncryptedDatabaseDocument | null = null;
   readonly vaults = new Map<VaultId, DatabaseVaultDocument>();
-  updateFailure: 'before' | 'after' | null = null;
-  createVaultFailure = false;
+  createVaultFailure: 'before' | 'after' | null = null;
+  failNextVaultReadAfterCreate = false;
+  afterVaultCreate: (() => Promise<void>) | undefined;
+  createVaultCalls = 0;
+  getVaultCalls = 0;
+  updateVaultCalls = 0;
 
   clear(): void {
     this.database = null;
@@ -724,27 +918,31 @@ class MemoryDatabaseBackend {
           .map((vault) => structuredClone(vault));
       },
       async getVault(databaseId, vaultId) {
+        backend.getVaultCalls += 1;
+        if (backend.failNextVaultReadAfterCreate && backend.vaults.size > 0) {
+          backend.failNextVaultReadAfterCreate = false;
+          throw new EncryptedDatabaseStoreError('operation');
+        }
         const vault = backend.vaults.get(vaultId);
         return vault?.databaseId === databaseId ? structuredClone(vault) : null;
       },
       async createVault(input: CreateVaultInput) {
-        if (backend.createVaultFailure) {
-          backend.createVaultFailure = false;
+        backend.createVaultCalls += 1;
+        if (backend.createVaultFailure === 'before') {
+          backend.createVaultFailure = null;
           throw new EncryptedDatabaseStoreError('conflict');
         }
         backend.database = structuredClone(input.database);
         backend.vaults.set(input.vault.id, structuredClone(input.vault));
-      },
-      async updateVault(input: UpdateVaultInput) {
-        if (backend.updateFailure === 'before') {
-          backend.updateFailure = null;
-          throw new EncryptedDatabaseStoreError('conflict');
-        }
-        backend.vaults.set(input.vault.id, structuredClone(input.vault));
-        if (backend.updateFailure === 'after') {
-          backend.updateFailure = null;
+        if (backend.createVaultFailure === 'after') {
+          backend.createVaultFailure = null;
           throw new EncryptedDatabaseStoreError('operation');
         }
+        await backend.afterVaultCreate?.();
+      },
+      async updateVault(input: UpdateVaultInput) {
+        backend.updateVaultCalls += 1;
+        backend.vaults.set(input.vault.id, structuredClone(input.vault));
       },
       async deleteVault(input: DeleteVaultInput) {
         backend.database = structuredClone(input.database);

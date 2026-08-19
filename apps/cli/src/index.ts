@@ -11,7 +11,6 @@ export {
   type DatabaseSessionErrorCode,
   type DatabaseVaultCatalogEntry,
   type MigrationInitializationOwnership,
-  type MigrationVaultOwnership,
 } from './database-session.js';
 export {
   DatabaseMigrationError,
