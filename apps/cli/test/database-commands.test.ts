@@ -7,7 +7,10 @@ import { FileEncryptedDatabaseStore, MongoLocalVaultStore } from '@kavrix/storag
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { buildLocalCli } from '../src/local-vault-cli.js';
-import { DatastoreProfileRegistry } from '../src/datastore-profiles.js';
+import {
+  DatastoreProfileError,
+  DatastoreProfileRegistry,
+} from '../src/datastore-profiles.js';
 import { DatabaseSession } from '../src/database-session.js';
 import { LocalSecretInput, type LocalSecretKind } from '../src/local-secrets.js';
 
@@ -358,7 +361,9 @@ describe('database owner command composition', () => {
       'bindDatabaseIdForInitialization',
     ).mockResolvedValue({
       status: 'not-published',
-      error: new Error('profile-publication-secret-canary'),
+      error: Object.assign(new DatastoreProfileError('PROFILE_OPERATION_FAILED'), {
+        detail: 'profile-publication-secret-canary',
+      }),
     } as never);
     let thrown: unknown;
     try {

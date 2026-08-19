@@ -39,6 +39,7 @@ import {
   DatabaseSession,
   setDatabaseSessionZeroizationObserverForTest,
 } from '../src/database-session.js';
+import { DatastoreProfileError } from '../src/datastore-profiles.js';
 
 const PASSPHRASE = Buffer.from('correct horse battery staple', 'utf8');
 
@@ -242,7 +243,10 @@ describe('DatabaseSession', () => {
         publishBinding: async () => {
           return {
             status: 'not-published' as const,
-            error: new Error('profile-not-published-secret-canary'),
+            error: Object.assign(
+              new DatastoreProfileError('PROFILE_OPERATION_FAILED'),
+              { detail: 'profile-not-published-secret-canary' },
+            ),
           };
         },
         rollbackDatabase: async () => {
@@ -277,7 +281,10 @@ describe('DatabaseSession', () => {
         publishBinding: async () => {
           return {
             status: 'not-published' as const,
-            error: new Error('primary-secret-canary'),
+            error: Object.assign(
+              new DatastoreProfileError('PROFILE_OPERATION_FAILED'),
+              { detail: 'primary-secret-canary' },
+            ),
           };
         },
         rollbackDatabase: async () => {
@@ -296,27 +303,72 @@ describe('DatabaseSession', () => {
     );
   });
 
-  it('accepts a proven published initialization binding', async () => {
-    const directory = await mkdtemp(join(tmpdir(), 'kavrix-session-'));
-    const store = new MemoryDatabaseStore();
-    const keyFile = join(directory, 'owner.kavrix-db-key');
-    const initialized = await DatabaseSession.initialize({
-      store,
-      keyFile,
-      passphrase: PASSPHRASE,
-      label: 'database',
-      publishBinding: async () => ({ status: 'published' as const }),
-      rollbackDatabase: async () => {
-        throw new Error('published initialization must not roll back');
+  it('retains artifacts for every malformed profile publication result', async () => {
+    const malformedResults: readonly Readonly<{ name: string; value: unknown }>[] = [
+      { name: 'null', value: null },
+      { name: 'undefined', value: undefined },
+      { name: 'primitive', value: 7 },
+      {
+        name: 'unknown-status',
+        value: { status: 'unknown', detail: 'unknown-status-secret-canary' },
       },
-    });
-    expect(store.database?.id).toBe(initialized.databaseId);
-    const opened = await DatabaseSession.open({
-      store,
-      keyFile,
-      passphrase: PASSPHRASE,
-    });
-    await opened.close();
+      { name: 'not-published-missing-error', value: { status: 'not-published' } },
+      {
+        name: 'not-published-wrong-error',
+        value: {
+          status: 'not-published',
+          error: new Error('malformed-not-published-secret-canary'),
+        },
+      },
+      { name: 'published-missing-capability', value: { status: 'published' } },
+      {
+        name: 'published-forged-capability',
+        value: { status: 'published', publication: Object.freeze({}) },
+      },
+      {
+        name: 'uncertain-missing-error',
+        value: {
+          status: 'publication-uncertain',
+          publication: Object.freeze({}),
+        },
+      },
+    ];
+    for (const malformed of malformedResults) {
+      const directory = await mkdtemp(join(tmpdir(), 'kavrix-session-'));
+      const store = new MemoryDatabaseStore();
+      const keyFile = join(directory, `${malformed.name}.kavrix-db-key`);
+      let rollbackCalled = false;
+      let thrown: unknown;
+      try {
+        await DatabaseSession.initialize({
+          store,
+          keyFile,
+          passphrase: PASSPHRASE,
+          label: 'database',
+          publishBinding: async () => malformed.value as never,
+          rollbackDatabase: async () => {
+            rollbackCalled = true;
+            store.database = null;
+          },
+        });
+      } catch (error) {
+        thrown = error;
+      }
+      expect(thrown, malformed.name).toMatchObject({ code: 'ambiguous-commit' });
+      expect(serializeThrown(thrown), malformed.name).not.toContain('secret-canary');
+      expect(rollbackCalled, malformed.name).toBe(false);
+      await expect(access(keyFile), malformed.name).resolves.toBeUndefined();
+      await expect(
+        access(databaseRevisionAnchorPath(keyFile)),
+        malformed.name,
+      ).resolves.toBeUndefined();
+      const reopened = await DatabaseSession.open({
+        store,
+        keyFile,
+        passphrase: PASSPHRASE,
+      });
+      await reopened.close();
+    }
   });
 
   it('rejects catalog tampering and missing, lower, or forked exact anchors', async () => {

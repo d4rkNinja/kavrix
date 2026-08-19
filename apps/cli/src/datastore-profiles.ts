@@ -112,6 +112,17 @@ const datastoreProfileBindingPublications = new WeakMap<
   ProtectedJsonDocumentPublication
 >();
 
+/** Validates an opaque binding-publication capability without exposing it. */
+export function isDatastoreProfileBindingPublication(
+  value: unknown,
+): value is DatastoreProfileBindingPublication {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    datastoreProfileBindingPublications.has(value)
+  );
+}
+
 export class DatastoreProfileError extends Error {
   public constructor(
     public readonly code:

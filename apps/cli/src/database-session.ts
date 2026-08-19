@@ -78,6 +78,12 @@ import {
   type EncryptedDatabaseStore,
 } from '@kavrix/storage';
 
+import {
+  DatastoreProfileError,
+  isDatastoreProfileBindingPublication,
+  type DatastoreProfileBindingPublicationResult,
+} from './datastore-profiles.js';
+
 const MAX_LABEL_BYTES = 1_024;
 const UTF8_ENCODER = new TextEncoder();
 const STRICT_UTF8_DECODER = new TextDecoder('utf-8', { fatal: true });
@@ -121,11 +127,6 @@ export type DatabaseVaultCatalogEntry = Readonly<{
   createdAt: string;
 }>;
 
-export type DatabaseInitializationBindingPublicationResult =
-  | Readonly<{ status: 'not-published'; error: unknown }>
-  | Readonly<{ status: 'published' }>
-  | Readonly<{ status: 'publication-uncertain'; error: unknown }>;
-
 export type DatabaseInitializationOptions = Readonly<{
   store: EncryptedDatabaseStore;
   keyFile: string;
@@ -135,7 +136,7 @@ export type DatabaseInitializationOptions = Readonly<{
   rollbackDatabase?: (databaseId: DatabaseId) => Promise<void>;
   publishBinding?: (
     databaseId: DatabaseId,
-  ) => Promise<DatabaseInitializationBindingPublicationResult>;
+  ) => Promise<DatastoreProfileBindingPublicationResult>;
 }>;
 
 export type DatabaseOpenOptions = Readonly<{
@@ -276,10 +277,15 @@ export class DatabaseSession {
         requireExactVaultSet: true,
       });
       if (options.publishBinding !== undefined) {
-        let bindingPublication: DatabaseInitializationBindingPublicationResult;
+        let resolvedPublication: unknown;
         try {
-          bindingPublication = await options.publishBinding(databaseId);
+          resolvedPublication = await options.publishBinding(databaseId);
         } catch {
+          bindingPublicationUncertain = true;
+          throw new DatabaseSessionError('ambiguous-commit');
+        }
+        const bindingPublication = validateBindingPublication(resolvedPublication);
+        if (bindingPublication === undefined) {
           bindingPublicationUncertain = true;
           throw new DatabaseSessionError('ambiguous-commit');
         }
@@ -1529,6 +1535,52 @@ function mapError(error: unknown): DatabaseSessionError {
     return new DatabaseSessionError('operation');
   }
   return new DatabaseSessionError('authentication');
+}
+
+function validateBindingPublication(
+  value: unknown,
+): DatastoreProfileBindingPublicationResult | undefined {
+  try {
+    if (typeof value !== 'object' || value === null) return undefined;
+    const status = readUnknownProperty(value, 'status');
+    if (status === 'not-published') {
+      if (!hasExactKeys(value, ['status', 'error'])) return undefined;
+      return readUnknownProperty(value, 'error') instanceof DatastoreProfileError
+        ? (value as DatastoreProfileBindingPublicationResult)
+        : undefined;
+    }
+    if (status === 'published') {
+      if (!hasExactKeys(value, ['status', 'publication'])) return undefined;
+      return isDatastoreProfileBindingPublication(
+        readUnknownProperty(value, 'publication'),
+      )
+        ? (value as DatastoreProfileBindingPublicationResult)
+        : undefined;
+    }
+    if (status === 'publication-uncertain') {
+      if (!hasExactKeys(value, ['status', 'publication', 'error'])) return undefined;
+      return isDatastoreProfileBindingPublication(
+        readUnknownProperty(value, 'publication'),
+      ) && readUnknownProperty(value, 'error') instanceof DatastoreProfileError
+        ? (value as DatastoreProfileBindingPublicationResult)
+        : undefined;
+    }
+    return undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function readUnknownProperty(value: object, key: string): unknown {
+  return Reflect.get(value, key) as unknown;
+}
+
+function hasExactKeys(value: object, expected: readonly string[]): boolean {
+  const keys = Reflect.ownKeys(value);
+  return (
+    keys.length === expected.length &&
+    expected.every((key) => Object.prototype.hasOwnProperty.call(value, key))
+  );
 }
 
 async function cleanupOwned(
