@@ -50,6 +50,25 @@ describe('database owner command composition', () => {
     expect(program.helpInformation()).not.toMatch(/--(?:passphrase|database-url)\s+</u);
   });
 
+  it('rejects local-share key creation for MongoDB before requesting secrets', async () => {
+    const read = vi.spyOn(LocalSecretInput.prototype, 'read');
+    await expect(
+      buildLocalCli().parseAsync([
+        'node',
+        'kavrix',
+        'db',
+        'key',
+        'create',
+        '--datastore',
+        'mongodb',
+        '--output-key-file',
+        'unused.key',
+        '--secrets-stdin',
+      ]),
+    ).rejects.toMatchObject({ code: 'invalid' });
+    expect(read).not.toHaveBeenCalled();
+  });
+
   it('executes file database, vault, and recovery commands through exact secret requests', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'kavrix-database-commands-'));
     const dataFile = join(directory, 'database.kavrix');

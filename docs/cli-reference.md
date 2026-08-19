@@ -87,9 +87,8 @@ snapshot fails closed. Because the DRK opens every wrapped VRK, local sharing is
 whole-database access and has no vault-scoped revocation.
 
 For `--secrets-stdin`, `db key create` expects the current owner-key passphrase,
-the new share-key passphrase, and confirmation. MongoDB local-share export also
-prepends the URI frame, but the resulting key is intended for an exact copied
-local container, not a vault-scoped Mongo grant.
+the new share-key passphrase, and confirmation. This command is file-datastore
+only; MongoDB vault-scoped grants remain deferred.
 
 ## 3. Create and select vaults
 
@@ -194,10 +193,11 @@ from another database fails even if the selected files or collection names look
 similar. Explicit routing overrides preserve this binding and cannot rebind a
 profile silently.
 
-For local-file sharing, securely transfer exactly the encrypted database file
-and its matching owner key file, then send the passphrase separately. Anyone who
-can unlock those two files has full access to every vault. Local profiles do not
-provide reader/editor roles or per-vault revocation.
+For local-file sharing, run `kavrix db key create`, then securely transfer
+exactly the encrypted database file and the freshly generated matching share key.
+Send the share-key passphrase separately. Anyone who can unlock those two files
+has full access to every vault. Local profiles do not provide reader/editor roles
+or per-vault revocation.
 
 ## 7. Migrate a version 2 vault
 

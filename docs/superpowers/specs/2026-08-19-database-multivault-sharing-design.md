@@ -317,8 +317,9 @@ sizes are independently bounded before allocation and encryption.
 
 User identity, grant, role, and recipient-discovery commands reject local-file
 profiles with an explicit unsupported-operation error. Sharing the local file
-and its matching database-owner key grants full database access. Kavrix cannot
-revoke a copied local key file or erase copied database snapshots.
+and a freshly generated exact-snapshot local-share key grants full database
+access. Kavrix cannot revoke a copied local key file or erase copied database
+snapshots.
 
 ## 9. Datastore profiles and switching
 

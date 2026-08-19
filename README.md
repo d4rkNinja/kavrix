@@ -58,6 +58,7 @@ flows shown by `kavrix <command> --help`.
 | --------------------------- | ----------------------------------------------------------- |
 | `kavrix db profile ...`     | Add, select, inspect, or remove non-secret routes.          |
 | `kavrix db init`            | Create an encrypted database and protected owner key.       |
+| `kavrix db key create`      | Create an exact-snapshot key for full local-file sharing.   |
 | `kavrix db vault ...`       | Create, list, inspect, or rename database vaults.           |
 | `kavrix db recovery ...`    | Manage database-root recovery kits.                         |
 | `kavrix migrate database`   | Copy one legacy version 2 vault into a database.            |

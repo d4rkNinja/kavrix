@@ -233,6 +233,8 @@ async function handleDatabaseStatus(options: DatabaseCommandOptions): Promise<vo
 
 async function handleDatabaseKeyCreate(options: DatabaseCommandOptions): Promise<void> {
   if (options.outputKeyFile === undefined) throw new DatabaseSessionError('invalid');
+  const route = await resolveRoute(options);
+  if (route.datastore !== 'file') throw new DatabaseSessionError('invalid');
   const keyFile = options.outputKeyFile;
   await validateSecureFileDestination(keyFile);
   await withOwnerSession(
