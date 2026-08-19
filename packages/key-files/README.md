@@ -20,11 +20,10 @@ platform supports directory handles.
 
 Database ownership-capability writes use direct create-only handles rather than
 staged hard links, so rollback never needs to unlink a temporary alias. Owned
-cleanup moves the exact opened inode into a fresh user-only quarantine
-directory, truncates and flushes it through the retained descriptor, and keeps
-the zero-byte quarantine artifact because Node has no portable unlink-by-handle
-operation. A raced-in foreign inode is restored create-only to the public path
-or retained in quarantine; cleanup never pathname-unlinks it.
+cleanup truncates and flushes the exact opened inode through its retained
+descriptor because Node has no portable unlink-by-handle operation. The public
+name is never mutated: it remains as a protected zero-byte tombstone when it
+still names the owned inode, while a raced-in foreign inode remains untouched.
 
 On Windows, writes also require a protected containing-directory DACL with an
 inheritable current-user-only rule. The adapter validates this before creating

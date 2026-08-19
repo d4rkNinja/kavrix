@@ -90,7 +90,7 @@ describe('protected database recovery-kit files', () => {
       if (created.status !== 'published') throw created.error;
       expect(Object.keys(created.publication)).toEqual([]);
       await cleanupOwnedDatabaseRecoveryKitFile(created.publication);
-      await expect(readFile(file)).rejects.toMatchObject({ code: 'ENOENT' });
+      await expect(readFile(file)).resolves.toHaveLength(0);
       await expect(
         cleanupOwnedDatabaseRecoveryKitFile(created.publication),
       ).rejects.toMatchObject({ code: 'KEY_FILE_OPERATION_FAILED' });

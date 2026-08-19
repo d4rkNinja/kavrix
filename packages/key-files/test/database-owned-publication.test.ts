@@ -1,5 +1,6 @@
 import type * as FsPromises from 'node:fs/promises';
 
+import { constants } from 'node:fs';
 import {
   lstat,
   mkdtemp,
@@ -38,15 +39,26 @@ import {
 } from '../src/index.js';
 
 type FaultPhase =
-  'none' | 'post-write' | 'final-verify' | 'directory-sync' | 'cleanup-race';
+  | 'none'
+  | 'post-write'
+  | 'final-verify'
+  | 'directory-sync'
+  | 'cleanup-before-truncate'
+  | 'cleanup-during-truncate'
+  | 'cleanup-sync-substitution'
+  | 'cleanup-post-inspection'
+  | 'cleanup-sync-failure';
 
 const fault = vi.hoisted(() => ({
   phase: 'none' as FaultPhase,
   target: '',
   directory: '',
   fired: false,
-  recoveryPath: '',
-  cleanupUnlinkCalls: 0,
+  neutralized: false,
+  ownedRecoveryPath: '',
+  foreignDev: 0n,
+  foreignIno: 0n,
+  cleanupPathOperations: 0,
 }));
 
 vi.mock('node:fs/promises', async (importOriginal) => {
@@ -56,11 +68,30 @@ vi.mock('node:fs/promises', async (importOriginal) => {
     error.code = 'EIO';
     return error;
   };
+  const isCleanupFault = (): boolean => fault.phase.startsWith('cleanup-');
+  const substitutePublicPath = async (path: string): Promise<void> => {
+    if (fault.fired) return;
+    fault.fired = true;
+    fault.ownedRecoveryPath = `${path}.owned-displaced`;
+    await actual.rename(path, fault.ownedRecoveryPath);
+    await actual.writeFile(path, `foreign-${fault.phase}`, { mode: 0o600 });
+    const foreign = await actual.lstat(path, { bigint: true });
+    fault.foreignDev = foreign.dev;
+    fault.foreignIno = foreign.ino;
+  };
   return {
     ...actual,
     link: actual.link,
     lstat: async (path: FsPromises.PathLike, options?: unknown) => {
       const result = await actual.lstat(path, options as never);
+      if (
+        fault.phase === 'cleanup-post-inspection' &&
+        String(path) === fault.target &&
+        fault.neutralized &&
+        !fault.fired
+      ) {
+        await substitutePublicPath(String(path));
+      }
       if (
         fault.phase === 'final-verify' &&
         String(path) === fault.target &&
@@ -78,6 +109,10 @@ vi.mock('node:fs/promises', async (importOriginal) => {
     ) => {
       const handle = await actual.open(path, flags, mode);
       const candidatePath = String(path);
+      const isCreateOpen =
+        typeof flags === 'number'
+          ? (flags & constants.O_CREAT) !== 0
+          : flags.includes('w') || flags.includes('a');
       if (
         fault.phase === 'post-write' &&
         candidatePath === fault.target &&
@@ -93,6 +128,38 @@ vi.mock('node:fs/promises', async (importOriginal) => {
                 await target.writeFile(...args);
                 fault.fired = true;
                 throw injected();
+              };
+            }
+            const value: unknown = Reflect.get(target, property, target);
+            return typeof value === 'function' ? value.bind(target) : value;
+          },
+        });
+      }
+      if (isCleanupFault() && candidatePath === fault.target && !isCreateOpen) {
+        return new Proxy(handle, {
+          get(target, property) {
+            if (property === 'truncate') {
+              return async (length?: number) => {
+                if (fault.phase === 'cleanup-before-truncate') {
+                  await substitutePublicPath(candidatePath);
+                }
+                await target.truncate(length);
+                fault.neutralized = true;
+                if (fault.phase === 'cleanup-during-truncate') {
+                  await substitutePublicPath(candidatePath);
+                }
+              };
+            }
+            if (property === 'sync') {
+              return async () => {
+                if (fault.phase === 'cleanup-sync-failure' && !fault.fired) {
+                  fault.fired = true;
+                  throw injected();
+                }
+                if (fault.phase === 'cleanup-sync-substitution') {
+                  await substitutePublicPath(candidatePath);
+                }
+                await target.sync();
               };
             }
             const value: unknown = Reflect.get(target, property, target);
@@ -122,21 +189,11 @@ vi.mock('node:fs/promises', async (importOriginal) => {
       });
     },
     rename: async (oldPath: FsPromises.PathLike, newPath: FsPromises.PathLike) => {
-      if (
-        fault.phase === 'cleanup-race' &&
-        String(oldPath) === fault.target &&
-        String(newPath).endsWith('/owned') &&
-        !fault.fired
-      ) {
-        fault.fired = true;
-        fault.recoveryPath = String(newPath);
-        await actual.unlink(oldPath);
-        await actual.writeFile(oldPath, 'foreign-during-cleanup', { mode: 0o600 });
-      }
+      if (isCleanupFault()) fault.cleanupPathOperations += 1;
       return actual.rename(oldPath, newPath);
     },
     unlink: async (path: FsPromises.PathLike) => {
-      if (fault.phase === 'cleanup-race') fault.cleanupUnlinkCalls += 1;
+      if (isCleanupFault()) fault.cleanupPathOperations += 1;
       return actual.unlink(path);
     },
   };
@@ -178,8 +235,11 @@ function resetFault(): void {
   fault.target = '';
   fault.directory = '';
   fault.fired = false;
-  fault.recoveryPath = '';
-  fault.cleanupUnlinkCalls = 0;
+  fault.neutralized = false;
+  fault.ownedRecoveryPath = '';
+  fault.foreignDev = 0n;
+  fault.foreignIno = 0n;
+  fault.cleanupPathOperations = 0;
 }
 
 function armFault(phase: Exclude<FaultPhase, 'none'>, target: string): void {
@@ -189,30 +249,24 @@ function armFault(phase: Exclude<FaultPhase, 'none'>, target: string): void {
   fault.fired = false;
 }
 
-async function expectNoLiveInternalArtifacts(): Promise<number> {
-  const internal = (await readdir(directory, { withFileTypes: true })).filter((entry) =>
-    entry.name.startsWith('.kavrix-'),
-  );
-  for (const entry of internal) {
-    expect(entry.isDirectory()).toBe(true);
-    expect(entry.name.startsWith('.kavrix-quarantine-')).toBe(true);
-    const quarantineDirectory = join(directory, entry.name);
-    expect(await readdir(quarantineDirectory)).toEqual(['owned']);
-    const neutralizedPath = join(quarantineDirectory, 'owned');
-    await expect(readFile(neutralizedPath)).resolves.toHaveLength(0);
-    if (process.platform !== 'win32') {
-      const getuid = process.getuid;
-      if (getuid === undefined) throw new Error('Expected a Unix user identity');
-      const directoryMetadata = await lstat(quarantineDirectory, { bigint: true });
-      const fileMetadata = await lstat(neutralizedPath, { bigint: true });
-      expect(directoryMetadata.uid).toBe(BigInt(getuid()));
-      expect(directoryMetadata.mode & 0o777n).toBe(0o700n);
-      expect(fileMetadata.uid).toBe(BigInt(getuid()));
-      expect(fileMetadata.mode & 0o777n).toBe(0o600n);
-      expect(fileMetadata.nlink).toBe(1n);
-    }
+async function expectNoInternalArtifacts(): Promise<void> {
+  expect(
+    (await readdir(directory)).filter((name) => name.startsWith('.kavrix-')),
+  ).toEqual([]);
+}
+
+async function expectProtectedZeroTombstone(path: string): Promise<void> {
+  await expect(readFile(path)).resolves.toHaveLength(0);
+  const metadata = await lstat(path, { bigint: true });
+  expect(metadata.isFile()).toBe(true);
+  expect(metadata.size).toBe(0n);
+  expect(metadata.nlink).toBe(1n);
+  if (process.platform !== 'win32') {
+    const getuid = process.getuid;
+    if (getuid === undefined) throw new Error('Expected a Unix user identity');
+    expect(metadata.uid).toBe(BigInt(getuid()));
+    expect(metadata.mode & 0o777n).toBe(0o600n);
   }
-  return internal.length;
 }
 
 describe('owned database-file publication', () => {
@@ -270,8 +324,8 @@ describe('owned database-file publication', () => {
             (await readdir(directory)).filter((name) => name.endsWith('.tmp')),
           ).toEqual([]);
           await domain.cleanup(created.publication);
-          await expect(readFile(file)).rejects.toMatchObject({ code: 'ENOENT' });
-          await expectNoLiveInternalArtifacts();
+          await expectProtectedZeroTombstone(file);
+          await expectNoInternalArtifacts();
         }
       } finally {
         zeroize(portableKey);
@@ -297,7 +351,7 @@ describe('owned database-file publication', () => {
       });
       expect(Object.hasOwn(result, 'publication')).toBe(false);
       await expect(readFile(file, 'utf8')).resolves.toBe('foreign');
-      await expectNoLiveInternalArtifacts();
+      await expectNoInternalArtifacts();
     } finally {
       zeroize(key);
       zeroize(passphrase);
@@ -333,56 +387,57 @@ describe('owned database-file publication', () => {
       ).rejects.toMatchObject({ code: 'KEY_FILE_UNSAFE' });
       await expect(readFile(linkedFile)).resolves.not.toHaveLength(0);
       await expect(readFile(extraLink)).resolves.not.toHaveLength(0);
-      await expectNoLiveInternalArtifacts();
+      await expectNoInternalArtifacts();
     } finally {
       zeroize(key);
       zeroize(passphrase);
     }
   });
 
-  it('restores a foreign file raced in after final validation instead of deleting it', async () => {
-    const file = join(directory, 'cleanup-race');
-    const key = generatePortableKey();
-    const passphrase = new TextEncoder().encode('cleanup-race-passphrase');
-    try {
-      const created = await createOwnedDatabaseKeyFile(file, key, keyBinding, {
-        protection: { kind: 'passphrase', passphrase },
-      });
-      if (created.status !== 'published') throw new Error('Expected publication');
-      armFault('cleanup-race', file);
-      let cleanupError: unknown;
+  it.each([
+    'cleanup-before-truncate',
+    'cleanup-during-truncate',
+    'cleanup-sync-substitution',
+    'cleanup-post-inspection',
+  ] as const)(
+    'neutralizes only the owned descriptor when substitution occurs at %s',
+    async (phase) => {
+      const file = join(directory, phase);
+      const key = generatePortableKey();
+      const passphrase = new TextEncoder().encode('cleanup-race-passphrase');
       try {
+        const created = await createOwnedDatabaseKeyFile(file, key, keyBinding, {
+          protection: { kind: 'passphrase', passphrase },
+        });
+        if (created.status !== 'published') throw new Error('Expected publication');
+        armFault(phase, file);
         await cleanupOwnedDatabaseKeyFile(created.publication);
-      } catch (error) {
-        cleanupError = error;
+        const ownedRecoveryPath = fault.ownedRecoveryPath;
+        expect(fault.cleanupPathOperations).toBe(0);
+        await expect(readFile(file, 'utf8')).resolves.toBe(`foreign-${phase}`);
+        const foreignAfter = await lstat(file, { bigint: true });
+        expect({ dev: foreignAfter.dev, ino: foreignAfter.ino }).toEqual({
+          dev: fault.foreignDev,
+          ino: fault.foreignIno,
+        });
+        await expect(readFile(ownedRecoveryPath)).resolves.toHaveLength(0);
+        const reuse = cleanupOwnedDatabaseKeyFile(created.publication);
+        await expect(reuse).rejects.toMatchObject({
+          code: 'KEY_FILE_OPERATION_FAILED',
+          message: 'The portable key file operation failed.',
+        });
+        await expect(reuse).rejects.not.toHaveProperty('cause');
+        expect(fault.cleanupPathOperations).toBe(0);
+        resetFault();
+        await expect(readFile(file, 'utf8')).resolves.toBe(`foreign-${phase}`);
+        await expect(readFile(ownedRecoveryPath)).resolves.toHaveLength(0);
+        await expectNoInternalArtifacts();
+      } finally {
+        zeroize(key);
+        zeroize(passphrase);
       }
-      const recoveryPath = fault.recoveryPath;
-      expect(cleanupError).toMatchObject({ code: 'KEY_FILE_UNSAFE' });
-      expect(Object.hasOwn(cleanupError as object, 'cause')).toBe(false);
-      expect(fault.cleanupUnlinkCalls).toBe(0);
-      const publicForeign = await lstat(file, { bigint: true });
-      const recoveryForeign = await lstat(recoveryPath, { bigint: true });
-      expect({ dev: publicForeign.dev, ino: publicForeign.ino }).toEqual({
-        dev: recoveryForeign.dev,
-        ino: recoveryForeign.ino,
-      });
-      await expect(readFile(recoveryPath, 'utf8')).resolves.toBe(
-        'foreign-during-cleanup',
-      );
-      await expect(
-        cleanupOwnedDatabaseKeyFile(created.publication),
-      ).rejects.toMatchObject({ code: 'KEY_FILE_UNSAFE' });
-      expect(fault.cleanupUnlinkCalls).toBe(0);
-      resetFault();
-      await expect(readFile(file, 'utf8')).resolves.toBe('foreign-during-cleanup');
-      await expect(readFile(recoveryPath, 'utf8')).resolves.toBe(
-        'foreign-during-cleanup',
-      );
-    } finally {
-      zeroize(key);
-      zeroize(passphrase);
-    }
-  });
+    },
+  );
 
   it('rejects every pairwise cross-domain ownership capability substitution', async () => {
     const key = generatePortableKey();
@@ -390,20 +445,20 @@ describe('owned database-file publication', () => {
     const drk = generateDatabaseRootKey();
     const passphrase = new TextEncoder().encode('cross-domain-passphrase');
     try {
-      const keyResult = await createOwnedDatabaseKeyFile(
-        join(directory, 'domain-key'),
-        key,
-        keyBinding,
-        { protection: { kind: 'passphrase', passphrase } },
-      );
+      const keyFile = join(directory, 'domain-key');
+      const recoveryFile = join(directory, 'domain-recovery');
+      const anchorFile = join(directory, 'domain-anchor');
+      const keyResult = await createOwnedDatabaseKeyFile(keyFile, key, keyBinding, {
+        protection: { kind: 'passphrase', passphrase },
+      });
       const recoveryResult = await createOwnedDatabaseRecoveryKitFile(
-        join(directory, 'domain-recovery'),
+        recoveryFile,
         recoveryKey,
         recoveryBinding,
         { passphrase },
       );
       const anchorResult = await createOwnedDatabaseRevisionAnchor(
-        join(directory, 'domain-anchor'),
+        anchorFile,
         drk,
         anchor,
       );
@@ -437,7 +492,10 @@ describe('owned database-file publication', () => {
       await cleanupOwnedDatabaseKeyFile(keyResult.publication);
       await cleanupOwnedDatabaseRecoveryKitFile(recoveryResult.publication);
       await cleanupOwnedDatabaseRevisionAnchor(anchorResult.publication);
-      expect(await expectNoLiveInternalArtifacts()).toBe(3);
+      await expectProtectedZeroTombstone(keyFile);
+      await expectProtectedZeroTombstone(recoveryFile);
+      await expectProtectedZeroTombstone(anchorFile);
+      await expectNoInternalArtifacts();
     } finally {
       zeroize(key);
       zeroize(recoveryKey);
@@ -446,7 +504,7 @@ describe('owned database-file publication', () => {
     }
   });
 
-  it('returns a redacted cleanup error suitable for aggregation and permits an absent-file retry', async () => {
+  it('returns a redacted sync error and permits a zero-tombstone retry', async () => {
     const file = join(directory, 'cleanup-sync');
     const key = generatePortableKey();
     const passphrase = new TextEncoder().encode('cleanup-passphrase');
@@ -455,7 +513,7 @@ describe('owned database-file publication', () => {
         protection: { kind: 'passphrase', passphrase },
       });
       if (created.status !== 'published') throw new Error('Expected publication');
-      armFault('directory-sync', file);
+      armFault('cleanup-sync-failure', file);
       let cleanupError: unknown;
       try {
         await cleanupOwnedDatabaseKeyFile(created.publication);
@@ -477,12 +535,13 @@ describe('owned database-file publication', () => {
         aggregate.errors.every((error) => error instanceof PortableKeyFileError),
       ).toBe(true);
       expect(String(aggregate.errors)).not.toContain(file);
-      await expect(readFile(file)).rejects.toMatchObject({ code: 'ENOENT' });
+      await expectProtectedZeroTombstone(file);
       await cleanupOwnedDatabaseKeyFile(created.publication);
       await expect(
         cleanupOwnedDatabaseKeyFile(created.publication),
       ).rejects.toMatchObject({ code: 'KEY_FILE_OPERATION_FAILED' });
-      await expectNoLiveInternalArtifacts();
+      await expectProtectedZeroTombstone(file);
+      await expectNoInternalArtifacts();
     } finally {
       zeroize(key);
       zeroize(passphrase);

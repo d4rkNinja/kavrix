@@ -3,7 +3,6 @@ import { constants, type BigIntStats } from 'node:fs';
 import {
   link,
   lstat,
-  mkdtemp,
   open,
   realpath,
   rename,
@@ -195,10 +194,11 @@ async function validateRegularFile(
   targetPath: string,
   metadata: BigIntStats,
   maximumBytes = MAX_PORTABLE_KEY_FILE_BYTES,
+  allowEmpty = false,
 ): Promise<void> {
   if (
     !metadata.isFile() ||
-    metadata.size <= 0 ||
+    metadata.size < (allowEmpty ? 0n : 1n) ||
     metadata.size > BigInt(maximumBytes) ||
     metadata.nlink !== 1n
   ) {
@@ -768,60 +768,6 @@ export async function createOwnedSecureFile(
   }
 }
 
-async function restoreQuarantinedEntryCreateOnly(
-  quarantinePath: string,
-  targetPath: string,
-  identity: FileIdentity,
-): Promise<boolean> {
-  let handle: FileHandle | undefined;
-  try {
-    const quarantined = await lstat(quarantinePath, { bigint: true });
-    if (!quarantined.isFile() || !sameIdentity(quarantined, identity)) return false;
-    handle = await open(quarantinePath, noFollowReadFlags());
-    const held = await handle.stat({ bigint: true });
-    if (!held.isFile() || !sameIdentity(held, identity)) return false;
-    await verifyPathStillNamesFile(quarantinePath, identity);
-
-    try {
-      await link(quarantinePath, targetPath);
-    } catch (error) {
-      if (fileErrorCode(error) !== 'EEXIST') throw error;
-      const target = await lstat(targetPath, { bigint: true });
-      if (!target.isFile() || !sameIdentity(target, identity)) return false;
-    }
-
-    await verifyPathStillNamesFile(targetPath, identity);
-    return true;
-  } finally {
-    await handle?.close().catch(() => undefined);
-  }
-}
-
-async function createOwnedQuarantineDirectory(
-  directoryPath: string,
-): Promise<Readonly<{ path: string; identity: FileIdentity; handle: FileHandle }>> {
-  const path = await mkdtemp(
-    join(directoryPath, `.kavrix-quarantine-${String(process.pid)}-`),
-  );
-  if (process.platform === 'win32') {
-    await setWindowsUserOnlyAcl(path);
-  }
-  const handle = await open(path, constants.O_RDONLY);
-  try {
-    if (process.platform !== 'win32') await handle.chmod(0o700);
-    await validateWriteDirectory(path);
-    const metadata = await handle.stat({ bigint: true });
-    if (!metadata.isDirectory()) {
-      throw new PortableKeyFileError('KEY_FILE_UNSAFE');
-    }
-    await verifyPathStillNamesDirectory(path, identityOf(metadata));
-    return { path, identity: identityOf(metadata), handle };
-  } catch (error) {
-    await handle.close().catch(() => undefined);
-    throw error;
-  }
-}
-
 async function neutralizeHeldFile(
   handle: FileHandle,
   identity: FileIdentity,
@@ -840,11 +786,12 @@ async function neutralizeHeldFile(
 
 /**
  * Neutralizes only the exact protected file represented by an opaque
- * publication capability. Node has no portable unlink-by-handle operation, so
- * successful cleanup moves the inode into a fresh protected quarantine,
- * truncates and flushes it through the retained descriptor, and deliberately
- * retains the zero-byte artifact. Forged, reused, cross-domain, or
- * foreign-replacement capabilities fail closed.
+ * publication capability. Node has no portable unlink-by-handle operation;
+ * cleanup therefore truncates and flushes the inode solely through a retained
+ * descriptor. The public name is never mutated. It either remains as a
+ * protected zero-byte tombstone or is observed as absent/replaced after the
+ * owned inode is already neutralized. Forged, reused, and cross-domain
+ * capabilities fail closed.
  */
 export async function cleanupOwnedSecureFilePublication(
   publication: OwnedSecureFilePublication,
@@ -856,9 +803,7 @@ export async function cleanupOwnedSecureFilePublication(
   }
 
   let handle: FileHandle | undefined;
-  let quarantineDirectory:
-    Awaited<ReturnType<typeof createOwnedQuarantineDirectory>> | undefined;
-  let quarantinePath: string | undefined;
+  let directoryHandle: FileHandle | undefined;
   try {
     const resolved = await resolveTarget(state.targetPath);
     if (
@@ -874,8 +819,7 @@ export async function cleanupOwnedSecureFilePublication(
       before = await lstat(state.targetPath, { bigint: true });
     } catch (error) {
       if (fileErrorCode(error) === 'ENOENT') {
-        ownedSecureFileStates.delete(publication);
-        return;
+        throw new PortableKeyFileError('KEY_FILE_UNSAFE');
       }
       throw error;
     }
@@ -887,72 +831,45 @@ export async function cleanupOwnedSecureFilePublication(
     if (!sameIdentity(opened, state.identity)) {
       throw new PortableKeyFileError('KEY_FILE_UNSAFE');
     }
-    await validateRegularFile(state.targetPath, opened, state.maximumBytes);
+    await validateRegularFile(state.targetPath, opened, state.maximumBytes, true);
     await verifyPathStillNamesFile(state.targetPath, state.identity);
 
-    quarantineDirectory = await createOwnedQuarantineDirectory(state.directoryPath);
-    quarantinePath = join(quarantineDirectory.path, 'owned');
-    await verifyPathStillNamesDirectory(
-      quarantineDirectory.path,
-      quarantineDirectory.identity,
-    );
-    await rename(state.targetPath, quarantinePath);
-    const quarantined = await lstat(quarantinePath, { bigint: true });
-    if (!quarantined.isFile() || !sameIdentity(quarantined, state.identity)) {
-      if (quarantined.isFile()) {
-        await restoreQuarantinedEntryCreateOnly(
-          quarantinePath,
-          state.targetPath,
-          identityOf(quarantined),
-        );
-      }
-      await neutralizeHeldFile(handle, state.identity);
+    const directoryBefore = await lstat(state.directoryPath, { bigint: true });
+    if (!directoryBefore.isDirectory()) {
       throw new PortableKeyFileError('KEY_FILE_UNSAFE');
     }
+    directoryHandle = await open(state.directoryPath, constants.O_RDONLY);
+    const openedDirectory = await directoryHandle.stat({ bigint: true });
+    if (
+      !openedDirectory.isDirectory() ||
+      !sameIdentity(openedDirectory, directoryBefore)
+    ) {
+      throw new PortableKeyFileError('KEY_FILE_UNSAFE');
+    }
+    await verifyPathStillNamesDirectory(
+      state.directoryPath,
+      identityOf(openedDirectory),
+    );
+
     await neutralizeHeldFile(handle, state.identity);
-    const neutralized = await lstat(quarantinePath, { bigint: true });
-    if (!sameIdentity(neutralized, state.identity) || neutralized.size !== 0n) {
-      throw new PortableKeyFileError('KEY_FILE_UNSAFE');
+
+    try {
+      const publicPath = await lstat(state.targetPath, { bigint: true });
+      if (sameIdentity(publicPath, state.identity) && publicPath.size !== 0n) {
+        await neutralizeHeldFile(handle, state.identity);
+      }
+    } catch {
+      // Namespace inspection is observational only. The held inode is already
+      // zero and no pathname is mutated based on this result.
     }
-    await verifyPathStillNamesDirectory(
-      quarantineDirectory.path,
-      quarantineDirectory.identity,
-    );
-    await syncDirectory(quarantineDirectory.path);
-    await syncDirectory(state.directoryPath);
+
+    await neutralizeHeldFile(handle, state.identity);
     ownedSecureFileStates.delete(publication);
   } catch (error) {
-    if (handle !== undefined) {
-      let ownedPublicPathRemains = false;
-      try {
-        const target = await lstat(state.targetPath, { bigint: true });
-        ownedPublicPathRemains =
-          target.isFile() && sameIdentity(target, state.identity);
-      } catch {
-        // An absent or unverifiable public path cannot protect the held inode.
-      }
-      if (!ownedPublicPathRemains) {
-        await neutralizeHeldFile(handle, state.identity).catch(() => undefined);
-      }
-    }
-    if (quarantinePath !== undefined) {
-      try {
-        const candidate = await lstat(quarantinePath, { bigint: true });
-        if (candidate.isFile() && !sameIdentity(candidate, state.identity)) {
-          await restoreQuarantinedEntryCreateOnly(
-            quarantinePath,
-            state.targetPath,
-            identityOf(candidate),
-          );
-        }
-      } catch {
-        // Retain every unverifiable quarantine entry without deleting it.
-      }
-    }
     throw mappedFileError(error, 'KEY_FILE_OPERATION_FAILED');
   } finally {
     await handle?.close().catch(() => undefined);
-    await quarantineDirectory?.handle.close().catch(() => undefined);
+    await directoryHandle?.close().catch(() => undefined);
   }
 }
 

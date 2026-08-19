@@ -89,7 +89,7 @@ describe('protected database key files', () => {
       if (created.status !== 'published') throw created.error;
       expect(Object.keys(created.publication)).toEqual([]);
       await cleanupOwnedDatabaseKeyFile(created.publication);
-      await expect(readFile(file)).rejects.toMatchObject({ code: 'ENOENT' });
+      await expect(readFile(file)).resolves.toHaveLength(0);
       await expect(
         cleanupOwnedDatabaseKeyFile(created.publication),
       ).rejects.toMatchObject({ code: 'KEY_FILE_OPERATION_FAILED' });
