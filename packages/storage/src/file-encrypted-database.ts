@@ -50,6 +50,7 @@ export const MAX_FILE_ENCRYPTED_DATABASE_BYTES = 32 * 1024 * 1024;
 type FileIdentity = Readonly<{ dev: bigint; ino: bigint }>;
 type ResolvedFileTarget = Readonly<{
   directoryPath: string;
+  directoryIdentity: FileIdentity;
   targetPath: string;
   lockPath: string;
 }>;
@@ -66,6 +67,7 @@ export class FileEncryptedDatabaseStore implements EncryptedDatabaseStore {
   readonly #directoryPath: string;
   readonly #targetPath: string;
   readonly #lockPath: string;
+  readonly #directoryIdentity: FileIdentity;
   readonly #lockHandle: FileHandle;
   readonly #lockIdentity: FileIdentity;
   #closed = false;
@@ -76,6 +78,7 @@ export class FileEncryptedDatabaseStore implements EncryptedDatabaseStore {
     lockIdentity: FileIdentity,
   ) {
     this.#directoryPath = target.directoryPath;
+    this.#directoryIdentity = target.directoryIdentity;
     this.#targetPath = target.targetPath;
     this.#lockPath = target.lockPath;
     this.#lockHandle = lockHandle;
@@ -84,12 +87,14 @@ export class FileEncryptedDatabaseStore implements EncryptedDatabaseStore {
 
   static async validatePath(path: string): Promise<void> {
     const target = await resolveTarget(path);
+    await assertDirectoryIdentity(target);
     await readContainerIfPresent(target.targetPath);
+    await assertDirectoryIdentity(target);
   }
 
   static async open(path: string): Promise<FileEncryptedDatabaseStore> {
     const target = await resolveTarget(path);
-    const acquired = await acquireLock(target.lockPath);
+    const acquired = await acquireLock(target);
     try {
       const store = new FileEncryptedDatabaseStore(
         target,
@@ -109,13 +114,13 @@ export class FileEncryptedDatabaseStore implements EncryptedDatabaseStore {
 
   async ping(): Promise<void> {
     this.#assertOpen();
-    await readContainerIfPresent(this.#targetPath);
+    await this.#readContainer();
   }
 
   async getDatabase(databaseId: DatabaseId): Promise<EncryptedDatabaseDocument | null> {
     this.#assertOpen();
     const id = parseDatabaseId(databaseId);
-    const current = await readContainerIfPresent(this.#targetPath);
+    const current = await this.#readContainer();
     if (current?.container.database.id !== id) return null;
     return parseDatabaseDocument(current.container.database);
   }
@@ -123,12 +128,12 @@ export class FileEncryptedDatabaseStore implements EncryptedDatabaseStore {
   async createDatabase(document: EncryptedDatabaseDocument): Promise<void> {
     this.#assertOpen();
     const database = parseDatabaseDocument(document);
-    if ((await readContainerIfPresent(this.#targetPath)) !== null) {
+    if ((await this.#readContainer()) !== null) {
       throw new EncryptedDatabaseStoreError('exists');
     }
     await publishContainer(
-      this.#directoryPath,
-      this.#targetPath,
+      this.#target(),
+      this.#lockIdentity,
       canonicalizeContainer({
         format: 'kavrix-file-database-container',
         version: 1,
@@ -147,7 +152,7 @@ export class FileEncryptedDatabaseStore implements EncryptedDatabaseStore {
     const database = parseDatabaseDocument(document);
     const expected = parseDatabaseRevision(expectedRevision);
     assertNextRevision(database.revision, expected);
-    const current = await readContainerIfPresent(this.#targetPath);
+    const current = await this.#readContainer();
     if (
       current?.container.database.id !== database.id ||
       current.container.database.revision !== expected
@@ -155,8 +160,8 @@ export class FileEncryptedDatabaseStore implements EncryptedDatabaseStore {
       throw new EncryptedDatabaseStoreError('conflict');
     }
     await publishContainer(
-      this.#directoryPath,
-      this.#targetPath,
+      this.#target(),
+      this.#lockIdentity,
       canonicalizeContainer({ ...current.container, database }),
       'replace',
       current.identity,
@@ -166,7 +171,7 @@ export class FileEncryptedDatabaseStore implements EncryptedDatabaseStore {
   async listVaults(databaseId: DatabaseId): Promise<readonly DatabaseVaultDocument[]> {
     this.#assertOpen();
     const id = parseDatabaseId(databaseId);
-    const current = await readContainerIfPresent(this.#targetPath);
+    const current = await this.#readContainer();
     if (current?.container.database.id !== id) return [];
     return Object.values(current.container.vaults)
       .sort((left, right) => compareOpaqueIds(left.id, right.id))
@@ -180,7 +185,7 @@ export class FileEncryptedDatabaseStore implements EncryptedDatabaseStore {
     this.#assertOpen();
     const database = parseDatabaseId(databaseId);
     const id = parseVaultId(vaultId);
-    const current = await readContainerIfPresent(this.#targetPath);
+    const current = await this.#readContainer();
     if (current?.container.database.id !== database) return null;
     const vault = current.container.vaults[id];
     return vault === undefined ? null : parseVaultDocument(vault);
@@ -196,7 +201,7 @@ export class FileEncryptedDatabaseStore implements EncryptedDatabaseStore {
     ) {
       throw new EncryptedDatabaseStoreError('invalid');
     }
-    const current = await readContainerIfPresent(this.#targetPath);
+    const current = await this.#readContainer();
     if (
       current?.container.database.id !== database.id ||
       current.container.database.revision !== expectedDatabaseRevision
@@ -207,8 +212,8 @@ export class FileEncryptedDatabaseStore implements EncryptedDatabaseStore {
       throw new EncryptedDatabaseStoreError('exists');
     }
     await publishContainer(
-      this.#directoryPath,
-      this.#targetPath,
+      this.#target(),
+      this.#lockIdentity,
       canonicalizeContainer({
         ...current.container,
         database,
@@ -223,7 +228,7 @@ export class FileEncryptedDatabaseStore implements EncryptedDatabaseStore {
     this.#assertOpen();
     const { vault, expectedVaultRevision } = parseUpdateVaultInput(input);
     assertNextRevision(vault.revision, expectedVaultRevision);
-    const current = await readContainerIfPresent(this.#targetPath);
+    const current = await this.#readContainer();
     if (current?.container.database.id !== vault.databaseId) {
       throw new EncryptedDatabaseStoreError('conflict');
     }
@@ -231,8 +236,8 @@ export class FileEncryptedDatabaseStore implements EncryptedDatabaseStore {
     if (existing?.revision !== expectedVaultRevision)
       throw new EncryptedDatabaseStoreError('conflict');
     await publishContainer(
-      this.#directoryPath,
-      this.#targetPath,
+      this.#target(),
+      this.#lockIdentity,
       canonicalizeContainer({
         ...current.container,
         vaults: { ...current.container.vaults, [vault.id]: vault },
@@ -247,7 +252,7 @@ export class FileEncryptedDatabaseStore implements EncryptedDatabaseStore {
     const { database, expectedDatabaseRevision, vaultId, expectedVaultRevision } =
       parseDeleteVaultInput(input);
     assertNextRevision(database.revision, expectedDatabaseRevision);
-    const current = await readContainerIfPresent(this.#targetPath);
+    const current = await this.#readContainer();
     if (
       current?.container.database.id !== database.id ||
       current.container.database.revision !== expectedDatabaseRevision
@@ -260,8 +265,8 @@ export class FileEncryptedDatabaseStore implements EncryptedDatabaseStore {
     const { [vaultId]: deletedVault, ...vaults } = current.container.vaults;
     void deletedVault;
     await publishContainer(
-      this.#directoryPath,
-      this.#targetPath,
+      this.#target(),
+      this.#lockIdentity,
       canonicalizeContainer({ ...current.container, database, vaults }),
       'replace',
       current.identity,
@@ -271,16 +276,48 @@ export class FileEncryptedDatabaseStore implements EncryptedDatabaseStore {
   async close(): Promise<void> {
     if (this.#closed) return;
     this.#closed = true;
+    let failure = false;
+    try {
+      await this.#assertTrusted();
+    } catch {
+      failure = true;
+    }
     try {
       await releaseLock(this.#lockHandle, this.#lockPath, this.#lockIdentity);
+    } catch {
+      failure = true;
+    }
+    try {
       await syncDirectory(this.#directoryPath);
     } catch {
-      throw new EncryptedDatabaseStoreError('operation');
+      failure = true;
     }
+    if (failure) throw new EncryptedDatabaseStoreError('operation');
   }
 
   #assertOpen(): void {
     if (this.#closed) throw new EncryptedDatabaseStoreError('closed');
+  }
+
+  #target(): ResolvedFileTarget {
+    return {
+      directoryPath: this.#directoryPath,
+      directoryIdentity: this.#directoryIdentity,
+      targetPath: this.#targetPath,
+      lockPath: this.#lockPath,
+    };
+  }
+
+  async #assertTrusted(): Promise<void> {
+    await assertDirectoryIdentity(this.#target());
+    await assertPathIdentity(this.#lockPath, this.#lockIdentity);
+  }
+
+  async #readContainer(): Promise<ReadContainerResult | null> {
+    await this.#assertTrusted();
+    const current = await readContainerIfPresent(this.#targetPath);
+    await this.#assertTrusted();
+    return current;
   }
 }
 
@@ -421,7 +458,12 @@ async function resolveTarget(inputPath: string): Promise<ResolvedFileTarget> {
     if (process.platform === 'win32') await setWindowsUserOnlyAcl(directoryPath);
     await assertOwnedPermissions(directory, directoryPath, false);
     const targetPath = join(directoryPath, targetName);
-    return { directoryPath, targetPath, lockPath: `${targetPath}.lock` };
+    return {
+      directoryPath,
+      directoryIdentity: identityOf(directory),
+      targetPath,
+      lockPath: `${targetPath}.lock`,
+    };
   } catch (error) {
     if (error instanceof EncryptedDatabaseStoreError) throw error;
     throw new EncryptedDatabaseStoreError('invalid');
@@ -456,10 +498,12 @@ function hasControlCharacter(value: string): boolean {
 }
 
 async function acquireLock(
-  lockPath: string,
+  target: ResolvedFileTarget,
 ): Promise<Readonly<{ handle: FileHandle; identity: FileIdentity }>> {
+  const { lockPath } = target;
   let handle: FileHandle | undefined;
   try {
+    await assertDirectoryIdentity(target);
     handle = await open(
       lockPath,
       constants.O_CREAT | constants.O_EXCL | constants.O_RDWR,
@@ -468,12 +512,15 @@ async function acquireLock(
     await setAndVerifyCreatedFile(lockPath, handle);
     await handle.sync();
     const metadata = await handle.stat({ bigint: true });
+    await assertDirectoryIdentity(target);
     return { handle, identity: identityOf(metadata) };
   } catch (error) {
     await handle?.close().catch(() => undefined);
     if (handle !== undefined) await unlink(lockPath).catch(() => undefined);
-    if (fileErrorCode(error) === 'EEXIST')
+    if (fileErrorCode(error) === 'EEXIST') {
+      await inspectExistingLock(lockPath);
       throw new EncryptedDatabaseStoreError('busy');
+    }
     throw new EncryptedDatabaseStoreError('operation');
   }
 }
@@ -502,6 +549,32 @@ async function releaseLock(
     }
   }
   if (failure) throw new EncryptedDatabaseStoreError('operation');
+}
+
+/**
+ * An existing sibling lock is only evidence of an active owner when it is the
+ * same protected regular-file shape we create ourselves. Never turn hostile
+ * filesystem objects into a misleading normal `busy` response.
+ */
+async function inspectExistingLock(lockPath: string): Promise<void> {
+  let handle: FileHandle | undefined;
+  try {
+    const before = await lstat(lockPath, { bigint: true });
+    await assertOwnedPermissions(before, lockPath, true);
+    const identity = identityOf(before);
+    handle = await open(lockPath, noFollowReadFlags());
+    const opened = await handle.stat({ bigint: true });
+    await assertOwnedPermissions(opened, lockPath, true);
+    if (!sameIdentity(identity, identityOf(opened))) {
+      throw new EncryptedDatabaseStoreError('invalid');
+    }
+    await assertPathIdentity(lockPath, identity);
+  } catch (error) {
+    if (error instanceof EncryptedDatabaseStoreError) throw error;
+    throw new EncryptedDatabaseStoreError('invalid');
+  } finally {
+    await handle?.close().catch(() => undefined);
+  }
 }
 
 async function readContainerIfPresent(
@@ -570,12 +643,14 @@ async function readContainerIfPresent(
 }
 
 async function publishContainer(
-  directoryPath: string,
-  targetPath: string,
+  target: ResolvedFileTarget,
+  lockIdentity: FileIdentity,
   container: FileDatabaseContainer,
   mode: 'create' | 'replace',
   expectedIdentity?: FileIdentity,
 ): Promise<void> {
+  const { directoryPath, targetPath, lockPath } = target;
+  await assertTrustedPublicationState(target, lockPath, lockIdentity);
   const contents = Buffer.from(serializeContainer(container), 'utf8');
   if (contents.byteLength > MAX_FILE_ENCRYPTED_DATABASE_BYTES) {
     contents.fill(0);
@@ -604,6 +679,7 @@ async function publishContainer(
     await handle.close();
     handle = undefined;
     await assertPathIdentity(temporaryPath, stagedIdentity);
+    await assertTrustedPublicationState(target, lockPath, lockIdentity);
     if (mode === 'create') {
       try {
         await link(temporaryPath, targetPath);
@@ -617,7 +693,17 @@ async function publishContainer(
       if (expectedIdentity === undefined)
         throw new EncryptedDatabaseStoreError('operation');
       await assertPathIdentity(targetPath, expectedIdentity);
+      await assertTrustedPublicationState(target, lockPath, lockIdentity);
       await rename(temporaryPath, targetPath);
+    }
+    await assertTrustedPublicationState(target, lockPath, lockIdentity);
+    const finalMetadata = await lstat(targetPath, { bigint: true });
+    await assertOwnedPermissions(finalMetadata, targetPath, true);
+    const finalIdentity = identityOf(finalMetadata);
+    if (process.platform === 'win32') {
+      await setWindowsUserOnlyAcl(targetPath);
+      await verifyWindowsUserOnlyAcl(targetPath);
+      await assertPathIdentity(targetPath, finalIdentity);
     }
     const final = await readContainerIfPresent(targetPath);
     if (
@@ -626,7 +712,9 @@ async function publishContainer(
     ) {
       throw new EncryptedDatabaseStoreError('operation');
     }
+    await assertTrustedPublicationState(target, lockPath, lockIdentity);
     await syncDirectory(directoryPath);
+    await assertTrustedPublicationState(target, lockPath, lockIdentity);
     published = true;
   } catch (error) {
     if (error instanceof EncryptedDatabaseStoreError) throw error;
@@ -636,6 +724,15 @@ async function publishContainer(
     await handle?.close().catch(() => undefined);
     if (!published) await unlink(temporaryPath).catch(() => undefined);
   }
+}
+
+async function assertTrustedPublicationState(
+  target: ResolvedFileTarget,
+  lockPath: string,
+  lockIdentity: FileIdentity,
+): Promise<void> {
+  await assertDirectoryIdentity(target);
+  await assertPathIdentity(lockPath, lockIdentity);
 }
 
 function serializeContainer(container: FileDatabaseContainer): string {
@@ -689,6 +786,22 @@ async function assertPathIdentity(path: string, expected: FileIdentity): Promise
     const metadata = await lstat(path, { bigint: true });
     await assertOwnedPermissions(metadata, path, true);
     if (!sameIdentity(identityOf(metadata), expected)) {
+      throw new EncryptedDatabaseStoreError('invalid');
+    }
+  } catch (error) {
+    if (error instanceof EncryptedDatabaseStoreError) throw error;
+    throw new EncryptedDatabaseStoreError('operation');
+  }
+}
+
+async function assertDirectoryIdentity(target: ResolvedFileTarget): Promise<void> {
+  try {
+    const resolved = await realpath(dirname(target.targetPath));
+    if (resolved !== target.directoryPath)
+      throw new EncryptedDatabaseStoreError('invalid');
+    const metadata = await stat(resolved, { bigint: true });
+    await assertOwnedPermissions(metadata, resolved, false);
+    if (!sameIdentity(identityOf(metadata), target.directoryIdentity)) {
       throw new EncryptedDatabaseStoreError('invalid');
     }
   } catch (error) {

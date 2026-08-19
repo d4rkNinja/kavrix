@@ -1,10 +1,16 @@
 import {
   chmod,
+  link,
   lstat,
+  mkdir,
   mkdtemp,
   readFile,
   readdir,
+  realpath,
+  rename,
   rm,
+  symlink,
+  unlink,
   writeFile,
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -21,7 +27,24 @@ import {
   type EncryptedDatabaseDocument,
   type VaultId,
 } from '@kavrix/schemas';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+const aclMocks = vi.hoisted(() => ({
+  set: vi.fn<(path: string) => Promise<void>>(() => Promise.resolve()),
+  verify: vi.fn<(path: string) => Promise<void>>(() => Promise.resolve()),
+}));
+const fileSystemMocks = vi.hoisted(() => ({ rename: vi.fn() }));
+
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>();
+  fileSystemMocks.rename.mockImplementation(actual.rename);
+  return { ...actual, rename: fileSystemMocks.rename };
+});
+
+vi.mock('@kavrix/key-files/windows-acl', () => ({
+  setWindowsUserOnlyAcl: aclMocks.set,
+  verifyWindowsUserOnlyAcl: aclMocks.verify,
+}));
 
 import { defineEncryptedDatabaseStoreContractTests } from './encrypted-database-store-contract.test.js';
 import {
@@ -37,6 +60,7 @@ const tag = 'AAAAAAAAAAAAAAAAAAAAAA';
 const ciphertext = 'AQID';
 
 afterEach(async () => {
+  vi.clearAllMocks();
   for (const directory of directories.splice(0))
     await rm(directory, { force: true, recursive: true });
 });
@@ -105,6 +129,140 @@ describe('FileEncryptedDatabaseStore', () => {
       expect(await readdir(directory)).toEqual([]);
     },
   );
+
+  it.skipIf(process.platform === 'win32')(
+    'rejects unsafe existing sibling locks instead of reporting busy',
+    async () => {
+      const target = await targetPath();
+      const source = `${target}.source`;
+      await writeRestricted(source, 'lock');
+      await symlink(source, `${target}.lock`);
+      await expect(FileEncryptedDatabaseStore.open(target)).rejects.toMatchObject({
+        code: 'invalid',
+      });
+      await unlink(`${target}.lock`);
+      await link(source, `${target}.lock`);
+      await expect(FileEncryptedDatabaseStore.open(target)).rejects.toMatchObject({
+        code: 'invalid',
+      });
+      await unlink(`${target}.lock`);
+      await mkdir(`${target}.lock`, { mode: 0o700 });
+      await expect(FileEncryptedDatabaseStore.open(target)).rejects.toMatchObject({
+        code: 'invalid',
+      });
+    },
+  );
+
+  it.skipIf(process.platform === 'win32')(
+    'fails closed when its lock or containing directory is replaced',
+    async () => {
+      const target = await targetPath();
+      const store = await FileEncryptedDatabaseStore.open(target);
+      await unlink(`${target}.lock`);
+      await writeRestricted(`${target}.lock`, 'replacement');
+      await expect(store.ping()).rejects.toMatchObject({ code: 'invalid' });
+      await expect(store.close()).rejects.toMatchObject({ code: 'operation' });
+
+      const directory = await temporaryDirectory();
+      const directoryTarget = join(directory, 'database.json');
+      const directoryStore = await FileEncryptedDatabaseStore.open(directoryTarget);
+      const movedDirectory = `${directory}.moved`;
+      await rename(directory, movedDirectory);
+      await mkdir(directory, { mode: 0o700 });
+      await expect(directoryStore.ping()).rejects.toMatchObject({ code: 'invalid' });
+      await expect(directoryStore.close()).rejects.toMatchObject({ code: 'operation' });
+      await rm(movedDirectory, { force: true, recursive: true });
+    },
+  );
+
+  it('rejects a valid but noncanonical container and validates absent safe paths', async () => {
+    const target = await targetPath();
+    await FileEncryptedDatabaseStore.validatePath(target);
+    const databaseId = dbId('db_01JNONCANONICAL');
+    const store = await FileEncryptedDatabaseStore.open(target);
+    await store.createDatabase(database(databaseId, 0));
+    await store.close();
+    const parsed = JSON.parse(await readFile(target, 'utf8'));
+    await writeRestricted(target, `${JSON.stringify(parsed, null, 2)}\n`);
+    await expect(FileEncryptedDatabaseStore.validatePath(target)).rejects.toMatchObject(
+      {
+        code: 'invalid',
+      },
+    );
+  });
+
+  it('preserves prior bytes and removes temporary files when an atomic replace fails', async () => {
+    const target = await targetPath();
+    const databaseId = dbId('db_01JATOMICFAILURE');
+    const store = await FileEncryptedDatabaseStore.open(target);
+    await store.createDatabase(database(databaseId, 0));
+    const before = await readFile(target, 'utf8');
+    fileSystemMocks.rename.mockRejectedValueOnce(
+      Object.assign(new Error(), { code: 'EIO' }),
+    );
+    await expect(
+      store.updateDatabase(database(databaseId, 1), revision(0)),
+    ).rejects.toMatchObject({
+      code: 'operation',
+    });
+    expect(await readFile(target, 'utf8')).toBe(before);
+    expect(
+      (await readdir(dirname(target))).filter((name) => name.endsWith('.tmp')),
+    ).toEqual([]);
+    await store.close();
+  });
+
+  it('accepts exactly one thousand vaults and preserves bytes when rejecting 1,001', async () => {
+    const target = await targetPath();
+    const databaseId = dbId('db_01JVAULTBOUNDARY');
+    const vaults: Record<string, DatabaseVaultDocument> = {};
+    for (let index = 1; index <= 1_000; index += 1) {
+      const id = vaultId(`vault_01JBOUNDARY${String(index).padStart(4, '0')}`);
+      vaults[id] = vault(databaseId, id, 0, 0);
+    }
+    await writeRestricted(
+      target,
+      `${JSON.stringify({
+        format: 'kavrix-file-database-container',
+        version: 1,
+        database: database(databaseId, 0),
+        vaults,
+      })}\n`,
+    );
+    const store = await FileEncryptedDatabaseStore.open(target);
+    expect((await store.listVaults(databaseId)).length).toBe(1_000);
+    const before = await readFile(target, 'utf8');
+    await expect(
+      store.createVault({
+        database: database(databaseId, 1),
+        expectedDatabaseRevision: revision(0),
+        vault: vault(databaseId, vaultId('vault_01JBOUNDARY1001'), 1, 0),
+      }),
+    ).rejects.toMatchObject({ code: 'invalid' });
+    expect(await readFile(target, 'utf8')).toBe(before);
+    await store.close();
+  });
+
+  it('sets and verifies Windows ACLs for the exact final path after publication', async () => {
+    const descriptor = Object.getOwnPropertyDescriptor(process, 'platform');
+    let store: FileEncryptedDatabaseStore | undefined;
+    try {
+      Object.defineProperty(process, 'platform', {
+        configurable: true,
+        value: 'win32',
+      });
+      const target = await targetPath();
+      const canonicalTarget = join(await realpath(dirname(target)), 'database.json');
+      store = await FileEncryptedDatabaseStore.open(target);
+      await store.createDatabase(database(dbId('db_01JWINDOWSFINAL'), 0));
+      expect(aclMocks.set).toHaveBeenCalledWith(canonicalTarget);
+      expect(aclMocks.verify).toHaveBeenCalledWith(canonicalTarget);
+    } finally {
+      await store?.close();
+      if (descriptor !== undefined)
+        Object.defineProperty(process, 'platform', descriptor);
+    }
+  });
 });
 
 async function targetPath(): Promise<string> {
