@@ -303,6 +303,52 @@ describe('FileEncryptedDatabaseStore', () => {
     }
   });
 
+  it('redacts deterministic temporary-close and final-read failures without losing the held lock', async () => {
+    const rows = [
+      {
+        name: 'temporary close',
+        effects: {
+          close: async (handle: { close(): Promise<void> }) => {
+            await handle.close();
+            throw new Error('injected close');
+          },
+        },
+      },
+      {
+        name: 'final canonical read',
+        effects: {
+          readFinal: async () => {
+            throw new Error('injected final read');
+          },
+        },
+      },
+    ] as const;
+    for (const row of rows) {
+      const target = await targetPath();
+      const databaseId = dbId(`db_01J${row.name.replaceAll(' ', '').toUpperCase()}`);
+      const store = await FileEncryptedDatabaseStore.open(target);
+      await store.createDatabase(database(databaseId, 0));
+      const before = await readFile(target, 'utf8');
+      __fileEncryptedDatabaseTestEffects.replace(
+        row.effects as Parameters<typeof __fileEncryptedDatabaseTestEffects.replace>[0],
+      );
+      await expect(
+        store.updateDatabase(database(databaseId, 1), revision(0)),
+      ).rejects.toMatchObject({ code: 'operation' });
+      __fileEncryptedDatabaseTestEffects.reset();
+      expect(await readFile(target, 'utf8')).toBe(before);
+      expect(
+        (await readdir(dirname(target))).filter(
+          (name) => name.endsWith('.tmp') || name.endsWith('.bak'),
+        ),
+      ).toEqual([]);
+      await expect(FileEncryptedDatabaseStore.open(target)).rejects.toMatchObject({
+        code: 'busy',
+      });
+      await store.close();
+    }
+  });
+
   it('accepts exactly one thousand vaults and preserves bytes when rejecting 1,001', async () => {
     const target = await targetPath();
     const databaseId = dbId('db_01JVAULTBOUNDARY');
