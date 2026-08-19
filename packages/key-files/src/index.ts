@@ -18,11 +18,14 @@ export {
 export {
   readProtectedJsonDocument,
   transitionProtectedJsonDocument,
+  transitionProtectedJsonDocumentWithPublicationStatus,
   writeProtectedJsonDocument,
   ProtectedJsonDocumentError,
   type CanonicalJsonDocumentSchema,
   type ProtectedJsonDocumentOptions,
+  type ProtectedJsonDocumentPublication,
   type ProtectedJsonDocumentTransition,
+  type ProtectedJsonDocumentTransitionPublicationResult,
 } from './canonical-json-document.js';
 export {
   readPortableKeyFile,

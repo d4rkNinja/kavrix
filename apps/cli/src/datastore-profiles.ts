@@ -6,8 +6,11 @@ import {
   ProtectedJsonDocumentError,
   readProtectedJsonDocument,
   transitionProtectedJsonDocument,
+  transitionProtectedJsonDocumentWithPublicationStatus,
   writeProtectedJsonDocument,
   type CanonicalJsonDocumentSchema,
+  type ProtectedJsonDocumentPublication,
+  type ProtectedJsonDocumentTransitionPublicationResult,
   PortableKeyFileError,
   setWindowsUserOnlyAcl,
   verifyWindowsUserOnlyAcl,
@@ -76,6 +79,38 @@ export type DatastoreProfileRegistryOptions = Readonly<{
   configDirectory?: string;
   fileName?: string;
 }>;
+
+const datastoreProfileBindingPublicationBrand = Symbol(
+  'datastoreProfileBindingPublication',
+);
+
+/**
+ * Opaque evidence that an initialization binding replacement started. It has
+ * no registry path, bytes, lock state, or cleanup authority.
+ */
+export type DatastoreProfileBindingPublication = Readonly<{
+  readonly [datastoreProfileBindingPublicationBrand]: true;
+}>;
+
+export type DatastoreProfileBindingPublicationResult =
+  | Readonly<{
+      status: 'not-published';
+      error: DatastoreProfileError;
+    }>
+  | Readonly<{
+      status: 'published';
+      publication: DatastoreProfileBindingPublication;
+    }>
+  | Readonly<{
+      status: 'publication-uncertain';
+      publication: DatastoreProfileBindingPublication;
+      error: DatastoreProfileError;
+    }>;
+
+const datastoreProfileBindingPublications = new WeakMap<
+  object,
+  ProtectedJsonDocumentPublication
+>();
 
 export class DatastoreProfileError extends Error {
   public constructor(
@@ -271,6 +306,69 @@ export class DatastoreProfileRegistry {
     });
   }
 
+  /**
+   * Binds an uninitialized profile and reports whether registry publication is
+   * proven absent, complete, or ambiguous. Initialization callers may roll
+   * back database/key/anchor artifacts only for `not-published`; the other two
+   * states must retain recovery-capable artifacts and surface ambiguity.
+   */
+  async bindDatabaseIdForInitialization(
+    id: ProfileId,
+    databaseId: DatabaseId,
+  ): Promise<DatastoreProfileBindingPublicationResult> {
+    let parsedId: ProfileId;
+    let parsedDatabaseId: DatabaseId | undefined;
+    try {
+      parsedId = parseProfileId(id);
+      parsedDatabaseId = parseOptionalDatabaseId(databaseId);
+    } catch (error) {
+      return {
+        status: 'not-published',
+        error: profileFilesystemError(error),
+      };
+    }
+    if (parsedDatabaseId === undefined)
+      return {
+        status: 'not-published',
+        error: new DatastoreProfileError('PROFILE_INVALID'),
+      };
+    const publication = await this.#mutateWithPublicationStatus((document) => {
+      const profile = document.profiles.find((candidate) => candidate.id === parsedId);
+      if (profile === undefined) throw new DatastoreProfileError('PROFILE_NOT_FOUND');
+      if (profile.databaseId !== undefined) {
+        throw new DatastoreProfileError('PROFILE_INVALID');
+      }
+      const bound = parseProfile({ ...profile, databaseId: parsedDatabaseId });
+      return {
+        document: {
+          ...document,
+          profiles: document.profiles.map((candidate) =>
+            candidate.id === parsedId ? bound : candidate,
+          ),
+        },
+        result: cloneProfile(bound),
+      };
+    });
+    if (publication.status === 'not-published') {
+      return {
+        status: 'not-published',
+        error: profileFilesystemError(publication.error),
+      };
+    }
+    const capability = newDatastoreProfileBindingPublication(publication.publication);
+    if (publication.status === 'publication-uncertain') {
+      return {
+        status: 'publication-uncertain',
+        publication: capability,
+        error: profileFilesystemError(publication.error),
+      };
+    }
+    return {
+      status: 'published',
+      publication: capability,
+    };
+  }
+
   async current(): Promise<DatastoreProfile | null> {
     const document = await this.#readOrEmpty();
     if (document.current === null) return null;
@@ -356,6 +454,55 @@ export class DatastoreProfileRegistry {
     }
     throw new DatastoreProfileError('PROFILE_OPERATION_FAILED');
   }
+
+  async #mutateWithPublicationStatus<T>(
+    mutate: (
+      document: DatastoreProfileRegistryDocument,
+    ) => Readonly<{ document: DatastoreProfileRegistryDocument; result: T }>,
+  ): Promise<ProtectedJsonDocumentTransitionPublicationResult<T>> {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        if (!(await registryExists(this.#path))) {
+          return {
+            status: 'not-published',
+            error: new DatastoreProfileError('PROFILE_NOT_FOUND'),
+          };
+        }
+      } catch (error) {
+        return {
+          status: 'not-published',
+          error: profileFilesystemError(error),
+        };
+      }
+
+      const publication = await transitionProtectedJsonDocumentWithPublicationStatus(
+        this.#path,
+        profileRegistryDocumentOptions,
+        mutate,
+      );
+      if (
+        publication.status === 'not-published' &&
+        (isKeyFileError(publication.error, 'KEY_FILE_NOT_FOUND') ||
+          isKeyFileError(publication.error, 'KEY_FILE_BUSY'))
+      ) {
+        await yieldRegistryMutation();
+        continue;
+      }
+      return publication;
+    }
+    return {
+      status: 'not-published',
+      error: new DatastoreProfileError('PROFILE_OPERATION_FAILED'),
+    };
+  }
+}
+
+function newDatastoreProfileBindingPublication(
+  publication: ProtectedJsonDocumentPublication,
+): DatastoreProfileBindingPublication {
+  const capability = Object.freeze({});
+  datastoreProfileBindingPublications.set(capability, publication);
+  return capability as DatastoreProfileBindingPublication;
 }
 
 async function yieldRegistryMutation(): Promise<void> {

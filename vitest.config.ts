@@ -9,6 +9,7 @@ export default defineConfig({
     include: [
       'apps/cli/test/database-session.test.ts',
       'apps/cli/test/database-commands.test.ts',
+      'apps/cli/test/datastore-profile-publication.test.ts',
       'apps/cli/test/datastore-profiles.test.ts',
       'apps/cli/test/local-vault-cli-view.test.ts',
       'apps/cli/test/local-secrets.test.ts',

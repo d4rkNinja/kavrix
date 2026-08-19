@@ -18,6 +18,8 @@ export {
   resolveProfilePath,
   verifyDatastoreProfileDatabaseId,
   type DatastoreProfile,
+  type DatastoreProfileBindingPublication,
+  type DatastoreProfileBindingPublicationResult,
   type DatastoreProfileRoutingOverrides,
   type DatastoreProfileRegistryOptions,
 } from './datastore-profiles.js';
