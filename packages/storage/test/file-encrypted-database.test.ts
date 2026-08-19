@@ -246,6 +246,35 @@ describe('FileEncryptedDatabaseStore', () => {
     await store.close();
   });
 
+  it('fails closed and cleans publication artifacts for injected pre-publication phases', async () => {
+    const phases = ['write', 'sync', 'chmod', 'link', 'rename'] as const;
+    for (const phase of phases) {
+      const target = await targetPath();
+      const databaseId = dbId(`db_01JFAULT${phase.toUpperCase()}`);
+      const store = await FileEncryptedDatabaseStore.open(target);
+      await store.createDatabase(database(databaseId, 0));
+      const before = await readFile(target, 'utf8');
+      const injected = new Error(`injected ${phase}`);
+      __fileEncryptedDatabaseTestEffects.replace({
+        [phase]: async () => Promise.reject(injected),
+      } as Parameters<typeof __fileEncryptedDatabaseTestEffects.replace>[0]);
+      await expect(
+        store.updateDatabase(database(databaseId, 1), revision(0)),
+      ).rejects.toMatchObject({ code: 'operation' });
+      __fileEncryptedDatabaseTestEffects.reset();
+      expect(await readFile(target, 'utf8')).toBe(before);
+      expect(
+        (await readdir(dirname(target))).filter(
+          (name) => name.endsWith('.tmp') || name.endsWith('.bak'),
+        ),
+      ).toEqual([]);
+      await expect(FileEncryptedDatabaseStore.open(target)).rejects.toMatchObject({
+        code: 'busy',
+      });
+      await store.close();
+    }
+  });
+
   it('accepts exactly one thousand vaults and preserves bytes when rejecting 1,001', async () => {
     const target = await targetPath();
     const databaseId = dbId('db_01JVAULTBOUNDARY');

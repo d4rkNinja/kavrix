@@ -510,12 +510,13 @@ async function acquireLock(
       0o600,
     );
     await setAndVerifyCreatedFile(lockPath, handle);
-    await handle.sync();
+    await fileEncryptedDatabaseEffects.sync(handle);
     const metadata = await handle.stat({ bigint: true });
     await assertDirectoryIdentity(target);
     return { handle, identity: identityOf(metadata) };
   } catch (error) {
-    await handle?.close().catch(() => undefined);
+    if (handle !== undefined)
+      await fileEncryptedDatabaseEffects.close(handle).catch(() => undefined);
     if (handle !== undefined) await unlink(lockPath).catch(() => undefined);
     if (fileErrorCode(error) === 'EEXIST') {
       await inspectExistingLock(lockPath);
@@ -537,13 +538,13 @@ async function releaseLock(
     failure = true;
   }
   try {
-    await handle.close();
+    await fileEncryptedDatabaseEffects.close(handle);
   } catch {
     failure = true;
   }
   if (!failure) {
     try {
-      await unlink(lockPath);
+      await fileEncryptedDatabaseEffects.unlink(lockPath);
     } catch {
       failure = true;
     }
@@ -675,14 +676,14 @@ async function publishContainer(
       0o600,
     );
     await setAndVerifyCreatedFile(temporaryPath, handle);
-    await handle.writeFile(contents);
-    await handle.sync();
+    await fileEncryptedDatabaseEffects.write(handle, contents);
+    await fileEncryptedDatabaseEffects.sync(handle);
     const staged = await handle.stat({ bigint: true });
     await assertOwnedPermissions(staged, temporaryPath, true);
     if (staged.size !== BigInt(contents.byteLength))
       throw new EncryptedDatabaseStoreError('operation');
     const stagedIdentity = identityOf(staged);
-    await handle.close();
+    await fileEncryptedDatabaseEffects.close(handle);
     handle = undefined;
     await assertPathIdentity(temporaryPath, stagedIdentity);
     await assertTrustedPublicationState(target, lockPath, lockIdentity);
@@ -719,7 +720,7 @@ async function publishContainer(
       throw new EncryptedDatabaseStoreError('operation');
     }
     if (process.platform === 'win32') {
-      await setWindowsUserOnlyAcl(targetPath);
+      await fileEncryptedDatabaseEffects.setAcl(targetPath);
       await verifyWindowsUserOnlyAcl(targetPath);
       await assertPathIdentity(targetPath, finalIdentity);
     }
@@ -760,9 +761,12 @@ async function publishContainer(
     throw new EncryptedDatabaseStoreError('operation');
   } finally {
     contents.fill(0);
-    await handle?.close().catch(() => undefined);
+    if (handle !== undefined)
+      await fileEncryptedDatabaseEffects.close(handle).catch(() => undefined);
     if (!published)
       await fileEncryptedDatabaseEffects.unlink(temporaryPath).catch(() => undefined);
+    if (!published && publishedIdentity === undefined && backupIdentity !== undefined)
+      await fileEncryptedDatabaseEffects.unlink(backupPath).catch(() => undefined);
     if (published && backupIdentity !== undefined)
       await fileEncryptedDatabaseEffects.unlink(backupPath).catch(() => undefined);
   }
@@ -857,8 +861,9 @@ async function setAndVerifyCreatedFile(
   targetPath: string,
   handle: FileHandle,
 ): Promise<void> {
-  if (process.platform === 'win32') await setWindowsUserOnlyAcl(targetPath);
-  else await handle.chmod(0o600);
+  if (process.platform === 'win32')
+    await fileEncryptedDatabaseEffects.setAcl(targetPath);
+  else await fileEncryptedDatabaseEffects.chmod(handle, 0o600);
   const metadata = await handle.stat({ bigint: true });
   await assertOwnedPermissions(metadata, targetPath, true);
 }
@@ -968,16 +973,26 @@ function fileErrorCode(error: unknown): string | undefined {
 }
 
 type FileEncryptedDatabaseEffects = Readonly<{
+  chmod: (handle: FileHandle, mode: number) => Promise<void>;
+  close: (handle: FileHandle) => Promise<void>;
   link: typeof link;
   rename: typeof rename;
+  setAcl: typeof setWindowsUserOnlyAcl;
+  sync: (handle: FileHandle) => Promise<void>;
   unlink: typeof unlink;
+  write: (handle: FileHandle, contents: Buffer) => Promise<void>;
   syncDirectory: typeof syncDirectory;
 }>;
 
 const defaultFileEncryptedDatabaseEffects: FileEncryptedDatabaseEffects = {
+  chmod: (handle, mode) => handle.chmod(mode),
+  close: (handle) => handle.close(),
   link,
   rename,
+  setAcl: setWindowsUserOnlyAcl,
+  sync: (handle) => handle.sync(),
   unlink,
+  write: (handle, contents) => handle.writeFile(contents),
   syncDirectory,
 };
 
