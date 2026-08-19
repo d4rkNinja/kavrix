@@ -18,6 +18,14 @@ replacement uses a cooperative cross-process lock, revalidates the old file,
 and atomically renames the staged file. Directory metadata is flushed where the
 platform supports directory handles.
 
+Database ownership-capability writes use direct create-only handles rather than
+staged hard links, so rollback never needs to unlink a temporary alias. Owned
+cleanup moves the exact opened inode into a fresh user-only quarantine
+directory, truncates and flushes it through the retained descriptor, and keeps
+the zero-byte quarantine artifact because Node has no portable unlink-by-handle
+operation. A raced-in foreign inode is restored create-only to the public path
+or retained in quarantine; cleanup never pathname-unlinks it.
+
 On Windows, writes also require a protected containing-directory DACL with an
 inheritable current-user-only rule. The adapter validates this before creating
 the empty staging file, so no other account can retain a read handle before the
