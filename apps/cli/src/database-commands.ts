@@ -190,9 +190,8 @@ async function handleDatabaseInit(options: DatabaseCommandOptions): Promise<void
       ...(registry === null || profile === null
         ? {}
         : {
-            publishBinding: async (databaseId: DatabaseId) => {
-              await registry.bindDatabaseId(profile.id, databaseId);
-            },
+            publishBinding: (databaseId: DatabaseId) =>
+              registry.bindDatabaseIdForInitialization(profile.id, databaseId),
           }),
     });
     writeOutput({ initialized: true, ...result });

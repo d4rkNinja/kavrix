@@ -121,6 +121,11 @@ export type DatabaseVaultCatalogEntry = Readonly<{
   createdAt: string;
 }>;
 
+export type DatabaseInitializationBindingPublicationResult =
+  | Readonly<{ status: 'not-published'; error: unknown }>
+  | Readonly<{ status: 'published' }>
+  | Readonly<{ status: 'publication-uncertain'; error: unknown }>;
+
 export type DatabaseInitializationOptions = Readonly<{
   store: EncryptedDatabaseStore;
   keyFile: string;
@@ -128,7 +133,9 @@ export type DatabaseInitializationOptions = Readonly<{
   label: string;
   anchorFile?: string;
   rollbackDatabase?: (databaseId: DatabaseId) => Promise<void>;
-  publishBinding?: (databaseId: DatabaseId) => Promise<void>;
+  publishBinding?: (
+    databaseId: DatabaseId,
+  ) => Promise<DatabaseInitializationBindingPublicationResult>;
 }>;
 
 export type DatabaseOpenOptions = Readonly<{
@@ -225,6 +232,7 @@ export class DatabaseSession {
     let keyPublication: DatabaseKeyFilePublication | undefined;
     let databaseMayExist = false;
     let anchorPublication: DatabaseRevisionAnchorPublication | undefined;
+    let bindingPublicationUncertain = false;
     try {
       const database = await createInitialDatabase(
         databaseId,
@@ -267,10 +275,28 @@ export class DatabaseSession {
       await readDatabaseRevisionAnchor(anchorFile, rootKey, anchor, {
         requireExactVaultSet: true,
       });
-      await options.publishBinding?.(databaseId);
+      if (options.publishBinding !== undefined) {
+        let bindingPublication: DatabaseInitializationBindingPublicationResult;
+        try {
+          bindingPublication = await options.publishBinding(databaseId);
+        } catch {
+          bindingPublicationUncertain = true;
+          throw new DatabaseSessionError('ambiguous-commit');
+        }
+        if (bindingPublication.status !== 'published') {
+          if (bindingPublication.status === 'not-published') {
+            throw bindingPublication.error;
+          }
+          bindingPublicationUncertain = true;
+          throw new DatabaseSessionError('ambiguous-commit');
+        }
+      }
       return { databaseId, keyFile: options.keyFile, anchorFile };
     } catch (error) {
       const cleanupErrors: DatabaseSessionError[] = [];
+      if (bindingPublicationUncertain) {
+        throw new DatabaseSessionError('ambiguous-commit');
+      }
       if (databaseMayExist && options.rollbackDatabase !== undefined) {
         try {
           await options.rollbackDatabase(databaseId);

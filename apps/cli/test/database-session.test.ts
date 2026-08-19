@@ -191,6 +191,7 @@ describe('DatabaseSession', () => {
     const directory = await mkdtemp(join(tmpdir(), 'kavrix-session-'));
     const store = new MemoryDatabaseStore();
     const keyFile = join(directory, 'owner.kavrix-db-key');
+    let rollbackCalled = false;
     let thrown: unknown;
     try {
       await DatabaseSession.initialize({
@@ -199,7 +200,14 @@ describe('DatabaseSession', () => {
         passphrase: PASSPHRASE,
         label: 'database',
         publishBinding: async () => {
-          throw new Error('mongodb://raw-error-canary');
+          return {
+            status: 'publication-uncertain' as const,
+            error: new Error('mongodb://raw-error-canary'),
+          };
+        },
+        rollbackDatabase: async () => {
+          rollbackCalled = true;
+          store.database = null;
         },
       });
     } catch (error) {
@@ -207,6 +215,7 @@ describe('DatabaseSession', () => {
     }
     expect(thrown).toMatchObject({ code: 'ambiguous-commit' });
     expect(serializeThrown(thrown)).not.toContain('raw-error-canary');
+    expect(rollbackCalled).toBe(false);
     await expect(access(keyFile)).resolves.toBeUndefined();
     await expect(access(databaseRevisionAnchorPath(keyFile))).resolves.toBeUndefined();
     expect((await readDatabaseKeyFileBinding(keyFile)).databaseId).toBe(
@@ -231,13 +240,22 @@ describe('DatabaseSession', () => {
         passphrase: PASSPHRASE,
         label: 'database',
         publishBinding: async () => {
-          throw new Error('profile publication failed');
+          return {
+            status: 'not-published' as const,
+            error: new Error('profile-not-published-secret-canary'),
+          };
         },
         rollbackDatabase: async () => {
           store.database = null;
         },
       }),
-    ).rejects.toMatchObject({ code: 'authentication' });
+    ).rejects.toSatisfy((error: unknown) => {
+      expect(error).toMatchObject({ code: 'authentication' });
+      expect(serializeThrown(error)).not.toContain(
+        'profile-not-published-secret-canary',
+      );
+      return true;
+    });
     await expect(access(keyFile)).rejects.toMatchObject({ code: 'ENOENT' });
     await expect(access(databaseRevisionAnchorPath(keyFile))).rejects.toMatchObject({
       code: 'ENOENT',
@@ -257,7 +275,10 @@ describe('DatabaseSession', () => {
         passphrase: PASSPHRASE,
         label: 'database',
         publishBinding: async () => {
-          throw new Error('primary-secret-canary');
+          return {
+            status: 'not-published' as const,
+            error: new Error('primary-secret-canary'),
+          };
         },
         rollbackDatabase: async () => {
           store.database = null;
@@ -273,6 +294,29 @@ describe('DatabaseSession', () => {
     await expect(readFile(keyFile, 'utf8')).resolves.toBe(
       'foreign-cleanup-secret-canary',
     );
+  });
+
+  it('accepts a proven published initialization binding', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'kavrix-session-'));
+    const store = new MemoryDatabaseStore();
+    const keyFile = join(directory, 'owner.kavrix-db-key');
+    const initialized = await DatabaseSession.initialize({
+      store,
+      keyFile,
+      passphrase: PASSPHRASE,
+      label: 'database',
+      publishBinding: async () => ({ status: 'published' as const }),
+      rollbackDatabase: async () => {
+        throw new Error('published initialization must not roll back');
+      },
+    });
+    expect(store.database?.id).toBe(initialized.databaseId);
+    const opened = await DatabaseSession.open({
+      store,
+      keyFile,
+      passphrase: PASSPHRASE,
+    });
+    await opened.close();
   });
 
   it('rejects catalog tampering and missing, lower, or forked exact anchors', async () => {

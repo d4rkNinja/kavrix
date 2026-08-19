@@ -2,11 +2,13 @@ import { access, mkdtemp, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { MongoLocalVaultStore } from '@kavrix/storage';
+import { readDatabaseKeyFileBinding } from '@kavrix/key-files';
+import { FileEncryptedDatabaseStore, MongoLocalVaultStore } from '@kavrix/storage';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { buildLocalCli } from '../src/local-vault-cli.js';
 import { DatastoreProfileRegistry } from '../src/datastore-profiles.js';
+import { DatabaseSession } from '../src/database-session.js';
 import { LocalSecretInput, type LocalSecretKind } from '../src/local-secrets.js';
 
 afterEach(() => vi.restoreAllMocks());
@@ -351,9 +353,13 @@ describe('database owner command composition', () => {
       '--key-file',
       keyFile,
     ]);
-    vi.spyOn(DatastoreProfileRegistry.prototype, 'bindDatabaseId').mockRejectedValue(
-      new Error('profile-publication-secret-canary'),
-    );
+    vi.spyOn(
+      DatastoreProfileRegistry.prototype,
+      'bindDatabaseIdForInitialization',
+    ).mockResolvedValue({
+      status: 'not-published',
+      error: new Error('profile-publication-secret-canary'),
+    } as never);
     let thrown: unknown;
     try {
       await buildLocalCli().parseAsync([
@@ -375,6 +381,74 @@ describe('database owner command composition', () => {
     for (const path of [dataFile, keyFile, keyFile + '.database-anchor']) {
       await expect(access(path)).rejects.toMatchObject({ code: 'ENOENT' });
     }
+  });
+
+  it('retains and reopens database artifacts when profile publication is uncertain', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'kavrix-profile-uncertain-'));
+    const dataFile = join(directory, 'database.kavrix');
+    const keyFile = join(directory, 'owner.kavrix-db-key');
+    const passphrase = 'correct horse battery staple';
+    vi.spyOn(LocalSecretInput.prototype, 'read').mockResolvedValue([
+      'private-profile-label',
+      passphrase,
+      passphrase,
+    ]);
+    vi.spyOn(process.stdout, 'write').mockReturnValue(true);
+    await buildLocalCli().parseAsync([
+      'node',
+      'kavrix',
+      'db',
+      'profile',
+      'add',
+      'uncertain',
+      '--config-dir',
+      directory,
+      '--datastore',
+      'file',
+      '--data-file',
+      dataFile,
+      '--key-file',
+      keyFile,
+    ]);
+    vi.spyOn(
+      DatastoreProfileRegistry.prototype,
+      'bindDatabaseIdForInitialization',
+    ).mockResolvedValue({
+      status: 'publication-uncertain',
+      publication: Object.freeze({}),
+      error: new Error('profile-uncertain-secret-canary'),
+    } as never);
+    let thrown: unknown;
+    try {
+      await buildLocalCli().parseAsync([
+        'node',
+        'kavrix',
+        'db',
+        'init',
+        '--profile',
+        'uncertain',
+        '--profile-config-dir',
+        directory,
+        '--secrets-stdin',
+      ]);
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toMatchObject({ code: 'ambiguous-commit' });
+    expect(serializeThrown(thrown)).not.toContain('profile-uncertain-secret-canary');
+    for (const path of [dataFile, keyFile, keyFile + '.database-anchor']) {
+      await expect(access(path)).resolves.toBeUndefined();
+    }
+    const binding = await readDatabaseKeyFileBinding(keyFile);
+    const store = await FileEncryptedDatabaseStore.open(dataFile);
+    const reopened = await DatabaseSession.open({
+      store,
+      keyFile,
+      passphrase: new TextEncoder().encode(passphrase),
+      expectedDatabaseId: binding.databaseId,
+    });
+    expect(reopened.databaseId).toBe(binding.databaseId);
+    await reopened.close();
   });
 
   it('preserves executable legacy vault list and status output contracts', async () => {
