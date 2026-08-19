@@ -97,6 +97,10 @@ file or MongoDB document during rollback.
 
 `kavrix destroy` will destroy exactly one selected vault. It is not an alias for
 credential removal and has no `--force`, `--yes`, or confirmation-in-argv bypass.
+The command remains directly callable but is hidden from the root command list,
+ordinary help output, command-discovery tables, shell-completion suggestions, and
+the README's everyday-command surface. Hiding it reduces accidental discovery;
+it is not treated as an authorization boundary.
 
 The command will:
 
@@ -193,6 +197,13 @@ will be reconciled with the shipped behavior and observable gates. Existing
 MongoDB invocations keep their default backend, option names, outputs, and exit
 codes unless a new fail-closed validation rejects an ambiguous mixed-backend
 invocation.
+
+The destroy command will be documented only in an advanced destructive-operations
+section at the end of the CLI reference. It will not appear in introductory
+guides, everyday-command tables, examples for normal workflows, or other command
+indexes. The advanced section will state the exact direct invocation, required
+authentication, two confirmations, cleanup scope, and unavoidable backup/copy
+limitations without presenting destruction as routine vault management.
 
 This change introduces no new cryptographic primitive, plaintext settings file,
 browser surface, API server, sync daemon, external prompt program, or destructive
