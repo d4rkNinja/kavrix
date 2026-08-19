@@ -39,11 +39,14 @@ lock, exact expected revisions, restrictive temporary files, atomic publication,
 and directory synchronization. Labels, credential names, and values remain in
 authenticated encrypted envelopes.
 
-Local sharing is all-or-nothing. A recipient needs exactly the encrypted database
-file and matching database-owner key file, plus the key-file passphrase through a
-separate secure channel. Possession of those grants access to every vault. Do not
-describe copied local files as a reader/editor grant, and do not assume Kavrix can
-revoke a copied key or snapshot.
+Local sharing is all-or-nothing. Create a fresh share key with
+`kavrix db key create`, then transfer exactly that key and its matching encrypted
+database snapshot. Deliver the share-key passphrase through a separate secure
+channel. The one-use authenticated bootstrap creates the recipient's local anchor
+on first open; subsequent opens require that anchor and fail closed if it is
+missing. Possession of the two shared artifacts grants access to every vault. Do
+not copy the primary owner key, describe copied files as a reader/editor grant, or
+assume Kavrix can revoke a copied key or snapshot.
 
 ## MongoDB topology and connection policy
 

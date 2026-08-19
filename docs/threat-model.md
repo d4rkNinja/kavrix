@@ -44,8 +44,10 @@ After unlock, Kavrix maintains a restrictive DRK-authenticated local anchor with
 the database/catalog head and authenticated vault-head set. A datastore-only
 administrator who presents a lower revision, same-revision fork, missing expected
 vault, or invalid reappearance is rejected before credentials are exposed.
-Valid newer state advances the anchor; stale writers fail their expected-revision
-publication rather than overwrite another writer.
+Ordinary owner-key opens require an exact anchor match, including against an
+authenticated newer datastore state; stale writers fail their expected-revision
+publication rather than overwrite another writer. Only the recovery workflow may
+forward-reconcile its authenticated companion anchor after an owner mutation.
 
 Database recovery requires the matching recovery kit, database snapshot, and
 trusted anchor. Deleting or corrupting the anchor fails closed and is a manual
@@ -53,8 +55,11 @@ recovery condition. Recovery does not erase old ciphertext snapshots.
 
 ## Sharing boundary
 
-Local-file sharing means sharing the encrypted database file and matching owner
-key file; once unlocked, this grants access to all vaults. Kavrix cannot revoke a
+Local-file sharing means running `kavrix db key create` and sharing the resulting
+fresh share key with its exact matching encrypted database snapshot. Deliver the
+passphrase separately; the one-use authenticated bootstrap creates the
+recipient's anchor on first open. Do not copy the primary owner key. Once
+unlocked, the shared pair grants access to all vaults, and Kavrix cannot revoke a
 copied local key or snapshot. Fine-grained identities, recipient discovery,
 signed grants, reader/editor/owner roles, revocation through VRK rotation, and
 ownership transfer are future work and provide no current protection.

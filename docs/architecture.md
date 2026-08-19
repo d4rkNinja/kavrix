@@ -72,8 +72,10 @@ A restrictive sidecar beside each database-owner key file records a
 DRK-authenticated database revision, catalog digest, and authenticated vault-head
 set. Unlock reconciles the datastore with that anchor. Lower revisions,
 same-revision forks, missing vault heads, unexpected reappearance, and invalid
-authentication fail closed. Accepted newer state advances the anchor; failed or
-ambiguous publication is never reported as success.
+authentication fail closed. Ordinary owner-key opens require an exact anchor
+match and reject an authenticated newer datastore state. Only recovery may
+forward-reconcile its authenticated companion anchor after an owner mutation;
+failed or ambiguous publication is never reported as success.
 
 Vault deletion uses authenticated catalog removal and storage deletion;
 tombstone-equivalent absence checks prevent a removed vault from silently

@@ -51,8 +51,10 @@ independent catalog and anchor keys with HKDF-SHA-256 domain separation.
 
 Database recovery slots wrap the DRK, not an individual VRK. Consequently, the
 owner key or a database recovery kit authorizes recovery of every vault in the
-database. A local database file plus its matching owner key and passphrase is a
-full-database authorization, not a vault-scoped grant.
+database. A fresh share key created by `kavrix db key create`, its exact matching
+database snapshot, and its separately delivered passphrase form a full-database
+authorization, not a vault-scoped grant. The primary owner key is not the sharing
+artifact.
 
 ## Revisions, transactions, and reconciliation
 
@@ -66,7 +68,9 @@ A DRK-authenticated local anchor records the trusted database revision, catalog
 digest, and vault head revisions/digests. Reconciliation rejects rollback,
 same-revision forks, catalog/document disagreement, missing expected vaults, and
 reappearance inconsistent with an authenticated deletion/tombstone-equivalent
-head. A valid newer datastore state advances the anchor.
+head. Ordinary owner-key opens require an exact anchor match and reject even an
+authenticated newer datastore state. Only the recovery workflow may
+forward-reconcile its authenticated companion anchor after an owner mutation.
 
 ## Legacy migration
 

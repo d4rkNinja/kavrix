@@ -67,8 +67,10 @@ MongoDB stores two collections of ciphertext plus visible opaque routing
 metadata; it never receives passphrases, DRKs, VRKs, labels, or decrypted values.
 Remote URIs must explicitly enable validated TLS. Kavrix cannot protect an unlocked machine from local
 administrators, same-user malware, keyloggers, terminal capture, or process-memory
-inspection. Local sharing of the database file and matching owner key grants full
-access to all vaults. User identities, grants, roles, revocation, ownership
+inspection. For local sharing, create a fresh share key with `kavrix db key create`
+and transfer it with its exact matching encrypted database snapshot. Deliver the
+passphrase separately; the pair grants access to all vaults. User identities,
+grants, roles, revocation, ownership
 transfer, environments, groups, structured items, and typed fields are not yet
 implemented. Losing all valid owner keys and database recovery kits makes the
 database unrecoverable by design.
