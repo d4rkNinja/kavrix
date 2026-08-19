@@ -20,6 +20,8 @@ export default defineConfig({
       'packages/key-files/test/database-revision-anchor.test.ts',
       'packages/storage/test/file-local-vault.test.ts',
       'packages/storage/test/encrypted-database-store-contract.test.ts',
+      'packages/storage/test/mongo-encrypted-database.test.ts',
+      'packages/storage/test/mongo-encrypted-database.integration.test.ts',
       'packages/storage/test/mongo-local-vault-uri.test.ts',
     ],
     passWithNoTests: false,

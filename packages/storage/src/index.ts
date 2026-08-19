@@ -24,3 +24,7 @@ export {
   type MongoLocalVaultErrorCode,
   type MongoLocalVaultStoreOptions,
 } from './mongo-local-vault.js';
+export {
+  MongoEncryptedDatabaseStore,
+  type MongoEncryptedDatabaseStoreOptions,
+} from './mongo-encrypted-database.js';
