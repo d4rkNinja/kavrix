@@ -92,6 +92,14 @@ export type DatastoreProfileBindingPublication = Readonly<{
   readonly [datastoreProfileBindingPublicationBrand]: true;
 }>;
 
+export type DatastoreProfileErrorCode =
+  | 'PROFILE_DUPLICATE'
+  | 'PROFILE_INVALID'
+  | 'PROFILE_LIMIT'
+  | 'PROFILE_NOT_FOUND'
+  | 'PROFILE_OPERATION_FAILED'
+  | 'PROFILE_UNSAFE';
+
 export type DatastoreProfileBindingPublicationResult =
   | Readonly<{
       status: 'not-published';
@@ -107,32 +115,42 @@ export type DatastoreProfileBindingPublicationResult =
       error: DatastoreProfileError;
     }>;
 
+export type ValidatedDatastoreProfileBindingPublicationResult =
+  | Readonly<{
+      status: 'not-published';
+      errorCategory: DatastoreProfileErrorCode;
+    }>
+  | Readonly<{ status: 'published' }>
+  | Readonly<{
+      status: 'publication-uncertain';
+      errorCategory: DatastoreProfileErrorCode;
+    }>;
+
 const datastoreProfileBindingPublications = new WeakMap<
   object,
   ProtectedJsonDocumentPublication
 >();
+const datastoreProfileBindingPublicationResults = new WeakMap<
+  object,
+  ValidatedDatastoreProfileBindingPublicationResult
+>();
 
-/** Validates an opaque binding-publication capability without exposing it. */
-export function isDatastoreProfileBindingPublication(
+/** Returns a fresh proof snapshot only for a producer-created result object. */
+export function validateDatastoreProfileBindingPublicationResult(
   value: unknown,
-): value is DatastoreProfileBindingPublication {
-  return (
-    typeof value === 'object' &&
-    value !== null &&
-    datastoreProfileBindingPublications.has(value)
-  );
+): ValidatedDatastoreProfileBindingPublicationResult | undefined {
+  if (typeof value !== 'object' || value === null) return undefined;
+  const proof = datastoreProfileBindingPublicationResults.get(value);
+  if (proof === undefined) return undefined;
+  if (proof.status === 'published') return Object.freeze({ status: 'published' });
+  return Object.freeze({
+    status: proof.status,
+    errorCategory: proof.errorCategory,
+  });
 }
 
 export class DatastoreProfileError extends Error {
-  public constructor(
-    public readonly code:
-      | 'PROFILE_DUPLICATE'
-      | 'PROFILE_INVALID'
-      | 'PROFILE_LIMIT'
-      | 'PROFILE_NOT_FOUND'
-      | 'PROFILE_OPERATION_FAILED'
-      | 'PROFILE_UNSAFE',
-  ) {
+  public constructor(public readonly code: DatastoreProfileErrorCode) {
     super(profileErrorMessage(code));
     this.name = 'DatastoreProfileError';
   }
@@ -333,16 +351,16 @@ export class DatastoreProfileRegistry {
       parsedId = parseProfileId(id);
       parsedDatabaseId = parseOptionalDatabaseId(databaseId);
     } catch (error) {
-      return {
+      return newDatastoreProfileBindingPublicationResult({
         status: 'not-published',
         error: profileFilesystemError(error),
-      };
+      });
     }
     if (parsedDatabaseId === undefined)
-      return {
+      return newDatastoreProfileBindingPublicationResult({
         status: 'not-published',
         error: new DatastoreProfileError('PROFILE_INVALID'),
-      };
+      });
     const publication = await this.#mutateWithPublicationStatus((document) => {
       const profile = document.profiles.find((candidate) => candidate.id === parsedId);
       if (profile === undefined) throw new DatastoreProfileError('PROFILE_NOT_FOUND');
@@ -361,23 +379,23 @@ export class DatastoreProfileRegistry {
       };
     });
     if (publication.status === 'not-published') {
-      return {
+      return newDatastoreProfileBindingPublicationResult({
         status: 'not-published',
         error: profileFilesystemError(publication.error),
-      };
+      });
     }
     const capability = newDatastoreProfileBindingPublication(publication.publication);
     if (publication.status === 'publication-uncertain') {
-      return {
+      return newDatastoreProfileBindingPublicationResult({
         status: 'publication-uncertain',
         publication: capability,
         error: profileFilesystemError(publication.error),
-      };
+      });
     }
-    return {
+    return newDatastoreProfileBindingPublicationResult({
       status: 'published',
       publication: capability,
-    };
+    });
   }
 
   async current(): Promise<DatastoreProfile | null> {
@@ -514,6 +532,21 @@ function newDatastoreProfileBindingPublication(
   const capability = Object.freeze({});
   datastoreProfileBindingPublications.set(capability, publication);
   return capability as DatastoreProfileBindingPublication;
+}
+
+function newDatastoreProfileBindingPublicationResult<
+  Result extends DatastoreProfileBindingPublicationResult,
+>(result: Result): Result {
+  const frozen = Object.freeze(result);
+  const proof: ValidatedDatastoreProfileBindingPublicationResult =
+    result.status === 'published'
+      ? Object.freeze({ status: 'published' })
+      : Object.freeze({
+          status: result.status,
+          errorCategory: result.error.code,
+        });
+  datastoreProfileBindingPublicationResults.set(frozen, proof);
+  return frozen;
 }
 
 async function yieldRegistryMutation(): Promise<void> {

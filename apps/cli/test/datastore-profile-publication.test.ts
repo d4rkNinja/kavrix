@@ -7,6 +7,8 @@ import { join } from 'node:path';
 import { databaseIdSchema, profileIdSchema } from '@kavrix/schemas';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { validateDatastoreProfileBindingPublicationResult } from '../src/datastore-profiles.js';
+
 type FaultPhase =
   | 'none'
   | 'pre-publication'
@@ -164,6 +166,13 @@ describe('datastore profile binding publication', () => {
     if (publication.status !== 'published') {
       throw new Error('Expected published profile binding');
     }
+    expect(Object.isFrozen(publication)).toBe(true);
+    const proof = validateDatastoreProfileBindingPublicationResult(publication);
+    expect(proof).toEqual({ status: 'published' });
+    expect(Object.isFrozen(proof)).toBe(true);
+    expect(validateDatastoreProfileBindingPublicationResult(publication)).not.toBe(
+      proof,
+    );
     expect(Object.isFrozen(publication.publication)).toBe(true);
     expect(Reflect.ownKeys(publication.publication)).toEqual([]);
     expect(JSON.stringify(publication.publication)).toBe('{}');
@@ -189,6 +198,11 @@ describe('datastore profile binding publication', () => {
       error: { code: 'PROFILE_UNSAFE' },
     });
     expect(publication).not.toHaveProperty('publication');
+    expect(Object.isFrozen(publication)).toBe(true);
+    expect(validateDatastoreProfileBindingPublicationResult(publication)).toEqual({
+      status: 'not-published',
+      errorCategory: 'PROFILE_UNSAFE',
+    });
     expect(await profiles.get(profileIdSchema.parse('work'))).not.toHaveProperty(
       'databaseId',
     );
@@ -214,6 +228,11 @@ describe('datastore profile binding publication', () => {
         throw new Error('Expected uncertain profile binding');
       }
       expect(Object.isFrozen(publication.publication)).toBe(true);
+      expect(Object.isFrozen(publication)).toBe(true);
+      expect(validateDatastoreProfileBindingPublicationResult(publication)).toEqual({
+        status: 'publication-uncertain',
+        errorCategory: 'PROFILE_UNSAFE',
+      });
       expect(Reflect.ownKeys(publication.publication)).toEqual([]);
       const serialized = JSON.stringify(publication);
       expect(serialized).not.toContain(directory);

@@ -7,10 +7,7 @@ import { FileEncryptedDatabaseStore, MongoLocalVaultStore } from '@kavrix/storag
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { buildLocalCli } from '../src/local-vault-cli.js';
-import {
-  DatastoreProfileError,
-  DatastoreProfileRegistry,
-} from '../src/datastore-profiles.js';
+import { DatastoreProfileRegistry } from '../src/datastore-profiles.js';
 import { DatabaseSession } from '../src/database-session.js';
 import { LocalSecretInput, type LocalSecretKind } from '../src/local-secrets.js';
 
@@ -356,15 +353,18 @@ describe('database owner command composition', () => {
       '--key-file',
       keyFile,
     ]);
+    const proofRegistry = await DatastoreProfileRegistry.open({
+      configDirectory: join(directory, 'proof-registry'),
+    });
+    const authenticNotPublished = await proofRegistry.bindDatabaseIdForInitialization(
+      'invalid profile id' as never,
+      'db_proof' as never,
+    );
+    expect(authenticNotPublished.status).toBe('not-published');
     vi.spyOn(
       DatastoreProfileRegistry.prototype,
       'bindDatabaseIdForInitialization',
-    ).mockResolvedValue({
-      status: 'not-published',
-      error: Object.assign(new DatastoreProfileError('PROFILE_OPERATION_FAILED'), {
-        detail: 'profile-publication-secret-canary',
-      }),
-    } as never);
+    ).mockResolvedValue(authenticNotPublished);
     let thrown: unknown;
     try {
       await buildLocalCli().parseAsync([

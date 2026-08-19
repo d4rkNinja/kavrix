@@ -39,7 +39,10 @@ import {
   DatabaseSession,
   setDatabaseSessionZeroizationObserverForTest,
 } from '../src/database-session.js';
-import { DatastoreProfileError } from '../src/datastore-profiles.js';
+import {
+  DatastoreProfileError,
+  DatastoreProfileRegistry,
+} from '../src/datastore-profiles.js';
 
 const PASSPHRASE = Buffer.from('correct horse battery staple', 'utf8');
 
@@ -234,21 +237,14 @@ describe('DatabaseSession', () => {
     const directory = await mkdtemp(join(tmpdir(), 'kavrix-session-'));
     const store = new MemoryDatabaseStore();
     const keyFile = join(directory, 'owner.kavrix-db-key');
+    const authenticNotPublished = await authenticNonPublication(directory);
     await expect(
       DatabaseSession.initialize({
         store,
         keyFile,
         passphrase: PASSPHRASE,
         label: 'database',
-        publishBinding: async () => {
-          return {
-            status: 'not-published' as const,
-            error: Object.assign(
-              new DatastoreProfileError('PROFILE_OPERATION_FAILED'),
-              { detail: 'profile-not-published-secret-canary' },
-            ),
-          };
-        },
+        publishBinding: async () => authenticNotPublished,
         rollbackDatabase: async () => {
           store.database = null;
         },
@@ -271,6 +267,7 @@ describe('DatabaseSession', () => {
     const directory = await mkdtemp(join(tmpdir(), 'kavrix-session-'));
     const store = new MemoryDatabaseStore();
     const keyFile = join(directory, 'owner.kavrix-db-key');
+    const authenticNotPublished = await authenticNonPublication(directory);
     let thrown: unknown;
     try {
       await DatabaseSession.initialize({
@@ -278,15 +275,7 @@ describe('DatabaseSession', () => {
         keyFile,
         passphrase: PASSPHRASE,
         label: 'database',
-        publishBinding: async () => {
-          return {
-            status: 'not-published' as const,
-            error: Object.assign(
-              new DatastoreProfileError('PROFILE_OPERATION_FAILED'),
-              { detail: 'primary-secret-canary' },
-            ),
-          };
-        },
+        publishBinding: async () => authenticNotPublished,
         rollbackDatabase: async () => {
           store.database = null;
           await rm(keyFile);
@@ -304,7 +293,49 @@ describe('DatabaseSession', () => {
   });
 
   it('retains artifacts for every malformed profile publication result', async () => {
-    const malformedResults: readonly Readonly<{ name: string; value: unknown }>[] = [
+    let getterReads = 0;
+    const getterWrapper = Object.freeze(
+      Object.defineProperties(
+        {},
+        {
+          status: {
+            enumerable: true,
+            get: () => {
+              getterReads += 1;
+              return 'not-published';
+            },
+          },
+          error: {
+            enumerable: true,
+            get: () => {
+              getterReads += 1;
+              return new DatastoreProfileError('PROFILE_OPERATION_FAILED');
+            },
+          },
+        },
+      ),
+    );
+    let proxyReads = 0;
+    const statefulProxy = new Proxy(
+      {},
+      {
+        get: (_target, property) => {
+          if (property === 'then') return undefined;
+          proxyReads += 1;
+          if (property === 'status' && proxyReads === 1) return 'not-published';
+          throw new Error('stateful-proxy-secret-canary');
+        },
+        ownKeys: () => {
+          proxyReads += 1;
+          return ['status', 'error'];
+        },
+      },
+    );
+    const malformedResults: readonly Readonly<{
+      name: string;
+      value: unknown;
+      observedReads?: () => number;
+    }>[] = [
       { name: 'null', value: null },
       { name: 'undefined', value: undefined },
       { name: 'primitive', value: 7 },
@@ -319,6 +350,23 @@ describe('DatabaseSession', () => {
           status: 'not-published',
           error: new Error('malformed-not-published-secret-canary'),
         },
+      },
+      {
+        name: 'not-published-exact-forgery',
+        value: Object.freeze({
+          status: 'not-published',
+          error: new DatastoreProfileError('PROFILE_OPERATION_FAILED'),
+        }),
+      },
+      {
+        name: 'frozen-getter-wrapper',
+        value: getterWrapper,
+        observedReads: () => getterReads,
+      },
+      {
+        name: 'stateful-throwing-proxy',
+        value: statefulProxy,
+        observedReads: () => proxyReads,
       },
       { name: 'published-missing-capability', value: { status: 'published' } },
       {
@@ -356,6 +404,7 @@ describe('DatabaseSession', () => {
       }
       expect(thrown, malformed.name).toMatchObject({ code: 'ambiguous-commit' });
       expect(serializeThrown(thrown), malformed.name).not.toContain('secret-canary');
+      expect(malformed.observedReads?.() ?? 0, malformed.name).toBe(0);
       expect(rollbackCalled, malformed.name).toBe(false);
       await expect(access(keyFile), malformed.name).resolves.toBeUndefined();
       await expect(
@@ -930,4 +979,18 @@ function serializeThrown(value: unknown, seen = new Set<unknown>()): string {
     return `${label}:${serializeThrown(Reflect.get(value, key), seen)}`;
   });
   return entries.join('|');
+}
+
+async function authenticNonPublication(
+  directory: string,
+): Promise<
+  Awaited<ReturnType<DatastoreProfileRegistry['bindDatabaseIdForInitialization']>>
+> {
+  const registry = await DatastoreProfileRegistry.open({
+    configDirectory: join(directory, 'profile-proof'),
+  });
+  return registry.bindDatabaseIdForInitialization(
+    'invalid profile id' as never,
+    'db_proof' as never,
+  );
 }

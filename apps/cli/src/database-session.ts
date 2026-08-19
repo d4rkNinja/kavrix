@@ -80,7 +80,7 @@ import {
 
 import {
   DatastoreProfileError,
-  isDatastoreProfileBindingPublication,
+  validateDatastoreProfileBindingPublicationResult,
   type DatastoreProfileBindingPublicationResult,
 } from './datastore-profiles.js';
 
@@ -284,14 +284,15 @@ export class DatabaseSession {
           bindingPublicationUncertain = true;
           throw new DatabaseSessionError('ambiguous-commit');
         }
-        const bindingPublication = validateBindingPublication(resolvedPublication);
+        const bindingPublication =
+          validateDatastoreProfileBindingPublicationResult(resolvedPublication);
         if (bindingPublication === undefined) {
           bindingPublicationUncertain = true;
           throw new DatabaseSessionError('ambiguous-commit');
         }
         if (bindingPublication.status !== 'published') {
           if (bindingPublication.status === 'not-published') {
-            throw bindingPublication.error;
+            throw new DatastoreProfileError(bindingPublication.errorCategory);
           }
           bindingPublicationUncertain = true;
           throw new DatabaseSessionError('ambiguous-commit');
@@ -1535,52 +1536,6 @@ function mapError(error: unknown): DatabaseSessionError {
     return new DatabaseSessionError('operation');
   }
   return new DatabaseSessionError('authentication');
-}
-
-function validateBindingPublication(
-  value: unknown,
-): DatastoreProfileBindingPublicationResult | undefined {
-  try {
-    if (typeof value !== 'object' || value === null) return undefined;
-    const status = readUnknownProperty(value, 'status');
-    if (status === 'not-published') {
-      if (!hasExactKeys(value, ['status', 'error'])) return undefined;
-      return readUnknownProperty(value, 'error') instanceof DatastoreProfileError
-        ? (value as DatastoreProfileBindingPublicationResult)
-        : undefined;
-    }
-    if (status === 'published') {
-      if (!hasExactKeys(value, ['status', 'publication'])) return undefined;
-      return isDatastoreProfileBindingPublication(
-        readUnknownProperty(value, 'publication'),
-      )
-        ? (value as DatastoreProfileBindingPublicationResult)
-        : undefined;
-    }
-    if (status === 'publication-uncertain') {
-      if (!hasExactKeys(value, ['status', 'publication', 'error'])) return undefined;
-      return isDatastoreProfileBindingPublication(
-        readUnknownProperty(value, 'publication'),
-      ) && readUnknownProperty(value, 'error') instanceof DatastoreProfileError
-        ? (value as DatastoreProfileBindingPublicationResult)
-        : undefined;
-    }
-    return undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-function readUnknownProperty(value: object, key: string): unknown {
-  return Reflect.get(value, key) as unknown;
-}
-
-function hasExactKeys(value: object, expected: readonly string[]): boolean {
-  const keys = Reflect.ownKeys(value);
-  return (
-    keys.length === expected.length &&
-    expected.every((key) => Object.prototype.hasOwnProperty.call(value, key))
-  );
 }
 
 async function cleanupOwned(
