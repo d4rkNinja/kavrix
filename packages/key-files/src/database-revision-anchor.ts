@@ -180,6 +180,7 @@ export async function transitionDatabaseRevisionAnchor<Result>(
       const transition = await callback(trusted);
       const next = normalizeAnchor(transition.nextAnchor);
       verifyDatabaseRevisionAnchor(trusted, next);
+      verifyDatabaseRevisionAnchor(observed, next);
       serialized = serializeAnchor(databaseRootKey, next);
       await replaceSecureFileWhileExclusive(lock, serialized);
       return transition.result;

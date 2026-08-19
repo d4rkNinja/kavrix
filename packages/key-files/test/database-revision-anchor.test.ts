@@ -162,6 +162,34 @@ describe('DRK-authenticated database revision anchors', () => {
       zeroize(drk);
     }
   });
+
+  it('rejects a callback that returns an anchor older than the accepted observation', async () => {
+    const file = path();
+    const drk = generateDatabaseRootKey();
+    try {
+      const trusted = anchor();
+      const observed = {
+        ...anchor(5, 8),
+        vaultHeads: {
+          ...anchor(5, 8).vaultHeads,
+          vault_new: {
+            revision: vaultRevisionSchema.parse(1),
+            metadataDigest: digest('D'),
+          },
+        },
+      } as DatabaseRevisionAnchor;
+      await writeDatabaseRevisionAnchor(file, drk, trusted, 'create');
+      await expect(
+        transitionDatabaseRevisionAnchor(file, drk, observed, async () => ({
+          nextAnchor: trusted,
+          result: 'stale',
+        })),
+      ).rejects.toMatchObject({ code: 'KEY_FILE_UNSAFE' });
+      await expect(readDatabaseRevisionAnchor(file, drk)).resolves.toEqual(trusted);
+    } finally {
+      zeroize(drk);
+    }
+  });
   it('writes a canonical sorted bounded anchor, authenticates it, and derives an adjacent path', async () => {
     const file = path();
     const drk = generateDatabaseRootKey();
