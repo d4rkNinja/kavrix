@@ -12,6 +12,8 @@ const opaqueId = z
   .regex(opaqueIdPattern, 'Must be an opaque identifier');
 
 export const vaultIdSchema = opaqueId.brand<'VaultId'>();
+export const databaseIdSchema = opaqueId.brand<'DatabaseId'>();
+export const profileIdSchema = opaqueId.brand<'ProfileId'>();
 export const keySlotIdSchema = opaqueId.brand<'KeySlotId'>();
 export const groupIdSchema = opaqueId.brand<'GroupId'>();
 export const itemIdSchema = opaqueId.brand<'ItemId'>();
@@ -27,6 +29,8 @@ export const historyIdSchema = opaqueId.brand<'HistoryId'>();
 export const inviteIdSchema = opaqueId.brand<'InviteId'>();
 
 export type VaultId = z.infer<typeof vaultIdSchema>;
+export type DatabaseId = z.infer<typeof databaseIdSchema>;
+export type ProfileId = z.infer<typeof profileIdSchema>;
 export type KeySlotId = z.infer<typeof keySlotIdSchema>;
 export type GroupId = z.infer<typeof groupIdSchema>;
 export type ItemId = z.infer<typeof itemIdSchema>;

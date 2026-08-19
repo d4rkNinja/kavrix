@@ -10,6 +10,7 @@ export default defineConfig({
       'apps/cli/test/local-vault-cli-view.test.ts',
       'apps/cli/test/local-secrets.test.ts',
       'apps/cli/test/package.test.ts',
+      'packages/schemas/test/database-container.test.ts',
       'packages/schemas/test/**/*.test.ts',
       'packages/crypto/test/**/*.test.ts',
       'packages/key-files/test/secure-stream.test.ts',

@@ -4,6 +4,7 @@ export * from './authorization.js';
 export * from './backup.js';
 export * from './encrypted-records.js';
 export * from './content-hash.js';
+export * from './database-container.js';
 export * from './fields.js';
 export * from './history.js';
 export * from './identifiers.js';
