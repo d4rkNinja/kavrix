@@ -47,7 +47,11 @@ if ($isDirectory) {
 $propagation = [Security.AccessControl.PropagationFlags]::None
 $rule = [Security.AccessControl.FileSystemAccessRule]::new($sid, $fullControl, $inheritance, $propagation, $allow)
 [void]$acl.AddAccessRule($rule)
-Set-Acl -LiteralPath $target -AclObject $acl -ErrorAction Stop
+if ($isDirectory) {
+  [IO.Directory]::SetAccessControl($target, $acl)
+} else {
+  [IO.File]::SetAccessControl($target, $acl)
+}
 `;
 
 const VERIFY_USER_ONLY_ACL = String.raw`
