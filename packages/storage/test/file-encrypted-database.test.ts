@@ -33,12 +33,23 @@ const aclMocks = vi.hoisted(() => ({
   set: vi.fn<(path: string) => Promise<void>>(() => Promise.resolve()),
   verify: vi.fn<(path: string) => Promise<void>>(() => Promise.resolve()),
 }));
-const fileSystemMocks = vi.hoisted(() => ({ rename: vi.fn() }));
+const fileSystemMocks = vi.hoisted(() => ({
+  lstat: vi.fn(),
+  realpath: vi.fn(),
+  rename: vi.fn(),
+}));
 
 vi.mock('node:fs/promises', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs/promises')>();
+  fileSystemMocks.lstat.mockImplementation(actual.lstat);
+  fileSystemMocks.realpath.mockImplementation(actual.realpath);
   fileSystemMocks.rename.mockImplementation(actual.rename);
-  return { ...actual, rename: fileSystemMocks.rename };
+  return {
+    ...actual,
+    lstat: fileSystemMocks.lstat,
+    realpath: fileSystemMocks.realpath,
+    rename: fileSystemMocks.rename,
+  };
 });
 
 vi.mock('@kavrix/key-files/windows-acl', () => ({
@@ -52,6 +63,7 @@ import {
   FileEncryptedDatabaseStore,
   MAX_FILE_ENCRYPTED_DATABASE_BYTES,
 } from '../src/file-encrypted-database.js';
+import { EncryptedDatabaseStoreError } from '../src/encrypted-database-store.js';
 
 const directories: string[] = [];
 const timestamp = '2026-08-19T00:00:00.000Z';
@@ -250,16 +262,17 @@ describe('FileEncryptedDatabaseStore', () => {
     const before = await readFile(target, 'utf8');
     let failed = false;
     __fileEncryptedDatabaseTestEffects.replace({
-      syncDirectory: async () => {
-        if (!failed) {
+      syncDirectory: async (_path, phase) => {
+        if (phase === 'post-publish' && !failed) {
           failed = true;
           throw new Error('injected directory sync');
         }
       },
     });
-    await expect(
+    await expectOperationFailure(
       store.updateDatabase(database(databaseId, 1), revision(0)),
-    ).rejects.toMatchObject({ code: 'operation' });
+      ['injected directory sync', databaseId],
+    );
     __fileEncryptedDatabaseTestEffects.reset();
     expect(await readFile(target, 'utf8')).toBe(before);
     expect(
@@ -282,13 +295,14 @@ describe('FileEncryptedDatabaseStore', () => {
       const store = await FileEncryptedDatabaseStore.open(target);
       await store.createDatabase(database(databaseId, 0));
       const before = await readFile(target, 'utf8');
-      const injected = new Error(`injected ${phase}`);
+      const injected = new Error(`injected ${phase} sensitive-value`);
       __fileEncryptedDatabaseTestEffects.replace({
         [phase]: async () => Promise.reject(injected),
       } as Parameters<typeof __fileEncryptedDatabaseTestEffects.replace>[0]);
-      await expect(
+      await expectOperationFailure(
         store.updateDatabase(database(databaseId, 1), revision(0)),
-      ).rejects.toMatchObject({ code: 'operation' });
+        [injected.message, databaseId],
+      );
       __fileEncryptedDatabaseTestEffects.reset();
       expect(await readFile(target, 'utf8')).toBe(before);
       expect(
@@ -308,9 +322,12 @@ describe('FileEncryptedDatabaseStore', () => {
       {
         name: 'temporary close',
         effects: {
-          close: async (handle: { close(): Promise<void> }) => {
+          close: async (
+            handle: { close(): Promise<void> },
+            role: 'lock' | 'temporary',
+          ) => {
             await handle.close();
-            throw new Error('injected close');
+            if (role === 'temporary') throw new Error('injected close');
           },
         },
       },
@@ -332,9 +349,10 @@ describe('FileEncryptedDatabaseStore', () => {
       __fileEncryptedDatabaseTestEffects.replace(
         row.effects as Parameters<typeof __fileEncryptedDatabaseTestEffects.replace>[0],
       );
-      await expect(
+      await expectOperationFailure(
         store.updateDatabase(database(databaseId, 1), revision(0)),
-      ).rejects.toMatchObject({ code: 'operation' });
+        [`injected ${row.name}`, databaseId],
+      );
       __fileEncryptedDatabaseTestEffects.reset();
       expect(await readFile(target, 'utf8')).toBe(before);
       expect(
@@ -346,6 +364,248 @@ describe('FileEncryptedDatabaseStore', () => {
         code: 'busy',
       });
       await store.close();
+    }
+  });
+
+  it('rolls back create publication, temporary-unlink, and one-shot rollback-unlink failures', async () => {
+    const rows = ['publish link', 'temporary unlink', 'rollback unlink'] as const;
+    for (const row of rows) {
+      const target = await targetPath();
+      const databaseId = dbId(`db_01JCREATE${row.replaceAll(' ', '').toUpperCase()}`);
+      const store = await FileEncryptedDatabaseStore.open(target);
+      let rollbackUnlinkFailed = false;
+      __fileEncryptedDatabaseTestEffects.replace({
+        link: async (existingPath, newPath, phase) => {
+          if (row === 'publish link' && phase === 'publish-create') {
+            throw new Error('injected create link sensitive-value');
+          }
+          await link(existingPath, newPath);
+        },
+        unlink: async (path, phase) => {
+          if (row !== 'publish link' && phase === 'temporary-after-create') {
+            throw new Error('injected temporary unlink sensitive-value');
+          }
+          if (
+            row === 'rollback unlink' &&
+            phase === 'rollback-create' &&
+            !rollbackUnlinkFailed
+          ) {
+            rollbackUnlinkFailed = true;
+            throw new Error('injected rollback unlink sensitive-value');
+          }
+          await unlink(path);
+        },
+      });
+      await expectOperationFailure(store.createDatabase(database(databaseId, 0)), [
+        'sensitive-value',
+        databaseId,
+      ]);
+      __fileEncryptedDatabaseTestEffects.reset();
+      await expect(readFile(target)).rejects.toMatchObject({ code: 'ENOENT' });
+      await expectNoPublicationArtifacts(target);
+      await expectHeldLock(target);
+      await store.close();
+    }
+  });
+
+  it('isolates pre-publish, post-publish, and final-identity failures', async () => {
+    const rows = ['pre-publish sync', 'post-publish sync', 'final identity'] as const;
+    for (const row of rows) {
+      const target = await targetPath();
+      const databaseId = dbId(`db_01JFINAL${row.replaceAll(' ', '').toUpperCase()}`);
+      const store = await FileEncryptedDatabaseStore.open(target);
+      await store.createDatabase(database(databaseId, 0));
+      const before = await readFile(target);
+      __fileEncryptedDatabaseTestEffects.replace({
+        syncDirectory: async (_path, phase) => {
+          if (phase === row.replace(' sync', '')) {
+            throw new Error(`injected ${row} sensitive-value`);
+          }
+        },
+        verifyFinalIdentity: async () => {
+          if (row === 'final identity') {
+            throw new Error('injected final identity sensitive-value');
+          }
+        },
+      });
+      await expectOperationFailure(
+        store.updateDatabase(database(databaseId, 1), revision(0)),
+        ['sensitive-value', databaseId],
+      );
+      __fileEncryptedDatabaseTestEffects.reset();
+      expect(await readFile(target)).toEqual(before);
+      await expectNoPublicationArtifacts(target);
+      await expectHeldLock(target);
+      await store.close();
+    }
+  });
+
+  it('recovers from one-shot rollback rename failure under the trusted lock', async () => {
+    const target = await targetPath();
+    const databaseId = dbId('db_01JROLLBACKRENAME');
+    const store = await FileEncryptedDatabaseStore.open(target);
+    await store.createDatabase(database(databaseId, 0));
+    const before = await readFile(target);
+    let rollbackRenameFailed = false;
+    const trustedChecksAtRollbackAttempts: Array<
+      Readonly<{ directory: number; lock: number }>
+    > = [];
+    __fileEncryptedDatabaseTestEffects.replace({
+      readFinal: async () => {
+        fileSystemMocks.lstat.mockClear();
+        fileSystemMocks.realpath.mockClear();
+        throw new Error('injected final read sensitive-value');
+      },
+      rename: async (oldPath, newPath, phase) => {
+        if (phase === 'rollback') {
+          trustedChecksAtRollbackAttempts.push({
+            directory: fileSystemMocks.realpath.mock.calls.length,
+            lock: fileSystemMocks.lstat.mock.calls.length,
+          });
+          if (!rollbackRenameFailed) {
+            rollbackRenameFailed = true;
+            throw new Error('injected rollback rename sensitive-value');
+          }
+        }
+        await rename(oldPath, newPath);
+      },
+    });
+    await expectOperationFailure(
+      store.updateDatabase(database(databaseId, 1), revision(0)),
+      ['sensitive-value', databaseId],
+    );
+    __fileEncryptedDatabaseTestEffects.reset();
+    expect(rollbackRenameFailed).toBe(true);
+    expect(trustedChecksAtRollbackAttempts).toHaveLength(2);
+    expect(trustedChecksAtRollbackAttempts[0]!.directory).toBeGreaterThan(0);
+    expect(trustedChecksAtRollbackAttempts[0]!.lock).toBeGreaterThan(0);
+    expect(trustedChecksAtRollbackAttempts[1]!.directory).toBeGreaterThan(
+      trustedChecksAtRollbackAttempts[0]!.directory,
+    );
+    expect(trustedChecksAtRollbackAttempts[1]!.lock).toBeGreaterThan(
+      trustedChecksAtRollbackAttempts[0]!.lock,
+    );
+    expect(await readFile(target)).toEqual(before);
+    await expectNoPublicationArtifacts(target);
+    await expectHeldLock(target);
+    await store.close();
+  });
+
+  it('retains a protected recovery backup when rollback durability stays unprovable', async () => {
+    const target = await targetPath();
+    const databaseId = dbId('db_01JPERSISTENTROLLBACK');
+    const store = await FileEncryptedDatabaseStore.open(target);
+    await store.createDatabase(database(databaseId, 0));
+    const before = await readFile(target);
+    __fileEncryptedDatabaseTestEffects.replace({
+      syncDirectory: async (_path, phase) => {
+        if (phase === 'post-publish' || phase === 'rollback') {
+          throw new Error('injected persistent sync sensitive-value');
+        }
+      },
+    });
+    await expectOperationFailure(
+      store.updateDatabase(database(databaseId, 1), revision(0)),
+      ['sensitive-value', databaseId],
+    );
+    __fileEncryptedDatabaseTestEffects.reset();
+    expect(await readFile(target)).toEqual(before);
+    const artifacts = await publicationArtifacts(target);
+    expect(artifacts.filter((name) => name.endsWith('.tmp'))).toEqual([]);
+    expect(artifacts.filter((name) => name.endsWith('.bak'))).toHaveLength(1);
+    const backupPath = join(dirname(target), artifacts[0]!);
+    expect(await readFile(backupPath)).toEqual(before);
+    const targetMetadata = await lstat(target, { bigint: true });
+    const backupMetadata = await lstat(backupPath, { bigint: true });
+    expect(targetMetadata.dev).toBe(backupMetadata.dev);
+    expect(targetMetadata.ino).toBe(backupMetadata.ino);
+    expect(targetMetadata.nlink).toBe(2n);
+    if (process.platform !== 'win32') {
+      expect(backupMetadata.mode & 0o777n).toBe(0o600n);
+    }
+    await expectHeldLock(target);
+    await store.close();
+  });
+
+  it('separately redacts Windows temporary and final ACL set and verify failures', async () => {
+    const descriptor = Object.getOwnPropertyDescriptor(process, 'platform');
+    try {
+      Object.defineProperty(process, 'platform', {
+        configurable: true,
+        value: 'win32',
+      });
+      const rows = [
+        { operation: 'set' as const, role: 'temporary' as const },
+        { operation: 'verify' as const, role: 'temporary' as const },
+        { operation: 'set' as const, role: 'final' as const },
+        { operation: 'verify' as const, role: 'final' as const },
+      ];
+      for (const row of rows) {
+        const target = await targetPath();
+        const databaseId = dbId(
+          `db_01JWIN${row.role.toUpperCase()}${row.operation.toUpperCase()}`,
+        );
+        const store = await FileEncryptedDatabaseStore.open(target);
+        await store.createDatabase(database(databaseId, 0));
+        const before = await readFile(target);
+        __fileEncryptedDatabaseTestEffects.replace({
+          setAcl: async (path, role) => {
+            if (row.operation === 'set' && role === row.role) {
+              throw new Error('injected ACL set sensitive-value');
+            }
+            await aclMocks.set(path);
+          },
+          verifyAcl: async (path, role) => {
+            if (row.operation === 'verify' && role === row.role) {
+              throw new Error('injected ACL verify sensitive-value');
+            }
+            await aclMocks.verify(path);
+          },
+        });
+        await expectOperationFailure(
+          store.updateDatabase(database(databaseId, 1), revision(0)),
+          ['sensitive-value', databaseId],
+        );
+        __fileEncryptedDatabaseTestEffects.reset();
+        expect(await readFile(target)).toEqual(before);
+        await expectNoPublicationArtifacts(target);
+        await expectHeldLock(target);
+        await store.close();
+      }
+    } finally {
+      __fileEncryptedDatabaseTestEffects.reset();
+      if (descriptor !== undefined)
+        Object.defineProperty(process, 'platform', descriptor);
+    }
+  });
+
+  it('fails closed on lock-handle close and sibling-lock unlink failures', async () => {
+    const rows = ['handle close', 'sibling unlink'] as const;
+    for (const row of rows) {
+      const target = await targetPath();
+      const databaseId = dbId(`db_01JLOCK${row.replaceAll(' ', '').toUpperCase()}`);
+      const store = await FileEncryptedDatabaseStore.open(target);
+      await store.createDatabase(database(databaseId, 0));
+      const before = await readFile(target);
+      __fileEncryptedDatabaseTestEffects.replace({
+        close: async (handle, role) => {
+          await handle.close();
+          if (row === 'handle close' && role === 'lock') {
+            throw new Error('injected lock close sensitive-value');
+          }
+        },
+        unlink: async (path, phase) => {
+          if (row === 'sibling unlink' && phase === 'lock-release') {
+            throw new Error('injected lock unlink sensitive-value');
+          }
+          await unlink(path);
+        },
+      });
+      await expectOperationFailure(store.close(), ['sensitive-value', databaseId]);
+      __fileEncryptedDatabaseTestEffects.reset();
+      expect(await readFile(target)).toEqual(before);
+      await expectNoPublicationArtifacts(target);
+      await expectHeldLock(target);
     }
   });
 
@@ -414,6 +674,44 @@ async function temporaryDirectory(): Promise<string> {
 async function writeRestricted(path: string, contents: string): Promise<void> {
   await writeFile(path, contents, { mode: 0o600 });
   if (process.platform !== 'win32') await chmod(path, 0o600);
+}
+async function publicationArtifacts(target: string): Promise<string[]> {
+  return (await readdir(dirname(target))).filter(
+    (name) => name.endsWith('.tmp') || name.endsWith('.bak'),
+  );
+}
+async function expectNoPublicationArtifacts(target: string): Promise<void> {
+  expect(await publicationArtifacts(target)).toEqual([]);
+}
+async function expectHeldLock(target: string): Promise<void> {
+  const metadata = await lstat(`${target}.lock`, { bigint: true });
+  expect(metadata.isFile()).toBe(true);
+  expect(metadata.nlink).toBe(1n);
+  if (process.platform !== 'win32') expect(metadata.mode & 0o777n).toBe(0o600n);
+  await expectStorageError(FileEncryptedDatabaseStore.open(target), 'busy');
+}
+async function expectOperationFailure(
+  operation: Promise<unknown>,
+  forbiddenValues: readonly (DatabaseId | string)[],
+): Promise<void> {
+  const error = await operation.catch((failure: unknown) => failure);
+  expect(error).toEqual(new EncryptedDatabaseStoreError('operation'));
+  expect(error).toMatchObject({
+    name: 'EncryptedDatabaseStoreError',
+    code: 'operation',
+    message: 'The database operation failed.',
+  });
+  expect(error).not.toHaveProperty('cause');
+  const rendered = JSON.stringify(error);
+  for (const value of forbiddenValues) expect(rendered).not.toContain(value);
+}
+async function expectStorageError(
+  operation: Promise<unknown>,
+  code: 'busy' | 'operation',
+): Promise<void> {
+  const error = await operation.catch((failure: unknown) => failure);
+  expect(error).toEqual(new EncryptedDatabaseStoreError(code));
+  expect(error).not.toHaveProperty('cause');
 }
 function dbId(value: string): DatabaseId {
   return databaseIdSchema.parse(value);
