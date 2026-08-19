@@ -27,5 +27,8 @@
     "@kavrix/key-files": "workspace:*",
     "@kavrix/schemas": "workspace:*",
     "mongodb": "catalog:"
+  },
+  "devDependencies": {
+    "@kavrix/crypto": "workspace:*"
   }
 }

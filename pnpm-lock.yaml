@@ -137,6 +137,10 @@ importers:
       mongodb:
         specifier: 'catalog:'
         version: 7.5.0
+    devDependencies:
+      '@kavrix/crypto':
+        specifier: workspace:*
+        version: link:../crypto
 
 packages:
 

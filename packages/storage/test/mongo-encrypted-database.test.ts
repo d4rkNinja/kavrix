@@ -109,6 +109,17 @@ describe('MongoEncryptedDatabaseStore', () => {
     await store.close();
   });
 
+  it('uses the exact default database and vault collection names', async () => {
+    const database = { collection: vi.fn(() => mongodb.databaseCollection) };
+    mongodb.client.db.mockReturnValue(database);
+
+    const store = await MongoEncryptedDatabaseStore.connect(URI, DATABASE_NAME);
+
+    expect(database.collection).toHaveBeenNthCalledWith(1, 'kavrix_databases');
+    expect(database.collection).toHaveBeenNthCalledWith(2, 'kavrix_vaults');
+    await store.close();
+  });
+
   it('rejects unsafe runtime configuration without reflecting it', async () => {
     await expect(
       MongoEncryptedDatabaseStore.connect(
@@ -365,4 +376,92 @@ describe('MongoEncryptedDatabaseStore', () => {
       new EncryptedDatabaseStoreError('closed'),
     );
   });
+
+  it('maps arbitrary normal and transactional driver errors to redacted operation errors', async () => {
+    const database = databaseDocument(
+      makeDatabaseId('db_01JMONGOREDAC'),
+      databaseRevision(1),
+    );
+    const vault = vaultDocument(
+      database.id,
+      makeVaultId('vault_01JMONGOREDAC'),
+      databaseRevision(1),
+      vaultRevision(0),
+    );
+    const updatedVault = vaultDocument(
+      database.id,
+      vault.id,
+      databaseRevision(1),
+      vaultRevision(1),
+    );
+    const driverError = new Error(
+      'mongodb://user:password@example.test/db_01JMONGOREDAC ciphertext AQID',
+    );
+    mongodb.client.db.mockReturnValue({
+      command: vi.fn(),
+      collection: vi.fn((name: string) =>
+        name === 'kavrix_databases'
+          ? mongodb.databaseCollection
+          : mongodb.vaultCollection,
+      ),
+    });
+    mongodb.databaseCollection.findOne.mockRejectedValueOnce(driverError);
+    mongodb.vaultCollection.updateOne.mockRejectedValueOnce(driverError);
+    mongodb.databaseCollection.updateOne.mockRejectedValueOnce(driverError);
+    const store = await MongoEncryptedDatabaseStore.connect(URI, DATABASE_NAME);
+
+    await expectRedactedStoreError(
+      store.getDatabase(database.id),
+      'operation',
+      driverError,
+    );
+    await expectRedactedStoreError(
+      store.updateVault({
+        vault: updatedVault,
+        expectedVaultRevision: vaultRevision(0),
+      }),
+      'operation',
+      driverError,
+    );
+    await expectRedactedStoreError(
+      store.createVault({
+        database,
+        expectedDatabaseRevision: databaseRevision(0),
+        vault,
+      }),
+      'operation',
+      driverError,
+    );
+    expect(mongodb.client.withSession).toHaveBeenCalledOnce();
+    expect(mongodb.session.withTransaction).toHaveBeenCalledOnce();
+    expect(mongodb.vaultCollection.insertOne).not.toHaveBeenCalled();
+    await store.close();
+  });
 });
+
+async function expectRedactedStoreError(
+  operation: Promise<unknown>,
+  code: EncryptedDatabaseStoreError['code'],
+  original: Error,
+): Promise<void> {
+  try {
+    await operation;
+    throw new Error('Expected an encrypted database store error');
+  } catch (error: unknown) {
+    expect(error).toEqual(new EncryptedDatabaseStoreError(code));
+    expect(error).not.toBe(original);
+    const storageError = error as EncryptedDatabaseStoreError & { cause?: unknown };
+    expect(storageError.cause).toBeUndefined();
+    for (const forbidden of [
+      'mongodb://',
+      'password',
+      'db_01J',
+      'vault_01J',
+      'ciphertext',
+      'AQID',
+    ]) {
+      expect(storageError.message).not.toContain(forbidden);
+      expect(String(storageError)).not.toContain(forbidden);
+    }
+  }
+}
