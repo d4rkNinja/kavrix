@@ -1,8 +1,8 @@
-import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { PortableKeyFileError } from '../src/errors.js';
 import { SealedSecretStore, sealedEntryFactory } from '../src/sealed-secret-store.js';
@@ -10,6 +10,7 @@ import { SealedSecretStore, sealedEntryFactory } from '../src/sealed-secret-stor
 const SERVICE = 'dev.kavrix.credentials';
 const ACCOUNT = 'v1:api-session:vault-1:device-1';
 const SECRET = Uint8Array.from({ length: 32 }, (_, index) => index + 1);
+const DERIVATION_FILE = 'store-params.v1.json';
 
 // Argon2id at production parameters dominates the runtime of every case here.
 const TIMEOUT_MS = 60_000;
@@ -48,6 +49,196 @@ afterEach(async () => {
 });
 
 describe('SealedSecretStore', () => {
+  it('rejects empty and oversized secrets before deriving a key', async () => {
+    const passphrase = vi.fn(() =>
+      Promise.resolve(Buffer.from('correct horse battery staple', 'utf8')),
+    );
+    const store = new SealedSecretStore({ directory, passphrase });
+    try {
+      await expect(
+        store.store(SERVICE, ACCOUNT, new Uint8Array()),
+      ).rejects.toMatchObject({
+        code: 'KEY_FILE_OPERATION_FAILED',
+      });
+      await expect(
+        store.store(SERVICE, ACCOUNT, new Uint8Array(8193)),
+      ).rejects.toMatchObject({ code: 'KEY_FILE_OPERATION_FAILED' });
+      expect(passphrase).not.toHaveBeenCalled();
+    } finally {
+      await store.close();
+    }
+  });
+
+  it(
+    'zeroizes the supplied passphrase after deriving the master key and closes idempotently',
+    async () => {
+      const passphrase = Buffer.from('correct horse battery staple', 'utf8');
+      const store = new SealedSecretStore({
+        directory,
+        passphrase: () => Promise.resolve(passphrase),
+      });
+      try {
+        await store.store(SERVICE, ACCOUNT, SECRET);
+        expect(passphrase.every((byte) => byte === 0)).toBe(true);
+        await store.close();
+        await store.close();
+      } finally {
+        await store.close();
+      }
+    },
+    TIMEOUT_MS,
+  );
+
+  it(
+    'replaces an existing envelope while preserving the latest secret',
+    async () => {
+      const replacement = Uint8Array.from({ length: 32 }, (_, index) => 255 - index);
+      const store = storeAt(directory);
+      try {
+        await store.store(SERVICE, ACCOUNT, SECRET);
+        await store.store(SERVICE, ACCOUNT, replacement);
+        expect(await store.load(SERVICE, ACCOUNT)).toStrictEqual(replacement);
+      } finally {
+        await store.close();
+      }
+    },
+    TIMEOUT_MS,
+  );
+
+  it(
+    'fails closed for malformed derivation metadata',
+    async () => {
+      const malformed = [
+        ['null metadata', null],
+        ['wrong algorithm', { algorithm: 'scrypt' }],
+        ['missing salt', { algorithm: 'argon2id' }],
+        [
+          'non-integer parameter',
+          {
+            algorithm: 'argon2id',
+            salt: 'AAAAAAAAAAAAAAAAAAAAAA',
+            version: 1.5,
+            memoryKiB: 32_768,
+            passes: 3,
+            parallelism: 1,
+            outputLength: 32,
+          },
+        ],
+        [
+          'invalid salt encoding',
+          {
+            algorithm: 'argon2id',
+            salt: 'not-base64!!',
+            version: 1,
+            memoryKiB: 32_768,
+            passes: 3,
+            parallelism: 1,
+            outputLength: 32,
+          },
+        ],
+        [
+          'wrong salt length',
+          {
+            algorithm: 'argon2id',
+            salt: 'AA',
+            version: 1,
+            memoryKiB: 32_768,
+            passes: 3,
+            parallelism: 1,
+            outputLength: 32,
+          },
+        ],
+      ] as const;
+
+      for (const [label, value] of malformed) {
+        await writeFile(
+          join(directory, DERIVATION_FILE),
+          JSON.stringify(value),
+          'utf8',
+        );
+        await chmod(join(directory, DERIVATION_FILE), 0o600);
+        const store = storeAt(directory);
+        try {
+          await expect(
+            store.store(SERVICE, ACCOUNT, SECRET),
+            label,
+          ).rejects.toMatchObject({
+            code: 'KEY_FILE_UNSAFE',
+          });
+        } finally {
+          await store.close();
+        }
+      }
+    },
+    TIMEOUT_MS,
+  );
+
+  it(
+    'fails closed when the storage directory cannot be created securely',
+    async () => {
+      const occupiedPath = join(directory, 'occupied');
+      await writeFile(occupiedPath, 'not a directory', 'utf8');
+      const store = storeAt(occupiedPath);
+      try {
+        await expect(store.store(SERVICE, ACCOUNT, SECRET)).rejects.toMatchObject({
+          code: 'KEY_FILE_UNSAFE',
+        });
+      } finally {
+        await store.close();
+      }
+    },
+    TIMEOUT_MS,
+  );
+
+  it(
+    'rejects truncated and unsupported envelope headers before decryption',
+    async () => {
+      const store = storeAt(directory);
+      try {
+        await store.store(SERVICE, ACCOUNT, SECRET);
+        const path = join(directory, requireSealFile(await readdir(directory)));
+        const original = await readFile(path);
+        const malformed = [
+          ['truncated', Buffer.alloc(0)],
+          [
+            'wrong magic',
+            (() => {
+              const bytes = Buffer.from(original);
+              bytes[0] = (bytes[0] ?? 0) ^ 0xff;
+              return bytes;
+            })(),
+          ],
+          [
+            'wrong format version',
+            (() => {
+              const bytes = Buffer.from(original);
+              bytes[4] = 2;
+              return bytes;
+            })(),
+          ],
+          [
+            'wrong algorithm',
+            (() => {
+              const bytes = Buffer.from(original);
+              bytes[5] = 2;
+              return bytes;
+            })(),
+          ],
+        ] as const;
+
+        for (const [label, bytes] of malformed) {
+          await writeFile(path, bytes);
+          await expect(store.load(SERVICE, ACCOUNT), label).rejects.toMatchObject({
+            code: 'KEY_FILE_UNSAFE',
+          });
+        }
+      } finally {
+        await store.close();
+      }
+    },
+    TIMEOUT_MS,
+  );
+
   it(
     'round-trips a secret through a fresh process-equivalent instance',
     async () => {
