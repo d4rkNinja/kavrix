@@ -190,7 +190,7 @@ describe('local secret input policy', () => {
     await expect(
       secretInput('private-label\r\n').read(['label'], true),
     ).resolves.toEqual(['private-label']);
-    for (const invalid of ['\n', 'private\0label\n']) {
+    for (const invalid of ['\n', 'private\0label\n', 'private\rlabel\n']) {
       await expect(secretInput(invalid).read(['label'], true)).rejects.toThrow(
         'Secret input must contain exactly one value.',
       );
