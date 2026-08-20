@@ -23,11 +23,13 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const aclMocks = vi.hoisted(() => ({
   set: vi.fn<(path: string) => Promise<void>>(() => Promise.resolve()),
+  verifyDirectory: vi.fn<(path: string) => Promise<void>>(() => Promise.resolve()),
   verify: vi.fn<(path: string) => Promise<void>>(() => Promise.resolve()),
 }));
 
 vi.mock('@kavrix/key-files/windows-acl', () => ({
   setWindowsUserOnlyAcl: aclMocks.set,
+  verifyWindowsDirectoryAcl: aclMocks.verifyDirectory,
   verifyWindowsUserOnlyAcl: aclMocks.verify,
 }));
 
@@ -119,7 +121,7 @@ describe('FileLocalVaultStore', () => {
     await reopened.close();
   });
 
-  it('applies and verifies Windows ACLs for the directory and every owned file', async () => {
+  it('verifies inherited Windows directory ACLs and protects every owned file', async () => {
     const platformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform');
     let store: FileLocalVaultStore | undefined;
     try {
@@ -136,14 +138,14 @@ describe('FileLocalVaultStore', () => {
       await store.close();
       store = undefined;
 
-      expect(aclMocks.set).toHaveBeenCalledWith(canonicalDirectory);
+      expect(aclMocks.verifyDirectory).toHaveBeenCalledWith(canonicalDirectory);
+      expect(aclMocks.set).not.toHaveBeenCalledWith(canonicalDirectory);
       expect(aclMocks.set).toHaveBeenCalledWith(`${canonicalTarget}.lock`);
       expect(
         aclMocks.set.mock.calls.some(([path]) =>
           String(path).includes('.vault.json.kavrix-'),
         ),
       ).toBe(true);
-      expect(aclMocks.verify).toHaveBeenCalledWith(canonicalDirectory);
       expect(aclMocks.verify).toHaveBeenCalledWith(`${canonicalTarget}.lock`);
       expect(aclMocks.verify).toHaveBeenCalledWith(canonicalTarget);
     } finally {
@@ -151,6 +153,24 @@ describe('FileLocalVaultStore', () => {
       if (platformDescriptor !== undefined) {
         Object.defineProperty(process, 'platform', platformDescriptor);
       }
+    }
+  });
+
+  it('validates an existing Windows parent without mutating its ACL', async () => {
+    const descriptor = Object.getOwnPropertyDescriptor(process, 'platform');
+    try {
+      Object.defineProperty(process, 'platform', {
+        configurable: true,
+        value: 'win32',
+      });
+      const target = await targetPath();
+      const canonicalDirectory = await realpath(dirname(target));
+      await expect(FileLocalVaultStore.validatePath(target)).resolves.toBeUndefined();
+      expect(aclMocks.verifyDirectory).toHaveBeenCalledWith(canonicalDirectory);
+      expect(aclMocks.set).not.toHaveBeenCalledWith(canonicalDirectory);
+    } finally {
+      if (descriptor !== undefined)
+        Object.defineProperty(process, 'platform', descriptor);
     }
   });
 

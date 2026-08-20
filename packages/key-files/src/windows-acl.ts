@@ -91,6 +91,40 @@ foreach ($rule in $rules) {
 if (-not $hasCurrentUserAllow -or -not $hasSafeChildInheritance) { exit 2 }
 `;
 
+// Existing parent directories are not Kavrix-owned objects. Their inherited
+// ACLs must therefore be inspected without changing ownership, inheritance, or
+// any access rule. Read grants to ordinary principals are compatible with a
+// shared working directory; any ordinary-principal write/control grant is not.
+const VERIFY_DIRECTORY_ACL = String.raw`
+$ErrorActionPreference = 'Stop'
+$target = [Environment]::GetEnvironmentVariable('KAVRIX_ACL_TARGET', 'Process')
+if ([String]::IsNullOrEmpty($target)) { exit 3 }
+$identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+$currentSid = $identity.User.Value
+$systemSid = 'S-1-5-18'
+$administratorsSid = 'S-1-5-32-544'
+if ([String]::IsNullOrEmpty($currentSid)) { exit 2 }
+if (-not [IO.Directory]::Exists($target)) { exit 4 }
+$item = [IO.DirectoryInfo]::new($target)
+$item.Refresh()
+if (-not $item.Exists -or (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) { exit 4 }
+$sections = [Security.AccessControl.AccessControlSections]::Access -bor [Security.AccessControl.AccessControlSections]::Owner
+$acl = $item.GetAccessControl($sections)
+$ownerSid = $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
+$trustedSids = @($currentSid, $systemSid, $administratorsSid)
+if ($trustedSids -notcontains $ownerSid) { exit 2 }
+$rules = @($acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]))
+if ($rules.Count -eq 0) { exit 2 }
+$writeRights = [Security.AccessControl.FileSystemRights]::Write -bor [Security.AccessControl.FileSystemRights]::WriteData -bor [Security.AccessControl.FileSystemRights]::AppendData -bor [Security.AccessControl.FileSystemRights]::WriteExtendedAttributes -bor [Security.AccessControl.FileSystemRights]::WriteAttributes -bor [Security.AccessControl.FileSystemRights]::Delete -bor [Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles -bor [Security.AccessControl.FileSystemRights]::ChangePermissions -bor [Security.AccessControl.FileSystemRights]::TakeOwnership -bor 0x40000000 -bor 0x10000000
+foreach ($rule in $rules) {
+  $ruleSid = $rule.IdentityReference.Value
+  if ([String]::IsNullOrEmpty($ruleSid)) { exit 2 }
+  if ($rule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow) { exit 2 }
+  $hasWriteRights = (([int]$rule.FileSystemRights -band [int]$writeRights) -ne 0)
+  if ($hasWriteRights -and $trustedSids -notcontains $ruleSid) { exit 2 }
+}
+`;
+
 function encodedCommand(script: string): string {
   return Buffer.from(script, 'utf16le').toString('base64');
 }
@@ -139,4 +173,14 @@ export async function setWindowsUserOnlyAcl(targetPath: string): Promise<void> {
 
 export async function verifyWindowsUserOnlyAcl(targetPath: string): Promise<void> {
   await runAclCommand(VERIFY_USER_ONLY_ACL, targetPath);
+}
+
+/**
+ * Verifies an existing directory's effective writable principals without
+ * mutating its ACL. Inherited read grants are allowed, but write/control
+ * grants are restricted to the current user, SYSTEM, and built-in
+ * Administrators.
+ */
+export async function verifyWindowsDirectoryAcl(targetPath: string): Promise<void> {
+  await runAclCommand(VERIFY_DIRECTORY_ACL, targetPath);
 }

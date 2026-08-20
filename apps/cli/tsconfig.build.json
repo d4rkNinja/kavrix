@@ -18,6 +18,7 @@
     "src/database-session.ts",
     "src/datastore-profiles.ts",
     "src/index.ts",
+    "src/init-onboarding.ts",
     "src/local-secrets.ts",
     "src/local-vault-cli.ts",
     "src/version.ts"

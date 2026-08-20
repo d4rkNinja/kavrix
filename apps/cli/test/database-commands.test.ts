@@ -1,4 +1,4 @@
-import { access, readFile, stat } from 'node:fs/promises';
+import { access, readFile, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -12,7 +12,30 @@ import { DatabaseSession } from '../src/database-session.js';
 import { LocalSecretInput, type LocalSecretKind } from '../src/local-secrets.js';
 import { createSecureTestDirectory as mkdtemp } from '../../../packages/key-files/test/secure-temporary-directory.js';
 
-afterEach(() => vi.restoreAllMocks());
+// The full workflow derives several Argon2 keys and hardens each artifact with
+// native Windows ACL probes. The isolated baseline reached the previous
+// 360-second ceiling, so keep a finite ten-minute boundary for this one
+// end-to-end case while cleaning every owned directory after it exits.
+const databaseCommandWorkflowTimeoutMs =
+  process.platform === 'win32' ? 600_000 : 30_000;
+const testDirectories = new Set<string>();
+
+function databaseCommandWorkflowTest(fn: () => Promise<void>): void {
+  it(
+    'executes file database, vault, and recovery commands through exact secret requests',
+    fn,
+    databaseCommandWorkflowTimeoutMs,
+  );
+}
+
+afterEach(async () => {
+  vi.restoreAllMocks();
+  const directories = [...testDirectories];
+  testDirectories.clear();
+  await Promise.all(
+    directories.map((directory) => rm(directory, { force: true, recursive: true })),
+  );
+});
 
 describe('database owner command composition', () => {
   it('registers the database and multi-vault owner surface without delete or secret arguments', () => {
@@ -70,8 +93,8 @@ describe('database owner command composition', () => {
     expect(read).not.toHaveBeenCalled();
   });
 
-  it('executes file database, vault, and recovery commands through exact secret requests', async () => {
-    const directory = await mkdtemp(join(tmpdir(), 'kavrix-database-commands-'));
+  databaseCommandWorkflowTest(async () => {
+    const directory = await testDirectory(join(tmpdir(), 'kavrix-database-commands-'));
     const dataFile = join(directory, 'database.kavrix');
     const keyFile = join(directory, 'owner.kavrix-db-key');
     const firstRecovery = join(directory, 'first.kavrix-db-recovery');
@@ -374,7 +397,7 @@ describe('database owner command composition', () => {
   });
 
   it('rolls back database artifacts when initial profile binding publication fails', async () => {
-    const directory = await mkdtemp(join(tmpdir(), 'kavrix-profile-publish-'));
+    const directory = await testDirectory(join(tmpdir(), 'kavrix-profile-publish-'));
     const dataFile = join(directory, 'database.kavrix');
     const keyFile = join(directory, 'owner.kavrix-db-key');
     const passphrase = 'correct horse battery staple';
@@ -439,7 +462,7 @@ describe('database owner command composition', () => {
   });
 
   it('retains and reopens database artifacts when profile publication is uncertain', async () => {
-    const directory = await mkdtemp(join(tmpdir(), 'kavrix-profile-uncertain-'));
+    const directory = await testDirectory(join(tmpdir(), 'kavrix-profile-uncertain-'));
     const dataFile = join(directory, 'database.kavrix');
     const keyFile = join(directory, 'owner.kavrix-db-key');
     const passphrase = 'correct horse battery staple';
@@ -600,4 +623,10 @@ function setStdoutTty(value: boolean): () => void {
     if (descriptor === undefined) delete (process.stdout as { isTTY?: boolean }).isTTY;
     else Object.defineProperty(process.stdout, 'isTTY', descriptor);
   };
+}
+
+async function testDirectory(prefix: string): Promise<string> {
+  const directory = await mkdtemp(prefix);
+  testDirectories.add(directory);
+  return directory;
 }

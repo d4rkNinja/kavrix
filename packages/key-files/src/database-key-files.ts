@@ -1,4 +1,4 @@
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 
 import {
   createPassphraseDerivation,
@@ -30,6 +30,9 @@ import {
   createOwnedSecureFile,
   releaseOwnedSecureFilePublication,
   readSecureFile,
+  readSecureFileWhileExclusive,
+  replaceSecureFileWhileExclusive,
+  withExclusiveSecureFile,
   writeSecureFile,
   type OwnedSecureFilePublication,
 } from './filesystem.js';
@@ -83,8 +86,17 @@ export type DatabaseKeyFileCreateResult =
       error: PortableKeyFileError;
     }>;
 
+declare const databaseKeyFileVersionBrand: unique symbol;
+type DatabaseKeyFileVersion = Readonly<{
+  readonly [databaseKeyFileVersionBrand]: true;
+}>;
+
+const databaseKeyFileVersions = new WeakMap<DatabaseKeyFileVersion, Uint8Array>();
+
 export type ParsedDatabaseKeyFile = Readonly<{
   binding: DatabaseKeyBinding;
+  /** Opaque one-shot exact-content version captured by the authenticated reader. */
+  fileVersion: DatabaseKeyFileVersion;
   portableKey: PortableKey;
   localShareBootstrap?: DatabaseRevisionAnchor | null;
 }>;
@@ -206,17 +218,36 @@ export async function consumeDatabaseLocalShareBootstrap(
   portableKey: Uint8Array,
   binding: DatabaseKeyBinding,
   passphrase: Uint8Array,
+  expectedVersion: DatabaseKeyFileVersion,
 ): Promise<void> {
   let serialized: Uint8Array | undefined;
+  let current: Uint8Array | undefined;
+  let expectedDigest: Uint8Array | undefined;
   try {
+    const versionDigest = takeDatabaseKeyFileVersion(expectedVersion);
+    expectedDigest = versionDigest;
     serialized = await serializeDatabaseKeyFile(
       portableKey,
       binding,
       { protection: { kind: 'passphrase', passphrase } },
       { formatVersion: LOCAL_SHARE_FORMAT_VERSION, bootstrapAnchor: null },
     );
-    await writeSecureFile(path, serialized, 'replace');
+    const replacement = serialized;
+    await withExclusiveSecureFile(path, MAX_FILE_BYTES, async (lock) => {
+      current = await readSecureFileWhileExclusive(lock);
+      try {
+        if (!matchesDatabaseKeyFileVersion(current, versionDigest)) {
+          throw new PortableKeyFileError('KEY_FILE_BUSY');
+        }
+      } finally {
+        zeroize(current);
+        current = undefined;
+      }
+      await replaceSecureFileWhileExclusive(lock, replacement);
+    });
   } finally {
+    zeroize(current);
+    zeroize(expectedDigest);
     zeroize(serialized);
   }
 }
@@ -407,6 +438,7 @@ export async function readDatabaseKeyFile(
     requireByteLength(portableKey, KEY_BYTES, 'portable key');
     const result: ParsedDatabaseKeyFile = {
       binding: parsed.binding,
+      fileVersion: createDatabaseKeyFileVersion(file),
       portableKey: portableKey as PortableKey,
       ...(localShareBootstrap === undefined ? {} : { localShareBootstrap }),
     };
@@ -423,6 +455,33 @@ export async function readDatabaseKeyFile(
     zeroize(nonce);
     zeroize(file);
     zeroize(ownedPassphrase);
+  }
+}
+
+function createDatabaseKeyFileVersion(file: Uint8Array): DatabaseKeyFileVersion {
+  const token = Object.freeze({}) as DatabaseKeyFileVersion;
+  databaseKeyFileVersions.set(token, createHash('sha256').update(file).digest());
+  return token;
+}
+
+function takeDatabaseKeyFileVersion(
+  expectedVersion: DatabaseKeyFileVersion,
+): Uint8Array {
+  const expected = databaseKeyFileVersions.get(expectedVersion);
+  if (expected === undefined) throw invalid();
+  databaseKeyFileVersions.delete(expectedVersion);
+  return expected;
+}
+
+function matchesDatabaseKeyFileVersion(
+  file: Uint8Array,
+  expected: Uint8Array,
+): boolean {
+  const actual = createHash('sha256').update(file).digest();
+  try {
+    return timingSafeEqual(expected, actual);
+  } finally {
+    zeroize(actual);
   }
 }
 

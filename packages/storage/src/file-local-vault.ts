@@ -23,6 +23,7 @@ import {
 // eslint-disable-next-line no-restricted-imports
 import {
   setWindowsUserOnlyAcl,
+  verifyWindowsDirectoryAcl,
   verifyWindowsUserOnlyAcl,
 } from '@kavrix/key-files/windows-acl';
 
@@ -234,7 +235,7 @@ async function resolveTarget(inputPath: string): Promise<ResolvedFileTarget> {
     const directoryPath = await realpath(dirname(absolutePath));
     const directory = await stat(directoryPath, { bigint: true });
     if (!directory.isDirectory()) throw new FileLocalVaultError('invalid');
-    if (process.platform === 'win32') await setWindowsUserOnlyAcl(directoryPath);
+    if (process.platform === 'win32') await verifyWindowsDirectoryAcl(directoryPath);
     await assertOwnedPermissions(directory, directoryPath, false);
     const targetPath = join(directoryPath, targetName);
     return { directoryPath, targetPath, lockPath: `${targetPath}.lock` };
@@ -435,7 +436,8 @@ async function assertOwnedPermissions(
   }
   if (process.platform === 'win32') {
     try {
-      await verifyWindowsUserOnlyAcl(path);
+      if (requireFile) await verifyWindowsUserOnlyAcl(path);
+      else await verifyWindowsDirectoryAcl(path);
       return;
     } catch {
       throw new FileLocalVaultError('invalid');

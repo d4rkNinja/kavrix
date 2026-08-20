@@ -316,6 +316,26 @@ describe('encrypted database container contracts', () => {
     ).toBe(false);
   });
 
+  it('requires vault-preferences payload envelopes to use the canonical AAD domain', () => {
+    const valid = vaultFixture(databaseId, vaultId);
+    const payload = valid['encryptedPayload'] as Record<string, unknown>;
+    const aad = payload['aad'] as Record<string, unknown>;
+    for (const patch of [
+      { entityType: 'device-label', purpose: 'device-label' },
+      { entityType: 'vault-preferences', purpose: 'device-label' },
+    ]) {
+      expect(
+        databaseVaultDocumentSchema.safeParse({
+          ...valid,
+          encryptedPayload: {
+            ...payload,
+            aad: { ...aad, ...patch },
+          },
+        }).success,
+      ).toBe(false);
+    }
+  });
+
   it('keeps catalog IDs unique and bounded without exposing labels', () => {
     const catalog = {
       label: 'Production',

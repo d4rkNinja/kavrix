@@ -196,3 +196,29 @@ jobs:
           name: kavrix-package
           path: package-artifacts/*.tgz
           if-no-files-found: error
+
+  active-release-hygiene:
+    name: Active release hygiene
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: 11.21.0
+          run_install: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: 24.19.0
+          cache: pnpm
+          package-manager-cache: false
+      - run: pnpm install --frozen-lockfile
+      - name: Reject stale Changesets
+        run: pnpm changeset status
+      - name: Build active release workspaces for coverage
+        run: pnpm build
+      - name: Enforce active-source coverage
+        run: pnpm test:coverage

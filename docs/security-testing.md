@@ -3,6 +3,13 @@
 Kavrix release validation always covers the packed local-file path and covers
 direct MongoDB behavior when a disposable MongoDB prerequisite is available.
 
+The active release workspace is `apps/cli`, `packages/schemas`,
+`packages/crypto`, `packages/key-files`, and `packages/storage`. The other
+package directories remain source-present but parked/incubating: they are not
+workspace members, are not release artifacts, and are not counted by the root
+Vitest or coverage gate. See [Active release boundary](active-release-boundary.md)
+for the complete boundary and command list.
+
 ## Required local checks
 
 ```sh
@@ -12,6 +19,8 @@ pnpm format:check
 pnpm lint
 pnpm typecheck
 pnpm test
+pnpm test:coverage
+pnpm changeset status
 pnpm acceptance:pre-ci
 pnpm acceptance:database-container
 pnpm --filter kavrix package:smoke
@@ -27,6 +36,13 @@ suite covers fail-closed Mongo URI policy, exact idempotent Mongo index
 definitions, two-collection transaction behavior,
 and local schema, bounds, links, locks, compare-and-swap conflicts, atomic
 publication, and deletion.
+
+The root suite explicitly includes `packages/key-files/test/portable-key-files.test.ts`
+and `packages/key-files/test/revision-anchor.test.ts`; the coverage gate scopes
+source collection to the active release workspaces and enforces the configured
+branch, function, line, and statement thresholds. `pnpm changeset status` is a
+release hygiene gate and fails when a changeset targets a package outside the
+active workspace.
 
 `acceptance:database-container` packs the actual public package, installs it into
 an isolated temporary prefix with a dedicated npm cache, and invokes only that

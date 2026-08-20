@@ -43,6 +43,7 @@ import {
   validateSecureFileDestination,
   type DatabaseKeyFilePublication,
   type DatabaseKeyBinding,
+  type ParsedDatabaseKeyFile,
   type DatabaseRecoveryBinding,
   type DatabaseRecoveryKitFilePublication,
   type DatabaseRevisionAnchor,
@@ -553,6 +554,7 @@ export class DatabaseSession {
         observed,
         keyFile: options.keyFile,
         binding: publicBinding,
+        keyFileVersion: parsed.fileVersion,
         portableKey,
         passphrase,
         ...(parsed.localShareBootstrap === undefined
@@ -792,7 +794,7 @@ export class DatabaseSession {
       plaintext = await decryptPayload(
         current.encryptedPayload,
         root,
-        current.encryptedPayload.aad,
+        vaultPayloadContext(current, current.revision, current.payloadMetadataDigest),
       );
       const currentPayload = localVaultPayloadSchema.parse(
         JSON.parse(decodeSecretUtf8(plaintext)) as unknown,
@@ -855,7 +857,7 @@ export class DatabaseSession {
       plaintext = await decryptPayload(
         current.encryptedPayload,
         root,
-        current.encryptedPayload.aad,
+        vaultPayloadContext(current, current.revision, current.payloadMetadataDigest),
       );
       const payload = localVaultPayloadSchema.parse(
         JSON.parse(decodeSecretUtf8(plaintext)) as unknown,
@@ -1633,7 +1635,7 @@ async function decryptAuthenticatedVaultPayload(
     plaintext = await decryptPayload(
       vault.encryptedPayload,
       root,
-      vault.encryptedPayload.aad,
+      vaultPayloadContext(vault, vault.revision, vault.payloadMetadataDigest),
     );
     const payload = localVaultPayloadSchema.parse(
       JSON.parse(decodeSecretUtf8(plaintext)) as unknown,
@@ -1719,6 +1721,7 @@ async function reconcileOpenAnchor(
     observed: DatabaseRevisionAnchor;
     keyFile: string;
     binding: DatabaseKeyBinding;
+    keyFileVersion: ParsedDatabaseKeyFile['fileVersion'];
     portableKey: PortableKey;
     passphrase: Uint8Array;
     localShareBootstrap?: DatabaseRevisionAnchor | null;
@@ -1766,6 +1769,7 @@ async function reconcileOpenAnchor(
       options.portableKey,
       options.binding,
       options.passphrase,
+      options.keyFileVersion,
     );
   }
 }

@@ -17,8 +17,17 @@ Active release workspaces:
 - `@kavrix/storage`: database-scoped local/MongoDB adapters and fail-closed URI/TLS policy.
 - `kavrix`: CLI composition, masked input, sanitized rendering, and npm package.
 
+The active-versus-parked source boundary and its verification commands are
+recorded in [Active release boundary](active-release-boundary.md). The source
+trees for the parked packages remain in the repository for incubation, but they
+are not workspace members, release artifacts, or evidence for the active release.
+
 ## Implemented command surface
 
+- guided interactive root `init` onboarding with local-file or MongoDB
+  selection, protected user-data defaults, masked secret handoff, back/cancel
+  navigation, and static recovery next steps; explicit and non-interactive init
+  invocations retain their flag-driven behavior;
 - protected non-secret datastore profile add/list/use/status/remove;
 - file/MongoDB database initialization, authenticated status, and MongoDB ping;
 - encrypted database vault create/list/status/rename;
@@ -48,6 +57,19 @@ not be documented as available.
 - remote MongoDB requires explicit validated TLS and insecure TLS flags are rejected;
 - protected files use bounded formats, atomic creation, and permission checks;
 - terminal output is sanitized and values are masked unless reveal is explicit.
+
+## Verification boundary
+
+The active release gate covers only the five workspaces listed above. Root
+Vitest includes the active CLI, schema, crypto, key-file, and storage suites,
+including the portable-key and revision-anchor security tests; its coverage
+scope is restricted to those same five source trees. Parked package sources are
+not counted as active release coverage and are not represented as shipped
+features in this ledger.
+
+The current verification commands and their platform limits are maintained in
+[`docs/security-testing.md`](security-testing.md). A feature is not marked
+verified here merely because source or tests exist in a parked package.
 
 ## Release gates
 

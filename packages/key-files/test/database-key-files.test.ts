@@ -150,6 +150,7 @@ describe('protected database key files', () => {
       expect(serialized).toContain('Version: 2');
       expect(serialized).not.toContain(anchor.catalogMetadataDigest);
       const parsed = await readDatabaseKeyFile(file, secret, binding);
+      const expectedVersion = parsed.fileVersion;
       try {
         expect(parsed.portableKey).toEqual(key);
         expect(parsed.localShareBootstrap).toEqual(anchor);
@@ -158,7 +159,13 @@ describe('protected database key files', () => {
       }
 
       await releaseOwnedDatabaseKeyFile(created.publication);
-      await consumeDatabaseLocalShareBootstrap(file, key, binding, secret);
+      await consumeDatabaseLocalShareBootstrap(
+        file,
+        key,
+        binding,
+        secret,
+        expectedVersion,
+      );
       const consumed = await readDatabaseKeyFile(file, secret, binding);
       try {
         expect(consumed.portableKey).toEqual(key);
@@ -167,6 +174,10 @@ describe('protected database key files', () => {
         zeroize(consumed.portableKey);
       }
       const consumedText = await readFile(file, 'utf8');
+      await expect(
+        consumeDatabaseLocalShareBootstrap(file, key, binding, secret, expectedVersion),
+      ).rejects.toMatchObject({ code: 'KEY_FILE_UNSAFE' });
+      expect(await readFile(file, 'utf8')).toBe(consumedText);
       const tampered = consumedText.replace(
         /Ciphertext: ([A-Za-z0-9_-])/u,
         (_match, first: string) => `Ciphertext: ${first === 'A' ? 'B' : 'A'}`,
@@ -175,6 +186,50 @@ describe('protected database key files', () => {
       await expect(readDatabaseKeyFile(file, secret, binding)).rejects.toMatchObject({
         code: 'KEY_FILE_UNSAFE',
       });
+    } finally {
+      zeroize(key);
+      zeroize(secret);
+    }
+  });
+
+  it('does not consume a bootstrap from a stale protected-file version', async () => {
+    const file = path('stale-shared.key');
+    const key = generatePortableKey();
+    const secret = passphrase();
+    const anchor = shareAnchor();
+    try {
+      const created = await createOwnedDatabaseLocalShareKeyFile(
+        file,
+        key,
+        binding,
+        anchor,
+        { protection: { kind: 'passphrase', passphrase: secret } },
+      );
+      expect(created.status).toBe('published');
+      if (created.status !== 'published') throw created.error;
+      const parsed = await readDatabaseKeyFile(file, secret, binding);
+      const staleVersion = parsed.fileVersion;
+      zeroize(parsed.portableKey);
+      await releaseOwnedDatabaseKeyFile(created.publication);
+
+      await writeDatabaseKeyFile(file, key, binding, options(secret, 'replace'));
+      const replacement = await readFile(file);
+      await expect(
+        consumeDatabaseLocalShareBootstrap(file, key, binding, secret, staleVersion),
+      ).rejects.toMatchObject({ code: 'KEY_FILE_BUSY' });
+      expect(await readFile(file)).toEqual(replacement);
+      await expect(
+        consumeDatabaseLocalShareBootstrap(file, key, binding, secret, staleVersion),
+      ).rejects.toMatchObject({ code: 'KEY_FILE_UNSAFE' });
+      expect(await readFile(file)).toEqual(replacement);
+
+      const rewrapped = await readDatabaseKeyFile(file, secret, binding);
+      try {
+        expect(rewrapped.portableKey).toEqual(key);
+        expect(rewrapped.localShareBootstrap).toBeUndefined();
+      } finally {
+        zeroize(rewrapped.portableKey);
+      }
     } finally {
       zeroize(key);
       zeroize(secret);

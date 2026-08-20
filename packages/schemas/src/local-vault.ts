@@ -5,8 +5,8 @@ import { vaultIdSchema } from './identifiers.js';
 import {
   CURRENT_CRYPTOGRAPHIC_VERSION,
   CURRENT_SCHEMA_VERSION,
-  MAX_TEXT_BYTES,
   keyVersionSchema,
+  maxTextBytesSchema,
   supportedCryptographicVersionSchema,
   supportedSchemaVersionSchema,
   timestampSchema,
@@ -25,7 +25,7 @@ export const localRecoveryKeySlotSchema = keySlotSchema.refine(
 
 export const localVaultValueSchema = z
   .object({
-    value: z.string().max(MAX_TEXT_BYTES),
+    value: maxTextBytesSchema,
     updatedAt: timestampSchema,
   })
   .strict();

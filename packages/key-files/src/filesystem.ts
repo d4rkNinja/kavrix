@@ -3,9 +3,11 @@ import { constants, type BigIntStats } from 'node:fs';
 import {
   link,
   lstat,
+  mkdir,
   open,
   realpath,
   rename,
+  rmdir,
   stat,
   unlink,
   type FileHandle,
@@ -13,7 +15,11 @@ import {
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 
 import { PortableKeyFileError } from './errors.js';
-import { setWindowsUserOnlyAcl, verifyWindowsUserOnlyAcl } from './windows-acl.js';
+import {
+  setWindowsUserOnlyAcl,
+  verifyWindowsDirectoryAcl,
+  verifyWindowsUserOnlyAcl,
+} from './windows-acl.js';
 
 export const MAX_PORTABLE_KEY_FILE_BYTES = 16_384;
 export const MAX_SECURE_STREAM_FILE_BYTES = 128 * 1024 * 1024;
@@ -73,6 +79,12 @@ const ownedSecureFileStates = new WeakMap<object, OwnedSecureFileState>();
 type ResolvedTarget = Readonly<{
   directoryPath: string;
   targetPath: string;
+}>;
+
+type SecureDirectoryParent = Readonly<{
+  directoryPath: string;
+  targetPath: string;
+  identity: FileIdentity;
 }>;
 
 const exclusiveSecureFileLockBrand = Symbol('exclusiveSecureFileLock');
@@ -171,7 +183,7 @@ async function validateWriteDirectory(directoryPath: string): Promise<void> {
       throw new PortableKeyFileError('KEY_FILE_INVALID_PATH');
     }
     if (process.platform === 'win32') {
-      await verifyWindowsUserOnlyAcl(directoryPath);
+      await verifyWindowsDirectoryAcl(directoryPath);
     } else {
       const getuid = process.getuid;
       if (
@@ -199,6 +211,208 @@ function sameIdentity(
   right: { readonly dev: bigint; readonly ino: bigint },
 ): boolean {
   return left.dev === right.dev && left.ino === right.ino;
+}
+
+async function directoryIdentity(path: string): Promise<FileIdentity> {
+  const metadata = await lstat(path, { bigint: true });
+  if (metadata.isSymbolicLink() || !metadata.isDirectory()) {
+    throw new PortableKeyFileError('KEY_FILE_UNSAFE');
+  }
+  return identityOf(metadata);
+}
+
+async function resolveSecureDirectoryParent(
+  inputPath: string,
+): Promise<SecureDirectoryParent> {
+  if (typeof inputPath !== 'string' || inputPath.length === 0) {
+    throw new PortableKeyFileError('KEY_FILE_INVALID_PATH');
+  }
+  const absolutePath = isAbsolute(inputPath) ? inputPath : resolve(inputPath);
+  validateBasename(basename(absolutePath));
+  // Check the caller's immediate parent before resolving it, so an input that
+  // names a symlink or Windows reparse point never receives a child directory.
+  await validateWriteDirectory(dirname(absolutePath));
+  const resolved = await resolveTarget(inputPath);
+  await validateWriteDirectory(resolved.directoryPath);
+  const identity = await directoryIdentity(resolved.directoryPath);
+  return { ...resolved, identity };
+}
+
+async function verifySecureDirectoryParent(
+  parent: SecureDirectoryParent,
+): Promise<void> {
+  await validateWriteDirectory(parent.directoryPath);
+  const current = await directoryIdentity(parent.directoryPath);
+  if (!sameIdentity(parent.identity, current)) {
+    throw new PortableKeyFileError('KEY_FILE_UNSAFE');
+  }
+}
+
+async function verifyStrictSecureDirectory(
+  path: string,
+  expectedIdentity?: FileIdentity,
+): Promise<Readonly<{ path: string; identity: FileIdentity }>> {
+  const before = await directoryIdentity(path);
+  if (expectedIdentity !== undefined && !sameIdentity(expectedIdentity, before)) {
+    throw new PortableKeyFileError('KEY_FILE_UNSAFE');
+  }
+  if (process.platform === 'win32') {
+    // The ACL verifier also rejects a reparse point on the direct path, before
+    // realpath could hide that redirect behind its resolved target.
+    await verifyWindowsUserOnlyAcl(path);
+  }
+  const canonical = await realpath(path);
+  const canonicalIdentity = await directoryIdentity(canonical);
+  if (!sameIdentity(before, canonicalIdentity)) {
+    throw new PortableKeyFileError('KEY_FILE_UNSAFE');
+  }
+  const metadata = await lstat(canonical, { bigint: true });
+  if (metadata.isSymbolicLink() || !metadata.isDirectory()) {
+    throw new PortableKeyFileError('KEY_FILE_UNSAFE');
+  }
+  if (process.platform !== 'win32') {
+    const getuid = process.getuid;
+    if (
+      getuid === undefined ||
+      metadata.uid !== BigInt(getuid()) ||
+      (metadata.mode & 0o777n) !== 0o700n
+    ) {
+      throw new PortableKeyFileError('KEY_FILE_UNSAFE');
+    }
+  }
+  const after = await directoryIdentity(path);
+  if (!sameIdentity(before, after)) {
+    throw new PortableKeyFileError('KEY_FILE_UNSAFE');
+  }
+  return { path: canonical, identity: before };
+}
+
+/**
+ * Makes only the directory created by this invocation owner-only. On POSIX,
+ * the descriptor binds chmod to the captured inode instead of a subsequently
+ * replaced pathname. Windows ACL APIs available here are pathname based; the
+ * safe parent policy prevents an ordinary principal from replacing a child
+ * between the immediate identity check and the ACL operation.
+ */
+async function hardenCreatedSecureDirectory(
+  parent: SecureDirectoryParent,
+  expectedIdentity: FileIdentity,
+): Promise<void> {
+  await verifySecureDirectoryParent(parent);
+  if (process.platform === 'win32') {
+    const before = await directoryIdentity(parent.targetPath);
+    if (!sameIdentity(expectedIdentity, before)) {
+      throw new PortableKeyFileError('KEY_FILE_UNSAFE');
+    }
+    // This rejects a replacement with an unsafe/reparse directory before the
+    // path-bound setter is allowed to touch it.
+    await verifyWindowsDirectoryAcl(parent.targetPath);
+    const after = await directoryIdentity(parent.targetPath);
+    if (!sameIdentity(expectedIdentity, after)) {
+      throw new PortableKeyFileError('KEY_FILE_UNSAFE');
+    }
+    await setWindowsUserOnlyAcl(parent.targetPath);
+    return;
+  }
+
+  let handle: FileHandle | undefined;
+  try {
+    handle = await open(
+      parent.targetPath,
+      constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
+    );
+    const opened = await handle.stat({ bigint: true });
+    if (!opened.isDirectory() || !sameIdentity(expectedIdentity, opened)) {
+      throw new PortableKeyFileError('KEY_FILE_UNSAFE');
+    }
+    await handle.chmod(0o700);
+    const hardened = await handle.stat({ bigint: true });
+    if (!hardened.isDirectory() || !sameIdentity(expectedIdentity, hardened)) {
+      throw new PortableKeyFileError('KEY_FILE_UNSAFE');
+    }
+  } finally {
+    if (handle !== undefined) await handle.close();
+  }
+}
+
+async function removeCreatedSecureDirectoryIfEmpty(
+  parent: SecureDirectoryParent,
+  expectedIdentity: FileIdentity,
+): Promise<void> {
+  try {
+    await verifySecureDirectoryParent(parent);
+    const current = await directoryIdentity(parent.targetPath);
+    if (!sameIdentity(expectedIdentity, current)) return;
+    if (process.platform === 'win32') {
+      await verifyWindowsDirectoryAcl(parent.targetPath);
+    }
+    await rmdir(parent.targetPath);
+  } catch {
+    // Cleanup is intentionally best effort: never recurse or remove a path
+    // that no longer names the directory this invocation created.
+  }
+}
+
+async function finalizeSecureDirectory(
+  parent: SecureDirectoryParent,
+  expectedIdentity?: FileIdentity,
+): Promise<string> {
+  await verifySecureDirectoryParent(parent);
+  const verified = await verifyStrictSecureDirectory(
+    parent.targetPath,
+    expectedIdentity,
+  );
+  // Recheck the parent after the child verification, then make the child
+  // identity check the final asynchronous operation before returning it.
+  await verifySecureDirectoryParent(parent);
+  return (await verifyStrictSecureDirectory(parent.targetPath, verified.identity)).path;
+}
+
+/**
+ * Ensures exactly one caller-selected child directory is strict owner-only.
+ * Its immediate parent must already exist and is only inspected, never changed.
+ */
+export async function ensureSecureDirectory(inputPath: string): Promise<string> {
+  let parent: SecureDirectoryParent;
+  try {
+    parent = await resolveSecureDirectoryParent(inputPath);
+  } catch (error) {
+    throw mappedFileError(error, 'KEY_FILE_UNSAFE');
+  }
+
+  try {
+    await lstat(parent.targetPath, { bigint: true });
+  } catch (error) {
+    if (fileErrorCode(error) !== 'ENOENT') {
+      throw mappedFileError(error, 'KEY_FILE_UNSAFE');
+    }
+
+    let createdIdentity: FileIdentity | undefined;
+    try {
+      await verifySecureDirectoryParent(parent);
+      try {
+        await mkdir(parent.targetPath, { mode: 0o700 });
+      } catch (mkdirError) {
+        if (fileErrorCode(mkdirError) !== 'EEXIST') throw mkdirError;
+        return await finalizeSecureDirectory(parent);
+      }
+
+      createdIdentity = await directoryIdentity(parent.targetPath);
+      await hardenCreatedSecureDirectory(parent, createdIdentity);
+      return await finalizeSecureDirectory(parent, createdIdentity);
+    } catch (creationError) {
+      if (createdIdentity !== undefined) {
+        await removeCreatedSecureDirectoryIfEmpty(parent, createdIdentity);
+      }
+      throw mappedFileError(creationError, 'KEY_FILE_UNSAFE');
+    }
+  }
+
+  try {
+    return await finalizeSecureDirectory(parent);
+  } catch (error) {
+    throw mappedFileError(error, 'KEY_FILE_UNSAFE');
+  }
 }
 
 async function validateRegularFile(

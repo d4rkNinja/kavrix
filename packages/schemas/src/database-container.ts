@@ -326,6 +326,7 @@ export const databaseVaultDocumentSchema = z
     const payload = vault.encryptedPayload;
     if (
       payload.aad.vaultId !== vault.id ||
+      !isVaultPreferencesPayloadDomain(payload.aad) ||
       payload.aad.entityId !== vault.id ||
       payload.aad.schemaVersion !== vault.schemaVersion ||
       payload.aad.keyVersion !== vault.currentKeyVersion ||
@@ -339,6 +340,14 @@ export const databaseVaultDocumentSchema = z
       });
     }
   });
+
+function isVaultPreferencesPayloadDomain(
+  value: Readonly<{ entityType: string; purpose: string }>,
+): boolean {
+  return (
+    value.entityType === 'vault-preferences' && value.purpose === 'vault-preferences'
+  );
+}
 
 export const fileDatabaseContainerSchema = z
   .object({

@@ -9,6 +9,7 @@ export {
   MAX_SECURE_STREAM_CHUNK_BYTES,
   MAX_SECURE_STREAM_FILE_BYTES,
   deleteSecureFile,
+  ensureSecureDirectory,
   readSecureFile,
   releaseOwnedSecureFilePublication,
   validateSecureFileDestination,

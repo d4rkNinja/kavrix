@@ -71,13 +71,13 @@ async function grantWindowsEveryoneRead(path: string): Promise<void> {
   ]);
 }
 
-async function grantWindowsEveryoneInheritedRead(path: string): Promise<void> {
+async function grantWindowsEveryoneInheritedModify(path: string): Promise<void> {
   const systemRoot = process.env['SystemRoot'];
   if (systemRoot === undefined) throw new Error('SystemRoot is required on Windows');
   await execFileAsync(join(systemRoot, 'System32', 'icacls.exe'), [
     path,
     '/grant',
-    '*S-1-1-0:(OI)(CI)(R)',
+    '*S-1-1-0:(OI)(CI)(M)',
   ]);
 }
 
@@ -457,11 +457,11 @@ describe('portable key filesystem adapter', () => {
   );
 
   it.runIf(process.platform === 'win32')(
-    'refuses to create content in a directory with inherited world read access',
+    'refuses to create content in a directory with inherited world write access',
     async () => {
       const sharedDirectory = target('shared');
       await mkdir(sharedDirectory);
-      await grantWindowsEveryoneInheritedRead(sharedDirectory);
+      await grantWindowsEveryoneInheritedModify(sharedDirectory);
 
       await expect(
         writePortableKeyFile(join(sharedDirectory, 'key.cvk'), key(15), UNBOUND, {

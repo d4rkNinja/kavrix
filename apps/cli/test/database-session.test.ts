@@ -12,16 +12,25 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { zeroize } from '@kavrix/crypto';
+import {
+  decryptPayload,
+  encryptPayload,
+  unlockDatabaseKeySlot,
+  unwrapVaultRootForDatabase,
+  zeroize,
+} from '@kavrix/crypto';
 
 import {
   databaseRevisionAnchorPath,
   deleteSecureFile,
+  readDatabaseKeyFile,
   readDatabaseKeyFileBinding,
   readDatabaseRecoveryKitFileBinding,
+  writeDatabaseKeyFile,
 } from '@kavrix/key-files';
 import { setWindowsUserOnlyAcl } from '@kavrix/key-files/windows-acl';
 import {
+  associatedDataSchema,
   databaseIdSchema,
   sha256DigestSchema,
   type DatabaseId,
@@ -142,6 +151,74 @@ describe('DatabaseSession', () => {
     zeroize(sharePassphrase);
   });
 
+  it('does not let a stale local-share opener overwrite a concurrent rewrap', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'kavrix-share-cas-'));
+    const store = new MemoryDatabaseStore();
+    const ownerKey = join(directory, 'owner.key');
+    const shareKey = join(directory, 'share.key');
+    const sharePassphrase = Buffer.from('recipient horse battery staple', 'utf8');
+    let rewrapKey: Uint8Array | undefined;
+    let rewrappedContents: Buffer | undefined;
+    try {
+      await DatabaseSession.initialize({
+        store,
+        keyFile: ownerKey,
+        passphrase: PASSPHRASE,
+        label: 'shared database',
+      });
+      const owner = await DatabaseSession.open({
+        store,
+        keyFile: ownerKey,
+        passphrase: PASSPHRASE,
+      });
+      await owner.createLocalShareKey({
+        keyFile: shareKey,
+        passphrase: sharePassphrase,
+      });
+      await owner.close();
+
+      const parsed = await readDatabaseKeyFile(shareKey, sharePassphrase);
+      rewrapKey = Uint8Array.from(parsed.portableKey);
+      zeroize(parsed.portableKey);
+      const binding = await readDatabaseKeyFileBinding(shareKey);
+      let rewrapped = false;
+      store.afterListVaults = async () => {
+        if (rewrapped || rewrapKey === undefined) return;
+        rewrapped = true;
+        await writeDatabaseKeyFile(shareKey, rewrapKey, binding, {
+          mode: 'replace',
+          protection: { kind: 'passphrase', passphrase: sharePassphrase },
+        });
+        rewrappedContents = await readFile(shareKey);
+      };
+
+      await expect(
+        DatabaseSession.open({
+          store,
+          keyFile: shareKey,
+          passphrase: sharePassphrase,
+        }),
+      ).rejects.toMatchObject({ code: 'authentication' });
+      expect(rewrapped).toBe(true);
+      expect(await readFile(shareKey)).toEqual(rewrappedContents);
+      const rewrappedFile = await readDatabaseKeyFile(
+        shareKey,
+        sharePassphrase,
+        binding,
+      );
+      try {
+        expect(rewrappedFile.portableKey).toEqual(rewrapKey);
+        expect(rewrappedFile.localShareBootstrap).toBeUndefined();
+      } finally {
+        zeroize(rewrappedFile.portableKey);
+      }
+    } finally {
+      zeroize(rewrappedContents);
+      zeroize(rewrapKey);
+      zeroize(sharePassphrase);
+    }
+  });
+
   it('initializes, authenticates an exact anchor, and manages two independent vaults', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'kavrix-session-'));
     const store = new MemoryDatabaseStore();
@@ -200,6 +277,93 @@ describe('DatabaseSession', () => {
     expect(outer).not.toContain('database-label-canary');
     expect(outer).not.toContain('alpha-label-canary');
     expect(outer).not.toContain('renamed-label-canary');
+  });
+
+  it('rejects a valid foreign AAD domain in every vault-preferences decrypt path', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'kavrix-vault-aad-'));
+    const store = new MemoryDatabaseStore();
+    const keyFile = join(directory, 'owner.kavrix-db-key');
+    let portableKey: Uint8Array | undefined;
+    let databaseRoot: Uint8Array | undefined;
+    let vaultRoot: Uint8Array | undefined;
+    let plaintext: Uint8Array | undefined;
+    let sessionClosed = false;
+    await DatabaseSession.initialize({
+      store,
+      keyFile,
+      passphrase: PASSPHRASE,
+      label: 'database',
+    });
+    const session = await DatabaseSession.open({
+      store,
+      keyFile,
+      passphrase: PASSPHRASE,
+    });
+    try {
+      const vault = await session.createVault('vault');
+      const document = await session.getVaultDocument(vault.id);
+      const database = store.database;
+      if (database === null) throw new Error('missing fixture');
+      const parsed = await readDatabaseKeyFile(keyFile, PASSPHRASE);
+      portableKey = parsed.portableKey;
+      databaseRoot = await unlockDatabaseKeySlot(database.keySlot, portableKey, {
+        databaseId: database.id,
+        slotId: database.keySlot.id,
+        schemaVersion: database.schemaVersion,
+        keyVersion: database.keySlot.keyVersion,
+        revision: database.keySlot.wrappedDatabaseRoot.aad.revision,
+        metadataDigest: database.keySlot.wrappedDatabaseRoot.aad.metadataDigest,
+      });
+      vaultRoot = await unwrapVaultRootForDatabase(
+        document.wrappedVaultRoot,
+        databaseRoot,
+        document.wrappedVaultRoot.aad,
+      );
+      plaintext = await decryptPayload(
+        document.encryptedPayload,
+        vaultRoot,
+        document.encryptedPayload.aad,
+      );
+      const foreignContext = associatedDataSchema.parse({
+        version: 1,
+        vaultId: document.id,
+        entityType: 'device-label',
+        entityId: document.id,
+        purpose: 'device-label',
+        schemaVersion: document.schemaVersion,
+        keyVersion: document.currentKeyVersion,
+        revision: document.revision,
+        metadataDigest: document.payloadMetadataDigest,
+      });
+      const encryptedPayload = await encryptPayload(
+        plaintext,
+        vaultRoot,
+        foreignContext,
+      );
+      store.vaults.set(vault.id, { ...document, encryptedPayload });
+
+      await expect(
+        session.inspectVault(vault.id, () => undefined),
+      ).rejects.toMatchObject({
+        code: 'authentication',
+      });
+      await expect(
+        session.updateVault(vault.id, (payload) => payload),
+      ).rejects.toMatchObject({
+        code: 'authentication',
+      });
+      await session.close();
+      sessionClosed = true;
+      await expect(
+        DatabaseSession.open({ store, keyFile, passphrase: PASSPHRASE }),
+      ).rejects.toMatchObject({ code: 'authentication' });
+    } finally {
+      if (!sessionClosed) await session.close();
+      zeroize(plaintext);
+      zeroize(vaultRoot);
+      zeroize(databaseRoot);
+      zeroize(portableKey);
+    }
   });
 
   it('decodes authenticated catalog and vault plaintext without Buffer copies', async () => {
@@ -1068,6 +1232,7 @@ class MemoryDatabaseStore implements EncryptedDatabaseStore {
   failClose = false;
   afterDatabaseUpdate: (() => Promise<void>) | undefined;
   afterVaultUpdate: (() => Promise<void>) | undefined;
+  afterListVaults: (() => Promise<void>) | undefined;
 
   async ping(): Promise<void> {}
   async getDatabase(id: DatabaseId): Promise<EncryptedDatabaseDocument | null> {
@@ -1087,6 +1252,7 @@ class MemoryDatabaseStore implements EncryptedDatabaseStore {
     await this.afterDatabaseUpdate?.();
   }
   async listVaults(databaseId: DatabaseId): Promise<readonly DatabaseVaultDocument[]> {
+    await this.afterListVaults?.();
     return [...this.vaults.values()]
       .filter((vault) => vault.databaseId === databaseId)
       .map((vault) => structuredClone(vault));

@@ -1,7 +1,12 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { realpath } from 'node:fs/promises';
-import { createInterface } from 'node:readline/promises';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
+import {
+  createInterface,
+  type Interface as ReadlineInterface,
+} from 'node:readline/promises';
 import { Readable } from 'node:stream';
 
 import {
@@ -20,6 +25,7 @@ import {
 import {
   copyRevisionAnchor,
   deleteSecureFile,
+  ensureSecureDirectory,
   PortableKeyFileError,
   readPortableKeyFile,
   readRecoveryKitFile,
@@ -88,6 +94,12 @@ import {
   type DatastoreProfileRoutingOverrides,
 } from './datastore-profiles.js';
 import {
+  InitOnboardingCancelledError,
+  runInitOnboarding,
+  writeInitOnboardingComplete,
+  type InitOnboardingPatch,
+} from './init-onboarding.js';
+import {
   LocalSecretInput,
   LocalSecretInputError,
   type LocalSecretKind,
@@ -100,6 +112,8 @@ const DEFAULT_COLLECTION = 'kavrix_vaults';
 const DEFAULT_DATABASE_PROFILE_COLLECTION = 'kavrix_databases';
 const DEFAULT_VAULT_PROFILE_COLLECTION = 'kavrix_vaults';
 const DEFAULT_VAULT_ID = 'default';
+const MONGO_DATABASE_NAME_PATTERN = /^[A-Za-z0-9_-]{1,63}$/u;
+const MONGO_COLLECTION_NAME_PATTERN = /^[A-Za-z0-9_-]{1,64}$/u;
 const REDACTED = '[REDACTED]';
 const MAX_LOCAL_PAYLOAD_BYTES = 4 * 1024 * 1024;
 const RESERVED_CREDENTIAL_NAMES = new Set(['__proto__', 'constructor', 'prototype']);
@@ -168,7 +182,16 @@ export function buildLocalCli(): Command {
   addDatabaseOptions(init);
   addKeyOptions(init);
   init.action(async (...args: unknown[]) => {
-    await handleInit(getOptions(args));
+    let options = getOptions(args);
+    const guided = shouldRunInitOnboarding(options);
+    if (guided) options = await readInitOnboardingOptions(options);
+    await handleInit(options);
+    if (guided) {
+      writeInitOnboardingComplete({
+        color: initOnboardingColorEnabled(),
+        write: (text) => process.stderr.write(text),
+      });
+    }
   });
 
   const destroy = program
@@ -506,9 +529,13 @@ export async function runLocalCli(argv: readonly string[]): Promise<void> {
                     ? error.message
                     : error instanceof DatabaseSessionError
                       ? error.message
-                      : error instanceof AggregateError
+                      : error instanceof PortableKeyFileError
                         ? error.message
-                        : 'Kavrix command failed.';
+                        : error instanceof InitOnboardingCancelledError
+                          ? error.message
+                          : error instanceof AggregateError
+                            ? error.message
+                            : 'Kavrix command failed.';
     process.stderr.write(colorizeError(message) + '\n');
     process.exitCode = 1;
   }
@@ -521,14 +548,32 @@ class LocalCliError extends Error {
   }
 }
 
-class InitializationRollbackError extends AggregateError {
-  public constructor(operationError: unknown, cleanupError: unknown) {
-    super(
-      [asError(operationError), asError(cleanupError)],
-      'Vault initialization failed and datastore rollback was incomplete.',
-    );
-    this.name = 'InitializationRollbackError';
+const AMBIGUOUS_LOCAL_PUBLICATION_MESSAGE =
+  'The vault operation may have committed; protected local artifacts were retained. Verify the datastore and files before retrying.';
+
+class LocalVaultPublicationError extends LocalCliError {
+  public constructor(cause?: unknown) {
+    super(AMBIGUOUS_LOCAL_PUBLICATION_MESSAGE);
+    this.name = 'LocalVaultPublicationError';
+    if (cause !== undefined) {
+      Object.defineProperty(this, 'cause', {
+        configurable: true,
+        enumerable: false,
+        value: asError(cause),
+        writable: false,
+      });
+    }
   }
+}
+
+type StoreMutationStatus = 'none' | 'pre-commit' | 'committed' | 'ambiguous';
+
+interface StoreOperationState {
+  readonly mutation: StoreMutationStatus;
+}
+
+interface MutableStoreOperationState {
+  mutation: StoreMutationStatus;
 }
 
 type DatastoreProfileCommandOptions = Readonly<{
@@ -1040,9 +1085,153 @@ const REVISION_ANCHOR_KEYS = [
   'version',
 ] as const;
 
-async function handleInit(options: LocalCliOptions): Promise<void> {
+function shouldRunInitOnboarding(options: LocalCliOptions): boolean {
+  if (!process.stdin.isTTY || !process.stderr.isTTY) return false;
+  if (
+    options.profile !== undefined ||
+    options.profileConfigDir !== undefined ||
+    options.databaseUrlStdin === true ||
+    options.passphraseStdin === true ||
+    options.secretsStdin === true
+  ) {
+    return false;
+  }
+  return Object.keys(options.routingOverrides ?? {}).length === 0;
+}
+
+async function readInitOnboardingOptions(
+  base: LocalCliOptions,
+): Promise<LocalCliOptions> {
+  const interface_ = createInterface({
+    input: process.stdin,
+    output: process.stderr,
+    terminal: true,
+  });
+  try {
+    for (;;) {
+      const patch = await runInitOnboarding({
+        color: initOnboardingColorEnabled(),
+        question: (prompt) => {
+          return readInitOnboardingQuestion(interface_, prompt);
+        },
+        write: (text) => {
+          process.stderr.write(text);
+        },
+      });
+      try {
+        const selected: LocalCliOptions = {
+          ...base,
+          ...(await resolveGuidedInitDestinations(patch)),
+        };
+        await validateInitDestinations(selected);
+        return selected;
+      } catch (error) {
+        if (
+          !(error instanceof PortableKeyFileError) &&
+          !(error instanceof EncryptedVaultStoreError) &&
+          !(error instanceof LocalCliError)
+        ) {
+          throw error;
+        }
+        process.stderr.write(
+          `${colorizeError(error.message)} Choose different destinations and try again.\n`,
+        );
+      }
+    }
+  } finally {
+    interface_.close();
+  }
+}
+
+async function resolveGuidedInitDestinations(
+  patch: InitOnboardingPatch,
+): Promise<InitOnboardingPatch> {
+  const usesDefaultKeyFile = patch.keyFile === DEFAULT_KEY_FILE;
+  const usesDefaultDataFile =
+    patch.datastore === 'file' && patch.dataFile === DEFAULT_DATA_FILE;
+  if (!usesDefaultKeyFile && !usesDefaultDataFile) return patch;
+
+  const secureDirectory = await ensureSecureDirectory(join(homedir(), '.kavrix'));
+  if (patch.datastore === 'file') {
+    return {
+      ...patch,
+      dataFile: usesDefaultDataFile
+        ? join(secureDirectory, 'kavrix.vault')
+        : patch.dataFile,
+      keyFile: usesDefaultKeyFile ? join(secureDirectory, 'kavrix.key') : patch.keyFile,
+    };
+  }
+  return {
+    ...patch,
+    keyFile: usesDefaultKeyFile ? join(secureDirectory, 'kavrix.key') : patch.keyFile,
+  };
+}
+
+async function readInitOnboardingQuestion(
+  interface_: ReadlineInterface,
+  prompt: string,
+): Promise<string> {
+  return new Promise<string>((resolve, reject) => {
+    let settled = false;
+    const finish = (complete: () => void): void => {
+      if (settled) return;
+      settled = true;
+      interface_.off('SIGINT', onInterrupt);
+      complete();
+    };
+    const onInterrupt = (): void => {
+      finish(() => {
+        reject(new InitOnboardingCancelledError());
+      });
+    };
+    interface_.once('SIGINT', onInterrupt);
+    void interface_.question(prompt).then(
+      (value) => {
+        finish(() => {
+          resolve(value);
+        });
+      },
+      (error: unknown) => {
+        finish(() => {
+          reject(
+            error instanceof Error
+              ? error
+              : new Error('Interactive onboarding input failed.'),
+          );
+        });
+      },
+    );
+  });
+}
+
+function initOnboardingColorEnabled(): boolean {
+  return (
+    process.stderr.isTTY &&
+    process.env['NO_COLOR'] === undefined &&
+    process.env['TERM'] !== 'dumb'
+  );
+}
+
+async function validateInitDestinations(options: LocalCliOptions): Promise<void> {
   await validateSecureFileDestination(options.keyFile);
   await validateSecureFileDestination(revisionAnchorPath(options.keyFile));
+  if (datastoreFrom(options) === 'file') {
+    await FileLocalVaultStore.validatePath(options.dataFile ?? DEFAULT_DATA_FILE);
+    return;
+  }
+  if (
+    options.database !== undefined &&
+    !MONGO_DATABASE_NAME_PATTERN.test(options.database)
+  ) {
+    throw new LocalCliError('MongoDB database name is invalid.');
+  }
+  if (!MONGO_COLLECTION_NAME_PATTERN.test(options.collection)) {
+    throw new LocalCliError('MongoDB collection name is invalid.');
+  }
+}
+
+async function handleInit(options: LocalCliOptions): Promise<void> {
+  await validateInitDestinations(options);
   const values = await readSecrets(
     ['database-url', 'passphrase', 'passphrase'],
     options,
@@ -1056,9 +1245,9 @@ async function handleInit(options: LocalCliOptions): Promise<void> {
   const passphrase = Buffer.from(firstPassphrase, 'utf8');
   const portableKey = generatePortableKey();
   const rootKey = generateVaultRootKey();
-  const createdFiles: string[] = [];
+  const artifactPublication = { published: false };
+  let successOutput: Record<string, unknown> | undefined;
   let operationError: unknown;
-  const cleanupFailures: Error[] = [];
   try {
     const document = await createVaultDocument(options.vault, portableKey, rootKey);
     const binding = {
@@ -1066,67 +1255,47 @@ async function handleInit(options: LocalCliOptions): Promise<void> {
       vaultId: document.id,
       keySlotId: document.keySlot.id,
     };
-    await writePortableKeyFile(options.keyFile, portableKey, binding, {
-      mode: 'create',
-      protection: { kind: 'passphrase', passphrase },
-    });
-    createdFiles.push(options.keyFile);
+    try {
+      await writePortableKeyFile(options.keyFile, portableKey, binding, {
+        mode: 'create',
+        protection: { kind: 'passphrase', passphrase },
+      });
+    } catch (error) {
+      if (!isDefinitelyPreCommitArtifactFailure(error)) {
+        throw new LocalVaultPublicationError(error);
+      }
+      throw error;
+    }
+    artifactPublication.published = true;
     await withStore(databaseUrl, options, async (store, target) => {
       await store.create(document);
-      try {
-        await writeRevisionAnchor(
-          revisionAnchorPath(options.keyFile),
-          rootKey,
-          localVaultRevisionAnchor(document),
-          'create',
-        );
-        createdFiles.push(revisionAnchorPath(options.keyFile));
-        writeJson({
-          vaultId: document.id,
-          ...storeLocation(options, target),
-          keyFile: options.keyFile,
-        });
-      } catch (error) {
-        try {
-          await store.delete(document.id, document.revision);
-        } catch (cleanupError) {
-          throw new InitializationRollbackError(error, cleanupError);
-        }
-        throw error;
-      }
+      await writeRevisionAnchor(
+        revisionAnchorPath(options.keyFile),
+        rootKey,
+        localVaultRevisionAnchor(document),
+        'create',
+      );
+      successOutput = {
+        vaultId: document.id,
+        ...storeLocation(options, target),
+        keyFile: options.keyFile,
+      };
     });
   } catch (error) {
-    operationError = error;
+    operationError =
+      artifactPublication.published && !(error instanceof LocalVaultPublicationError)
+        ? new LocalVaultPublicationError(error)
+        : error;
   } finally {
-    if (
-      operationError !== undefined &&
-      !(operationError instanceof InitializationRollbackError)
-    ) {
-      for (const path of createdFiles.toReversed()) {
-        try {
-          await deleteSecureFile(path, 16_384);
-        } catch (error) {
-          cleanupFailures.push(asError(error));
-        }
-      }
-    }
     zeroize(passphrase);
     zeroize(portableKey);
     zeroize(rootKey);
   }
-  if (operationError !== undefined && cleanupFailures.length > 0) {
-    throw new AggregateError(
-      [asError(operationError), ...cleanupFailures],
-      'Vault initialization and cleanup failed.',
-    );
-  }
   if (operationError !== undefined) throw asError(operationError);
-  if (cleanupFailures.length > 0) {
-    throw new AggregateError(
-      cleanupFailures,
-      'Vault initialization cleanup was incomplete.',
-    );
+  if (successOutput === undefined) {
+    throw new LocalCliError('Vault initialization failed.');
   }
+  writeJson(successOutput);
 }
 
 type DestroyInputs = Readonly<{
@@ -1138,6 +1307,7 @@ type DestroyInputs = Readonly<{
 async function handleDestroy(options: LocalCliOptions): Promise<void> {
   const datastore = datastoreFrom(options);
   const challenge = randomUUID().replaceAll('-', '').slice(0, 12).toUpperCase();
+  let successOutput: Record<string, unknown> | undefined;
   let inputs: DestroyInputs;
   if (options.confirmationStdin === true) {
     process.stderr.write(`Destruction challenge: ${challenge}\n`);
@@ -1241,18 +1411,22 @@ async function handleDestroy(options: LocalCliOptions): Promise<void> {
           'The encrypted datastore was deleted, but protected local-file cleanup was incomplete.',
         );
       }
-      writeJson({
+      successOutput = {
         destroyed: true,
         vaultId: document.id,
         datastore,
         target,
         keyFile: options.keyFile,
         anchorFile: revisionAnchorPath(options.keyFile),
-      });
+      };
     } finally {
       zeroize(rootKey);
     }
   });
+  if (successOutput === undefined) {
+    throw new LocalCliError('Vault destruction failed.');
+  }
+  writeJson(successOutput);
 }
 
 async function resolveDestroyArtifacts(
@@ -2182,6 +2356,7 @@ async function handleRecoveryCreate(options: LocalCliOptions): Promise<void> {
       'Recovery kits cannot be overwritten. Choose a new --recovery-file path.',
     );
   }
+  await validateSecureFileDestination(recoveryFile);
   const values = await readSecrets(
     ['database-url', 'passphrase', 'recovery-passphrase'],
     options,
@@ -2195,67 +2370,91 @@ async function handleRecoveryCreate(options: LocalCliOptions): Promise<void> {
   const recoveryPassphraseBytes = Buffer.from(recoveryPassphrase, 'utf8');
   let recoveryKey: ReturnType<typeof generateRecoveryKey> | undefined;
   let verifiedRecoveryKey: Awaited<ReturnType<typeof readRecoveryKitFile>> | undefined;
-  await withStore(databaseUrl, options, async (store) => {
-    const document = await requireVault(store, options.vault);
-    const rootKey = await unlockVault(document, options.keyFile, passphrase);
-    try {
-      if (document.recoverySlots.length >= MAX_LOCAL_RECOVERY_SLOTS) {
-        throw new LocalCliError(
-          `The vault can contain at most ${String(MAX_LOCAL_RECOVERY_SLOTS)} recovery kits.`,
+  let successOutput: Record<string, unknown> | undefined;
+  const artifactPublication = { published: false };
+  let operationError: unknown;
+  try {
+    await withStore(databaseUrl, options, async (store) => {
+      const document = await requireVault(store, options.vault);
+      const rootKey = await unlockVault(document, options.keyFile, passphrase);
+      try {
+        if (document.recoverySlots.length >= MAX_LOCAL_RECOVERY_SLOTS) {
+          throw new LocalCliError(
+            `The vault can contain at most ${String(MAX_LOCAL_RECOVERY_SLOTS)} recovery kits.`,
+          );
+        }
+        recoveryKey = generateRecoveryKey();
+        const slot = await createRecoveryKeySlot(
+          {
+            vaultId: document.id,
+            slotId: keySlotIdSchema.parse(randomUUID()),
+            schemaVersion: document.schemaVersion,
+            keyVersion: document.currentKeyVersion,
+            createdAt: now(),
+          },
+          recoveryKey,
+          rootKey,
         );
-      }
-      recoveryKey = generateRecoveryKey();
-      const slot = await createRecoveryKeySlot(
-        {
+        const binding = { vaultId: document.id, recoverySlotId: slot.id };
+        const payload = await decryptVaultPayload(document, rootKey);
+        try {
+          await writeRecoveryKitFile(
+            recoveryFile,
+            recoveryKey,
+            recoveryPassphraseBytes,
+            binding,
+            'create',
+          );
+        } catch (error) {
+          if (!isDefinitelyPreCommitArtifactFailure(error)) {
+            throw new LocalVaultPublicationError(error);
+          }
+          throw error;
+        }
+        artifactPublication.published = true;
+        verifiedRecoveryKey = await readRecoveryKitFile(
+          recoveryFile,
+          recoveryPassphraseBytes,
+          binding,
+        );
+        zeroize(verifiedRecoveryKey.recoveryKey);
+        const updated = await encryptDocumentPayload(document, payload, rootKey, {
+          version: CURRENT_LOCAL_VAULT_VERSION,
+          recoverySlots: [...document.recoverySlots, slot],
+        });
+        await persistUpdatedDocument(
+          store,
+          updated,
+          document.revision,
+          options.keyFile,
+          rootKey,
+        );
+        successOutput = {
+          recoveryKitCreated: true,
           vaultId: document.id,
-          slotId: keySlotIdSchema.parse(randomUUID()),
-          schemaVersion: document.schemaVersion,
-          keyVersion: document.currentKeyVersion,
-          createdAt: now(),
-        },
-        recoveryKey,
-        rootKey,
-      );
-      const binding = { vaultId: document.id, recoverySlotId: slot.id };
-      const payload = await decryptVaultPayload(document, rootKey);
-      await writeRecoveryKitFile(
-        recoveryFile,
-        recoveryKey,
-        recoveryPassphraseBytes,
-        binding,
-        'create',
-      );
-      verifiedRecoveryKey = await readRecoveryKitFile(
-        recoveryFile,
-        recoveryPassphraseBytes,
-        binding,
-      );
-      zeroize(verifiedRecoveryKey.recoveryKey);
-      const updated = await encryptDocumentPayload(document, payload, rootKey, {
-        version: CURRENT_LOCAL_VAULT_VERSION,
-        recoverySlots: [...document.recoverySlots, slot],
-      });
-      await persistUpdatedDocument(
-        store,
-        updated,
-        document.revision,
-        options.keyFile,
-        rootKey,
-      );
-      writeJson({
-        recoveryKitCreated: true,
-        vaultId: document.id,
-        recoveryFile,
-        recoverySlotId: slot.id,
-        revision: updated.revision,
-      });
-    } finally {
-      zeroize(rootKey);
-      zeroize(verifiedRecoveryKey?.recoveryKey);
-      zeroize(recoveryKey);
-      zeroize(recoveryPassphraseBytes);
-    }
-  });
+          recoveryFile,
+          recoverySlotId: slot.id,
+          revision: updated.revision,
+        };
+      } finally {
+        zeroize(rootKey);
+        zeroize(verifiedRecoveryKey?.recoveryKey);
+        zeroize(recoveryKey);
+      }
+    });
+  } catch (error) {
+    operationError =
+      artifactPublication.published && !(error instanceof LocalVaultPublicationError)
+        ? new LocalVaultPublicationError(error)
+        : error;
+  } finally {
+    zeroize(recoveryPassphraseBytes);
+  }
+  if (operationError !== undefined) throw asError(operationError);
+  if (successOutput === undefined) {
+    throw new LocalCliError('Recovery-kit creation failed.');
+  }
+  writeJson(successOutput);
 }
 
 async function handleRecoveryStatus(options: LocalCliOptions): Promise<void> {
@@ -2414,6 +2613,9 @@ async function handleRecoveryUse(options: LocalCliOptions): Promise<void> {
       'The source and destination recovery-kit paths must be different.',
     );
   }
+  await validateSecureFileDestination(outputRecoveryFile);
+  await validateSecureFileDestination(destination);
+  await validateSecureFileDestination(revisionAnchorPath(destination));
   const values = await readSecrets(
     ['database-url', 'recovery-passphrase', 'new-passphrase', 'new-passphrase'],
     options,
@@ -2436,6 +2638,9 @@ async function handleRecoveryUse(options: LocalCliOptions): Promise<void> {
   let verifiedKey: Awaited<ReturnType<typeof readPortableKeyFile>> | undefined;
   let verifiedRecoveryKey: Awaited<ReturnType<typeof readRecoveryKitFile>> | undefined;
   let recoveryKey: ReturnType<typeof generateRecoveryKey> | undefined;
+  let successOutput: Record<string, unknown> | undefined;
+  const artifactPublication = { published: false };
+  let operationError: unknown;
   try {
     await withStore(databaseUrl, options, async (store) => {
       const document = await requireVault(store, options.vault);
@@ -2491,22 +2696,37 @@ async function handleRecoveryUse(options: LocalCliOptions): Promise<void> {
         vaultId: document.id,
         recoverySlotId: newRecoverySlot.id,
       };
-      await writeRecoveryKitFile(
-        outputRecoveryFile,
-        recoveryKey,
-        recoveryPassphraseBytes,
-        recoveryBinding,
-        'create',
-      );
+      try {
+        await writeRecoveryKitFile(
+          outputRecoveryFile,
+          recoveryKey,
+          recoveryPassphraseBytes,
+          recoveryBinding,
+          'create',
+        );
+      } catch (error) {
+        if (!isDefinitelyPreCommitArtifactFailure(error)) {
+          throw new LocalVaultPublicationError(error);
+        }
+        throw error;
+      }
+      artifactPublication.published = true;
       const binding = {
         kind: 'bound' as const,
         vaultId: document.id,
         keySlotId: newSlot.id,
       };
-      await writePortableKeyFile(destination, portableKey, binding, {
-        mode: 'create',
-        protection: { kind: 'passphrase', passphrase: passphraseBytes },
-      });
+      try {
+        await writePortableKeyFile(destination, portableKey, binding, {
+          mode: 'create',
+          protection: { kind: 'passphrase', passphrase: passphraseBytes },
+        });
+      } catch (error) {
+        if (!isDefinitelyPreCommitArtifactFailure(error)) {
+          throw new LocalVaultPublicationError(error);
+        }
+        throw error;
+      }
       verifiedKey = await readPortableKeyFile(
         destination,
         { kind: 'passphrase', passphrase: passphraseBytes },
@@ -2554,15 +2774,20 @@ async function handleRecoveryUse(options: LocalCliOptions): Promise<void> {
         newRootKey,
         'create',
       );
-      writeJson({
+      successOutput = {
         recovered: true,
         vaultId: document.id,
         keyFile: destination,
         recoveryFile: outputRecoveryFile,
         keyVersion: updated.currentKeyVersion,
         revision: updated.revision,
-      });
+      };
     });
+  } catch (error) {
+    operationError =
+      artifactPublication.published && !(error instanceof LocalVaultPublicationError)
+        ? new LocalVaultPublicationError(error)
+        : error;
   } finally {
     zeroize(verifiedRecoveryKey?.recoveryKey);
     zeroize(recoveryKey);
@@ -2573,6 +2798,11 @@ async function handleRecoveryUse(options: LocalCliOptions): Promise<void> {
     zeroize(recoveryPassphraseBytes);
     zeroize(passphraseBytes);
   }
+  if (operationError !== undefined) throw asError(operationError);
+  if (successOutput === undefined) {
+    throw new LocalCliError('Recovery use failed.');
+  }
+  writeJson(successOutput);
 }
 
 async function handleVaultList(options: LocalCliOptions): Promise<void> {
@@ -2644,6 +2874,8 @@ async function handleKeyCopy(options: LocalCliOptions): Promise<void> {
     options.outputKeyFile ?? options.destination,
     '--destination',
   );
+  const createOnly = options.overwrite !== true;
+  if (createOnly) await validateSecureFileDestination(outputKeyFile);
   const values = await readSecrets(
     ['passphrase', 'new-passphrase', 'new-passphrase'],
     options,
@@ -2657,6 +2889,8 @@ async function handleKeyCopy(options: LocalCliOptions): Promise<void> {
   const sourcePassphraseBytes = Buffer.from(sourcePassphrase, 'utf8');
   const newPassphraseBytes = Buffer.from(newPassphrase, 'utf8');
   let parsed: Awaited<ReturnType<typeof readPortableKeyFile>> | undefined;
+  let artifactStatus: 'none' | 'committed' = 'none';
+  let operationError: unknown;
   try {
     parsed = await readPortableKeyFile(sourceKeyFile, {
       kind: 'passphrase',
@@ -2668,30 +2902,62 @@ async function handleKeyCopy(options: LocalCliOptions): Promise<void> {
         : { kind: parsed.kind };
     if (parsed.kind === 'bound') {
       await validateRevisionAnchorFile(revisionAnchorPath(sourceKeyFile));
+      if (createOnly) {
+        await validateSecureFileDestination(revisionAnchorPath(outputKeyFile));
+      }
     }
-    await writePortableKeyFile(outputKeyFile, parsed.key, binding, {
-      mode: options.overwrite === true ? 'replace' : 'create',
-      protection: { kind: 'passphrase', passphrase: newPassphraseBytes },
-    });
+    try {
+      await writePortableKeyFile(outputKeyFile, parsed.key, binding, {
+        mode: options.overwrite === true ? 'replace' : 'create',
+        protection: { kind: 'passphrase', passphrase: newPassphraseBytes },
+      });
+    } catch (error) {
+      if (!isDefinitelyPreCommitArtifactFailure(error)) {
+        throw new LocalVaultPublicationError(error);
+      }
+      throw error;
+    }
+    // A successful protected-file write is a durable publication in both
+    // modes. Without an ownership-bound cleanup capability, any later failure
+    // must preserve it rather than delete a possible concurrent replacement.
+    artifactStatus = 'committed';
     if (parsed.kind === 'bound') {
-      await copyRevisionAnchor(
-        revisionAnchorPath(sourceKeyFile),
-        revisionAnchorPath(outputKeyFile),
-        options.overwrite === true ? 'replace' : 'create',
-      );
+      try {
+        await copyRevisionAnchor(
+          revisionAnchorPath(sourceKeyFile),
+          revisionAnchorPath(outputKeyFile),
+          options.overwrite === true ? 'replace' : 'create',
+        );
+      } catch (error) {
+        if (!createOnly || !isDefinitelyPreCommitArtifactFailure(error)) {
+          throw new LocalVaultPublicationError(error);
+        }
+        throw error;
+      }
     }
-    const verified = await readPortableKeyFile(
-      outputKeyFile,
-      { kind: 'passphrase', passphrase: newPassphraseBytes },
-      binding,
-    );
-    zeroize(verified.key);
+    artifactStatus = 'committed';
+    try {
+      const verified = await readPortableKeyFile(
+        outputKeyFile,
+        { kind: 'passphrase', passphrase: newPassphraseBytes },
+        binding,
+      );
+      zeroize(verified.key);
+    } catch (error) {
+      throw new LocalVaultPublicationError(error);
+    }
     writeJson({ copied: true, source: sourceKeyFile, destination: outputKeyFile });
+  } catch (error) {
+    operationError =
+      artifactStatus === 'committed' && !(error instanceof LocalVaultPublicationError)
+        ? new LocalVaultPublicationError(error)
+        : error;
   } finally {
     zeroize(parsed?.key);
     zeroize(sourcePassphraseBytes);
     zeroize(newPassphraseBytes);
   }
+  if (operationError !== undefined) throw asError(operationError);
 }
 
 async function handleKeyRewrap(options: LocalCliOptions): Promise<void> {
@@ -3122,31 +3388,151 @@ function now(): LocalVaultDocument['createdAt'] {
   return timestampSchema.parse(new Date().toISOString());
 }
 
+function isDefinitelyPreCommitStoreFailure(error: unknown): boolean {
+  return (
+    error instanceof EncryptedVaultStoreError &&
+    (error.code === 'busy' ||
+      error.code === 'closed' ||
+      error.code === 'conflict' ||
+      error.code === 'exists' ||
+      error.code === 'invalid')
+  );
+}
+
+function isDefinitelyPreCommitArtifactFailure(error: unknown): boolean {
+  return (
+    error instanceof PortableKeyFileError &&
+    (error.code === 'KEY_FILE_ALREADY_EXISTS' ||
+      error.code === 'KEY_FILE_INVALID_PATH' ||
+      error.code === 'KEY_FILE_NOT_FOUND')
+  );
+}
+
+function preservePrimaryFailure(primary: unknown, secondary: readonly Error[]): Error {
+  const primaryError = asError(primary);
+  if (secondary.length === 0) return primaryError;
+  try {
+    Object.defineProperty(primaryError, 'cause', {
+      configurable: true,
+      enumerable: false,
+      value: new AggregateError(secondary, 'Secondary cleanup failed.'),
+      writable: false,
+    });
+  } catch {
+    // Preserve the primary error even if its cause property is sealed.
+  }
+  return primaryError;
+}
+
+async function runTrackedStoreMutation(
+  state: MutableStoreOperationState,
+  operation: () => Promise<void>,
+): Promise<void> {
+  try {
+    await operation();
+    state.mutation = 'committed';
+  } catch (error) {
+    state.mutation = isDefinitelyPreCommitStoreFailure(error)
+      ? 'pre-commit'
+      : 'ambiguous';
+    throw error;
+  }
+}
+
+function trackedStore(
+  store: EncryptedVaultStore,
+  state: MutableStoreOperationState,
+): EncryptedVaultStore {
+  return {
+    ping: () => store.ping(),
+    get: (vaultId) => store.get(vaultId),
+    listVaultIds: () => store.listVaultIds(),
+    create: (document) => runTrackedStoreMutation(state, () => store.create(document)),
+    update: (document, expectedRevision) =>
+      runTrackedStoreMutation(state, () => store.update(document, expectedRevision)),
+    delete: (vaultId, expectedRevision) =>
+      runTrackedStoreMutation(state, () => store.delete(vaultId, expectedRevision)),
+    close: () => store.close(),
+  };
+}
+
 async function withStore(
   databaseUrl: string,
   options: LocalCliOptions,
-  operation: (store: EncryptedVaultStore, target: string) => Promise<void>,
+  operation: (
+    store: EncryptedVaultStore,
+    target: string,
+    state: StoreOperationState,
+  ) => Promise<void>,
 ): Promise<void> {
   const datastore = datastoreFrom(options);
   if (datastore === 'file') {
     const dataFile = options.dataFile ?? DEFAULT_DATA_FILE;
     const store = await FileLocalVaultStore.open(dataFile);
+    const state: MutableStoreOperationState = { mutation: 'none' };
+    let operationError: unknown;
     try {
-      await operation(store, dataFile);
-    } finally {
-      await store.close();
+      await operation(trackedStore(store, state), dataFile, state);
+    } catch (error) {
+      operationError = error;
     }
+    let closeError: unknown;
+    try {
+      await store.close();
+    } catch (error) {
+      closeError = error;
+    }
+    if (
+      (state.mutation === 'committed' || state.mutation === 'ambiguous') &&
+      (operationError !== undefined || closeError !== undefined)
+    ) {
+      if (operationError instanceof LocalVaultPublicationError) {
+        throw operationError;
+      }
+      throw new LocalVaultPublicationError(operationError ?? closeError);
+    }
+    if (operationError !== undefined) {
+      if (closeError !== undefined) {
+        throw preservePrimaryFailure(operationError, [asError(closeError)]);
+      }
+      throw asError(operationError);
+    }
+    if (closeError !== undefined) throw asError(closeError);
     return;
   }
   const databaseName = databaseNameFrom(databaseUrl, options.database);
   const store = await MongoLocalVaultStore.connect(databaseUrl, databaseName, {
     collectionName: options.collection,
   });
+  const state: MutableStoreOperationState = { mutation: 'none' };
+  let operationError: unknown;
   try {
-    await operation(store, databaseName);
-  } finally {
-    await store.close();
+    await operation(trackedStore(store, state), databaseName, state);
+  } catch (error) {
+    operationError = error;
   }
+  let closeError: unknown;
+  try {
+    await store.close();
+  } catch (error) {
+    closeError = error;
+  }
+  if (
+    (state.mutation === 'committed' || state.mutation === 'ambiguous') &&
+    (operationError !== undefined || closeError !== undefined)
+  ) {
+    if (operationError instanceof LocalVaultPublicationError) {
+      throw operationError;
+    }
+    throw new LocalVaultPublicationError(operationError ?? closeError);
+  }
+  if (operationError !== undefined) {
+    if (closeError !== undefined) {
+      throw preservePrimaryFailure(operationError, [asError(closeError)]);
+    }
+    throw asError(operationError);
+  }
+  if (closeError !== undefined) throw asError(closeError);
 }
 
 function storeLocation(
@@ -3181,7 +3567,7 @@ function datastoreFrom(options: LocalCliOptions): 'mongodb' | 'file' {
 }
 
 function databaseNameFrom(uri: string, explicit: string | undefined): string {
-  if (explicit !== undefined && /^[A-Za-z0-9_-]{1,63}$/u.test(explicit)) {
+  if (explicit !== undefined && MONGO_DATABASE_NAME_PATTERN.test(explicit)) {
     return explicit;
   }
   if (explicit !== undefined) {
@@ -3189,7 +3575,7 @@ function databaseNameFrom(uri: string, explicit: string | undefined): string {
   }
   try {
     const pathname = new URL(uri).pathname.replace(/^\/+/u, '');
-    if (pathname.length > 0 && /^[A-Za-z0-9_-]{1,63}$/u.test(pathname)) {
+    if (pathname.length > 0 && MONGO_DATABASE_NAME_PATTERN.test(pathname)) {
       return pathname;
     }
   } catch {
@@ -3450,5 +3836,35 @@ function writeRecoveryStatus(result: {
 }
 
 function writeJson(value: unknown): void {
-  process.stdout.write(JSON.stringify(value) + '\n');
+  process.stdout.write(JSON.stringify(sanitizeJsonValue(value)) + '\n');
+}
+
+export function sanitizeJsonValue(
+  value: unknown,
+  ancestors = new WeakSet<object>(),
+): unknown {
+  if (typeof value === 'string') return sanitizeTerminalText(value);
+  if (value === null || typeof value !== 'object') return value;
+  if (ancestors.has(value))
+    throw new TypeError('Cannot serialize circular JSON output.');
+  ancestors.add(value);
+  try {
+    if (Array.isArray(value)) {
+      return value.map((entry) => sanitizeJsonValue(entry, ancestors));
+    }
+    const sanitized: Record<string, unknown> = Object.create(null) as Record<
+      string,
+      unknown
+    >;
+    for (const [key, entry] of Object.entries(value)) {
+      const sanitizedKey = sanitizeTerminalText(key);
+      if (Object.hasOwn(sanitized, sanitizedKey)) {
+        throw new LocalCliError('JSON output contains colliding sanitized keys.');
+      }
+      sanitized[sanitizedKey] = sanitizeJsonValue(entry, ancestors);
+    }
+    return sanitized;
+  } finally {
+    ancestors.delete(value);
+  }
 }

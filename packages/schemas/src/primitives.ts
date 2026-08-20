@@ -5,6 +5,28 @@ export const MAX_CIPHERTEXT_CHARS = 22_369_632;
 export const MAX_SEMANTIC_VERSION = 0xffff_ffff;
 export const MAX_SEMANTIC_REVISION = Number.MAX_SAFE_INTEGER;
 
+const textEncoder = new TextEncoder();
+
+/** Return the number of bytes needed to encode text as UTF-8. */
+export function utf8ByteLength(value: string): number {
+  return textEncoder.encode(value).byteLength;
+}
+
+/** Shared byte-bound schema for sensitive and encrypted text values. */
+export const maxTextBytesSchema = z.string().superRefine((value, context) => {
+  // Every UTF-16 code unit requires at least one UTF-8 byte, so reject an
+  // obviously oversized value before allocating its encoded byte buffer.
+  if (value.length > MAX_TEXT_BYTES || utf8ByteLength(value) > MAX_TEXT_BYTES) {
+    context.addIssue({
+      code: 'too_big',
+      origin: 'string',
+      maximum: MAX_TEXT_BYTES,
+      inclusive: true,
+      message: `Too big: expected string to have <=${String(MAX_TEXT_BYTES)} bytes`,
+    });
+  }
+});
+
 export const CURRENT_SCHEMA_VERSION = 1;
 export const SUPPORTED_SCHEMA_VERSIONS = Object.freeze([
   CURRENT_SCHEMA_VERSION,
@@ -89,8 +111,8 @@ export const associatedDataVersionSchema = z
 export const keySlotVersionSchema = z.literal(1).brand<'KeySlotVersion'>();
 export const sortOrderSchema = z.number().int().nonnegative();
 export const nonEmptyTextSchema = z.string().trim().min(1).max(256);
-export const encryptedTextSchema = z.string().max(MAX_TEXT_BYTES);
-export const secretValueSchema = z.string().max(MAX_TEXT_BYTES).brand<'SecretValue'>();
+export const encryptedTextSchema = maxTextBytesSchema;
+export const secretValueSchema = maxTextBytesSchema.brand<'SecretValue'>();
 export const secretBytesSchema = z
   .instanceof(Uint8Array)
   .refine((value) => value.byteLength > 0 && value.byteLength <= MAX_TEXT_BYTES, {

@@ -2,6 +2,42 @@
 
 All notable user-facing and security changes to Kavrix are recorded here.
 
+## 0.1.4 - 2026-08-20
+
+### Added
+
+- Added a guided, step-by-step `kavrix init` experience for new users with a
+  clear choice between an encrypted local file and MongoDB, protected local
+  defaults, masked secret entry, recovery guidance, back/cancel controls, and
+  actionable completion steps.
+- Added secure one-directory provisioning for the default local vault and key
+  files without mutating an existing parent directory's permissions.
+
+### Security and reliability
+
+- Hardened Windows initialization by inspecting inherited parent-directory
+  permissions without rewriting them and by applying strict access controls only
+  to Kavrix-owned files and directories.
+- Made local-share replacement compare the exact encrypted key-file version
+  under an exclusive lock using a one-shot transition token, preventing a stale
+  session from overwriting a newer share.
+- Bound encrypted vault-preference records to the canonical authenticated-data
+  context instead of accepting record-supplied context values.
+- Preserved protected files after ambiguous datastore, anchor, or publication
+  failures so pathname replacement cannot redirect cleanup into an unrelated
+  file.
+- Tracked destructive datastore mutations and delayed success output until the
+  datastore closes successfully.
+- Enforced UTF-8 byte limits at schema boundaries and sanitized recursive JSON
+  keys and values, failing closed when sanitized keys collide.
+
+### Verification
+
+- Expanded onboarding, publication-transition, filesystem-race, Windows ACL,
+  schema-boundary, and storage-adapter regression coverage.
+- Added active-release CI and package-hygiene checks, and removed stale
+  changesets for features that are not part of the published CLI.
+
 ## 0.1.3 - 2026-08-20
 
 ### Added

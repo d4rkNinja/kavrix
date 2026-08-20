@@ -31,6 +31,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const aclMocks = vi.hoisted(() => ({
   set: vi.fn<(path: string) => Promise<void>>(() => Promise.resolve()),
+  verifyDirectory: vi.fn<(path: string) => Promise<void>>(() => Promise.resolve()),
   verify: vi.fn<(path: string) => Promise<void>>(() => Promise.resolve()),
 }));
 const fileSystemMocks = vi.hoisted(() => ({
@@ -54,6 +55,7 @@ vi.mock('node:fs/promises', async (importOriginal) => {
 
 vi.mock('@kavrix/key-files/windows-acl', () => ({
   setWindowsUserOnlyAcl: aclMocks.set,
+  verifyWindowsDirectoryAcl: aclMocks.verifyDirectory,
   verifyWindowsUserOnlyAcl: aclMocks.verify,
 }));
 
@@ -706,7 +708,7 @@ describe('FileEncryptedDatabaseStore', () => {
     await store.close();
   });
 
-  it('sets and verifies Windows ACLs for the exact final path after publication', async () => {
+  it('verifies the Windows parent and protects the exact final path after publication', async () => {
     const descriptor = Object.getOwnPropertyDescriptor(process, 'platform');
     let store: FileEncryptedDatabaseStore | undefined;
     try {
@@ -718,10 +720,32 @@ describe('FileEncryptedDatabaseStore', () => {
       const canonicalTarget = join(await realpath(dirname(target)), 'database.json');
       store = await FileEncryptedDatabaseStore.open(target);
       await store.createDatabase(database(dbId('db_01JWINDOWSFINAL'), 0));
+      expect(aclMocks.verifyDirectory).toHaveBeenCalledWith(dirname(canonicalTarget));
+      expect(aclMocks.set).not.toHaveBeenCalledWith(dirname(canonicalTarget));
       expect(aclMocks.set).toHaveBeenCalledWith(canonicalTarget);
       expect(aclMocks.verify).toHaveBeenCalledWith(canonicalTarget);
     } finally {
       await store?.close();
+      if (descriptor !== undefined)
+        Object.defineProperty(process, 'platform', descriptor);
+    }
+  });
+
+  it('validates an existing Windows parent without mutating its ACL', async () => {
+    const descriptor = Object.getOwnPropertyDescriptor(process, 'platform');
+    try {
+      Object.defineProperty(process, 'platform', {
+        configurable: true,
+        value: 'win32',
+      });
+      const target = await targetPath();
+      const canonicalDirectory = await realpath(dirname(target));
+      await expect(
+        FileEncryptedDatabaseStore.validatePath(target),
+      ).resolves.toBeUndefined();
+      expect(aclMocks.verifyDirectory).toHaveBeenCalledWith(canonicalDirectory);
+      expect(aclMocks.set).not.toHaveBeenCalledWith(canonicalDirectory);
+    } finally {
       if (descriptor !== undefined)
         Object.defineProperty(process, 'platform', descriptor);
     }
