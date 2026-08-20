@@ -121,6 +121,95 @@ describe('local secret input policy', () => {
     ).rejects.toThrow('Secret input request is invalid.');
   });
 
+  it('rejects empty secret requests before reading stdin', async () => {
+    await expect(secretInput('unused\n').read([], true)).rejects.toThrow(
+      'Secret input request is invalid.',
+    );
+  });
+
+  it('rejects missing and surplus stdin frames without exposing their contents', async () => {
+    await expect(secretInput('').read(['label'], true)).rejects.toThrow(
+      'Secret input contains the wrong number of values.',
+    );
+
+    const surplus = 'private-label\nsecret-surplus-value\n';
+    const error = await secretInput(surplus)
+      .read(['label'], true)
+      .catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(Error);
+    expect(String(error)).toContain(
+      'Secret input contains the wrong number of values.',
+    );
+    expect(String(error)).not.toContain('private-label');
+    expect(String(error)).not.toContain('secret-surplus-value');
+  });
+
+  it('rejects a surplus frame arriving in a later stdin chunk', async () => {
+    const input = Readable.from(['private-label\n', 'secret-surplus-value\n']);
+    const output = new TestTerminalOutput();
+
+    await expect(
+      new LocalSecretInput(input, output).read(['label'], true),
+    ).rejects.toThrow('Secret input contains the wrong number of values.');
+    expect(output.text()).toBe('');
+  });
+
+  it('skips empty stdin chunks and rejects non-byte chunks generically', async () => {
+    const emptyThenValue = {
+      async *[Symbol.asyncIterator]() {
+        yield new Uint8Array(0);
+        yield 'private-label\n';
+      },
+    } as unknown as Readable;
+    await expect(
+      new LocalSecretInput(emptyThenValue, new TestTerminalOutput()).read(
+        ['label'],
+        true,
+      ),
+    ).resolves.toEqual(['private-label']);
+
+    const invalid = {
+      async *[Symbol.asyncIterator]() {
+        yield { secret: 'must-not-be-rendered' };
+      },
+    } as unknown as Readable;
+    await expect(
+      new LocalSecretInput(invalid, new TestTerminalOutput()).read(['label'], true),
+    ).rejects.toThrow('Secret input contains invalid bytes.');
+  });
+
+  it('accepts a final unterminated stdin frame and fails closed after EOF', async () => {
+    const reader = secretInput('private-label');
+    await expect(reader.read(['label'], true)).resolves.toEqual(['private-label']);
+    await expect(reader.read(['label'], true)).rejects.toThrow(
+      'Secret input contains the wrong number of values.',
+    );
+  });
+
+  it('trims a stdin carriage return while rejecting empty and NUL frames', async () => {
+    await expect(
+      secretInput('private-label\r\n').read(['label'], true),
+    ).resolves.toEqual(['private-label']);
+    for (const invalid of ['\n', 'private\0label\n']) {
+      await expect(secretInput(invalid).read(['label'], true)).rejects.toThrow(
+        'Secret input must contain exactly one value.',
+      );
+    }
+  });
+
+  it('rejects an oversized stdin frame without including its value in the error', async () => {
+    const oversized = Buffer.alloc(1_048_577, 0x61);
+    const input = Readable.from([oversized]);
+
+    const error = await new LocalSecretInput(input, new TestTerminalOutput())
+      .read(['label'], true)
+      .catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(Error);
+    expect(String(error)).toContain('Secret input exceeds the supported size.');
+    expect(String(error)).not.toContain('aaaaaaaa');
+    expect([...oversized.subarray(0, 16)]).toEqual(new Array(16).fill(0));
+  });
+
   it('rejects malformed and partial UTF-8 stdin frames and clears consumed chunks', async () => {
     for (const malformed of [
       Buffer.from([0xc3, 0x28, 0x0a]),
@@ -202,6 +291,66 @@ describe('local secret input policy', () => {
     await expect(reading).resolves.toEqual(['correct horse battery staple-密码']);
     expect(output.text()).not.toContain('correct horse');
     expect(output.text()).not.toContain('密码');
+    expect(input.isRaw).toBe(false);
+  });
+
+  it('handles string-mode terminal chunks and backspace on an empty value', async () => {
+    const input = new TestTerminalInput();
+    input.setEncoding('utf8');
+    const output = new TestTerminalOutput();
+    const reading = new LocalSecretInput(input, output).read(['passphrase'], false);
+
+    input.enter('\bcorrect horse battery staple\r');
+
+    await expect(reading).resolves.toEqual(['correct horse battery staple']);
+    expect(output.text()).not.toContain('correct horse battery staple');
+    expect(input.isRaw).toBe(false);
+  });
+
+  it('uses specific hidden labels for every masked secret kind', async () => {
+    const input = new TestTerminalInput();
+    const output = new TestTerminalOutput();
+    const reading = new LocalSecretInput(input, output).read(
+      ['label', 'field-value', 'recovery-passphrase', 'new-passphrase'],
+      false,
+    );
+
+    input.enter('private-label\r');
+    await allowNextPrompt();
+    input.enter('credential-secret-value\r');
+    await allowNextPrompt();
+    input.enter('recovery passphrase value\r');
+    await allowNextPrompt();
+    input.enter('replacement passphrase value\r');
+
+    await expect(reading).resolves.toEqual([
+      'private-label',
+      'credential-secret-value',
+      'recovery passphrase value',
+      'replacement passphrase value',
+    ]);
+    expect(output.text()).toBe(
+      'Enter private label (input hidden): \n' +
+        'Enter credential value (input hidden): \n' +
+        'Enter recovery-kit passphrase (input hidden): \n' +
+        'Enter new passphrase (input hidden): \n',
+    );
+    expect(output.text()).not.toContain('credential-secret-value');
+    expect(output.text()).not.toContain('recovery passphrase value');
+    expect(output.text()).not.toContain('replacement passphrase value');
+  });
+
+  it('rejects oversized masked input and clears the consumed buffer', async () => {
+    const input = new TestTerminalInput();
+    const output = new TestTerminalOutput();
+    const reading = new LocalSecretInput(input, output).read(['field-value'], false);
+    const oversized = Buffer.alloc(1_048_577, 0x61);
+
+    input.enter(oversized);
+
+    await expect(reading).rejects.toThrow('Secret input exceeds the supported size.');
+    expect([...oversized.subarray(0, 16)]).toEqual(new Array(16).fill(0));
+    expect(output.text()).not.toContain('aaaaaaaa');
     expect(input.isRaw).toBe(false);
   });
 

@@ -523,6 +523,30 @@ describe('DatabaseSession', () => {
     expect(store.database).toBeNull();
   });
 
+  it('treats known create-database rejections as proven non-publication', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'kavrix-session-create-reject-'));
+    for (const [code, expected] of [
+      ['exists', 'conflict'],
+      ['conflict', 'conflict'],
+      ['invalid', 'operation'],
+    ] as const) {
+      const store = new MemoryDatabaseStore();
+      const keyFile = join(directory, `${code}.kavrix-db-key`);
+      store.createDatabaseError = code;
+
+      await expect(
+        DatabaseSession.initialize({
+          store,
+          keyFile,
+          passphrase: PASSPHRASE,
+          label: 'database',
+        }),
+      ).rejects.toMatchObject({ code: expected });
+      expect(store.database).toBeNull();
+      await expect(readFile(keyFile)).resolves.toHaveLength(0);
+    }
+  });
+
   it('aggregates only redacted categories when owned cleanup meets a foreign race', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'kavrix-session-'));
     const store = new MemoryDatabaseStore();
@@ -829,10 +853,48 @@ describe('DatabaseSession', () => {
     });
 
     await expect(session.createVault('')).rejects.toMatchObject({ code: 'invalid' });
+    await expect(session.createVault(42 as never)).rejects.toMatchObject({
+      code: 'invalid',
+    });
     await expect(session.createVault('x'.repeat(1_025))).rejects.toMatchObject({
       code: 'invalid',
     });
     const first = await session.createVault('first');
+    await expect(session.createVault('first')).rejects.toMatchObject({
+      code: 'duplicate',
+    });
+    const storedFirst = store.vaults.get(first.id);
+    if (storedFirst === undefined) throw new Error('missing fixture');
+    store.vaults.delete(first.id);
+    await expect(session.getVault(first.id)).rejects.toMatchObject({
+      code: 'not-found',
+    });
+    store.vaults.set(first.id, storedFirst);
+
+    await expect(
+      session.inspectVault(first.id, () => {
+        throw new Error('inspection-secret-canary');
+      }),
+    ).rejects.toMatchObject({ code: 'authentication' });
+    const beforeInvalidUpdate = await session.getVaultDocument(first.id);
+    await expect(
+      session.updateVault(first.id, () => ({ records: null }) as never),
+    ).rejects.toMatchObject({ code: 'authentication' });
+    expect((await session.getVaultDocument(first.id)).revision).toBe(
+      beforeInvalidUpdate.revision,
+    );
+
+    for (const [code, expected] of [
+      ['exists', 'conflict'],
+      ['invalid', 'operation'],
+    ] as const) {
+      store.createVaultError = code;
+      await expect(session.createVault(`adapter-${code}`)).rejects.toMatchObject({
+        code: expected,
+      });
+      expect(session.status().vaultCount).toBe(1);
+    }
+    store.createVaultError = undefined;
     const missingId = vaultIdSchema.parse('missing-vault');
     await expect(session.getVault(missingId)).rejects.toMatchObject({
       code: 'not-found',
@@ -1267,6 +1329,61 @@ describe('DatabaseSession', () => {
     expect(second.slotId).not.toBe(first.slotId);
   });
 
+  it('distinguishes rejected and uncertain owner recovery mutations', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'kavrix-recovery-mutation-'));
+    const store = new MemoryDatabaseStore();
+    const keyFile = join(directory, 'owner.kavrix-db-key');
+    const recoveryFile = join(directory, 'recovery.kavrix-db-recovery');
+    await DatabaseSession.initialize({
+      store,
+      keyFile,
+      passphrase: PASSPHRASE,
+      label: 'database',
+    });
+    const session = await DatabaseSession.open({
+      store,
+      keyFile,
+      passphrase: PASSPHRASE,
+    });
+    await session.createRecovery({ recoveryFile, passphrase: PASSPHRASE });
+    await session.close();
+    const expectedBinding = await readDatabaseRecoveryKitFileBinding(recoveryFile);
+
+    const rejectedKey = join(directory, 'rejected-owner.kavrix-db-key');
+    store.updateDatabaseError = 'conflict';
+    await expect(
+      DatabaseSession.useRecovery({
+        store,
+        recoveryFile,
+        recoveryPassphrase: PASSPHRASE,
+        outputKeyFile: rejectedKey,
+        newPassphrase: PASSPHRASE,
+        expectedBinding,
+      }),
+    ).rejects.toMatchObject({ code: 'conflict' });
+    await expect(readFile(rejectedKey)).resolves.toHaveLength(0);
+    await expect(
+      readFile(databaseRevisionAnchorPath(rejectedKey)),
+    ).resolves.toHaveLength(0);
+
+    const uncertainKey = join(directory, 'uncertain-owner.kavrix-db-key');
+    store.updateDatabaseError = 'operation';
+    await expect(
+      DatabaseSession.useRecovery({
+        store,
+        recoveryFile,
+        recoveryPassphrase: PASSPHRASE,
+        outputKeyFile: uncertainKey,
+        newPassphrase: PASSPHRASE,
+        expectedBinding,
+      }),
+    ).rejects.toMatchObject({ code: 'ambiguous-commit' });
+    await expect(access(uncertainKey)).resolves.toBeUndefined();
+    await expect(
+      access(databaseRevisionAnchorPath(uncertainKey)),
+    ).resolves.toBeUndefined();
+  });
+
   it('rejects a recovery kit bound to another database', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'kavrix-session-recovery-binding-'));
     const primaryStore = new MemoryDatabaseStore();
@@ -1407,6 +1524,9 @@ class MemoryDatabaseStore implements EncryptedDatabaseStore {
   database: EncryptedDatabaseDocument | null = null;
   readonly vaults = new Map<VaultId, DatabaseVaultDocument>();
   failClose = false;
+  createDatabaseError: 'conflict' | 'exists' | 'invalid' | undefined;
+  createVaultError: 'exists' | 'invalid' | undefined;
+  updateDatabaseError: 'conflict' | 'operation' | undefined;
   afterDatabaseUpdate: (() => Promise<void>) | undefined;
   afterVaultUpdate: (() => Promise<void>) | undefined;
   afterListVaults: (() => Promise<void>) | undefined;
@@ -1416,6 +1536,8 @@ class MemoryDatabaseStore implements EncryptedDatabaseStore {
     return this.database?.id === id ? structuredClone(this.database) : null;
   }
   async createDatabase(document: EncryptedDatabaseDocument): Promise<void> {
+    if (this.createDatabaseError !== undefined)
+      throw new EncryptedDatabaseStoreError(this.createDatabaseError);
     if (this.database !== null) throw new EncryptedDatabaseStoreError('exists');
     this.database = structuredClone(document);
   }
@@ -1423,6 +1545,8 @@ class MemoryDatabaseStore implements EncryptedDatabaseStore {
     document: EncryptedDatabaseDocument,
     expectedRevision: DatabaseRevision,
   ): Promise<void> {
+    if (this.updateDatabaseError !== undefined)
+      throw new EncryptedDatabaseStoreError(this.updateDatabaseError);
     if (this.database?.revision !== expectedRevision)
       throw new EncryptedDatabaseStoreError('conflict');
     this.database = structuredClone(document);
@@ -1442,6 +1566,8 @@ class MemoryDatabaseStore implements EncryptedDatabaseStore {
     return vault?.databaseId === databaseId ? structuredClone(vault) : null;
   }
   async createVault(input: CreateVaultInput): Promise<void> {
+    if (this.createVaultError !== undefined)
+      throw new EncryptedDatabaseStoreError(this.createVaultError);
     if (this.database?.revision !== input.expectedDatabaseRevision)
       throw new EncryptedDatabaseStoreError('conflict');
     if (this.vaults.has(input.vault.id))
