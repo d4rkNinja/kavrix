@@ -7,12 +7,14 @@ import { keySlotIdSchema, vaultIdSchema } from '@kavrix/schemas';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mockedAcl = vi.hoisted(() => ({
+  directoryVerify: vi.fn(),
   set: vi.fn(),
   verify: vi.fn(),
 }));
 
 vi.mock('../src/windows-acl.js', () => ({
   setWindowsUserOnlyAcl: mockedAcl.set,
+  verifyWindowsDirectoryAcl: mockedAcl.directoryVerify,
   verifyWindowsUserOnlyAcl: mockedAcl.verify,
 }));
 
@@ -32,6 +34,7 @@ const binding: RecoveryKitBinding = {
 
 beforeEach(async () => {
   directory = await mkdtemp(join(tmpdir(), 'kavrix-recovery-kit-'));
+  mockedAcl.directoryVerify.mockReset();
   mockedAcl.set.mockReset();
   mockedAcl.verify.mockReset();
 });
