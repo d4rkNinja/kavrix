@@ -14,12 +14,14 @@ import { tmpdir } from 'node:os';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mockedAcl = vi.hoisted(() => ({
+  directoryVerify: vi.fn(),
   set: vi.fn(),
   verify: vi.fn(),
 }));
 
 vi.mock('../src/windows-acl.js', () => ({
   setWindowsUserOnlyAcl: mockedAcl.set,
+  verifyWindowsDirectoryAcl: mockedAcl.directoryVerify,
   verifyWindowsUserOnlyAcl: mockedAcl.verify,
 }));
 
@@ -36,6 +38,7 @@ let directory = '';
 
 beforeEach(async () => {
   directory = await mkdtemp(join(tmpdir(), 'kavrix-secure-stream-'));
+  mockedAcl.directoryVerify.mockReset();
   mockedAcl.set.mockReset();
   mockedAcl.verify.mockReset();
 });
@@ -153,7 +156,8 @@ describe('protected streaming file publication', () => {
       const canonicalDirectory = await realpath(directory);
       const canonicalPath = join(canonicalDirectory, 'windows-protected.cvkx');
 
-      expect(mockedAcl.verify).toHaveBeenCalledWith(canonicalDirectory);
+      expect(mockedAcl.directoryVerify).toHaveBeenCalledWith(canonicalDirectory);
+      expect(mockedAcl.verify).not.toHaveBeenCalledWith(canonicalDirectory);
       expect(mockedAcl.verify).toHaveBeenCalledWith(canonicalPath);
       expect(
         mockedAcl.set.mock.calls.some(([candidate]) =>
