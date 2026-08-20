@@ -3,6 +3,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
 
+import * as keyFiles from '@kavrix/key-files';
+import { PortableKeyFileError } from '@kavrix/key-files';
+import {
+  EncryptedVaultStoreError,
+  FileLocalVaultStore,
+  MongoLocalVaultStore,
+} from '@kavrix/storage';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const aclMocks = vi.hoisted(() => ({
@@ -17,7 +24,12 @@ vi.mock('@kavrix/key-files/windows-acl', () => ({
   verifyWindowsUserOnlyAcl: aclMocks.verify,
 }));
 
-import { buildLocalCli } from '../src/local-vault-cli.js';
+import {
+  buildLocalCli,
+  renderSearchResult,
+  renderVaultStats,
+  sanitizeJsonValue,
+} from '../src/local-vault-cli.js';
 
 const PASSPHRASE = 'local-cli-coverage-passphrase';
 const DIFFERENT_PASSPHRASE = 'local-cli-coverage-different-passphrase';
@@ -130,6 +142,21 @@ describe('local vault CLI active coverage', () => {
       datastore: 'file',
       dataFile: value.data,
       keyFile: value.key,
+    });
+    const emptyStats = JSON.parse(
+      await runCli(
+        ['stats', ...route(value), '--passphrase-stdin', '--json'],
+        `${PASSPHRASE}\n`,
+      ),
+    ) as {
+      credentialCount: number;
+      oldestCredentialAt: string | null;
+      newestCredentialAt: string | null;
+    };
+    expect(emptyStats).toMatchObject({
+      credentialCount: 0,
+      oldestCredentialAt: null,
+      newestCredentialAt: null,
     });
     expect(await put(value, 'alpha', ALPHA_VALUE)).toMatchObject({
       saved: true,
@@ -266,6 +293,278 @@ describe('local vault CLI active coverage', () => {
     expect(keyStatus).toMatchObject({ keyFile: value.key, protected: true });
   });
 
+  it('resolves MongoDB routes and reports invalid connection-name combinations safely', async () => {
+    const value = await target();
+    await initVault(value);
+    const document = JSON.parse(await readFile(value.data, 'utf8')) as Record<
+      string,
+      unknown
+    >;
+    const fakeStore = {
+      ping: vi.fn(async () => undefined),
+      get: vi.fn(async () => document),
+      listVaultIds: vi.fn(async () => ['default']),
+      create: vi.fn(async () => undefined),
+      update: vi.fn(async () => undefined),
+      delete: vi.fn(async () => undefined),
+      close: vi.fn(async () => undefined),
+    };
+    const connect = vi
+      .spyOn(MongoLocalVaultStore, 'connect')
+      .mockResolvedValue(fakeStore as never);
+
+    expect(
+      JSON.parse(
+        await runCli(
+          [
+            'db',
+            'ping',
+            '--datastore',
+            'mongodb',
+            '--database-url-stdin',
+            '--database',
+            'audit_db',
+            '--profile-config-dir',
+            value.directory,
+          ],
+          'mongodb://localhost\n',
+        ),
+      ),
+    ).toMatchObject({ connected: true, database: 'audit_db' });
+    expect(fakeStore.ping).toHaveBeenCalledTimes(1);
+
+    expect(
+      JSON.parse(
+        await runCli(
+          ['vault', 'list', '--datastore', 'mongodb', '--database-url-stdin'],
+          'mongodb://localhost/from-uri\n',
+        ),
+      ),
+    ).toEqual({
+      database: 'from-uri',
+      collection: 'kavrix_vaults',
+      vaults: ['default'],
+    });
+    expect(
+      JSON.parse(
+        await runCli(
+          [
+            'vault',
+            'status',
+            '--datastore',
+            'mongodb',
+            '--database-url-stdin',
+            '--database',
+            'audit_db',
+          ],
+          'mongodb://localhost\n',
+        ),
+      ),
+    ).toMatchObject({ database: 'audit_db', vaultId: 'default', revision: 0 });
+    expect(connect).toHaveBeenCalledTimes(3);
+    expect(fakeStore.close).toHaveBeenCalledTimes(3);
+
+    await expect(
+      runCli(
+        ['vault', 'list', '--datastore', 'mongodb', '--database-url-stdin'],
+        'not-a-mongodb-url\n',
+      ),
+    ).rejects.toThrow('MongoDB connection string is invalid.');
+    await expect(
+      runCli(
+        ['vault', 'list', '--datastore', 'mongodb', '--database-url-stdin'],
+        'mongodb://localhost\n',
+      ),
+    ).rejects.toThrow(
+      'Specify --database when the MongoDB connection string has no database name.',
+    );
+    await expect(
+      runCli(
+        [
+          'vault',
+          'list',
+          '--datastore',
+          'mongodb',
+          '--database-url-stdin',
+          '--database',
+          'invalid database',
+        ],
+        'mongodb://localhost\n',
+      ),
+    ).rejects.toThrow('MongoDB database name is invalid.');
+  });
+
+  it('reports bounded MongoDB health retries and fail-closed outages', async () => {
+    const value = await target();
+    await initVault(value);
+    const document = JSON.parse(await readFile(value.data, 'utf8')) as Record<
+      string,
+      unknown
+    >;
+    const fakeStore = {
+      ping: vi.fn<() => Promise<void>>(),
+      get: vi.fn(async () => document),
+      listVaultIds: vi.fn(async () => ['default']),
+      create: vi.fn(async () => undefined),
+      update: vi.fn(async () => undefined),
+      delete: vi.fn(async () => undefined),
+      close: vi.fn(async () => undefined),
+    };
+    const connect = vi
+      .spyOn(MongoLocalVaultStore, 'connect')
+      .mockResolvedValue(fakeStore as never);
+    const mongoHealthArgs = [
+      'doctor',
+      'health',
+      '--datastore',
+      'mongodb',
+      '--database-url-stdin',
+      '--key-file',
+      value.key,
+      '--passphrase-stdin',
+    ];
+
+    fakeStore.ping
+      .mockRejectedValueOnce(new Error('transient detail'))
+      .mockResolvedValueOnce(undefined);
+    const retried = JSON.parse(
+      await runCli(mongoHealthArgs, `mongodb://localhost/healthdb\n${PASSPHRASE}\n`),
+    ) as { autoHealed: string[]; checks: Array<{ name: string }> };
+    expect(retried.autoHealed).toContain('datastore-retry');
+    expect(retried.checks.map((check) => check.name)).toContain('database');
+
+    fakeStore.ping.mockReset().mockRejectedValue(new Error('persistent detail'));
+    const unavailable = JSON.parse(
+      await runCli(mongoHealthArgs, `mongodb://localhost/healthdb\n${PASSPHRASE}\n`),
+    ) as { healthy: boolean; manualRecoveryRequired: string[] };
+    expect(unavailable.healthy).toBe(false);
+    expect(unavailable.manualRecoveryRequired.join(' ')).toContain(
+      'datastore is unavailable',
+    );
+
+    connect.mockRejectedValueOnce(new Error('connection detail'));
+    const unopened = JSON.parse(
+      await runCli(mongoHealthArgs, `mongodb://localhost/healthdb\n${PASSPHRASE}\n`),
+    ) as { healthy: boolean; manualRecoveryRequired: string[] };
+    expect(unopened.healthy).toBe(false);
+    expect(unopened.manualRecoveryRequired.join(' ')).toContain(
+      'could not be opened safely',
+    );
+  });
+
+  it('rejects incompatible datastore options before reading protected input', async () => {
+    const value = await target();
+    await expect(
+      runCli(
+        [
+          'init',
+          '--datastore',
+          'file',
+          '--data-file',
+          value.data,
+          '--key-file',
+          value.key,
+          '--database-url-stdin',
+        ],
+        '',
+      ),
+    ).rejects.toThrow(
+      'MongoDB connection options cannot be used with --datastore file.',
+    );
+    await expect(
+      runCli(
+        [
+          'init',
+          '--datastore',
+          'mongodb',
+          '--data-file',
+          value.data,
+          '--key-file',
+          value.key,
+        ],
+        '',
+      ),
+    ).rejects.toThrow('--data-file requires --datastore file.');
+    await expect(
+      runCli(['db', 'ping', '--datastore', 'file', '--data-file', value.data]),
+    ).rejects.toThrow('db ping supports only the MongoDB datastore.');
+    await expect(
+      runCli(['list', '--datastore', 'unsupported', '--data-file', value.data]),
+    ).rejects.toThrow('--datastore must be mongodb or file.');
+  });
+
+  it('preserves the primary command error when closing a file store also fails', async () => {
+    const value = await target();
+    await initVault(value);
+    const originalClose = FileLocalVaultStore.prototype.close;
+    vi.spyOn(FileLocalVaultStore.prototype, 'close').mockImplementationOnce(
+      async function (this: FileLocalVaultStore): Promise<void> {
+        await originalClose.call(this);
+        throw new Error('injected close detail');
+      },
+    );
+
+    let failure: unknown;
+    try {
+      await runCli(
+        ['get', 'missing', ...route(value), '--passphrase-stdin'],
+        `${PASSPHRASE}\n`,
+      );
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toBeInstanceOf(Error);
+    expect(failure).toHaveProperty('message', 'Credential was not found.');
+    expect(failure).toHaveProperty('cause');
+    expect((failure as Error & { cause?: unknown }).cause).toBeInstanceOf(
+      AggregateError,
+    );
+  });
+
+  it.each([
+    'busy',
+    'closed',
+    'conflict',
+    'exists',
+    'invalid',
+    'connection',
+    'operation',
+  ] as const)(
+    'classifies a %s datastore publication failure without leaking details',
+    async (code) => {
+      const value = await target();
+      vi.spyOn(FileLocalVaultStore.prototype, 'create').mockRejectedValueOnce(
+        new EncryptedVaultStoreError(code, 'internal datastore detail'),
+      );
+
+      await expect(
+        runCli(
+          ['init', ...route(value), '--passphrase-stdin'],
+          `${PASSPHRASE}\n${PASSPHRASE}\n`,
+        ),
+      ).rejects.toThrow(
+        'The vault operation may have committed; protected local artifacts were retained.',
+      );
+    },
+  );
+
+  it('keeps a protected artifact failure generic and pre-commit', async () => {
+    const value = await target();
+    vi.spyOn(keyFiles, 'writePortableKeyFile').mockRejectedValueOnce(
+      new PortableKeyFileError('KEY_FILE_ALREADY_EXISTS'),
+    );
+
+    await expect(
+      runCli(
+        ['init', ...route(value), '--passphrase-stdin'],
+        `${PASSPHRASE}\n${PASSPHRASE}\n`,
+      ),
+    ).rejects.toMatchObject({
+      name: 'PortableKeyFileError',
+      code: 'KEY_FILE_ALREADY_EXISTS',
+    });
+  });
+
   it('rejects invalid input before decrypting or mutating the local vault', async () => {
     const value = await target();
     await initVault(value);
@@ -307,6 +606,12 @@ describe('local vault CLI active coverage', () => {
     await expect(
       runCli(
         ['search', 'x', ...route(value), '--passphrase-stdin', '--limit', '0'],
+        `${PASSPHRASE}\n`,
+      ),
+    ).rejects.toThrow('--limit must be a whole number between 1 and 200.');
+    await expect(
+      runCli(
+        ['search', 'x', ...route(value), '--passphrase-stdin', '--limit', '201'],
         `${PASSPHRASE}\n`,
       ),
     ).rejects.toThrow('--limit must be a whole number between 1 and 200.');
@@ -357,6 +662,12 @@ describe('local vault CLI active coverage', () => {
     ).rejects.toThrow(/destination credential already exists/u);
     await expect(
       runCli(
+        ['rename', 'missing', 'new-name', ...route(value), '--passphrase-stdin'],
+        `${PASSPHRASE}\n`,
+      ),
+    ).rejects.toThrow('Credential was not found.');
+    await expect(
+      runCli(
         ['put', 'later', ...route(value), '--passphrase-stdin', '--value-stdin'],
         `${PASSPHRASE}\nlater\n`,
       ),
@@ -391,6 +702,31 @@ describe('local vault CLI active coverage', () => {
         `${PASSPHRASE}\n${NEW_PASSPHRASE}\n${DIFFERENT_PASSPHRASE}\n`,
       ),
     ).rejects.toThrow('New passphrases do not match.');
+    await expect(
+      runCli(
+        [
+          'key',
+          'copy',
+          '--source',
+          value.key,
+          '--passphrase-stdin',
+          '--new-passphrase-stdin',
+        ],
+        '',
+      ),
+    ).rejects.toThrow('--destination is required.');
+    await expect(
+      runCli(
+        [
+          'recovery',
+          'create',
+          ...route(value),
+          '--passphrase-stdin',
+          '--recovery-passphrase-stdin',
+        ],
+        `${PASSPHRASE}\n${RECOVERY_PASSPHRASE}\n`,
+      ),
+    ).rejects.toThrow('--recovery-file is required.');
   });
 
   it('creates, verifies, revokes, and consumes protected recovery artifacts', async () => {
@@ -448,6 +784,12 @@ describe('local vault CLI active coverage', () => {
         `${PASSPHRASE}\n`,
       ),
     ).rejects.toThrow('last active kit.');
+    await expect(
+      runCli(
+        ['recovery', 'revoke', 'not a slot', ...route(value), '--passphrase-stdin'],
+        `${PASSPHRASE}\n`,
+      ),
+    ).rejects.toThrow('Recovery slot ID is invalid.');
 
     const second = JSON.parse(
       await runCli(
@@ -490,6 +832,88 @@ describe('local vault CLI active coverage', () => {
         `${RECOVERY_PASSPHRASE}\n`,
       ),
     ).rejects.toThrow('Recovery verification failed.');
+
+    await expect(
+      runCli(
+        [
+          'recovery',
+          'revoke',
+          first.recoverySlotId,
+          ...route(value),
+          '--passphrase-stdin',
+        ],
+        `${PASSPHRASE}\n`,
+      ),
+    ).rejects.toThrow('not found or is already revoked.');
+    await expect(
+      runCli(
+        [
+          'recovery',
+          'use',
+          ...route(value),
+          '--recovery-file',
+          secondRecovery,
+          '--output-recovery-file',
+          recoveredRecovery,
+          '--output-key-file',
+          recoveredKey,
+          '--overwrite',
+        ],
+        '',
+      ),
+    ).rejects.toThrow('Recovery outputs cannot be overwritten.');
+    await expect(
+      runCli(
+        [
+          'recovery',
+          'use',
+          ...route(value),
+          '--recovery-file',
+          secondRecovery,
+          '--output-recovery-file',
+          recoveredRecovery,
+          '--output-key-file',
+          secondRecovery,
+        ],
+        '',
+      ),
+    ).rejects.toThrow('Recovery-kit and key-file paths must be different.');
+    await expect(
+      runCli(
+        [
+          'recovery',
+          'use',
+          ...route(value),
+          '--recovery-file',
+          secondRecovery,
+          '--output-recovery-file',
+          secondRecovery,
+          '--output-key-file',
+          recoveredKey,
+        ],
+        '',
+      ),
+    ).rejects.toThrow('source and destination recovery-kit paths must be different.');
+    const mismatchRecovery = join(value.directory, 'mismatch.recovery');
+    const mismatchKey = join(value.directory, 'mismatch.key');
+    await expect(
+      runCli(
+        [
+          'recovery',
+          'use',
+          ...route(value),
+          '--recovery-file',
+          secondRecovery,
+          '--output-recovery-file',
+          mismatchRecovery,
+          '--output-key-file',
+          mismatchKey,
+          '--recovery-passphrase-stdin',
+          '--new-passphrase-stdin',
+        ],
+        `${SECOND_RECOVERY_PASSPHRASE}\n${NEW_PASSPHRASE}\n${DIFFERENT_PASSPHRASE}\n`,
+      ),
+    ).rejects.toThrow('New passphrases do not match.');
 
     expect(
       JSON.parse(
@@ -596,5 +1020,35 @@ describe('local vault CLI active coverage', () => {
     expect(accepted.healthy).toBe(false);
     expect(accepted.autoHealed).toContain('revision-anchor-initialized');
     expect(await access(`${value.key}.anchor`)).toBeUndefined();
+  });
+
+  it('renders empty statistics, truncated search results, and rejects circular JSON', () => {
+    const emptyStats = renderVaultStats({
+      vaultId: 'empty',
+      revision: 0,
+      currentKeyVersion: 1,
+      credentialCount: 0,
+      oldestCredentialAt: null,
+      newestCredentialAt: null,
+      updatedAt: '2026-08-20T00:00:00.000Z',
+    });
+    expect(emptyStats).toContain('Oldest credential:  (none)');
+    expect(emptyStats).toContain('Newest credential:  (none)');
+
+    const truncated = renderSearchResult({
+      vaultId: 'empty',
+      revision: 0,
+      pattern: 'credential',
+      count: 2,
+      truncated: true,
+      matches: [{ name: 'one', updatedAt: '2026-08-20T00:00:00.000Z' }],
+    });
+    expect(truncated).toContain('Results were limited.');
+
+    const circular: Record<string, unknown> = {};
+    circular['self'] = circular;
+    expect(() => sanitizeJsonValue(circular)).toThrow(
+      'Cannot serialize circular JSON output.',
+    );
   });
 });

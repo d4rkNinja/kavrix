@@ -33,6 +33,7 @@ import {
   associatedDataSchema,
   databaseIdSchema,
   sha256DigestSchema,
+  vaultIdSchema,
   type DatabaseId,
   type DatabaseRevision,
   type DatabaseVaultDocument,
@@ -811,6 +812,124 @@ describe('DatabaseSession', () => {
     expect(observed).toEqual([true]);
   });
 
+  it('rejects invalid labels, missing vaults, unauthorized deletion, and closed operations', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'kavrix-session-validation-'));
+    const store = new MemoryDatabaseStore();
+    const keyFile = join(directory, 'owner.kavrix-db-key');
+    await DatabaseSession.initialize({
+      store,
+      keyFile,
+      passphrase: PASSPHRASE,
+      label: 'database',
+    });
+    const session = await DatabaseSession.open({
+      store,
+      keyFile,
+      passphrase: PASSPHRASE,
+    });
+
+    await expect(session.createVault('')).rejects.toMatchObject({ code: 'invalid' });
+    await expect(session.createVault('x'.repeat(1_025))).rejects.toMatchObject({
+      code: 'invalid',
+    });
+    const first = await session.createVault('first');
+    const missingId = vaultIdSchema.parse('missing-vault');
+    await expect(session.getVault(missingId)).rejects.toMatchObject({
+      code: 'not-found',
+    });
+    await expect(session.getVaultDocument(missingId)).rejects.toMatchObject({
+      code: 'not-found',
+    });
+    await expect(session.renameVault(missingId, 'renamed')).rejects.toMatchObject({
+      code: 'not-found',
+    });
+    await session.createVault('second');
+    await expect(session.renameVault(first.id, 'second')).rejects.toMatchObject({
+      code: 'duplicate',
+    });
+    await expect(session.deleteVault(first.id)).rejects.toMatchObject({
+      code: 'invalid',
+    });
+
+    await session.close();
+    await session.close();
+    expect(() => session.status()).toThrow(
+      expect.objectContaining({ code: 'operation' }),
+    );
+    expect(() => session.listVaults()).toThrow(
+      expect.objectContaining({ code: 'operation' }),
+    );
+    expect(() => session.recoveryStatus()).toThrow(
+      expect.objectContaining({ code: 'operation' }),
+    );
+    await expect(session.createVault('after-close')).rejects.toMatchObject({
+      code: 'operation',
+    });
+  });
+
+  it('rejects missing databases and key-slot bindings before reading the passphrase', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'kavrix-session-binding-'));
+    const store = new MemoryDatabaseStore();
+    const keyFile = join(directory, 'owner.kavrix-db-key');
+    await DatabaseSession.initialize({
+      store,
+      keyFile,
+      passphrase: PASSPHRASE,
+      label: 'database',
+    });
+    const original = store.database;
+    if (original === null) throw new Error('missing fixture');
+
+    store.database = null;
+    let reads = 0;
+    await expect(
+      DatabaseSession.openWithSecret({
+        store,
+        keyFile,
+        readPassphrase: async () => {
+          reads += 1;
+          return PASSPHRASE;
+        },
+      }),
+    ).rejects.toMatchObject({ code: 'binding' });
+    expect(reads).toBe(0);
+
+    const mismatched = structuredClone(original);
+    mismatched.keySlot.id = 'foreign-slot';
+    store.database = mismatched;
+    await expect(
+      DatabaseSession.open({
+        store,
+        keyFile,
+        passphrase: PASSPHRASE,
+      }),
+    ).rejects.toMatchObject({ code: 'binding' });
+  });
+
+  it('maps a zeroization observer failure and leaves the session closed', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'kavrix-session-zeroization-'));
+    const store = new MemoryDatabaseStore();
+    const keyFile = join(directory, 'owner.kavrix-db-key');
+    await DatabaseSession.initialize({
+      store,
+      keyFile,
+      passphrase: PASSPHRASE,
+      label: 'database',
+    });
+    const session = await DatabaseSession.open({
+      store,
+      keyFile,
+      passphrase: PASSPHRASE,
+    });
+    setDatabaseSessionZeroizationObserverForTest(() => {
+      throw new Error('observer-secret-canary');
+    });
+    await expect(session.close()).rejects.toMatchObject({ code: 'operation' });
+    expect(() => session.status()).toThrow(
+      expect.objectContaining({ code: 'operation' }),
+    );
+  });
+
   it('maps an independent stale vault CAS to a generic conflict', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'kavrix-session-'));
     const store = new MemoryDatabaseStore();
@@ -1089,6 +1208,19 @@ describe('DatabaseSession', () => {
     ).toBe(second.slotId);
     await session.revokeRecovery(first.slotId);
     expect(session.recoveryStatus()).toEqual({ active: 1, revoked: 1 });
+    await expect(
+      session.verifyRecovery({
+        recoveryFile: firstRecovery,
+        passphrase: PASSPHRASE,
+        expectedBinding: await readDatabaseRecoveryKitFileBinding(firstRecovery),
+      }),
+    ).rejects.toMatchObject({ code: 'authentication' });
+    await expect(session.revokeRecovery(first.slotId)).rejects.toMatchObject({
+      code: 'not-found',
+    });
+    await expect(session.revokeRecovery(second.slotId)).rejects.toMatchObject({
+      code: 'invalid',
+    });
     await session.close();
 
     const racedRecovery = join(directory, 'raced.kavrix-db-recovery');
@@ -1133,6 +1265,51 @@ describe('DatabaseSession', () => {
     expect((await reopened.getVault(recoveredVault.id)).id).toBe(recoveredVault.id);
     await reopened.close();
     expect(second.slotId).not.toBe(first.slotId);
+  });
+
+  it('rejects a recovery kit bound to another database', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'kavrix-session-recovery-binding-'));
+    const primaryStore = new MemoryDatabaseStore();
+    const foreignStore = new MemoryDatabaseStore();
+    const primaryKey = join(directory, 'primary.kavrix-db-key');
+    const foreignKey = join(directory, 'foreign.kavrix-db-key');
+    const foreignRecovery = join(directory, 'foreign.kavrix-db-recovery');
+    await DatabaseSession.initialize({
+      store: primaryStore,
+      keyFile: primaryKey,
+      passphrase: PASSPHRASE,
+      label: 'primary',
+    });
+    await DatabaseSession.initialize({
+      store: foreignStore,
+      keyFile: foreignKey,
+      passphrase: PASSPHRASE,
+      label: 'foreign',
+    });
+    const primary = await DatabaseSession.open({
+      store: primaryStore,
+      keyFile: primaryKey,
+      passphrase: PASSPHRASE,
+    });
+    const foreign = await DatabaseSession.open({
+      store: foreignStore,
+      keyFile: foreignKey,
+      passphrase: PASSPHRASE,
+    });
+    await foreign.createRecovery({
+      recoveryFile: foreignRecovery,
+      passphrase: PASSPHRASE,
+    });
+    await foreign.close();
+
+    await expect(
+      primary.verifyRecovery({
+        recoveryFile: foreignRecovery,
+        passphrase: PASSPHRASE,
+        expectedBinding: await readDatabaseRecoveryKitFileBinding(foreignRecovery),
+      }),
+    ).rejects.toMatchObject({ code: 'binding' });
+    await primary.close();
   });
 
   it('rejects missing and forked recovery companion anchors after vault additions', async () => {

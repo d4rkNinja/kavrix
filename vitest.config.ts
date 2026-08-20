@@ -37,6 +37,7 @@ export default defineConfig({
       'packages/key-files/test/database-recovery-kit-files.test.ts',
       'packages/key-files/test/database-revision-anchor.test.ts',
       'packages/key-files/test/database-owned-publication.test.ts',
+      'packages/key-files/test/filesystem-coverage.test.ts',
       'packages/key-files/test/filesystem-windows-acl.test.ts',
       'packages/key-files/test/windows-acl.test.ts',
       'packages/storage/test/file-local-vault.test.ts',
