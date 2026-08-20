@@ -427,6 +427,28 @@ describe('local secret input policy', () => {
     expect(output.text()).not.toContain('sensitive platform detail');
   });
 
+  it('fails closed when the input stream errors during listener cleanup', async () => {
+    const input = new TestTerminalInput();
+    const output = new TestTerminalOutput();
+    const originalOff = input.off.bind(input);
+    let injected = false;
+    input.off = ((eventName, listener) => {
+      const result = originalOff(eventName, listener);
+      if (!injected && eventName === 'data') {
+        injected = true;
+        input.emit('error', new Error('cleanup stream detail must stay hidden'));
+      }
+      return result;
+    }) as typeof input.off;
+    const reading = new LocalSecretInput(input, output).read(['passphrase'], false);
+
+    input.enter('correct horse battery staple\r');
+
+    await expect(reading).rejects.toThrow('Secret input terminal cleanup failed.');
+    expect(output.text()).not.toContain('cleanup stream detail must stay hidden');
+    expect(input.isRaw).toBe(false);
+  });
+
   it('restores terminal state when input ends before a value is entered', async () => {
     const input = new TestTerminalInput();
     const output = new TestTerminalOutput();
