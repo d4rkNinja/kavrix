@@ -377,6 +377,73 @@ describe('legacy version 2 database migration', () => {
     expect([...expectedLabel]).toEqual(new Array(expectedLabel.byteLength).fill(0));
   });
 
+  it('rejects an equal-length protected source-vault label mismatch and zeroizes it', async () => {
+    const fixture = await migrationFixture({});
+    const expectedLabel = Buffer.from(fixture.options.source.document.id, 'utf8');
+    expectedLabel[0] = expectedLabel[0] === 0x78 ? 0x79 : 0x78;
+
+    await expect(
+      migrateLegacyVaultToDatabase({
+        ...fixture.options,
+        source: {
+          ...fixture.options.source,
+          readExpectedVaultLabel: async () => expectedLabel,
+        },
+      }),
+    ).rejects.toMatchObject({ code: 'invalid' });
+
+    expect([...expectedLabel]).toEqual(new Array(expectedLabel.byteLength).fill(0));
+    expect(fixture.backend.vaults.size).toBe(0);
+  });
+
+  it('rejects a malformed source document before reading either secret', async () => {
+    const readSourcePassphrase = vi.fn<() => Promise<Uint8Array>>();
+    const readDestinationPassphrase = vi.fn<() => Promise<Uint8Array>>();
+
+    await expect(
+      migrateLegacyVaultToDatabase({
+        source: {
+          document: {} as never,
+          keyFile: 'unread-source.key',
+          readPassphrase: readSourcePassphrase,
+        },
+        destination: {
+          openStore: async () => {
+            throw new Error('destination must remain unopened');
+          },
+          keyFile: 'unread-destination.key',
+          vaultLabel: 'unread',
+          readPassphrase: readDestinationPassphrase,
+        },
+      }),
+    ).rejects.toMatchObject({ code: 'invalid' });
+
+    expect(readSourcePassphrase).not.toHaveBeenCalled();
+    expect(readDestinationPassphrase).not.toHaveBeenCalled();
+  });
+
+  it('rejects a non-byte source secret before reading the destination secret', async () => {
+    const fixture = await migrationFixture({});
+    const readDestinationPassphrase = vi.fn<() => Promise<Uint8Array>>();
+
+    await expect(
+      migrateLegacyVaultToDatabase({
+        ...fixture.options,
+        source: {
+          ...fixture.options.source,
+          readPassphrase: async () => 'not secret bytes' as never,
+        },
+        destination: {
+          ...fixture.options.destination,
+          readPassphrase: readDestinationPassphrase,
+        },
+      }),
+    ).rejects.toMatchObject({ code: 'invalid' });
+
+    expect(readDestinationPassphrase).not.toHaveBeenCalled();
+    expect(fixture.backend.vaults.size).toBe(0);
+  });
+
   it('routes every flat credential and doctor command through an explicitly selected database vault', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'kavrix-flat-database-'));
     const dataFile = join(directory, 'database.kavrix');
@@ -613,7 +680,16 @@ describe('legacy version 2 database migration', () => {
 
   it('copies an empty source vault and verifies an exact zero-record destination', async () => {
     const fixture = await migrationFixture({});
-    const result = await migrateLegacyVaultToDatabase(fixture.options);
+    const databaseId = fixture.backend.database?.id;
+    if (databaseId === undefined) throw new Error('database fixture missing');
+    const result = await migrateLegacyVaultToDatabase({
+      ...fixture.options,
+      destination: {
+        ...fixture.options.destination,
+        anchorFile: databaseRevisionAnchorPath(fixture.options.destination.keyFile),
+        expectedDatabaseId: databaseId,
+      },
+    });
     expect(result.recordCount).toBe(0);
     const reopened = await DatabaseSession.open({
       store: fixture.backend.open(),
@@ -641,6 +717,22 @@ describe('legacy version 2 database migration', () => {
         },
       }),
     ).rejects.toMatchObject({ code: 'authentication' });
+    expect(fixture.backend.vaults.size).toBe(0);
+  });
+
+  it('maps an expected destination database mismatch to an invalid request', async () => {
+    const fixture = await migrationFixture({});
+
+    await expect(
+      migrateLegacyVaultToDatabase({
+        ...fixture.options,
+        destination: {
+          ...fixture.options.destination,
+          expectedDatabaseId: 'db_unexpected' as never,
+        },
+      }),
+    ).rejects.toMatchObject({ code: 'invalid' });
+
     expect(fixture.backend.vaults.size).toBe(0);
   });
 

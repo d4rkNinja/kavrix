@@ -12,7 +12,7 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, parse, relative } from 'node:path';
 
 import {
   localVaultDocumentSchema,
@@ -53,6 +53,83 @@ afterEach(async () => {
 });
 
 describe('FileLocalVaultStore', () => {
+  it('keeps stable, non-sensitive messages for every public error code', () => {
+    expect(
+      (['busy', 'closed', 'conflict', 'exists', 'invalid', 'operation'] as const).map(
+        (code) => new FileLocalVaultError(code).message,
+      ),
+    ).toEqual([
+      'The local vault file is in use.',
+      'The local vault store is closed.',
+      'The vault changed while this command was running.',
+      'A vault already exists in this local file.',
+      'The local vault file is invalid or unsafe.',
+      'The local vault file operation failed.',
+    ]);
+  });
+
+  it('rejects invalid paths before creating lock or staging artifacts', async () => {
+    const target = await targetPath();
+    const directory = dirname(target);
+    const fileParent = join(directory, 'not-a-directory');
+    await writeRestricted(fileParent, 'opaque');
+
+    await expect(FileLocalVaultStore.validatePath('')).rejects.toMatchObject({
+      code: 'invalid',
+    });
+    await expect(
+      FileLocalVaultStore.validatePath(undefined as unknown as string),
+    ).rejects.toMatchObject({ code: 'invalid' });
+    await expect(
+      FileLocalVaultStore.validatePath(`${target}\u0000suffix`),
+    ).rejects.toMatchObject({ code: 'invalid' });
+    await expect(
+      FileLocalVaultStore.validatePath(`${target}\u007fsuffix`),
+    ).rejects.toMatchObject({ code: 'invalid' });
+    await expect(
+      FileLocalVaultStore.validatePath(join(directory, 'missing', 'vault.json')),
+    ).rejects.toMatchObject({ code: 'invalid' });
+    await expect(
+      FileLocalVaultStore.validatePath(join(fileParent, 'vault.json')),
+    ).rejects.toMatchObject({ code: 'invalid' });
+    await expect(
+      FileLocalVaultStore.validatePath(parse(target).root),
+    ).rejects.toMatchObject({ code: 'invalid' });
+    await expect(
+      FileLocalVaultStore.validatePath(relative(process.cwd(), target)),
+    ).resolves.toBeUndefined();
+    expect(await readdir(directory)).toEqual(['not-a-directory']);
+  });
+
+  it('rejects invalid public identifiers, revisions, and documents', async () => {
+    const target = await targetPath();
+    const store = await FileLocalVaultStore.open(target);
+
+    await expect(store.get('')).rejects.toMatchObject({ code: 'invalid' });
+    await expect(
+      store.create({ format: 'not-a-local-vault' } as unknown as LocalVaultDocument),
+    ).rejects.toMatchObject({ code: 'invalid' });
+    await expect(store.update(document(1), revision(0))).rejects.toMatchObject({
+      code: 'conflict',
+    });
+    await expect(store.delete('vault.one', revision(0))).rejects.toMatchObject({
+      code: 'conflict',
+    });
+    await store.create(document());
+    await expect(store.get('vault.two')).resolves.toBeNull();
+    await expect(
+      store.update(document(1), -1 as LocalVaultDocument['revision']),
+    ).rejects.toMatchObject({ code: 'invalid' });
+    await expect(
+      store.delete('vault.one', -1 as LocalVaultDocument['revision']),
+    ).rejects.toMatchObject({ code: 'invalid' });
+    await expect(store.delete('', revision(0))).rejects.toMatchObject({
+      code: 'invalid',
+    });
+
+    await store.close();
+  });
+
   it('creates, canonically reads, revision-CAS updates, and revision-CAS deletes', async () => {
     const target = await targetPath();
     const store: EncryptedVaultStore = await FileLocalVaultStore.open(target);
@@ -186,6 +263,18 @@ describe('FileLocalVaultStore', () => {
   });
 
   it('rejects malformed, noncanonical, and oversized document files', async () => {
+    const nonJsonTarget = await targetPath();
+    await writeRestricted(nonJsonTarget, 'not-json\n');
+    await expect(FileLocalVaultStore.open(nonJsonTarget)).rejects.toMatchObject({
+      code: 'invalid',
+    });
+
+    const emptyTarget = await targetPath();
+    await writeRestricted(emptyTarget, '');
+    await expect(FileLocalVaultStore.open(emptyTarget)).rejects.toMatchObject({
+      code: 'invalid',
+    });
+
     const malformedTarget = await targetPath();
     await writeRestricted(malformedTarget, '{"format":"not-a-vault"}\n');
     await expect(FileLocalVaultStore.open(malformedTarget)).rejects.toMatchObject({
@@ -208,6 +297,79 @@ describe('FileLocalVaultStore', () => {
       code: 'invalid',
     });
   });
+
+  it.skipIf(process.platform === 'win32')(
+    'fails closed when the process-lifetime lock identity is replaced',
+    async () => {
+      const target = await targetPath();
+      const store = await FileLocalVaultStore.open(target);
+      const lockPath = `${target}.lock`;
+      await rm(lockPath);
+      await writeRestricted(lockPath, 'replacement');
+
+      await expect(store.close()).rejects.toMatchObject({ code: 'operation' });
+      expect(await readFile(lockPath, 'utf8')).toBe('replacement');
+    },
+  );
+
+  it('maps Windows ACL verification failures to an invalid-file error', async () => {
+    const descriptor = Object.getOwnPropertyDescriptor(process, 'platform');
+    try {
+      Object.defineProperty(process, 'platform', {
+        configurable: true,
+        value: 'win32',
+      });
+      const target = await targetPath();
+      aclMocks.verifyDirectory.mockRejectedValueOnce(new Error('unsafe ACL'));
+
+      await expect(FileLocalVaultStore.validatePath(target)).rejects.toMatchObject({
+        code: 'invalid',
+      });
+    } finally {
+      if (descriptor !== undefined)
+        Object.defineProperty(process, 'platform', descriptor);
+    }
+  });
+
+  it('maps Windows file ACL verification failures to an invalid-file error', async () => {
+    const target = await targetPath();
+    await writeRestricted(target, `${JSON.stringify(document())}\n`);
+    const descriptor = Object.getOwnPropertyDescriptor(process, 'platform');
+    try {
+      Object.defineProperty(process, 'platform', {
+        configurable: true,
+        value: 'win32',
+      });
+      aclMocks.verify.mockRejectedValueOnce(new Error('unsafe file ACL'));
+
+      await expect(FileLocalVaultStore.validatePath(target)).rejects.toMatchObject({
+        code: 'invalid',
+      });
+    } finally {
+      if (descriptor !== undefined)
+        Object.defineProperty(process, 'platform', descriptor);
+    }
+  });
+
+  it.skipIf(process.platform === 'win32')(
+    'fails closed when the platform cannot establish file ownership',
+    async () => {
+      const target = await targetPath();
+      const descriptor = Object.getOwnPropertyDescriptor(process, 'getuid');
+      try {
+        Object.defineProperty(process, 'getuid', {
+          configurable: true,
+          value: undefined,
+        });
+        await expect(FileLocalVaultStore.validatePath(target)).rejects.toMatchObject({
+          code: 'invalid',
+        });
+      } finally {
+        if (descriptor !== undefined)
+          Object.defineProperty(process, 'getuid', descriptor);
+      }
+    },
+  );
 
   it.skipIf(process.platform === 'win32')(
     'rejects unsafe file permissions, symlinks, and hardlinks',

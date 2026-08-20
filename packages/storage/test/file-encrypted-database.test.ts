@@ -14,7 +14,7 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, relative } from 'node:path';
 
 import {
   databaseIdSchema,
@@ -296,6 +296,208 @@ describe('FileEncryptedDatabaseStore', () => {
         code: 'invalid',
       },
     );
+  });
+
+  it('covers absent records and fails closed across public mutation guard branches', async () => {
+    const target = await targetPath();
+    const databaseId = dbId('db_01JGUARDBRANCHES');
+    const otherDatabaseId = dbId('db_01JGUARDOTHER');
+    const existingVaultId = vaultId('vault_01JGUARDEXISTING');
+    const missingVaultId = vaultId('vault_01JGUARDMISSING');
+    const store = await FileEncryptedDatabaseStore.open(target);
+
+    expect(await store.getDatabase(databaseId)).toBeNull();
+    expect(await store.listVaults(databaseId)).toEqual([]);
+    expect(await store.getVault(databaseId, missingVaultId)).toBeNull();
+    await expect(store.rollbackOwnedInitialization(databaseId)).rejects.toMatchObject({
+      code: 'invalid',
+    });
+
+    await store.createDatabase(database(databaseId, 0));
+    expect(await store.getDatabase(otherDatabaseId)).toBeNull();
+    expect(await store.listVaults(otherDatabaseId)).toEqual([]);
+    expect(await store.getVault(otherDatabaseId, missingVaultId)).toBeNull();
+    expect(await store.getVault(databaseId, missingVaultId)).toBeNull();
+
+    await expect(store.createVault(null as never)).rejects.toMatchObject({
+      code: 'invalid',
+    });
+    await expect(store.updateVault([] as never)).rejects.toMatchObject({
+      code: 'invalid',
+    });
+    await expect(store.deleteVault('invalid' as never)).rejects.toMatchObject({
+      code: 'invalid',
+    });
+    await expect(
+      store.createVault({
+        database: database(databaseId, 1),
+        expectedDatabaseRevision: revision(0),
+        vault: vault(otherDatabaseId, existingVaultId, 1, 0),
+      }),
+    ).rejects.toMatchObject({ code: 'invalid' });
+    await expect(
+      store.createVault({
+        database: database(otherDatabaseId, 1),
+        expectedDatabaseRevision: revision(0),
+        vault: vault(otherDatabaseId, existingVaultId, 1, 0),
+      }),
+    ).rejects.toMatchObject({ code: 'conflict' });
+
+    await store.createVault({
+      database: database(databaseId, 1),
+      expectedDatabaseRevision: revision(0),
+      vault: vault(databaseId, existingVaultId, 1, 0),
+    });
+    await expect(
+      store.createVault({
+        database: database(databaseId, 2),
+        expectedDatabaseRevision: revision(1),
+        vault: vault(databaseId, existingVaultId, 2, 0),
+      }),
+    ).rejects.toMatchObject({ code: 'exists' });
+    await expect(
+      store.updateVault({
+        vault: vault(otherDatabaseId, existingVaultId, 1, 1),
+        expectedVaultRevision: vaultRevision(0),
+      }),
+    ).rejects.toMatchObject({ code: 'conflict' });
+    await expect(
+      store.updateVault({
+        vault: vault(databaseId, missingVaultId, 1, 1),
+        expectedVaultRevision: vaultRevision(0),
+      }),
+    ).rejects.toMatchObject({ code: 'conflict' });
+    await expect(
+      store.deleteVault({
+        database: database(otherDatabaseId, 2),
+        expectedDatabaseRevision: revision(1),
+        expectedVaultRevision: vaultRevision(0),
+        vaultId: existingVaultId,
+      }),
+    ).rejects.toMatchObject({ code: 'conflict' });
+    await expect(
+      store.deleteVault({
+        database: database(databaseId, 2),
+        expectedDatabaseRevision: revision(1),
+        expectedVaultRevision: vaultRevision(0),
+        vaultId: missingVaultId,
+      }),
+    ).rejects.toMatchObject({ code: 'conflict' });
+
+    await store.close();
+    await store.close();
+    await expect(store.ping()).rejects.toMatchObject({ code: 'closed' });
+  });
+
+  it('accepts a relative safe path and rejects malformed path boundaries', async () => {
+    const target = await targetPath();
+    const relativeTarget = relative(process.cwd(), target);
+    await expect(
+      FileEncryptedDatabaseStore.validatePath(relativeTarget),
+    ).resolves.toBeUndefined();
+    await expect(FileEncryptedDatabaseStore.validatePath('')).rejects.toMatchObject({
+      code: 'invalid',
+    });
+    await expect(
+      FileEncryptedDatabaseStore.validatePath('database\u0000.json'),
+    ).rejects.toMatchObject({ code: 'invalid' });
+    await expect(
+      FileEncryptedDatabaseStore.validatePath(42 as never),
+    ).rejects.toMatchObject({ code: 'invalid' });
+    await expect(
+      FileEncryptedDatabaseStore.validatePath(join(dirname(target), 'missing', 'db')),
+    ).rejects.toMatchObject({ code: 'invalid' });
+  });
+
+  it('rejects Windows-reserved target basenames before touching the filesystem', async () => {
+    const descriptor = Object.getOwnPropertyDescriptor(process, 'platform');
+    try {
+      Object.defineProperty(process, 'platform', {
+        configurable: true,
+        value: 'win32',
+      });
+      for (const targetName of ['CON', 'database:name', 'database.', 'database ']) {
+        await expect(
+          FileEncryptedDatabaseStore.validatePath(join(process.cwd(), targetName)),
+        ).rejects.toMatchObject({ code: 'invalid' });
+      }
+    } finally {
+      if (descriptor !== undefined)
+        Object.defineProperty(process, 'platform', descriptor);
+    }
+  });
+
+  it('fails initialization rollback when its retained object gains another link', async () => {
+    const target = await targetPath();
+    const databaseId = dbId('db_01JROLLBACKLINKED');
+    const store = await FileEncryptedDatabaseStore.open(target);
+    await store.createDatabase(database(databaseId, 0));
+    const alias = `${target}.alias`;
+    await link(target, alias);
+
+    await expect(store.rollbackOwnedInitialization(databaseId)).rejects.toMatchObject({
+      code: 'operation',
+    });
+    expect(await readFile(target)).toEqual(await readFile(alias));
+    await unlink(alias);
+    await store.close();
+  });
+
+  it('fails initialization rollback when truncation cannot be completed', async () => {
+    const target = await targetPath();
+    const databaseId = dbId('db_01JROLLBACKTRUNCATE');
+    const store = await FileEncryptedDatabaseStore.open(target);
+    await store.createDatabase(database(databaseId, 0));
+    const before = await readFile(target);
+    __fileEncryptedDatabaseTestEffects.replace({
+      truncate: async () => {
+        throw new Error('injected truncate failure sensitive-value');
+      },
+    });
+
+    await expectOperationFailure(store.rollbackOwnedInitialization(databaseId), [
+      'sensitive-value',
+      databaseId,
+    ]);
+    __fileEncryptedDatabaseTestEffects.reset();
+    expect(await readFile(target)).toEqual(before);
+    await store.close();
+  });
+
+  it.skipIf(process.platform === 'win32')(
+    'cleans a partially acquired lock when restrictive mode setup fails',
+    async () => {
+      const target = await targetPath();
+      __fileEncryptedDatabaseTestEffects.replace({
+        chmod: async () => {
+          throw new Error('injected lock mode failure sensitive-value');
+        },
+      });
+
+      await expectOperationFailure(FileEncryptedDatabaseStore.open(target), [
+        'sensitive-value',
+      ]);
+      expect(await readdir(dirname(target))).toEqual([]);
+    },
+  );
+
+  it('rejects a short staged write and removes every publication artifact', async () => {
+    const target = await targetPath();
+    const databaseId = dbId('db_01JSHORTSTAGEDWRITE');
+    const store = await FileEncryptedDatabaseStore.open(target);
+    __fileEncryptedDatabaseTestEffects.replace({
+      write: async (handle, contents) => {
+        await handle.writeFile(contents.subarray(0, contents.length - 1));
+      },
+    });
+
+    await expectOperationFailure(store.createDatabase(database(databaseId, 0)), [
+      databaseId,
+    ]);
+    await expect(readFile(target)).rejects.toMatchObject({ code: 'ENOENT' });
+    await expectNoPublicationArtifacts(target);
+    await expectHeldLock(target);
+    await store.close();
   });
 
   it('preserves prior bytes and removes temporary files when an atomic replace fails', async () => {
@@ -814,6 +1016,9 @@ function awaitableVaultId(value: string): VaultId {
 }
 function revision(value: number): DatabaseRevision {
   return databaseRevisionSchema.parse(value);
+}
+function vaultRevision(value: number): DatabaseVaultDocument['revision'] {
+  return databaseVaultDocumentSchema.shape.revision.parse(value);
 }
 function database(id: DatabaseId, value: number): EncryptedDatabaseDocument {
   const current = revision(value);

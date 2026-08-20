@@ -3,7 +3,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { readDatabaseKeyFileBinding } from '@kavrix/key-files';
-import { FileEncryptedDatabaseStore, MongoLocalVaultStore } from '@kavrix/storage';
+import {
+  FileEncryptedDatabaseStore,
+  MongoEncryptedDatabaseStore,
+  MongoLocalVaultStore,
+} from '@kavrix/storage';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { buildLocalCli } from '../src/local-vault-cli.js';
@@ -91,6 +95,194 @@ describe('database owner command composition', () => {
       ]),
     ).rejects.toMatchObject({ code: 'invalid' });
     expect(read).not.toHaveBeenCalled();
+  });
+
+  it('rejects an unsupported datastore before opening a store or requesting secrets', async () => {
+    const read = vi.spyOn(LocalSecretInput.prototype, 'read');
+    const open = vi.spyOn(FileEncryptedDatabaseStore, 'open');
+    const connect = vi.spyOn(MongoEncryptedDatabaseStore, 'connect');
+
+    await expect(
+      buildLocalCli().parseAsync([
+        'node',
+        'kavrix',
+        'db',
+        'status',
+        '--datastore',
+        'sqlite',
+        '--secrets-stdin',
+      ]),
+    ).rejects.toMatchObject({ code: 'invalid' });
+
+    expect(read).not.toHaveBeenCalled();
+    expect(open).not.toHaveBeenCalled();
+    expect(connect).not.toHaveBeenCalled();
+  });
+
+  it('rejects mismatched initialization passphrases before opening the file store', async () => {
+    vi.spyOn(DatabaseSession, 'validateInitializationDestinations').mockResolvedValue();
+    vi.spyOn(FileEncryptedDatabaseStore, 'validatePath').mockResolvedValue();
+    const open = vi.spyOn(FileEncryptedDatabaseStore, 'open');
+    const read = vi
+      .spyOn(LocalSecretInput.prototype, 'read')
+      .mockResolvedValue(['private-label', 'first passphrase', 'second passphrase']);
+
+    await expect(
+      buildLocalCli().parseAsync(['node', 'kavrix', 'db', 'init', '--secrets-stdin']),
+    ).rejects.toMatchObject({ code: 'invalid' });
+
+    expect(read).toHaveBeenCalledWith(
+      ['label', 'new-passphrase', 'new-passphrase'],
+      true,
+      true,
+    );
+    expect(open).not.toHaveBeenCalled();
+  });
+
+  it('initializes MongoDB with default routing and closes a store that rejects close', async () => {
+    const store = {
+      close: vi.fn(async () => Promise.reject(new Error('close failed'))),
+    };
+    vi.spyOn(DatabaseSession, 'validateInitializationDestinations').mockResolvedValue();
+    const connect = vi
+      .spyOn(MongoEncryptedDatabaseStore, 'connect')
+      .mockResolvedValue(store as never);
+    const initialize = vi.spyOn(DatabaseSession, 'initialize').mockResolvedValue({
+      databaseId: 'db_mongo',
+      keyFile: './kavrix.database.key',
+    } as never);
+    const read = vi
+      .spyOn(LocalSecretInput.prototype, 'read')
+      .mockResolvedValue([
+        'mongodb://localhost:27017',
+        'private-label',
+        'correct horse battery staple',
+        'correct horse battery staple',
+      ]);
+    const output: string[] = [];
+    vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => {
+      output.push(String(chunk));
+      return true;
+    });
+
+    await buildLocalCli().parseAsync([
+      'node',
+      'kavrix',
+      'db',
+      'init',
+      '--datastore',
+      'mongodb',
+      '--secrets-stdin',
+    ]);
+
+    expect(read).toHaveBeenCalledWith(
+      ['database-url', 'label', 'new-passphrase', 'new-passphrase'],
+      true,
+      true,
+    );
+    expect(connect).toHaveBeenCalledWith('mongodb://localhost:27017', 'kavrix', {
+      databaseCollectionName: 'kavrix_databases',
+      vaultCollectionName: 'kavrix_vaults',
+    });
+    expect(initialize).toHaveBeenCalledWith(
+      expect.objectContaining({
+        keyFile: './kavrix.database.key',
+        label: 'private-label',
+      }),
+    );
+    expect(initialize.mock.calls[0]?.[0]).not.toHaveProperty('rollbackDatabase');
+    expect(JSON.parse(output.join(''))).toMatchObject({
+      initialized: true,
+      databaseId: 'db_mongo',
+    });
+    expect(store.close).toHaveBeenCalledOnce();
+  });
+
+  it('opens MongoDB owner status with explicit routing and separate secret frames', async () => {
+    const store = { close: vi.fn(async () => undefined) };
+    const session = {
+      databaseId: 'db_explicit',
+      status: vi.fn(() => ({ databaseId: 'db_explicit', vaultCount: 2 })),
+      close: vi.fn(async () => undefined),
+    };
+    const connect = vi
+      .spyOn(MongoEncryptedDatabaseStore, 'connect')
+      .mockResolvedValue(store as never);
+    const openWithSecret = vi
+      .spyOn(DatabaseSession, 'openWithSecret')
+      .mockImplementation(async (options) => {
+        await options.readPassphrase();
+        return session as never;
+      });
+    const read = vi
+      .spyOn(LocalSecretInput.prototype, 'read')
+      .mockResolvedValueOnce(['mongodb://localhost:27018'])
+      .mockResolvedValueOnce(['owner passphrase']);
+    const output: string[] = [];
+    vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => {
+      output.push(String(chunk));
+      return true;
+    });
+
+    await buildLocalCli().parseAsync([
+      'node',
+      'kavrix',
+      'db',
+      'status',
+      '--datastore',
+      'mongodb',
+      '--database',
+      'custom_database',
+      '--database-collection',
+      'custom_databases',
+      '--vault-collection',
+      'custom_vaults',
+      '--key-file',
+      'custom-owner.key',
+      '--secrets-stdin',
+    ]);
+
+    expect(read).toHaveBeenNthCalledWith(1, ['database-url'], true, false);
+    expect(read).toHaveBeenNthCalledWith(2, ['passphrase'], true, true);
+    expect(connect).toHaveBeenCalledWith(
+      'mongodb://localhost:27018',
+      'custom_database',
+      {
+        databaseCollectionName: 'custom_databases',
+        vaultCollectionName: 'custom_vaults',
+      },
+    );
+    expect(openWithSecret).toHaveBeenCalledWith(
+      expect.objectContaining({ keyFile: 'custom-owner.key' }),
+    );
+    expect(JSON.parse(output.join(''))).toEqual({
+      databaseId: 'db_explicit',
+      vaultCount: 2,
+    });
+    expect(session.close).toHaveBeenCalledOnce();
+    expect(store.close).not.toHaveBeenCalled();
+  });
+
+  it('rejects a missing MongoDB URL before attempting owner unlock', async () => {
+    const read = vi.spyOn(LocalSecretInput.prototype, 'read').mockResolvedValue([]);
+    const connect = vi.spyOn(MongoEncryptedDatabaseStore, 'connect');
+    const openWithSecret = vi.spyOn(DatabaseSession, 'openWithSecret');
+
+    await expect(
+      buildLocalCli().parseAsync([
+        'node',
+        'kavrix',
+        'db',
+        'status',
+        '--datastore',
+        'mongodb',
+        '--secrets-stdin',
+      ]),
+    ).rejects.toMatchObject({ code: 'invalid' });
+
+    expect(read).toHaveBeenCalledWith(['database-url'], true, false);
+    expect(connect).not.toHaveBeenCalled();
+    expect(openWithSecret).not.toHaveBeenCalled();
   });
 
   databaseCommandWorkflowTest(async () => {
