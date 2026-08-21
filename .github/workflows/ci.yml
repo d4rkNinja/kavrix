@@ -9,7 +9,33 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
+  static-checks:
+    name: Static checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: 11.21.0
+          run_install: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: 24.19.0
+          cache: pnpm
+          package-manager-cache: false
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm format:check
+      - run: pnpm lint
+      - run: pnpm typecheck
+
   verify:
     name: Verify (${{ matrix.label }})
     runs-on: ${{ matrix.runner }}
@@ -30,9 +56,23 @@ jobs:
           - label: macOS arm64
             runner: macos-15
             expected_arch: arm64
-          - label: Windows x64
+          # Windows executes the suite serially (fileParallelism is off for the
+          # process-boundary security tests), so it alone dominates the CI wall
+          # clock. The suite is split across shards; acceptance and the packed
+          # CLI smoke run once, on the first shard.
+          - label: Windows x64 · shard 1/3
             runner: windows-2025
             expected_arch: x64
+            shard: 1/3
+            runs_acceptance: true
+          - label: Windows x64 · shard 2/3
+            runner: windows-2025
+            expected_arch: x64
+            shard: 2/3
+          - label: Windows x64 · shard 3/3
+            runner: windows-2025
+            expected_arch: x64
+            shard: 3/3
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
@@ -55,12 +95,25 @@ jobs:
         shell: bash
         run: node --input-type=module -e "if (process.arch !== process.env.EXPECTED_ARCH) process.exit(1)"
       - run: pnpm install --frozen-lockfile
-      - run: pnpm verify
+      - name: Build and test on this platform
+        env:
+          SHARD: ${{ matrix.shard }}
+        shell: bash
+        run: |
+          pnpm build
+          if [ -n "$SHARD" ]; then
+            pnpm exec vitest run "--shard=$SHARD"
+          else
+            pnpm test
+          fi
       - name: Exercise packed database profiles, multi-vault storage, and migration
+        if: ${{ matrix.runs_acceptance == true }}
         run: pnpm acceptance:database-container
       - name: Exercise every applicable command through the packed local-file CLI
+        if: ${{ matrix.runs_acceptance == true }}
         run: pnpm acceptance:pre-ci
       - name: Install and smoke-test the packed public CLI
+        if: ${{ matrix.runs_acceptance == true }}
         run: pnpm --filter kavrix --fail-if-no-match package:smoke
 
   runtime-range:

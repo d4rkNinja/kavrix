@@ -35,6 +35,8 @@
     "test:coverage": "vitest run --coverage",
     "typecheck": "pnpm -r --if-present typecheck",
     "verify": "pnpm build && pnpm format:check && pnpm lint && pnpm typecheck && pnpm test",
+    "verify:all": "node scripts/verify-all.mjs",
+    "verify:quick": "node scripts/verify-all.mjs --quick",
     "verify:release": "pnpm changeset status && pnpm test:coverage",
     "acceptance:pre-ci": "node acceptance/pre-ci/all-commands/run.js",
     "acceptance:database-container": "node acceptance/pre-ci/database-container/run.js",
