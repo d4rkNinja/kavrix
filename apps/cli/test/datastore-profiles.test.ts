@@ -265,6 +265,27 @@ describe('datastore profiles', () => {
     expect(() =>
       verifyDatastoreProfileDatabaseId(profile, databaseIdSchema.parse('db_work')),
     ).not.toThrow();
+
+    const local = fileProfile();
+    expect(resolveDatastoreProfileRouting(local, {})).toEqual(local);
+    expect(
+      resolveDatastoreProfileRouting(local, {
+        datastore: 'mongodb',
+        database: 'converted',
+        databaseCollection: 'database_docs',
+        vaultCollection: 'vault_docs',
+      }),
+    ).toMatchObject({
+      id: local.id,
+      datastore: 'mongodb',
+      database: 'converted',
+      databaseCollection: 'database_docs',
+      vaultCollection: 'vault_docs',
+    });
+    const { databaseId: _unboundDatabaseId, ...unbound } = fileProfile();
+    expect(() =>
+      verifyDatastoreProfileDatabaseId(unbound, databaseIdSchema.parse('db_any')),
+    ).not.toThrow();
   });
 
   it('composes an explicit profile into db ping and gives explicit routing precedence', async () => {

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   InitOnboardingCancelledError,
+  InitOnboardingDestinationError,
   runInitOnboarding,
   writeInitOnboardingComplete,
 } from '../src/init-onboarding.js';
@@ -33,6 +34,134 @@ async function run(answers: readonly string[], color = false): Promise<RunResult
 }
 
 describe('init onboarding', () => {
+  it('renders every destination validation category and retries only that step', async () => {
+    const answers = ['', ...Array.from({ length: 16 }, () => '')];
+    const failures = [
+      'unsafe-default-directory',
+      'unsafe-key-file',
+      'invalid-database',
+      'invalid-collection',
+      'invalid-destination',
+    ] as const;
+    let attempts = 0;
+    let answerIndex = 0;
+    const output: string[] = [];
+    const result = await runInitOnboarding({
+      question: async () => answers[answerIndex++] ?? '',
+      selectStorage: async () => 'mongodb',
+      validateDestination: async (patch) => {
+        const failure = failures[attempts++];
+        if (failure !== undefined) throw new InitOnboardingDestinationError(failure);
+        return patch;
+      },
+      write: (text) => output.push(text),
+    });
+
+    expect(result.datastore).toBe('mongodb');
+    expect(attempts).toBe(6);
+    const transcript = output.join('');
+    expect(transcript).toContain('could not safely use its protected default');
+    expect(transcript).toContain('portable-key path is not private enough');
+    expect(transcript).toContain('database name is invalid');
+    expect(transcript).toContain('collection name is invalid');
+    expect(transcript).toContain('Those destinations are not safe to use');
+    expect(transcript.match(/STEP 1 \/ WELCOME & SECURITY/gu)).toHaveLength(1);
+    expect(transcript.match(/STEP 3 \/ MONGODB DESTINATION/gu)).toHaveLength(6);
+  });
+
+  it('supports back and cancel from interactive storage selection', async () => {
+    let selections = 0;
+    const result = await runInitOnboarding({
+      question: async () => '',
+      selectStorage: async () => {
+        selections += 1;
+        return selections === 1 ? 'back' : 'file';
+      },
+      write: () => undefined,
+    });
+    expect(result.datastore).toBe('file');
+
+    await expect(
+      runInitOnboarding({
+        question: async () => '',
+        selectStorage: async () => 'cancel',
+        write: () => undefined,
+      }),
+    ).rejects.toBeInstanceOf(InitOnboardingCancelledError);
+  });
+
+  it('supports field-level backtracking and protect-step correction without restarting', async () => {
+    const mongodb = await run([
+      '',
+      '2',
+      'first-db',
+      'b',
+      'second-db',
+      'first-collection',
+      'b',
+      'second-collection',
+      'first.key',
+      'continue-too-soon',
+      'b',
+      'final-db',
+      'final-collection',
+      'final.key',
+      '',
+    ]);
+    expect(mongodb.result).toEqual({
+      datastore: 'mongodb',
+      database: 'final-db',
+      collection: 'final-collection',
+      keyFile: 'final.key',
+    });
+    expect(mongodb.output).toContain('Press Enter to begin');
+    expect(mongodb.output.match(/STEP 1 \/ WELCOME & SECURITY/gu)).toHaveLength(1);
+    expect(mongodb.output.match(/STEP 3 \/ MONGODB DESTINATION/gu)).toHaveLength(2);
+
+    const local = await run(['', '', 'first.data', 'b', 'final.data', 'final.key', '']);
+    expect(local.result).toEqual({
+      datastore: 'file',
+      dataFile: 'final.data',
+      keyFile: 'final.key',
+    });
+  });
+
+  it('cancels safely from destination and protect steps', async () => {
+    await expect(run(['', '', 'q'])).rejects.toBeInstanceOf(
+      InitOnboardingCancelledError,
+    );
+    await expect(run(['', '', '', '', 'q'])).rejects.toBeInstanceOf(
+      InitOnboardingCancelledError,
+    );
+  });
+
+  it('treats a non-string question result as a safe blank value', async () => {
+    let answers: unknown[] = [undefined, undefined, undefined, undefined, undefined];
+    const result = await runInitOnboarding({
+      question: async () => answers.shift() as string,
+      write: () => undefined,
+    });
+    expect(result).toEqual({
+      datastore: 'file',
+      dataFile: './kavrix.vault',
+      keyFile: './kavrix.key',
+    });
+  });
+
+  it('does not swallow unexpected destination validation failures', async () => {
+    const failure = new Error('unexpected validation failure');
+    await expect(
+      runInitOnboarding({
+        question: async () => '',
+        selectStorage: async () => 'file',
+        validateDestination: async () => {
+          throw failure;
+        },
+        write: () => undefined,
+      }),
+    ).rejects.toBe(failure);
+  });
+
   it('selects local storage by default and returns safe defaults', async () => {
     const { result, output, prompts } = await run(['', '', '', '', '']);
 

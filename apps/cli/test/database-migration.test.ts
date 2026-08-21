@@ -72,6 +72,21 @@ describe('legacy version 2 database migration', () => {
       'passphrase',
       'label',
     ]);
+    expect(databaseMigrationSecretKinds('file', 'file', true)).toEqual([
+      'passphrase',
+      'label',
+      'new-passphrase',
+      'new-passphrase',
+      'label',
+      'label',
+    ]);
+    expect(databaseMigrationSecretKinds('mongodb', 'mongodb', false)).toEqual([
+      'database-url',
+      'database-url',
+      'passphrase',
+      'passphrase',
+      'label',
+    ]);
   });
 
   it('routes an existing mocked Mongo destination through the explicit command', async () => {

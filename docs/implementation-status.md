@@ -24,10 +24,10 @@ are not workspace members, release artifacts, or evidence for the active release
 
 ## Implemented command surface
 
-- guided interactive root `init` onboarding with local-file or MongoDB
-  selection, protected user-data defaults, masked secret handoff, back/cancel
-  navigation, and static recovery next steps; explicit and non-interactive init
-  invocations retain their flag-driven behavior;
+- guided interactive root `init` onboarding with arrow-key local-file or MongoDB
+  selection, destination-local validation retries, protected user-data defaults,
+  masked secret handoff, back/cancel navigation, and static recovery next steps;
+  explicit and non-interactive init invocations retain their flag-driven behavior;
 - protected non-secret datastore profile add/list/use/status/remove;
 - file/MongoDB database initialization, authenticated status, and MongoDB ping;
 - encrypted database vault create/list/status/rename;

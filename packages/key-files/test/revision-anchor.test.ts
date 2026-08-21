@@ -5,7 +5,7 @@ import {
   vaultIdSchema,
   vaultRevisionSchema,
 } from '@kavrix/schemas';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -16,11 +16,14 @@ import {
   readRevisionAnchor,
   writeRevisionAnchor,
 } from '../src/index.js';
+import { createSecureTestDirectory } from './secure-temporary-directory.js';
 
 let directory = '';
 
 beforeEach(async () => {
-  directory = await mkdtemp(join(tmpdir(), 'kavrix-revision-anchor-'));
+  directory = await createSecureTestDirectory(
+    join(tmpdir(), 'kavrix-revision-anchor-'),
+  );
 });
 
 afterEach(async () => {

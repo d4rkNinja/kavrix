@@ -2,6 +2,35 @@
 
 All notable user-facing and security changes to Kavrix are recorded here.
 
+## 0.1.5 - 2026-08-21
+
+### Fixed
+
+- Kept guided initialization at the destination step after an invalid or unsafe
+  vault/key path instead of restarting the entire onboarding flow.
+- Reported why Kavrix could not establish the protected default key directory
+  on Windows and distinguished that failure from an unsafe custom key path.
+- Validated destination paths before beginning masked MongoDB URL and
+  passphrase entry, so configuration errors are corrected beside the affected
+  fields.
+
+### Improved
+
+- Replaced typed storage numbers with an interactive Up/Down and Enter selector,
+  while retaining a line-input fallback for terminals without raw-mode support.
+- Clarified that MongoDB URLs are entered through a masked prompt and that
+  Atlas, replica-set, sharded-cluster, TLS, and `replicaSet` URL options are
+  accepted without exposing connection credentials.
+- Reduced repeated onboarding work after validation failures by preserving the
+  selected datastore and returning directly to its destination fields.
+
+### Verification
+
+- Added regression coverage for destination-local retries, actionable Windows
+  permission errors, terminal cleanup, and secret-safe onboarding output.
+- Revalidated MongoDB URI policy, CLI coverage, strict type checking, linting,
+  builds, and the installed packed-package allowlist.
+
 ## 0.1.4 - 2026-08-20
 
 ### Added

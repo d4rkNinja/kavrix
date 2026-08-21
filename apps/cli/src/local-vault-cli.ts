@@ -3,10 +3,7 @@ import { existsSync } from 'node:fs';
 import { realpath } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import {
-  createInterface,
-  type Interface as ReadlineInterface,
-} from 'node:readline/promises';
+import { createInterface } from 'node:readline/promises';
 import { Readable } from 'node:stream';
 
 import {
@@ -95,6 +92,7 @@ import {
 } from './datastore-profiles.js';
 import {
   InitOnboardingCancelledError,
+  InitOnboardingDestinationError,
   runInitOnboarding,
   writeInitOnboardingComplete,
   type InitOnboardingPatch,
@@ -1102,45 +1100,58 @@ function shouldRunInitOnboarding(options: LocalCliOptions): boolean {
 async function readInitOnboardingOptions(
   base: LocalCliOptions,
 ): Promise<LocalCliOptions> {
-  const interface_ = createInterface({
-    input: process.stdin,
-    output: process.stderr,
-    terminal: true,
-  });
-  try {
-    for (;;) {
-      const patch = await runInitOnboarding({
-        color: initOnboardingColorEnabled(),
-        question: (prompt) => {
-          return readInitOnboardingQuestion(interface_, prompt);
-        },
-        write: (text) => {
-          process.stderr.write(text);
-        },
-      });
+  const patch = await runInitOnboarding({
+    color: initOnboardingColorEnabled(),
+    question: readInitOnboardingQuestion,
+    selectStorage: readInitStorageSelection,
+    validateDestination: async (candidate) => {
+      let resolved: InitOnboardingPatch;
       try {
-        const selected: LocalCliOptions = {
-          ...base,
-          ...(await resolveGuidedInitDestinations(patch)),
-        };
-        await validateInitDestinations(selected);
-        return selected;
+        resolved = await resolveGuidedInitDestinations(candidate);
       } catch (error) {
-        if (
-          !(error instanceof PortableKeyFileError) &&
-          !(error instanceof EncryptedVaultStoreError) &&
-          !(error instanceof LocalCliError)
-        ) {
-          throw error;
-        }
-        process.stderr.write(
-          `${colorizeError(error.message)} Choose different destinations and try again.\n`,
-        );
+        const kind = classifyInitDestinationError(error, candidate);
+        if (kind !== undefined) throw new InitOnboardingDestinationError(kind);
+        throw error;
       }
-    }
-  } finally {
-    interface_.close();
+      try {
+        await validateInitDestinations({ ...base, ...resolved });
+        return resolved;
+      } catch (error) {
+        const kind = classifyInitDestinationError(error, candidate);
+        if (kind !== undefined) throw new InitOnboardingDestinationError(kind);
+        throw error;
+      }
+    },
+    write: (text) => {
+      process.stderr.write(text);
+    },
+  });
+  return { ...base, ...patch };
+}
+
+export function classifyInitDestinationError(
+  error: unknown,
+  candidate: InitOnboardingPatch,
+): ConstructorParameters<typeof InitOnboardingDestinationError>[0] | undefined {
+  if (error instanceof PortableKeyFileError) {
+    if (error.code !== 'KEY_FILE_UNSAFE') return 'invalid-destination';
+    const usesProtectedDefault =
+      candidate.keyFile === DEFAULT_KEY_FILE ||
+      (candidate.datastore === 'file' && candidate.dataFile === DEFAULT_DATA_FILE);
+    return usesProtectedDefault ? 'unsafe-default-directory' : 'unsafe-key-file';
   }
+  if (error instanceof Error) {
+    if (error.message === 'MongoDB database name is invalid.') {
+      return 'invalid-database';
+    }
+    if (error.message === 'MongoDB collection name is invalid.') {
+      return 'invalid-collection';
+    }
+  }
+  if (error instanceof EncryptedVaultStoreError || error instanceof LocalCliError) {
+    return 'invalid-destination';
+  }
+  return undefined;
 }
 
 async function resolveGuidedInitDestinations(
@@ -1167,40 +1178,166 @@ async function resolveGuidedInitDestinations(
   };
 }
 
-async function readInitOnboardingQuestion(
-  interface_: ReadlineInterface,
-  prompt: string,
-): Promise<string> {
-  return new Promise<string>((resolve, reject) => {
+async function readInitOnboardingQuestion(prompt: string): Promise<string> {
+  const interface_ = createInterface({
+    input: process.stdin,
+    output: process.stderr,
+    terminal: true,
+  });
+  try {
+    return await new Promise<string>((resolve, reject) => {
+      let settled = false;
+      const finish = (complete: () => void): void => {
+        if (settled) return;
+        settled = true;
+        interface_.off('SIGINT', onInterrupt);
+        complete();
+      };
+      const onInterrupt = (): void => {
+        finish(() => {
+          reject(new InitOnboardingCancelledError());
+        });
+      };
+      interface_.once('SIGINT', onInterrupt);
+      void interface_.question(prompt).then(
+        (value) => {
+          finish(() => {
+            resolve(value);
+          });
+        },
+        (error: unknown) => {
+          finish(() => {
+            reject(
+              error instanceof Error
+                ? error
+                : new Error('Interactive onboarding input failed.'),
+            );
+          });
+        },
+      );
+    });
+  } finally {
+    interface_.close();
+  }
+}
+
+export async function readInitStorageSelection(
+  input: NodeJS.ReadStream = process.stdin,
+  output: NodeJS.WriteStream = process.stderr,
+  question: (prompt: string) => Promise<string> = readInitOnboardingQuestion,
+): Promise<'file' | 'mongodb' | 'back' | 'cancel'> {
+  const rawModeSetter = Reflect.get(input, 'setRawMode') as
+    ((enabled: boolean) => void) | undefined;
+  if (!input.isTTY || rawModeSetter === undefined) {
+    for (;;) {
+      const value = (
+        await question('Choose storage [1/2, Enter=1, B=back, Q=cancel]: ')
+      )
+        .trim()
+        .toLowerCase();
+      if (value === '' || value === '1') return 'file';
+      if (value === '2') return 'mongodb';
+      if (value === 'b' || value === 'back') return 'back';
+      if (value === 'q' || value === 'quit' || value === 'cancel') return 'cancel';
+      output.write('Choose Local encrypted file or MongoDB.\n');
+    }
+  }
+  const setRawMode = (enabled: boolean): void => {
+    rawModeSetter.call(input, enabled);
+  };
+  const restoreRawMode = input.isRaw;
+  let selected: 'file' | 'mongodb' = 'file';
+  const render = (replace: boolean): void => {
+    if (replace) output.write('\u001b[2A');
+    output.write(
+      `\r\u001b[2K${selected === 'file' ? '❯' : ' '} Local encrypted file\n` +
+        `\r\u001b[2K${selected === 'mongodb' ? '❯' : ' '} MongoDB\n`,
+    );
+  };
+  return await new Promise((resolve, reject) => {
     let settled = false;
-    const finish = (complete: () => void): void => {
+    let pending = '';
+    let escapeTimer: NodeJS.Timeout | undefined;
+    const finish = (outcome: 'file' | 'mongodb' | 'back' | 'cancel' | Error): void => {
       if (settled) return;
       settled = true;
-      interface_.off('SIGINT', onInterrupt);
-      complete();
+      if (escapeTimer !== undefined) clearTimeout(escapeTimer);
+      input.off('data', onData);
+      input.off('end', onEnd);
+      input.off('error', onError);
+      try {
+        setRawMode(restoreRawMode);
+        input.pause();
+      } catch {
+        if (!(outcome instanceof Error)) {
+          outcome = new LocalCliError('Storage selection cleanup failed.');
+        }
+      }
+      if (outcome instanceof Error) reject(outcome);
+      else resolve(outcome);
     };
-    const onInterrupt = (): void => {
-      finish(() => {
-        reject(new InitOnboardingCancelledError());
-      });
+    const onError = (): void => {
+      finish(new LocalCliError('Storage selection could not be read.'));
     };
-    interface_.once('SIGINT', onInterrupt);
-    void interface_.question(prompt).then(
-      (value) => {
-        finish(() => {
-          resolve(value);
-        });
-      },
-      (error: unknown) => {
-        finish(() => {
-          reject(
-            error instanceof Error
-              ? error
-              : new Error('Interactive onboarding input failed.'),
-          );
-        });
-      },
-    );
+    const onEnd = (): void => {
+      finish(new LocalCliError('Storage selection ended before a choice was made.'));
+    };
+    const onData = (chunk: Buffer | string): void => {
+      const value = typeof chunk === 'string' ? chunk : chunk.toString('utf8');
+      if (value.includes('\u0003')) {
+        finish('cancel');
+        return;
+      }
+      pending += value;
+      if (escapeTimer !== undefined) {
+        clearTimeout(escapeTimer);
+        escapeTimer = undefined;
+      }
+      while (pending.length > 0) {
+        if (pending.startsWith('\r') || pending.startsWith('\n')) {
+          finish(selected);
+          return;
+        }
+        if (pending === '\u001b' || pending === '\u001b[') {
+          escapeTimer = setTimeout(() => {
+            finish('back');
+          }, 40);
+          return;
+        }
+        if (pending.startsWith('\u001b[A')) {
+          selected = 'file';
+          pending = pending.slice(3);
+          render(true);
+          continue;
+        }
+        if (pending.startsWith('\u001b[B')) {
+          selected = 'mongodb';
+          pending = pending.slice(3);
+          render(true);
+          continue;
+        }
+        const key = pending[0]?.toLowerCase();
+        pending = pending.slice(1);
+        if (key === 'k') {
+          selected = 'file';
+          render(true);
+        } else if (key === 'j') {
+          selected = 'mongodb';
+          render(true);
+        }
+      }
+    };
+    try {
+      input.pause();
+      input.on('error', onError);
+      input.once('end', onEnd);
+      input.on('data', onData);
+      setRawMode(true);
+      render(false);
+      input.resume();
+    } catch {
+      finish(new LocalCliError('Storage selection could not be started.'));
+    }
   });
 }
 

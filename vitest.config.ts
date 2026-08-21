@@ -18,6 +18,7 @@ export default defineConfig({
       'apps/cli/test/datastore-profiles.test.ts',
       'apps/cli/test/init-onboarding.test.ts',
       'apps/cli/test/init-onboarding-command.test.ts',
+      'apps/cli/test/init-storage-selection.test.ts',
       'apps/cli/test/local-vault-cli-publication.test.ts',
       'apps/cli/test/local-vault-cli-coverage.test.ts',
       'apps/cli/test/local-vault-cli-view.test.ts',

@@ -33,6 +33,10 @@ export type InitOnboardingPatch =
 export type InitOnboardingOptions = Readonly<{
   /** Read one visible line. The prompt is always static and contains no input. */
   question: (prompt: string) => Promise<string>;
+  /** Select a storage backend with terminal navigation when available. */
+  selectStorage?: () => Promise<InitOnboardingStorage | 'back' | 'cancel'>;
+  /** Resolve and validate destinations before advancing to secret input. */
+  validateDestination?: (patch: InitOnboardingPatch) => Promise<InitOnboardingPatch>;
   /** Write static onboarding text (normally to stderr). */
   write: (text: string) => void;
   /** ANSI styling is enabled only when explicitly requested. */
@@ -50,6 +54,20 @@ export class InitOnboardingCancelledError extends Error {
   public constructor() {
     super('Setup cancelled. No vault was created.');
     this.name = 'InitOnboardingCancelledError';
+  }
+}
+
+export type InitOnboardingDestinationErrorKind =
+  | 'unsafe-default-directory'
+  | 'unsafe-key-file'
+  | 'invalid-database'
+  | 'invalid-collection'
+  | 'invalid-destination';
+
+export class InitOnboardingDestinationError extends Error {
+  public constructor(public readonly kind: InitOnboardingDestinationErrorKind) {
+    super('The selected destination is invalid.');
+    this.name = 'InitOnboardingDestinationError';
   }
 }
 
@@ -102,6 +120,18 @@ export async function runInitOnboarding(
 
     if (step === 'storage') {
       writeStorageChoice(options.write, style);
+      if (options.selectStorage !== undefined) {
+        const selected = await options.selectStorage();
+        if (selected === 'cancel') throw new InitOnboardingCancelledError();
+        if (selected === 'back') {
+          step = 'welcome';
+          continue;
+        }
+        storage = selected;
+        patch = undefined;
+        step = 'destination';
+        continue;
+      }
       const result = await readChoice(
         options,
         style('Choose storage [1/2, Enter=1, B=back, Q=cancel]', '2'),
@@ -141,7 +171,17 @@ export async function runInitOnboarding(
         patch = undefined;
         continue;
       }
-      patch = result.patch;
+      try {
+        patch =
+          options.validateDestination === undefined
+            ? result.patch
+            : await options.validateDestination(result.patch);
+      } catch (error) {
+        if (!(error instanceof InitOnboardingDestinationError)) throw error;
+        writeNotice(options.write, style, destinationValidationMessage(error));
+        patch = result.patch;
+        continue;
+      }
       step = 'protect-key';
       continue;
     }
@@ -386,10 +426,11 @@ function writeStorageChoice(
       '',
       style('STEP 2 / STORAGE', '1;36'),
       '',
-      '1) Local encrypted file (recommended for one device)',
-      '2) MongoDB (an operator-controlled datastore for opaque ciphertext)',
+      'Local encrypted file — simplest choice for one device',
+      'MongoDB — sync opaque ciphertext through your own MongoDB deployment',
       '',
       'Both choices preserve client-side encryption. The datastore never receives a vault key.',
+      'Use Up/Down and Enter to select. Esc goes back; Ctrl+C cancels.',
       '',
     ].join('\n'),
   );
@@ -409,10 +450,12 @@ function writeDestinationIntro(
       storage === 'file'
         ? 'Choose the encrypted vault file and protected portable-key file paths.'
         : 'Choose the database name, ciphertext collection, and protected key-file path.',
-      'These are routing values only. Do not enter a database URI here.',
+      storage === 'file'
+        ? 'The key file must be in a private directory that only your account can access.'
+        : 'Your MongoDB URL is entered next in a masked prompt so credentials never appear on screen.',
       storage === 'file'
         ? 'Press Enter on a blank field to use the protected Kavrix user-data default.'
-        : 'Press Enter to infer the database from the URI or use the protected Kavrix defaults.',
+        : 'Atlas, replica-set, and sharded-cluster URLs are accepted, including replicaSet and TLS options. Transactional database-container commands require a replica set or sharded cluster; this single-vault setup also supports standalone MongoDB.',
       '',
     ].join('\n'),
   );
@@ -425,9 +468,10 @@ function writeProtectKey(
   write(
     [
       '',
-      style('STEP 4 / PROTECT THE PORTABLE KEY', '1;36'),
+      style('STEP 4 / CONNECT & PROTECT', '1;36'),
       '',
-      'Next, masked prompts will collect the MongoDB URI when needed and your passphrase.',
+      'Next, masked prompts collect the MongoDB URL when needed, then your passphrase.',
+      'The MongoDB URL selects the remote ciphertext store; it may include replicaSet and TLS options.',
       'The passphrase is never shown, logged, or sent to the datastore.',
       'Keep the portable key and a recovery kit safe and separate from the vault.',
       'Init does not create a recovery kit; after setup, run `kavrix recovery create`.',
@@ -436,6 +480,24 @@ function writeProtectKey(
       '',
     ].join('\n'),
   );
+}
+
+function destinationValidationMessage(error: unknown): string {
+  if (error instanceof InitOnboardingDestinationError) {
+    if (error.kind === 'unsafe-default-directory') {
+      return 'Kavrix could not safely use its protected default directory. The parent directory permissions or filesystem protections do not meet the fail-closed vault/key-file policy. Choose vault and key paths inside an existing private directory that only your account can modify.';
+    }
+    if (error.kind === 'unsafe-key-file') {
+      return 'That portable-key path is not private enough. Choose a path inside a directory accessible only to your account, or press Enter to use Kavrix’s protected default.';
+    }
+    if (error.kind === 'invalid-database') {
+      return 'That MongoDB database name is invalid. Use 1–63 letters, numbers, underscores, or hyphens.';
+    }
+    if (error.kind === 'invalid-collection') {
+      return 'That MongoDB collection name is invalid. Use 1–64 letters, numbers, underscores, or hyphens.';
+    }
+  }
+  return 'Those destinations are not safe to use. Review this step and try again.';
 }
 
 function writeNotice(

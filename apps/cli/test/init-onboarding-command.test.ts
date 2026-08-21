@@ -30,9 +30,14 @@ vi.mock('@kavrix/key-files', async (importOriginal) => {
 });
 
 import { PortableKeyFileError } from '@kavrix/key-files';
+import { EncryptedVaultStoreError } from '@kavrix/storage';
 
 import { InitOnboardingCancelledError } from '../src/init-onboarding.js';
-import { buildLocalCli, runLocalCli } from '../src/local-vault-cli.js';
+import {
+  buildLocalCli,
+  classifyInitDestinationError,
+  runLocalCli,
+} from '../src/local-vault-cli.js';
 
 const stdinTtyDescriptor = Object.getOwnPropertyDescriptor(process.stdin, 'isTTY');
 const stderrTtyDescriptor = Object.getOwnPropertyDescriptor(process.stderr, 'isTTY');
@@ -68,6 +73,65 @@ afterEach(() => {
 });
 
 describe('root init onboarding composition', () => {
+  it('classifies destination failures without relying on key-file display text', () => {
+    const defaultCandidate = {
+      datastore: 'file' as const,
+      dataFile: './kavrix.vault',
+      keyFile: './kavrix.key',
+    };
+    const customCandidate = {
+      ...defaultCandidate,
+      dataFile: 'private/vault',
+      keyFile: 'private/key',
+    };
+
+    expect(
+      classifyInitDestinationError(
+        new PortableKeyFileError('KEY_FILE_UNSAFE'),
+        defaultCandidate,
+      ),
+    ).toBe('unsafe-default-directory');
+    expect(
+      classifyInitDestinationError(
+        new PortableKeyFileError('KEY_FILE_UNSAFE'),
+        customCandidate,
+      ),
+    ).toBe('unsafe-key-file');
+    expect(
+      classifyInitDestinationError(
+        new PortableKeyFileError('KEY_FILE_INVALID_PATH'),
+        customCandidate,
+      ),
+    ).toBe('invalid-destination');
+    expect(
+      classifyInitDestinationError(
+        new Error('MongoDB database name is invalid.'),
+        defaultCandidate,
+      ),
+    ).toBe('invalid-database');
+    expect(
+      classifyInitDestinationError(
+        new Error('MongoDB collection name is invalid.'),
+        defaultCandidate,
+      ),
+    ).toBe('invalid-collection');
+    expect(
+      classifyInitDestinationError(
+        new EncryptedVaultStoreError('invalid', 'static datastore failure'),
+        defaultCandidate,
+      ),
+    ).toBe('invalid-destination');
+    expect(classifyInitDestinationError({}, defaultCandidate)).toBeUndefined();
+
+    expect(
+      classifyInitDestinationError(new PortableKeyFileError('KEY_FILE_UNSAFE'), {
+        datastore: 'file',
+        dataFile: './kavrix.vault',
+        keyFile: 'private/key',
+      }),
+    ).toBe('unsafe-default-directory');
+  });
+
   it('starts only the interactive no-option init flow and closes it on cancel', async () => {
     readlineMocks.answers.push('', 'q');
     const stderr = vi.spyOn(process.stderr, 'write').mockReturnValue(true);
@@ -76,8 +140,8 @@ describe('root init onboarding composition', () => {
       buildLocalCli().parseAsync(['node', 'kavrix', 'init']),
     ).rejects.toBeInstanceOf(InitOnboardingCancelledError);
 
-    expect(readlineMocks.createInterface).toHaveBeenCalledTimes(1);
-    expect(readlineMocks.interface_.close).toHaveBeenCalledTimes(1);
+    expect(readlineMocks.createInterface).toHaveBeenCalledTimes(2);
+    expectEveryInterfaceClosed();
     expect(stderr.mock.calls.join('')).toContain('STEP 1 / WELCOME & SECURITY');
   });
 
@@ -108,7 +172,7 @@ describe('root init onboarding composition', () => {
     expect(secureDirectoryMocks.ensure).toHaveBeenCalledWith(
       join(homedir(), '.kavrix'),
     );
-    expect(readlineMocks.interface_.close).toHaveBeenCalledTimes(1);
+    expectEveryInterfaceClosed();
   });
 
   it('resolves the MongoDB default key in the protected Kavrix user directory', async () => {
@@ -124,7 +188,7 @@ describe('root init onboarding composition', () => {
     expect(secureDirectoryMocks.ensure).toHaveBeenCalledWith(
       join(homedir(), '.kavrix'),
     );
-    expect(readlineMocks.interface_.close).toHaveBeenCalledTimes(1);
+    expectEveryInterfaceClosed();
   });
 
   it('preserves a Windows-style data path while resolving only the default key', async () => {
@@ -140,10 +204,10 @@ describe('root init onboarding composition', () => {
 
     expect(secureDirectoryMocks.ensure).toHaveBeenCalledTimes(1);
     expect(stderr.mock.calls.flat().join('')).not.toContain(windowsDataPath);
-    expect(readlineMocks.interface_.close).toHaveBeenCalledTimes(1);
+    expectEveryInterfaceClosed();
   });
 
-  it('restarts guided setup after a protected-destination error without leaking input', async () => {
+  it('returns to the destination step after a protected-destination error without leaking input', async () => {
     const enteredDataPath = 'C:\\private\\vault.kavrix';
     readlineMocks.answers.push('', '1', enteredDataPath, '', '', 'q');
     secureDirectoryMocks.ensure.mockRejectedValueOnce(
@@ -156,10 +220,12 @@ describe('root init onboarding composition', () => {
     ).rejects.toBeInstanceOf(InitOnboardingCancelledError);
 
     const output = stderr.mock.calls.flat().join('');
-    expect(output).toContain('Choose different destinations and try again.');
-    expect(output.match(/STEP 1 \/ WELCOME & SECURITY/gu)).toHaveLength(2);
+    expect(output).toContain('could not safely use its protected default directory');
+    expect(output).toContain('fail-closed vault/key-file policy');
+    expect(output.match(/STEP 1 \/ WELCOME & SECURITY/gu)).toHaveLength(1);
+    expect(output.match(/STEP 3 \/ LOCAL FILE DESTINATION/gu)).toHaveLength(2);
     expect(output).not.toContain(enteredDataPath);
-    expect(readlineMocks.interface_.close).toHaveBeenCalledTimes(1);
+    expectEveryInterfaceClosed();
   });
 
   it('closes the interface and preserves an Error rejected by readline', async () => {
@@ -175,7 +241,7 @@ describe('root init onboarding composition', () => {
       'SIGINT',
       expect.any(Function),
     );
-    expect(readlineMocks.interface_.close).toHaveBeenCalledTimes(1);
+    expectEveryInterfaceClosed();
   });
 
   it('normalizes a non-Error readline rejection to a safe static message', async () => {
@@ -188,7 +254,7 @@ describe('root init onboarding composition', () => {
     ).rejects.toThrow('Interactive onboarding input failed.');
 
     expect(stderr.mock.calls.flat().join('')).not.toContain(unsafeRejection.input);
-    expect(readlineMocks.interface_.close).toHaveBeenCalledTimes(1);
+    expectEveryInterfaceClosed();
   });
 
   it('turns readline SIGINT into dedicated cancellation and ignores late input', async () => {
@@ -205,7 +271,7 @@ describe('root init onboarding composition', () => {
 
     expect(stderr.mock.calls.flat().join('')).not.toContain('late-private-input');
     expect(readlineMocks.interface_.off).toHaveBeenCalledTimes(1);
-    expect(readlineMocks.interface_.close).toHaveBeenCalledTimes(1);
+    expectEveryInterfaceClosed();
   });
 
   it('enables onboarding color only for an eligible terminal', async () => {
@@ -246,4 +312,10 @@ function restoreProperty(
 ): void {
   if (descriptor === undefined) delete (target as { isTTY?: boolean }).isTTY;
   else Object.defineProperty(target, key, descriptor);
+}
+
+function expectEveryInterfaceClosed(): void {
+  expect(readlineMocks.interface_.close).toHaveBeenCalledTimes(
+    readlineMocks.createInterface.mock.calls.length,
+  );
 }
