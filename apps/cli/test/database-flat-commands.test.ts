@@ -212,6 +212,7 @@ describe('flat database command routing', () => {
       {
         databaseCollectionName: profile.databaseCollection,
         vaultCollectionName: 'explicit_collection',
+        allowInsecureTransport: false,
       },
     );
     expect(openSession).toHaveBeenCalledWith(

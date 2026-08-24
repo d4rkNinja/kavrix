@@ -56,6 +56,7 @@ describe('cli option extraction', () => {
       keyFile: 'k',
       databaseUrlStdin: true,
       passphraseStdin: true,
+      allowInsecureTransport: false,
     });
     const nothing = executionFlatOptions({});
     expect(nothing.vault).toBe('default');
