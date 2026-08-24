@@ -56,10 +56,12 @@
     "vitest": "4.1.10",
     "@kavrix/crypto": "workspace:*",
     "@kavrix/key-files": "workspace:*",
+    "@kavrix/runner": "workspace:*",
     "@kavrix/schemas": "workspace:*",
     "@kavrix/storage": "workspace:*",
     "commander": "15.0.0",
     "esbuild": "0.28.1",
+    "yaml": "2.8.3",
     "zod": "4.4.3"
   },
   "dependencies": {

@@ -39,19 +39,45 @@ for database files.
 ## Boundaries
 
 - `packages/schemas` owns canonical database, catalog, vault, local-container,
-  legacy version 2, and authenticated-envelope contracts.
+  legacy version 2, authenticated-envelope, policy, grant, audit-event,
+  broker-protocol, and CLI-contract schemas.
 - `packages/crypto` owns Argon2id passphrase derivation, HKDF-SHA-256 domain
-  separation, XChaCha20-Poly1305 encryption, wrapping, and secret-byte handling.
+  separation, XChaCha20-Poly1305 encryption, wrapping, sealed state envelopes,
+  and secret-byte handling.
 - `packages/key-files` owns protected database-owner key/recovery formats,
-  revision anchors, path/link safety, POSIX modes, and Windows ACL enforcement.
+  revision anchors, the sealed authorization-state sidecar, path/link safety,
+  POSIX modes, and Windows ACL enforcement.
 - `packages/storage` owns the database-scoped compare-and-swap port, atomic local
   container, MongoDB two-collection adapter, URI/TLS policy, and transactions.
+- `packages/runner` owns shell-free child execution: fixed executable paths,
+  argument arrays, minimal environments with deny-by-default inheritance and
+  reserved-name rejection, argv-secret refusal, bounded capture with secret
+  redaction, inherit/pipe passthrough modes, timeouts, and termination.
 - `apps/cli` owns protected input, non-secret profile routing, database sessions,
-  explicit legacy migration, flat credential projection, and sanitized output.
+  explicit legacy migration, flat credential projection, credential execution
+  orchestration (`run`), authorization evaluation (policies, grants, reveal),
+  the agent broker/client, sanitized output, and stable exit codes.
 
 No API server, sync daemon, SQLite store, or TUI is required. The public package
 bundles the CLI and reviewed cryptographic/schema libraries while leaving the
 MongoDB driver external and pinned.
+
+## Authorization state
+
+Policies, grants, and the audit ring persist as one canonical JSON document,
+sealed with XChaCha20-Poly1305 under an HKDF-derived key bound to the database
+scope identity and a monotonic sequence, stored beside the owner key. Every
+mutation runs under a protected-file lock, republishes the complete document
+with `sequence + 1`, and fails closed on authentication failure, foreign scope,
+malformed format, or busy contention. Evaluation (policy match, pins, TTLs,
+confirmation) happens before spawn; grant consumption re-validates expiry and
+use counts inside the locked transition so concurrent invocations serialize.
+
+The agent firewall composes the same state: a loopback socket (POSIX) or named
+pipe (Windows) broker authenticates newline-delimited JSON requests against a
+per-session token, evaluates configured permissions through one shared engine
+with `kavrix run`, streams the authorized child's stdio in bounded base64
+frames, and always terminates requests with an exit frame.
 
 ## Persistence and concurrency
 

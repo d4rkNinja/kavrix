@@ -103,6 +103,9 @@ import {
   type LocalSecretKind,
 } from './local-secrets.js';
 import { CLI_VERSION } from './version.js';
+import { registerExecutionCommands } from './execution/register.js';
+import { codedExitCode, isCodedCliError } from './execution/exit-codes.js';
+import { enforceRevealPolicy } from './execution/reveal-policy.js';
 
 const DEFAULT_KEY_FILE = './kavrix.key';
 const DEFAULT_DATA_FILE = './kavrix.vault';
@@ -503,6 +506,8 @@ export function buildLocalCli(): Command {
     await handleKeyRewrap(getOptions(args));
   });
 
+  registerExecutionCommands(program);
+
   return program;
 }
 
@@ -513,29 +518,31 @@ export async function runLocalCli(argv: readonly string[]): Promise<void> {
     const message =
       error instanceof LocalCliError
         ? error.message
-        : error instanceof LocalSecretInputError
+        : isCodedCliError(error)
           ? error.message
-          : error instanceof EncryptedVaultStoreError
+          : error instanceof LocalSecretInputError
             ? error.message
-            : error instanceof DatastoreProfileError
+            : error instanceof EncryptedVaultStoreError
               ? error.message
-              : error instanceof DatabaseMigrationError
+              : error instanceof DatastoreProfileError
                 ? error.message
-                : error instanceof DatabaseMigrationCommandError
+                : error instanceof DatabaseMigrationError
                   ? error.message
-                  : error instanceof DatabaseFlatCommandError
+                  : error instanceof DatabaseMigrationCommandError
                     ? error.message
-                    : error instanceof DatabaseSessionError
+                    : error instanceof DatabaseFlatCommandError
                       ? error.message
-                      : error instanceof PortableKeyFileError
+                      : error instanceof DatabaseSessionError
                         ? error.message
-                        : error instanceof InitOnboardingCancelledError
+                        : error instanceof PortableKeyFileError
                           ? error.message
-                          : error instanceof AggregateError
+                          : error instanceof InitOnboardingCancelledError
                             ? error.message
-                            : 'Kavrix command failed.';
+                            : error instanceof AggregateError
+                              ? error.message
+                              : 'Kavrix command failed.';
     process.stderr.write(colorizeError(message) + '\n');
-    process.exitCode = 1;
+    process.exitCode = codedExitCode(error) ?? 1;
   }
 }
 
@@ -1831,13 +1838,14 @@ async function handleGet(name: string, options: LocalCliOptions): Promise<void> 
   validateCredentialName(name);
   if (await usesDatabaseContainer(options)) {
     const values = await readDatabaseFlatSecrets(options, []);
-    await withDatabaseFlatVault(options, values, async (session, vaultId) => {
+    await withDatabaseFlatVault(options, values, async (session, vaultId, profile) => {
       let found: LocalVaultPayload['records'][string] | undefined;
       const document = await session.inspectVault(vaultId, (payload) => {
         found = payload.records[name];
       });
       if (found === undefined) throw new LocalCliError('Credential was not found.');
       if (options.reveal === true) {
+        await enforceRevealPolicy(session, profile, name);
         const value = process.stdout.isTTY
           ? sanitizeTerminalText(found.value)
           : found.value;
@@ -1922,7 +1930,7 @@ async function handleView(
   }
   if (await usesDatabaseContainer(options)) {
     const values = await readDatabaseFlatSecrets(options, []);
-    await withDatabaseFlatVault(options, values, async (session, vaultId) => {
+    await withDatabaseFlatVault(options, values, async (session, vaultId, profile) => {
       let entries: [string, LocalVaultPayload['records'][string]][] = [];
       const document = await session.inspectVault(vaultId, (payload) => {
         entries = Object.entries(payload.records)
@@ -1931,6 +1939,9 @@ async function handleView(
       });
       if (name !== undefined && entries.length === 0)
         throw new LocalCliError('Credential was not found.');
+      if (options.reveal === true && name !== undefined) {
+        await enforceRevealPolicy(session, profile, name);
+      }
       if (options.json === true || !process.stdout.isTTY) {
         writeJson({
           vaultId,

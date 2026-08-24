@@ -5,6 +5,7 @@ import {
   createDatabaseRecoverySlot,
   decryptDatabaseCatalog,
   decryptPayload,
+  deriveAuthorizationStateKey,
   encryptDatabaseCatalog,
   encryptPayload,
   generateDatabaseRootKey,
@@ -585,6 +586,20 @@ export class DatabaseSession {
 
   public get databaseId(): DatabaseId {
     return this.#databaseId;
+  }
+
+  /**
+   * Fresh purpose-bound key for the database's sealed authorization state.
+   * The database root key itself never leaves the session; only the derived
+   * scope-bound key is published to the caller, and each call yields new bytes
+   * the caller must zeroize after use.
+   */
+  public authorizationStateKey(): Uint8Array {
+    this.#assertOpen();
+    return deriveAuthorizationStateKey(this.#rootKey, {
+      scopeKind: 'database',
+      scopeId: this.#databaseId,
+    });
   }
 
   public status(): Readonly<{

@@ -1,4 +1,4 @@
-import { MongoClient, type ClientSession, type Collection, type Db } from 'mongodb';
+﻿import { MongoClient, type ClientSession, type Collection, type Db } from 'mongodb';
 
 import {
   databaseIdSchema,
@@ -102,6 +102,11 @@ export class MongoEncryptedDatabaseStore implements EncryptedDatabaseStore {
   }
 
   async #initializeIndexes(): Promise<void> {
+    // MongoDB cannot create a collection inside the transaction that first
+    // touches it, so both collections must be materialized before any CAS
+    // write. Index creation auto-creates the parent collection and is
+    // idempotent, which keeps first use race-free on an empty deployment.
+    await this.#databases.createIndex({ _id: 1 }, { name: '_id_' });
     await this.#vaults.createIndex(
       { databaseId: 1, id: 1 },
       { name: 'database_vault_identity', unique: true },

@@ -1,4 +1,4 @@
-import { randomBytes } from 'node:crypto';
+﻿import { randomBytes } from 'node:crypto';
 
 import {
   encryptAead,
@@ -179,7 +179,7 @@ integration('MongoEncryptedDatabaseStore replica-set integration', () => {
       );
       await expectStoreError(
         activeStore.updateDatabase(thirdDatabaseUpdate, databaseRevision(1)),
-        'conflict',
+        'invalid',
       );
       await expectStoreError(
         activeStore.createVault({
@@ -246,9 +246,17 @@ integration('MongoEncryptedDatabaseStore replica-set integration', () => {
         }),
         'conflict',
       );
+      // Stale expected *database* revision: the replacement document is
+      // internally consistent (rev 2 = 1 + 1) but the stored head is already
+      // at revision 2, so only the CAS filter mismatches.
       await expectStoreError(
         activeStore.deleteVault({
-          database: thirdDatabaseUpdate,
+          database: await encryptedDatabaseDocument(
+            databaseId,
+            databaseRevision(2),
+            databaseRootKey,
+            plaintextCanaryBytes,
+          ),
           expectedDatabaseRevision: databaseRevision(1),
           vaultId: firstVaultId,
           expectedVaultRevision: vaultRevision(1),

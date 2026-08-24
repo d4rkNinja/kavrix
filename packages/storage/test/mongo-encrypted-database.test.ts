@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+﻿import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mongodb = vi.hoisted(() => {
   const databaseCollection = {
@@ -23,10 +23,18 @@ const mongodb = vi.hoisted(() => {
       callback(session),
     ),
   };
+  const database = {
+    collection: vi.fn((name: string) =>
+      name === 'kavrix_databases' ? databaseCollection : vaultCollection,
+    ),
+    command: vi.fn(),
+    createCollection: vi.fn(async () => undefined),
+    listCollections: vi.fn(async () => [{ name: 'kavrix_databases' }]),
+  };
   const client = {
     close: vi.fn(async () => undefined),
     connect: vi.fn(async () => undefined),
-    db: vi.fn(),
+    db: vi.fn(() => database),
     withSession: vi.fn(async (callback: (session: unknown) => Promise<unknown>) =>
       callback(session),
     ),
@@ -35,6 +43,7 @@ const mongodb = vi.hoisted(() => {
   return {
     client,
     clients: [] as Array<{ uri: string; options: unknown }>,
+    database,
     databaseCollection,
     session,
     vaultCollection,
@@ -82,6 +91,7 @@ describe('MongoEncryptedDatabaseStore', () => {
 
   it('uses bounded connection timeouts, safe defaults, and exact collection names', async () => {
     const database = {
+      ...mongodb.database,
       collection: vi.fn((name: string) =>
         name === 'database_records'
           ? mongodb.databaseCollection
@@ -119,6 +129,7 @@ describe('MongoEncryptedDatabaseStore', () => {
     const sensitive = new Error('mongodb://user:password@example.test/private');
     mongodb.vaultCollection.createIndex.mockRejectedValueOnce(sensitive);
     mongodb.client.db.mockReturnValue({
+      ...mongodb.database,
       collection: vi.fn((name: string) =>
         name === 'kavrix_databases'
           ? mongodb.databaseCollection
@@ -133,7 +144,10 @@ describe('MongoEncryptedDatabaseStore', () => {
   });
 
   it('uses the exact default database and vault collection names', async () => {
-    const database = { collection: vi.fn(() => mongodb.databaseCollection) };
+    const database = {
+      ...mongodb.database,
+      collection: vi.fn(() => mongodb.databaseCollection),
+    };
     mongodb.client.db.mockReturnValue(database);
 
     const store = await MongoEncryptedDatabaseStore.connect(URI, DATABASE_NAME);
@@ -196,6 +210,7 @@ describe('MongoEncryptedDatabaseStore', () => {
     });
     mongodb.vaultCollection.find.mockReturnValueOnce(cursor);
     mongodb.client.db.mockReturnValue({
+      ...mongodb.database,
       command: vi.fn(),
       collection: vi.fn((name: string) =>
         name === 'kavrix_databases'
@@ -239,6 +254,7 @@ describe('MongoEncryptedDatabaseStore', () => {
     mongodb.databaseCollection.updateOne.mockResolvedValueOnce({ matchedCount: 1 });
     mongodb.vaultCollection.updateOne.mockResolvedValueOnce({ matchedCount: 1 });
     mongodb.client.db.mockReturnValue({
+      ...mongodb.database,
       command: vi.fn(),
       collection: vi.fn((name: string) =>
         name === 'kavrix_databases'
@@ -288,6 +304,7 @@ describe('MongoEncryptedDatabaseStore', () => {
       insertedId: `${database.id}:${vault.id}`,
     });
     mongodb.client.db.mockReturnValue({
+      ...mongodb.database,
       command: vi.fn(),
       collection: vi.fn((name: string) =>
         name === 'kavrix_databases'
@@ -332,6 +349,7 @@ describe('MongoEncryptedDatabaseStore', () => {
       vaultRevision(0),
     );
     mongodb.client.db.mockReturnValue({
+      ...mongodb.database,
       command: vi.fn(),
       collection: vi.fn((name: string) =>
         name === 'kavrix_databases'
@@ -381,6 +399,7 @@ describe('MongoEncryptedDatabaseStore', () => {
       Object.assign(new Error(), { code: 11_000 }),
     );
     mongodb.client.db.mockReturnValue({
+      ...mongodb.database,
       command: vi.fn(),
       collection: vi.fn((name: string) =>
         name === 'kavrix_databases'
@@ -421,6 +440,7 @@ describe('MongoEncryptedDatabaseStore', () => {
       'mongodb://user:password@example.test/db_01JMONGOREDAC ciphertext AQID',
     );
     mongodb.client.db.mockReturnValue({
+      ...mongodb.database,
       command: vi.fn(),
       collection: vi.fn((name: string) =>
         name === 'kavrix_databases'

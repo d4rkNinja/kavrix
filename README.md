@@ -1,9 +1,13 @@
 # Kavrix
 
-Kavrix is a local, zero-knowledge credential vault for the terminal. It encrypts
-credential values and private labels on your machine and stores authenticated
-ciphertext in a hardened local database file or MongoDB. One database can hold
-multiple independently encrypted vaults. Kavrix does not start an API server,
+Kavrix is a local, zero-knowledge credential vault **and credential firewall**
+for the terminal. It encrypts credential values and private labels on your
+machine and stores authenticated ciphertext in a hardened local database file
+or MongoDB. One database can hold multiple independently encrypted vaults.
+Tools use credentials through tightly scoped execution (`kavrix run`),
+permission policies with temporary grants, and a brokered firewall for AI
+coding agents — without plaintext secrets landing in `.env` files, shell
+history, logs, or unrelated processes. Kavrix does not start an API server,
 sync daemon, or web service.
 
 ## What you control
@@ -54,31 +58,36 @@ flows shown by `kavrix <command> --help`.
 
 ## Everyday commands
 
-| Command                     | Purpose                                                     |
-| --------------------------- | ----------------------------------------------------------- |
-| `kavrix db profile ...`     | Add, select, inspect, or remove non-secret routes.          |
-| `kavrix db init`            | Create an encrypted database and protected owner key.       |
-| `kavrix db key create`      | Create an exact-snapshot key for full local-file sharing.   |
-| `kavrix db vault ...`       | Create, list, inspect, or rename database vaults.           |
-| `kavrix db recovery ...`    | Manage database-root recovery kits.                         |
-| `kavrix migrate database`   | Copy one legacy version 2 vault into a database.            |
-| `kavrix db ping`            | Test a direct MongoDB connection.                           |
-| `kavrix init`               | Create a legacy-compatible version 2 single vault.          |
-| `kavrix put <name>`         | Add a value; replacement requires explicit override.        |
-| `kavrix get <name>`         | Read metadata; `--reveal` is required for plaintext.        |
-| `kavrix list`               | List names without values.                                  |
-| `kavrix view [name]`        | Show a sanitized vault dashboard or credential card.        |
-| `kavrix search <pattern>`   | Search credential names only.                               |
-| `kavrix stats`              | Show non-secret vault statistics.                           |
-| `kavrix has <name>`         | Check for a name without revealing its value.               |
-| `kavrix rename <from> <to>` | Rename a record.                                            |
-| `kavrix remove <name>`      | Delete a record.                                            |
-| `kavrix vault list`         | List vault identifiers in the selected collection.          |
-| `kavrix vault status`       | Inspect non-secret vault metadata.                          |
-| `kavrix key ...`            | Verify, copy, replicate, assign, or rewrap key files.       |
-| `kavrix recovery ...`       | Create, verify, inspect, revoke, or use recovery kits.      |
-| `kavrix doctor`             | Authenticate and validate a vault without revealing values. |
-| `kavrix doctor health`      | Diagnose and safely repair bounded transient state.         |
+| Command                     | Purpose                                                           |
+| --------------------------- | ----------------------------------------------------------------- |
+| `kavrix db profile ...`     | Add, select, inspect, or remove non-secret routes.                |
+| `kavrix db init`            | Create an encrypted database and protected owner key.             |
+| `kavrix db key create`      | Create an exact-snapshot key for full local-file sharing.         |
+| `kavrix db vault ...`       | Create, list, inspect, or rename database vaults.                 |
+| `kavrix db recovery ...`    | Manage database-root recovery kits.                               |
+| `kavrix migrate database`   | Copy one legacy version 2 vault into a database.                  |
+| `kavrix db ping`            | Test a direct MongoDB connection.                                 |
+| `kavrix init`               | Create a legacy-compatible version 2 single vault.                |
+| `kavrix put <name>`         | Add a value; replacement requires explicit override.              |
+| `kavrix get <name>`         | Read metadata; `--reveal` is required for plaintext.              |
+| `kavrix list`               | List names without values.                                        |
+| `kavrix view [name]`        | Show a sanitized vault dashboard or credential card.              |
+| `kavrix search <pattern>`   | Search credential names only.                                     |
+| `kavrix stats`              | Show non-secret vault statistics.                                 |
+| `kavrix has <name>`         | Check for a name without revealing its value.                     |
+| `kavrix rename <from> <to>` | Rename a record.                                                  |
+| `kavrix remove <name>`      | Delete a record.                                                  |
+| `kavrix vault list`         | List vault identifiers in the selected collection.                |
+| `kavrix vault status`       | Inspect non-secret vault metadata.                                |
+| `kavrix key ...`            | Verify, copy, replicate, assign, or rewrap key files.             |
+| `kavrix recovery ...`       | Create, verify, inspect, revoke, or use recovery kits.            |
+| `kavrix doctor`             | Authenticate and validate a vault without revealing values.       |
+| `kavrix doctor health`      | Diagnose and safely repair bounded transient state.               |
+| `kavrix run`                | Execute one command with only the requested credentials injected. |
+| `kavrix policy ...`         | Manage permission policies: allowlists, pins, TTLs, reveal, deny. |
+| `kavrix grant ...`          | Issue, list, or revoke temporary consumable authorizations.       |
+| `kavrix audit`              | Show the sealed, plaintext-free security audit trail.             |
+| `kavrix agent run/exec`     | Broker AI coding agents behind the credential firewall.           |
 
 Run `kavrix <command> --help` for the authoritative options installed with your
 version.
@@ -109,7 +118,10 @@ sizes, and access patterns. It cannot read database, vault, or credential labels
 Kavrix cannot protect an unlocked host from administrator access, same-user
 malware, keyloggers, terminal capture, process-memory inspection, or a user who
 reveals or copies plaintext. JavaScript runtimes also cannot guarantee that all
-secret copies are erased from memory.
+secret copies are erased from memory. Process-scoped execution (`kavrix run`,
+policies, grants, the agent firewall) adds authorization and process hygiene —
+the authorized program can still read its own environment by design. See the
+threat model for the exact boundary.
 
 See [the threat model](docs/threat-model.md), [cryptographic design](docs/cryptography.md),
 and [data model](docs/data-model.md).

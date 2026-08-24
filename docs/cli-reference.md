@@ -1,4 +1,4 @@
-# Kavrix command guide
+﻿# Kavrix command guide
 
 This guide follows the current public executable. `kavrix --help` and
 `kavrix <command> --help` are authoritative for the installed version.
@@ -248,7 +248,132 @@ Legacy recovery use may rotate a version 2 vault root. Database recovery keeps
 the database DRK and independently wrapped VRKs. Read the command path carefully
 before operating on recovery material.
 
-## 9. Security and platform behavior
+## 9. Execute credentials without copying them
+
+`kavrix run` decrypts only the credentials you name and injects them into the
+environment of exactly one child process:
+
+```sh
+kavrix run \
+  --profile work --vault <vault-id> \
+  --secret DATABASE_URL=production/database \
+  -- node server.js
+```
+
+Project files keep mappings and policy definitions out of the shell. A project
+file contains references only, never plaintext values, and strict parsing
+fails closed on unknown keys:
+
+```yaml
+# kavrix.yaml
+version: 1
+project: backend-api
+environments:
+  development:
+    secrets:
+      DATABASE_URL: database/development
+      REDIS_URL: redis/development
+    policies:
+      github-development:
+        secret: github/development-token
+        commands: [git, gh]
+        reveal: false
+        ttl: 30m
+        # Optional: bind use to one directory subtree (canonical real path).
+        workingDirectory: /srv/work/backend-api
+  npm-publish:
+    secret: npm/publish-token
+    commands: [npm]
+    reveal: false
+    require_confirmation: [publish]
+    max_uses: 1
+```
+
+```sh
+kavrix run ... --config kavrix.yaml --environment development -- npm test
+kavrix run ... --policy npm-publish -- npm publish
+```
+
+Behavior guarantees and limits (see the threat model for the full list): values
+are injected only into the child environment and never placed in arguments;
+child exit codes propagate, signal death maps to conventional `128+n` codes;
+`--json` captures bounded child output (64 KiB per stream) with injected
+secrets redacted; a child that exceeds the bound is terminated with an
+output-limit kill (exit `143`, `termination: "output-limit"`); no plaintext
+temporary files are written. The child can always read its own environment.
+This is process scoping, not a sandbox.
+
+## 10. Policies and temporary grants
+
+Stored policies live in a sealed sidecar beside the owner key, authenticated
+with a key derived from the database root key and a monotonic sequence.
+Permission to use a credential is distinct from permission to reveal it:
+`get <name> --reveal` is denied while any covering policy does not explicitly
+set `reveal: true`, and deny entries block every path.
+
+```sh
+kavrix policy create github-development \
+  --secret github/development-token \
+  --command git --command gh \
+  [--hash node=<sha256hex>] [--env GITHUB_TOKEN] \
+  [--ttl 30m] [--max-uses 3] [--workdir <path>] \
+  [--require-confirmation|--require-confirmation publish] \
+  [--deny] [--reveal] [--json]
+```
+
+`--workdir` canonicalizes the given directory through realpath at creation and
+restricts every later use to invocations launched inside that subtree
+(fail-closed when the invocation directory cannot be resolved).
+
+Temporary grants are consumable authorizations evaluated against wall-clock
+TTL, use counts, command allowlists, and pins at consumption time under an
+exclusive lock, so concurrent invocations cannot both claim the last use:
+
+```sh
+kavrix grant production/database --command psql --ttl 15m   # documented bare form
+kavrix grant create production/database --command psql --ttl 15m --max-uses 2
+kavrix grant list
+kavrix grant revoke grant_<uuid>
+kavrix run --grant production/database -- psql ...
+```
+
+Stable exit codes carry the outcome to automation: success `0`, generic `1`,
+usage `2`, authentication `10`, credential missing `11`, authorization denied
+`12`, grant invalid/expired/exhausted `13`, invalid configuration `14`,
+datastore failure `15`, security-integrity failure `16`, confirmation required
+or declined `17`. Commands accepting `--json` emit machine-readable envelopes;
+failures print one sanitized line to stderr.
+
+Every security-relevant action appends to an audit ring inside the sealed state;
+`kavrix audit [--json] [--limit N]` renders bounded metadata only, never
+credential plaintext.
+
+## 11. AI agent credential firewall
+
+`kavrix agent run` starts an agent process with no credential material: it
+receives only a local broker endpoint and a per-session token. Every
+credential-backed operation must be requested through `kavrix agent exec`,
+which asks the broker to evaluate the configured permission and inject the
+secret directly into the authorized child:
+
+```sh
+# agents.bot permissions come from the project file's `agents:` section.
+kavrix agent run --agent bot --config kavrix.yaml \
+  --profile work --vault <vault-id> \
+  -- codex
+
+# Inside the agent session (its children inherit KAVRIX_AGENT_BROKER/TOKEN):
+kavrix agent exec gh -- gh issue list
+```
+
+Each request is authorized per operation (`git fetch` allow, `npm publish`
+ask when configured, `reveal` denied), prompts on the controlling terminal for
+confirmations when one is attached, and otherwise fails closed. Agent
+descendants inherit broker access; policy still gates every request. Windows
+command scripts are refused as run targets because launching them requires
+shell re-parsing.
+
+## 12. Security and platform behavior
 
 - Secret input is accepted only through masked prompts or explicit bounded stdin
   frames. Secrets are not normal flags, positional arguments, profiles, or
@@ -264,11 +389,14 @@ before operating on recovery material.
 - Kavrix uses versioned XChaCha20-Poly1305, Argon2id, HKDF-SHA-256, and SHA-256;
   it does not claim encryption is permanently unbreakable.
 
-## 10. Current limits
+## 13. Current limits
 
 The database container currently supports encrypted database/vault labels and
-the flat credential record payload. Environments, groups/services, structured
-items, and typed fields are deferred.
+the flat credential record payload; project-file environments cover secret
+mappings only. Groups/services, structured items, and typed fields are
+deferred. Policies, grants, audit, run, and agent commands require a
+database-container profile; legacy version 2 vaults keep their existing
+compatibility commands and can migrate with the copy-first flow in section 7.
 
 User identity files, public enrollment, recipient discovery, vault grants,
 reader/editor/owner roles, signed writer revisions, revocation by VRK rotation,

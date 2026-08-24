@@ -97,15 +97,20 @@ export async function readDatabaseFlatSecrets(
   };
 }
 
-export async function withDatabaseFlatVault(
+export type OpenDatabaseFlatVaultHandle = Readonly<{
+  session: DatabaseSession;
+  vaultId: VaultId;
+  profile: DatastoreProfile;
+}>;
+
+/**
+ * Opens one bound database vault session. Callers own the handle lifecycle
+ * and must close it; `withDatabaseFlatVault` composes this for simple cases.
+ */
+export async function openDatabaseFlatVault(
   options: DatabaseFlatCommandOptions,
   secrets: DatabaseFlatSecrets,
-  operation: (
-    session: DatabaseSession,
-    vaultId: VaultId,
-    profile: DatastoreProfile,
-  ) => Promise<void>,
-): Promise<void> {
+): Promise<OpenDatabaseFlatVaultHandle> {
   const profile = await selectedDatabaseProfile(options);
   if (profile?.databaseId === undefined) {
     throw new DatabaseFlatCommandError('A database profile is required.');
@@ -131,11 +136,33 @@ export async function withDatabaseFlatVault(
       passphrase,
       expectedDatabaseId: profile.databaseId,
     });
-    await operation(session, vaultId, profile);
   } finally {
     zeroize(passphrase);
-    if (session !== undefined) await session.close();
-    else await store.close().catch(() => undefined);
+    if (session === undefined) await store.close().catch(() => undefined);
+  }
+  return Object.freeze({ session, vaultId, profile });
+}
+
+export async function closeDatabaseFlatVault(
+  handle: OpenDatabaseFlatVaultHandle,
+): Promise<void> {
+  await handle.session.close();
+}
+
+export async function withDatabaseFlatVault(
+  options: DatabaseFlatCommandOptions,
+  secrets: DatabaseFlatSecrets,
+  operation: (
+    session: DatabaseSession,
+    vaultId: VaultId,
+    profile: DatastoreProfile,
+  ) => Promise<void>,
+): Promise<void> {
+  const handle = await openDatabaseFlatVault(options, secrets);
+  try {
+    await operation(handle.session, handle.vaultId, handle.profile);
+  } finally {
+    await handle.session.close();
   }
 }
 

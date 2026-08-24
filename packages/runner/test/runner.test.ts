@@ -374,6 +374,53 @@ describe('runSecureCommand', () => {
       canary,
     );
   });
+
+  it('inherits parent streams in inherit mode and preserves child exit codes', async () => {
+    const canary = 'inherit-mode-secret-canary-2c9f';
+    const result = await runSecureCommand(
+      nodeRequest('process.stdout.write("ran"); process.exit(5)', {
+        output: { mode: 'inherit' },
+        arguments: [
+          '-e',
+          'process.stdout.write("ran"); process.exit(5)',
+          'positional-arg',
+        ],
+        environment: [secret('KAVRIX_INHERIT_CANARY', canary)],
+      }),
+    );
+
+    expect(result).toMatchObject({ exitCode: 5, termination: 'exit' });
+    expect(result.stdout).toBeUndefined();
+    expect(result.stderr).toBeUndefined();
+    expect(result.outputTruncated).toBe(false);
+  });
+
+  it('still refuses secrets in arguments in inherit mode', async () => {
+    const canary = 'inherit-argv-canary';
+    await expectRunnerError(
+      nodeRequest('process.exit(0)', {
+        output: { mode: 'inherit' },
+        arguments: ['-e', 'process.exit(0)', `--token=${canary}`],
+        environment: [secret('KAVRIX_INHERIT_ARGV', canary)],
+      }),
+      'RUNNER_SECRET_IN_ARGUMENTS',
+      canary,
+    );
+  });
+
+  it('reports timeout and signal terminations without captured buffers in inherit mode', async () => {
+    const result = await runSecureCommand(
+      nodeRequest('setInterval(() => {}, 1_000)', {
+        output: { mode: 'inherit' },
+        timeoutMs: 40,
+        terminationGraceMs: 20,
+      }),
+    );
+
+    expect(result.termination).toBe('timeout');
+    expect(result.stdout).toBeUndefined();
+    expect(result.stderr).toBeUndefined();
+  });
 });
 
 describe('request and environment validation', () => {
@@ -465,9 +512,8 @@ describe('request and environment validation', () => {
     { timeoutMs: Number.NaN },
     { terminationGraceMs: -1 },
     { output: { mode: 'capture', maxBytes: 0 } as const },
-    {
-      output: { mode: 'inherit' } as unknown as RunnerOutputPolicy,
-    },
+    { output: { mode: 'unknown' } as unknown as RunnerOutputPolicy },
+    { input: 'stdout' as unknown as 'ignore' },
     { arguments: ['bad\0argument'] },
   ])('rejects malformed execution bounds', async (override) => {
     await expectRunnerError(

@@ -1,4 +1,4 @@
-import { realpath, stat } from 'node:fs/promises';
+﻿import { realpath, stat } from 'node:fs/promises';
 import { isAbsolute } from 'node:path';
 import { spawn, type ChildProcess } from 'node:child_process';
 
@@ -7,6 +7,8 @@ import { prepareEnvironment, type PreparedEnvironment } from './environment.js';
 import {
   RUNNER_LIMITS,
   type RunTermination,
+  type RunnerInputPolicy,
+  type RunnerOutputCapturePolicy,
   type RunnerOutputPolicy,
   type SecureRunRequest,
   type SecureRunResult,
@@ -92,17 +94,49 @@ async function validatedWorkingDirectory(cwd: string): Promise<string> {
 }
 
 function outputPolicy(policy: RunnerOutputPolicy | undefined): Readonly<{
+  mode: 'capture' | 'inherit' | 'pipe';
   maxBytes: number;
 }> {
-  const requestedMode: unknown = policy?.mode;
-  if (policy !== undefined && requestedMode !== 'capture') {
-    throw new RunnerError('RUNNER_INVALID_REQUEST');
+  if (policy === undefined) return { mode: 'capture', maxBytes: DEFAULT_CAPTURE_BYTES };
+  switch (policy.mode) {
+    case 'inherit': {
+      // Typed callers cannot set maxBytes here; untyped callers may try. Any
+      // non-integer extra field fails closed instead of being ignored.
+      const extra = policy as unknown as Pick<RunnerOutputCapturePolicy, 'maxBytes'>;
+      if (extra.maxBytes !== undefined && !Number.isSafeInteger(extra.maxBytes)) {
+        throw new RunnerError('RUNNER_INVALID_REQUEST');
+      }
+      return { mode: 'inherit', maxBytes: 0 };
+    }
+    case 'pipe':
+      return { mode: 'pipe', maxBytes: 0 };
+    case 'capture': {
+      const maxBytes = policy.maxBytes ?? DEFAULT_CAPTURE_BYTES;
+      if (
+        !Number.isSafeInteger(maxBytes) ||
+        maxBytes < 1 ||
+        maxBytes > MAX_CAPTURE_BYTES
+      ) {
+        throw new RunnerError('RUNNER_INVALID_REQUEST');
+      }
+      return { mode: 'capture', maxBytes };
+    }
+    default:
+      throw new RunnerError('RUNNER_INVALID_REQUEST');
   }
-  const maxBytes = policy?.maxBytes ?? DEFAULT_CAPTURE_BYTES;
-  if (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > MAX_CAPTURE_BYTES) {
-    throw new RunnerError('RUNNER_INVALID_REQUEST');
+}
+
+function inputStdio(inputPolicy: RunnerInputPolicy): 'ignore' | 'inherit' | 'pipe' {
+  switch (inputPolicy) {
+    case 'ignore':
+      return 'ignore';
+    case 'inherit':
+      return 'inherit';
+    case 'pipe':
+      return 'pipe';
+    default:
+      throw new RunnerError('RUNNER_INVALID_REQUEST');
   }
-  return { maxBytes };
 }
 
 function assertSecretsAbsentFromArguments(
@@ -190,6 +224,7 @@ function spawnChild(
   argumentsList: readonly string[],
   cwd: string,
   environment: PreparedEnvironment,
+  stdio: readonly ('ignore' | 'inherit' | 'pipe')[],
 ): ChildProcess {
   try {
     return spawn(request.executable, argumentsList, {
@@ -197,7 +232,7 @@ function spawnChild(
       env: environment.childEnvironment,
       shell: false,
       windowsHide: true,
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: [...stdio],
     });
   } catch {
     throw new RunnerError('RUNNER_SPAWN_FAILED');
@@ -208,6 +243,11 @@ function spawnChild(
  * Runs one executable directly with a minimal environment and bounded output.
  * This is process hygiene, not a sandbox: the selected executable can read its
  * injected environment and intentionally disclose it or pass it to descendants.
+ *
+ * Output defaults to bounded capture with secret redaction. Inherit mode hands
+ * this process's streams to the child directly: nothing is captured, so no
+ * redaction is possible and callers accept that child output reaches the
+ * terminal unfiltered.
  *
  * Two limits are imposed by the platform rather than by this module. Windows
  * copies a fixed set of shell variables (including PATH, SYSTEMROOT, TEMP, and
@@ -227,6 +267,15 @@ export async function runSecureCommand(
   const argumentsList = assertRequest(request);
   const cwd = await validatedWorkingDirectory(request.cwd);
   const policy = outputPolicy(request.output);
+  const requestedInput: unknown = request.input ?? 'ignore';
+  if (
+    requestedInput !== 'ignore' &&
+    requestedInput !== 'inherit' &&
+    requestedInput !== 'pipe'
+  ) {
+    throw new RunnerError('RUNNER_INVALID_REQUEST');
+  }
+  const inputStdioMode = inputStdio(requestedInput);
   const environment = prepareEnvironment(
     request.environment ?? [],
     request.inheritEnvironment ?? [],
@@ -239,7 +288,28 @@ export async function runSecureCommand(
       environment.secretValues,
     );
 
-    const child = spawnChild(request, argumentsList, cwd, environment);
+    if (policy.mode === 'inherit') {
+      return await runStreamingChild(request, argumentsList, cwd, environment, [
+        inputStdioMode === 'pipe' ? 'ignore' : inputStdioMode,
+        'inherit',
+        'inherit',
+      ]);
+    }
+
+    if (policy.mode === 'pipe') {
+      return await runStreamingChild(request, argumentsList, cwd, environment, [
+        inputStdioMode,
+        'pipe',
+        'pipe',
+      ]);
+    }
+
+    const child = spawnChild(request, argumentsList, cwd, environment, [
+      inputStdioMode,
+      'pipe',
+      'pipe',
+    ]);
+    request.onSpawn?.(child);
     const stdout: CaptureState = { chunks: [], bytes: 0, truncated: false };
     const stderr: CaptureState = { chunks: [], bytes: 0, truncated: false };
 
@@ -327,4 +397,78 @@ export async function runSecureCommand(
   } finally {
     environment.clear();
   }
+}
+
+/**
+ * Runs one child with this process's own stdio streams. Nothing is captured,
+ * buffered, or redacted; the child writes directly to the terminal and reads
+ * directly from the inherited input stream when requested.
+ */
+/**
+ * Runs one child whose streams are handed through directly (inherit) or to the
+ * caller via onSpawn (pipe). Nothing is captured, buffered, or redacted in
+ * these modes; timeouts and aborts still terminate the child.
+ */
+async function runStreamingChild(
+  request: SecureRunRequest,
+  argumentsList: readonly string[],
+  cwd: string,
+  environment: PreparedEnvironment,
+  stdio: readonly ('ignore' | 'inherit' | 'pipe')[],
+): Promise<SecureRunResult> {
+  const child = spawnChild(request, argumentsList, cwd, environment, stdio);
+  request.onSpawn?.(child);
+  return await new Promise<SecureRunResult>((resolve, reject) => {
+    let requestedTermination: Exclude<RunTermination, 'exit' | 'signal'> | null = null;
+    let timeout: NodeJS.Timeout | undefined;
+    let forceKillTimeout: NodeJS.Timeout | undefined;
+    let settled = false;
+
+    const clearLifecycle = (): void => {
+      if (timeout !== undefined) clearTimeout(timeout);
+      if (forceKillTimeout !== undefined) clearTimeout(forceKillTimeout);
+      request.signal?.removeEventListener('abort', abort);
+    };
+
+    const terminate = (reason: Exclude<RunTermination, 'exit' | 'signal'>): void => {
+      if (requestedTermination !== null || settled) return;
+      requestedTermination = reason;
+      child.kill('SIGTERM');
+      const grace = request.terminationGraceMs ?? DEFAULT_TERMINATION_GRACE_MS;
+      forceKillTimeout = setTimeout(() => {
+        if (!settled) child.kill('SIGKILL');
+      }, grace);
+    };
+
+    const abort = (): void => {
+      terminate('aborted');
+    };
+
+    child.once('error', () => {
+      if (settled) return;
+      settled = true;
+      clearLifecycle();
+      reject(new RunnerError('RUNNER_SPAWN_FAILED'));
+    });
+
+    child.once('close', (exitCode, signal) => {
+      if (settled) return;
+      settled = true;
+      clearLifecycle();
+      resolve({
+        exitCode,
+        signal,
+        termination: requestedTermination ?? (signal === null ? 'exit' : 'signal'),
+        outputTruncated: false,
+      });
+    });
+
+    if (request.timeoutMs !== undefined) {
+      timeout = setTimeout(() => {
+        terminate('timeout');
+      }, request.timeoutMs);
+    }
+    request.signal?.addEventListener('abort', abort, { once: true });
+    if (request.signal?.aborted === true) abort();
+  });
 }

@@ -4,11 +4,12 @@ Kavrix release validation always covers the packed local-file path and covers
 direct MongoDB behavior when a disposable MongoDB prerequisite is available.
 
 The active release workspace is `apps/cli`, `packages/schemas`,
-`packages/crypto`, `packages/key-files`, and `packages/storage`. The other
-package directories remain source-present but parked/incubating: they are not
-workspace members, are not release artifacts, and are not counted by the root
-Vitest or coverage gate. See [Active release boundary](active-release-boundary.md)
-for the complete boundary and command list.
+`packages/crypto`, `packages/key-files`, `packages/storage`, and
+`packages/runner`. The other package directories remain source-present but
+parked/incubating: they are not workspace members, are not release artifacts,
+and are not counted by the root Vitest or coverage gate. See
+[Active release boundary](active-release-boundary.md) for the complete boundary
+and command list.
 
 ## Required local checks
 
@@ -60,6 +61,37 @@ only after cleanup. Child probes cover signals both after handlers are installed
 but before any potential root is created and while cleanup is in progress; the
 parent owns every potential path and verifies its absence. Expected negative
 tests run inside the same cleanup envelope.
+
+## Execution-layer security suites
+
+The credential execution features carry dedicated adversarial suites in the
+root gate:
+
+- `packages/runner`: environment-only injection with digest canaries and
+  argv-secret refusal, cross-chunk output redaction, truncation-boundary
+  redaction, timeout/abort termination, inherit/pipe passthrough modes, and
+  reserved/colliding variable rejection.
+- `packages/crypto` state envelope: round-trip, ciphertext/tag bit-flips,
+  scope-kind/id/sequence transplant rejection, domain separation, and key/
+  plaintext bounds.
+- `packages/key-files` authorization-state file: canonical serialization
+  strictness (reformatting fails closed), wrong-key integrity failure, foreign
+  scope refusal, sequence advancement under the exclusive lock, missing-file
+  semantics.
+- `apps/cli` execution suites run the real CLI composition end to end:
+  environment-only delivery with sha256 digests plus argv absence, parent
+  environment purity, exit-code and signal-code propagation (`128+n`),
+  captured-output redaction, project-file mappings and conflict rejection,
+  deny/reveal/confirmation/hash-pin/TTL policy paths, grant expiry/exhaustion/
+  revocation/name-vs-id resolution, audit content without plaintext, sealed-
+  state tamper and reformat failures, and a live agent-broker session covering
+  allow with oversized-output framing, unknown permission, deny entry,
+  confirmation-unavailable, unresolved executable, missing injection mapping,
+  and exit-frame protocol termination.
+
+Platform caveats: Windows command-script refusal is asserted through injected
+platform parameters plus native `.cmd` cases on Windows runners; POSIX signal
+exit-code mapping is exercised only where the platform delivers signals.
 
 ## MongoDB integration
 

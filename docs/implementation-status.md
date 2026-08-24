@@ -11,11 +11,12 @@ interactive Ink TUI is required or shipped.
 
 Active release workspaces:
 
-- `@kavrix/schemas`: canonical database-container, vault, legacy, and envelope schemas.
-- `@kavrix/crypto`: DRK/VRK hierarchy, key derivation, wrapping, authenticated encryption, and secure-byte helpers.
-- `@kavrix/key-files`: protected database-owner key, recovery-kit, legacy key, and revision-anchor files.
+- `@kavrix/schemas`: canonical database-container, vault, legacy, envelope, policy, and authorization-state schemas.
+- `@kavrix/crypto`: DRK/VRK hierarchy, key derivation, wrapping, authenticated encryption, sealed state envelopes, and secure-byte helpers.
+- `@kavrix/key-files`: protected database-owner key, recovery-kit, legacy key, revision-anchor, and sealed authorization-state files.
 - `@kavrix/storage`: database-scoped local/MongoDB adapters and fail-closed URI/TLS policy.
-- `kavrix`: CLI composition, masked input, sanitized rendering, and npm package.
+- `@kavrix/runner`: shell-free child execution with minimal environments and secret redaction in captured output.
+- `kavrix`: CLI composition, masked input, sanitized rendering, credential execution, policy firewall, and npm package.
 
 The active-versus-parked source boundary and its verification commands are
 recorded in [Active release boundary](active-release-boundary.md). The source
@@ -38,7 +39,28 @@ are not workspace members, release artifacts, or evidence for the active release
 - has, rename, remove, vault list, and vault status;
 - protected key-file status, verify, copy, replicate, assign, and rewrap;
 - recovery-kit create, verify, status, revoke, and use;
-- authenticated `doctor` validation and fail-closed `doctor health` repair.
+- authenticated `doctor` validation and fail-closed `doctor health` repair;
+- process-scoped credential execution (`kavrix run`) with environment-only
+  injection, exit-code and signal preservation, optional project-file
+  environment mappings, JSON capture with redaction, and no plaintext temp
+  files (database-container profiles required);
+- stored permission policies (`kavrix policy create|list|show|remove`) sealed
+  in a DRK-derived, AEAD-authenticated sidecar bound to the database scope
+  with a monotonic sequence; deny entries, command allowlists, SHA-256
+  executable pins, execution-window TTLs, reveal gating, and confirmation
+  requirements are evaluated fail-closed before any child spawns;
+- temporary consumable grants (`kavrix grant <secret>|create|list|revoke`)
+  with TTL, maximum uses, atomic use reservation under the protected-file
+  lock, revocation, and distinct stable exit codes for expired, exhausted,
+  revoked, and not-found references;
+- an append-bounded audit trail (`kavrix audit`) inside the same sealed state
+  recording policy, grant, authorization, confirmation, and completion events
+  with sanitized bounded metadata only;
+- an AI-agent firewall (`kavrix agent run`, `kavrix agent exec`) that starts
+  an agent with no credential material, brokers each requested operation over
+  a local socket or named pipe behind a per-session token, evaluates the
+  agent's configured permissions per request, and injects the secret directly
+  into the authorized child only.
 
 Run `kavrix <command> --help` for exact options. Planned or retired commands must
 not be documented as available.
@@ -56,7 +78,17 @@ not be documented as available.
 - local publication is atomic and MongoDB multi-document publication requires transactions;
 - remote MongoDB requires explicit validated TLS and insecure TLS flags are rejected;
 - protected files use bounded formats, atomic creation, and permission checks;
-- terminal output is sanitized and values are masked unless reveal is explicit.
+- terminal output is sanitized and values are masked unless reveal is explicit;
+- the authorization sidecar is sealed with XChaCha20-Poly1305 under a key
+  derived (HKDF-SHA-256) from the database root key and bound to the exact
+  scope identity and sequence; any tampering or reformatting fails closed;
+- `kavrix run` never places secrets in argv (enforced by the runner), spawns
+  through `shell: false` argument arrays, wipes injected environment buffers
+  after child exit (best effort in JavaScript), and propagates child exit
+  codes and signal-death codes (128+n);
+- agent broker requests are token-checked, serialized per session, evaluated
+  against configured permissions before spawn, and terminated by an explicit
+  exit frame so denials are distinguishable from broken connections.
 
 ## Verification boundary
 
@@ -92,14 +124,34 @@ local revision anchor is fail-closed but is not remote tamper-proof storage. A
 fresh local-share key trusts only the exact authenticated snapshot captured when
 the key was created; after first use its companion anchor is mandatory.
 
+Execution-layer limits that are verified or documented rather than claimed away:
+
+- process-scoped injection cannot stop the authorized program (or anything
+  running as the same user) from reading its own environment and disclosing it;
+  inherited stdio in default `run` mode is unfiltered by design;
+- executable hash pinning narrows but cannot close the resolve-to-spawn window;
+  JavaScript cannot open-then-execute one file descriptor portably;
+- Windows command scripts (.bat/.cmd/.com) are refused outright because
+  launching them requires shell argument re-parsing; invoke real executables;
+- policy/grant state integrity is authenticated against forgery and corruption,
+  but a same-user attacker who can rewrite the datastore can also restore older
+  authentic sidecar bytes; sequence numbers make regressions visible to audit
+  review, not cryptographically impossible;
+- agent descendants inherit the broker endpoint and session token; policy still
+  gates every individual request, and secrets live in broker memory for the
+  session lifetime subject to the same unlocked-host inspection limits.
+
 User identities, public enrollment, recipient discovery, vault grants, reader/
 editor/owner roles, revocation with VRK rotation, and ownership transfer are not
-implemented. Environments, groups/services, structured items, and typed fields
-are also deferred. Local-file mode has no fine-grained sharing: sharing its data
-file and a freshly generated matching share key grants full database access once
-unlocked.
+implemented. Environments beyond project-file secret mappings, groups/services,
+structured items, and typed fields are also deferred. Legacy version 2 vaults
+support `get --reveal` semantics unchanged; policies, grants, audit, run, and
+agent commands require a database-container profile. Local-file mode has no
+fine-grained sharing: sharing its data file and a freshly generated matching
+share key grants full database access once unlocked.
 
 Kavrix does not protect an unlocked host from administrators, same-user malware,
-keyloggers, screen/terminal/clipboard capture, process-memory inspection, swap, or
-crash dumps. JavaScript cannot guarantee complete zeroization. Losing all valid
-key files and recovery kits is unrecoverable by design.
+keyloggers, screen/terminal/clipboard capture, process-memory inspection, swap,
+crash dumps, or terminal capture of child output. JavaScript cannot guarantee
+complete zeroization. Losing all valid key files and recovery kits is
+unrecoverable by design.

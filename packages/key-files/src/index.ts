@@ -1,5 +1,16 @@
 export * from './errors.js';
 export {
+  AuthorizationStateFileError,
+  AUTHORIZATION_STATE_SUFFIX,
+  authorizationStatePath,
+  initializeAuthorizationStateFile,
+  readAuthorizationStateFile,
+  transitionAuthorizationStateFile,
+  type AuthorizationScope,
+  type AuthorizationStateErrorCode,
+  type AuthorizationStateTransition,
+} from './authorization-state-file.js';
+export {
   SealedSecretStore,
   sealedEntryFactory,
   type SealedSecretStoreOptions,

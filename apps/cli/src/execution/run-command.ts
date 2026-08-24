@@ -1,0 +1,687 @@
+﻿import type { ChildProcess } from 'node:child_process';
+
+import { zeroize } from '@kavrix/crypto';
+import {
+  authorizationReasonSchema,
+  type ProjectConfigDocument,
+  environmentVariableNameSchema,
+  secretValueSchema,
+  type AuthorizationReason,
+  type GrantRecord,
+  type PermissionEntry,
+} from '@kavrix/schemas';
+import { RunnerError, runSecureCommand, type EnvironmentMapping } from '@kavrix/runner';
+
+import {
+  closeDatabaseFlatVault,
+  openDatabaseFlatVault,
+  readDatabaseFlatSecrets,
+  usesDatabaseContainer,
+} from '../database-flat-commands.js';
+import { AuthorizationState, nowIso } from './authorization-state.js';
+import { requestApproval } from './confirm.js';
+import {
+  CodedCliError,
+  authorizationDenied,
+  confirmationRequired,
+  grantInvalid,
+  invalidConfiguration,
+} from './exit-codes.js';
+import { resolveExecutable } from './executable.js';
+import {
+  canonicalizeDirectory,
+  evaluateGrantUse,
+  evaluatePermission,
+  executionWindowMs,
+  type EvaluationContext,
+} from './engine.js';
+import {
+  environmentMappings,
+  loadProjectConfig,
+  projectPolicies,
+} from './project-config.js';
+import {
+  auditArgvPreview,
+  mergeMappings,
+  parseSecretMappings,
+  type ResolvedMapping,
+  type RunCliOptions,
+} from './run-options.js';
+
+export interface RunOutcome {
+  readonly ran: boolean;
+  readonly decision: Readonly<{
+    outcome: 'allow' | 'deny' | 'declined' | 'unavailable';
+    reason: string;
+    policyId?: string;
+    grantId?: string;
+  }>;
+  readonly executable: Readonly<{
+    request: string;
+    displayName?: string;
+    path?: string;
+  }>;
+  readonly exitCode: number | null;
+  readonly signal: NodeJS.Signals | null;
+  readonly termination: string;
+  readonly stdout?: string;
+  readonly stderr?: string;
+  readonly outputTruncated?: boolean;
+}
+
+const INHERITED_ENVIRONMENT_NAMES = [
+  'PATH',
+  'PATHEXT',
+  'SystemRoot',
+  'WINDIR',
+  'COMSPEC',
+  'TEMP',
+  'TMP',
+  'HOME',
+  'USERPROFILE',
+] as const;
+
+const JSON_CAPTURE_MAX_BYTES = 64 * 1024;
+
+class MissingCredentialError extends Error {
+  public readonly credentialName: string;
+
+  public constructor(name: string) {
+    super(`Credential '${name}' was not found.`);
+    this.credentialName = name;
+  }
+}
+
+interface UnlockedScope {
+  readonly values: ReadonlyMap<string, string>;
+  readonly authzKey: Uint8Array;
+  readonly keyFile: string;
+  readonly scopeId: string;
+}
+
+/**
+ * Executes one child process whose environment carries only explicitly
+ * requested credentials. Authorization completes before spawn; grant uses are
+ * reserved under the sealed-state lock; decrypted values exist in memory only
+ * for the lifetime of the request and are wiped (best effort) afterwards.
+ */
+export async function executeRun(options: RunCliOptions): Promise<RunOutcome> {
+  const targetArguments = options.executableAndArgs;
+  if (targetArguments.length === 0 || (targetArguments[0] ?? '').length === 0) {
+    throw invalidConfiguration('A command is required after `--`.');
+  }
+  const targetRequest = targetArguments[0] ?? '';
+  const targetRest = targetArguments.slice(1);
+
+  if (!(await usesDatabaseContainer(options))) {
+    throw invalidConfiguration(
+      'kavrix run requires a database profile; create one with `kavrix db profile add`.',
+    );
+  }
+
+  const explicitMappings = parseSecretMappings(options.secretMappings ?? []);
+  const configDocument =
+    options.noConfig === true ? null : await loadOptionalProjectConfig(options.config);
+  const configuredMappings: readonly ResolvedMapping[] =
+    configDocument !== null && options.environmentName !== undefined
+      ? environmentMappings(configDocument, options.environmentName).map(
+          ([destination, secret]) => ({ destination, secret }),
+        )
+      : [];
+  const mappings = mergeMappings(configuredMappings, explicitMappings);
+
+  const policyNames = options.policyIds ?? [];
+  const grantRefs = options.grantRefs ?? [];
+
+  const strictNeededNames = new Set<string>([
+    ...mappings.map((mapping) => mapping.secret),
+  ]);
+  const looseNeededNames = new Set<string>(grantRefs);
+
+  const flatSecrets = await readDatabaseFlatSecrets(options, []);
+  const handle = await openDatabaseFlatVault(options, flatSecrets);
+  let unlocked: UnlockedScope;
+  let missingName: string | undefined;
+  try {
+    const values = new Map<string, string>();
+    await handle.session.inspectVault(handle.vaultId, (payload) => {
+      const missing: string[] = [];
+      for (const name of strictNeededNames) {
+        const record = payload.records[name];
+        if (record === undefined) missing.push(name);
+        else values.set(name, record.value);
+      }
+      for (const name of looseNeededNames) {
+        const record = payload.records[name];
+        if (record !== undefined) values.set(name, record.value);
+      }
+      missingName = missing[0];
+    });
+    // Session callbacks must not throw: failures are surfaced after inspection
+    // so the session can close cleanly and map codes without translation.
+    if (missingName !== undefined) throw new MissingCredentialError(missingName);
+    unlocked = {
+      values,
+      authzKey: handle.session.authorizationStateKey(),
+      keyFile: handle.profile.keyFile,
+      scopeId: handle.session.databaseId,
+    };
+  } catch (error) {
+    if (error instanceof MissingCredentialError) {
+      throw new CodedCliError('CREDENTIAL_MISSING', error.message);
+    }
+    throw error;
+  } finally {
+    await closeDatabaseFlatVault(handle);
+  }
+
+  const state = await openStateSafely(unlocked);
+  try {
+    return await authorizeAndSpawn(
+      options,
+      { request: targetRequest, args: targetRest },
+      mappings,
+      policyNames,
+      grantRefs,
+      unlocked.values,
+      configDocument,
+      state,
+    );
+  } finally {
+    state.close();
+  }
+}
+
+async function openStateSafely(unlocked: UnlockedScope): Promise<AuthorizationState> {
+  try {
+    return await AuthorizationState.open(unlocked.keyFile, unlocked.authzKey, {
+      scopeKind: 'database',
+      scopeId: unlocked.scopeId,
+    });
+  } catch (error) {
+    zeroize(unlocked.authzKey);
+    throw error;
+  }
+}
+
+async function loadOptionalProjectConfig(
+  explicitPath: string | undefined,
+): Promise<ProjectConfigDocumentLike | null> {
+  if (explicitPath !== undefined)
+    return (await loadProjectConfig(explicitPath)).document;
+  for (const candidate of DEFAULT_CONFIG_CANDIDATES) {
+    try {
+      return (await loadProjectConfig(candidate)).document;
+    } catch (error) {
+      if (isMissingConfig(error)) continue;
+      throw error;
+    }
+  }
+  return null;
+}
+
+function isMissingConfig(error: unknown): boolean {
+  return error instanceof Error && error.message.includes('could not be read');
+}
+
+const DEFAULT_CONFIG_CANDIDATES = ['kavrix.yaml', 'kavrix.yml', 'kavrix.json'] as const;
+
+interface RunTarget {
+  readonly request: string;
+  readonly args: readonly string[];
+}
+
+type ProjectConfigDocumentLike = ProjectConfigDocument;
+
+async function authorizeAndSpawn(
+  options: RunCliOptions,
+  target: RunTarget,
+  mappings: readonly ResolvedMapping[],
+  policyNames: readonly string[],
+  grantRefs: readonly string[],
+  values: ReadonlyMap<string, string>,
+  configDocument: ProjectConfigDocumentLike | null,
+  state: AuthorizationState,
+): Promise<RunOutcome> {
+  const platform = process.platform;
+  const jsonMode = options.json === true;
+  const argvPreview = auditArgvPreview(target.args);
+
+  const resolution = await resolveExecutable(target.request);
+  if (resolution.status === 'unresolved') {
+    return await denyExecution(
+      state,
+      'user',
+      'executable-unresolved',
+      undefined,
+      authorizationDenied(`'${target.request}' could not be resolved on PATH.`),
+    );
+  }
+  if (resolution.status === 'refused') {
+    return await denyExecution(
+      state,
+      'user',
+      'executable-refused',
+      undefined,
+      authorizationDenied(
+        `'${target.request}' is a Windows command script; Kavrix refuses .bat/.cmd/.com targets because launching them requires shell argument re-parsing. Invoke the underlying executable directly.`,
+      ),
+    );
+  }
+
+  const context: EvaluationContext = {
+    platform,
+    facts: {
+      displayName: resolution.displayName,
+      sha256: resolution.sha256,
+      firstArgument: target.args[0],
+    },
+    nowIso: nowIso(),
+    cwdRealPath: canonicalizeDirectory(process.cwd()),
+  };
+
+  const snapshot = await state.read();
+
+  // Stored deny entries block every use of their credential, attached or not.
+  const involvedSecrets = new Set<string>([
+    ...mappings.map((mapping) => mapping.secret),
+    ...grantRefs,
+  ]);
+  for (const [storedId, record] of Object.entries(snapshot.policies)) {
+    const entry = record.definition;
+    if (
+      entry.deny === true &&
+      entry.secret !== undefined &&
+      involvedSecrets.has(entry.secret)
+    ) {
+      return await denyExecution(
+        state,
+        'user',
+        'policy-denied',
+        storedId,
+        authorizationDenied(
+          `Credential '${entry.secret}' is denied by policy '${storedId}'.`,
+        ),
+        entry.secret,
+      );
+    }
+  }
+
+  let ttlCapMs: number | undefined;
+  const confirmations: { policyId: string; entry: PermissionEntry }[] = [];
+  for (const policyId of policyNames) {
+    const entry = findPolicy(snapshot, configDocument, policyId);
+    if (entry === undefined) {
+      throw invalidConfiguration(`Policy '${policyId}' is not defined.`);
+    }
+    const decision = evaluatePermission(entry, context);
+    if (decision.outcome === 'deny') {
+      return await denyExecution(
+        state,
+        'user',
+        decision.reason,
+        policyId,
+        authorizationDenied(denyMessage(decision.reason, policyId)),
+        entry.secret,
+      );
+    }
+    if (decision.outcome === 'confirm') {
+      confirmations.push({ policyId, entry });
+    }
+    const window = executionWindowMs(entry);
+    if (window === 'invalid') {
+      throw invalidConfiguration(
+        `Policy '${policyId}' declares a TTL above the supported maximum.`,
+      );
+    }
+    if (window !== undefined) {
+      ttlCapMs = ttlCapMs === undefined ? window : Math.min(ttlCapMs, window);
+    }
+  }
+
+  const resolvedGrantIds: { ref: string; grant: GrantRecord }[] = [];
+  for (const ref of grantRefs) {
+    const located = locateGrant(snapshot.grants, ref);
+    if (located === undefined) {
+      throw grantInvalid(`No active grant matches '${ref}'.`);
+    }
+    const evaluation = evaluateGrantUse(located, context);
+    if (evaluation.status === 'denied') {
+      const coded =
+        evaluation.reason === 'command-not-allowed' ||
+        evaluation.reason === 'hash-mismatch'
+          ? authorizationDenied(grantDenyMessage(evaluation.reason))
+          : grantInvalid(grantDenyMessage(evaluation.reason));
+      return await denyExecution(
+        state,
+        'user',
+        evaluation.reason,
+        undefined,
+        coded,
+        located.secret,
+      );
+    }
+    resolvedGrantIds.push({ ref, grant: located });
+  }
+
+  for (const confirmation of confirmations) {
+    const approval = await requestApproval({
+      actor: 'user',
+      ...(confirmation.entry.secret === undefined
+        ? {}
+        : { secret: confirmation.entry.secret }),
+      executable: resolution.displayName,
+      argumentsPreview: argvPreview ?? [],
+    });
+    await state.recordEvent({
+      actor: 'user',
+      action:
+        approval === 'granted'
+          ? 'confirmation-granted'
+          : approval === 'declined'
+            ? 'confirmation-declined'
+            : 'confirmation-requested',
+      policyId: confirmation.policyId,
+      ...(confirmation.entry.secret === undefined
+        ? {}
+        : { secret: confirmation.entry.secret }),
+      command: resolution.displayName,
+      ...(argvPreview === undefined ? {} : { argvPreview: [...argvPreview] }),
+    });
+    if (approval !== 'granted') {
+      throw confirmationRequired(
+        approval === 'declined'
+          ? 'Operation declined by the operator.'
+          : 'Interactive confirmation is required but no terminal is available.',
+      );
+    }
+  }
+
+  for (const resolved of resolvedGrantIds) {
+    await state.consumeGrantUse(resolved.grant.grantId, {
+      executable: resolution.displayName,
+      argvPreview,
+    });
+  }
+
+  // Policy-gated runs record their allowance explicitly (grant consumption
+  // already audits itself), so every credential use is traceable.
+  if (policyNames.length > 0) {
+    const primaryPolicy = policyNames[0] ?? '';
+    const gatedEntry = findPolicy(snapshot, configDocument, primaryPolicy);
+    await state.recordEvent({
+      actor: 'user',
+      action: 'authorization-allowed',
+      ...(primaryPolicy.length > 0 ? { policyId: primaryPolicy } : {}),
+      ...(gatedEntry?.secret === undefined ? {} : { secret: gatedEntry.secret }),
+      command: resolution.displayName,
+      ...(argvPreview === undefined ? {} : { argvPreview: [...argvPreview] }),
+    });
+  }
+
+  const injections = buildInjections(
+    mappings,
+    resolvedGrantIds.map((resolved) => resolved.grant),
+    values,
+  );
+
+  const childRef: { current: ChildProcess | null } = { current: null };
+  const forwardSignals = forwardableSignals(platform);
+  const handlers = new Map<NodeJS.Signals, () => void>();
+  for (const signalName of forwardSignals) {
+    const handler = (): void => {
+      childRef.current?.kill(signalName);
+    };
+    handlers.set(signalName, handler);
+    process.on(signalName, handler);
+  }
+
+  let result;
+  try {
+    result = await runSecureCommand({
+      executable: resolution.absolutePath,
+      arguments: [...target.args],
+      cwd: process.cwd(),
+      environment: injections,
+      inheritEnvironment: [...INHERITED_ENVIRONMENT_NAMES],
+      input: jsonMode ? 'ignore' : 'inherit',
+      output: jsonMode
+        ? { mode: 'capture', maxBytes: JSON_CAPTURE_MAX_BYTES }
+        : { mode: 'inherit' },
+      ...(ttlCapMs === undefined ? {} : { timeoutMs: ttlCapMs }),
+      onSpawn(child) {
+        childRef.current = child;
+      },
+    });
+  } catch (error) {
+    if (error instanceof RunnerError && error.code === 'RUNNER_ENVIRONMENT_REJECTED') {
+      throw invalidConfiguration(
+        'A destination variable conflicts with a protected runtime variable.',
+      );
+    }
+    throw authorizationDenied('The authorized executable could not be started.');
+  } finally {
+    for (const [signalName, handler] of handlers) {
+      process.off(signalName, handler);
+    }
+  }
+
+  try {
+    await state.recordEvent({
+      actor: 'user',
+      action: 'execution-completed',
+      command: resolution.displayName,
+      ...(argvPreview === undefined ? {} : { argvPreview: [...argvPreview] }),
+      ...(result.exitCode === null ? {} : { exitCode: result.exitCode }),
+      ...(resolvedGrantIds[0] === undefined
+        ? {}
+        : { grantId: resolvedGrantIds[0].grant.grantId }),
+    });
+  } catch (error) {
+    process.stderr.write(
+      `kavrix: warning: the execution completed but the audit event failed: ${describeError(error)}\n`,
+    );
+  }
+
+  const primaryPolicy = policyNames[0];
+  const primaryGrant = resolvedGrantIds[0]?.grant.grantId;
+  return {
+    ran: true,
+    decision: {
+      outcome: 'allow',
+      reason:
+        primaryGrant !== undefined
+          ? 'grant-allowed'
+          : primaryPolicy !== undefined
+            ? 'policy-allowed'
+            : 'no-applicable-policy',
+      ...(primaryPolicy === undefined ? {} : { policyId: primaryPolicy }),
+      ...(primaryGrant === undefined ? {} : { grantId: primaryGrant }),
+    },
+    executable: {
+      request: target.request,
+      displayName: resolution.displayName,
+      path: resolution.absolutePath,
+    },
+    exitCode: result.exitCode ?? signalExitCode(result.signal),
+    signal: result.signal,
+    termination: result.termination,
+    ...(jsonMode
+      ? {
+          stdout: decodeSanitized(result.stdout),
+          stderr: decodeSanitized(result.stderr),
+          outputTruncated: result.outputTruncated,
+        }
+      : {}),
+  };
+}
+
+async function denyExecution(
+  state: AuthorizationState,
+  actor: 'user' | 'agent',
+  reason: string,
+  policyId: string | undefined,
+  error: CodedCliError,
+  secret?: string,
+): Promise<never> {
+  try {
+    await state.recordEvent({
+      actor,
+      action: 'authorization-denied',
+      ...(policyId === undefined ? {} : { policyId }),
+      ...(secret === undefined ? {} : { secret }),
+      reason: asAuditReason(reason),
+    });
+  } catch (auditError) {
+    process.stderr.write(
+      `kavrix: warning: denial audit event failed: ${describeError(auditError)}\n`,
+    );
+  }
+  throw error;
+}
+
+function findPolicy(
+  snapshot: { policies: Readonly<Record<string, { definition: PermissionEntry }>> },
+  configDocument: ProjectConfigDocumentLike | null,
+  policyId: string,
+): PermissionEntry | undefined {
+  const stored = snapshot.policies[policyId];
+  if (stored !== undefined) return stored.definition;
+  if (configDocument !== null) {
+    return projectPolicies(configDocument).get(policyId);
+  }
+  return undefined;
+}
+
+function locateGrant(
+  grants: Readonly<Record<string, GrantRecord>>,
+  reference: string,
+): GrantRecord | undefined {
+  // An explicit grant id resolves even when revoked or exhausted so the
+  // evaluator can report the precise denial reason.
+  const direct = grants[reference];
+  if (direct !== undefined) return direct;
+  const matches = Object.values(grants).filter(
+    (candidate) => candidate.secret === reference && candidate.revokedAt === undefined,
+  );
+  if (matches.length > 1) {
+    throw grantInvalid(`Multiple active grants match '${reference}'; use a grant id.`);
+  }
+  return matches[0];
+}
+
+type Injection = EnvironmentMapping;
+
+function buildInjections(
+  mappings: readonly ResolvedMapping[],
+  grants: readonly GrantRecord[],
+  values: ReadonlyMap<string, string>,
+): readonly Injection[] {
+  const planned = new Map<string, string>();
+  for (const mapping of mappings) planned.set(mapping.destination, mapping.secret);
+  for (const grant of grants) {
+    if (grant.env !== undefined && grant.env.length > 0) {
+      addPlannedInjection(planned, grant.env, grant.secret);
+    }
+  }
+  const injections: Injection[] = [];
+  for (const [destination, secret] of planned) {
+    const value = values.get(secret);
+    if (value === undefined) {
+      throw new CodedCliError(
+        'CREDENTIAL_MISSING',
+        `Credential '${secret}' was not found.`,
+      );
+    }
+    injections.push([
+      destination,
+      { kind: 'secret', value: secretValueSchema.parse(value) },
+    ]);
+  }
+  return injections;
+}
+
+export function addPlannedInjection(
+  planned: Map<string, string>,
+  destination: string,
+  secret: string,
+): void {
+  if (!environmentVariableNameSchema.safeParse(destination).success) {
+    throw invalidConfiguration(`Destination variable '${destination}' is invalid.`);
+  }
+  const existing = planned.get(destination);
+  if (existing !== undefined && existing !== secret) {
+    throw invalidConfiguration(
+      `Destination variable '${destination}' maps to conflicting credentials.`,
+    );
+  }
+  planned.set(destination, secret);
+}
+
+function forwardableSignals(platform: NodeJS.Platform): readonly NodeJS.Signals[] {
+  return platform === 'win32'
+    ? ['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGBREAK']
+    : ['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGQUIT'];
+}
+
+function signalExitCode(signal: NodeJS.Signals | null): number {
+  if (signal === null) return 1;
+  const table: Partial<Record<NodeJS.Signals, number>> = {
+    SIGHUP: 129,
+    SIGINT: 130,
+    SIGQUIT: 131,
+    SIGKILL: 137,
+    SIGTERM: 143,
+  };
+  return table[signal] ?? 128;
+}
+
+function decodeSanitized(buffer: Buffer | undefined): string {
+  if (buffer === undefined) return '';
+  // Strip terminal control sequences from captured child output.
+  const sanitized = buffer
+    .toString('utf8')
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/gu, '?');
+  return sanitized;
+}
+
+export function denyMessage(reason: string, policyId: string): string {
+  switch (reason) {
+    case 'command-not-allowed':
+      return `Policy '${policyId}' does not allow this executable.`;
+    case 'hash-mismatch':
+      return `The executable hash does not match the pin recorded by policy '${policyId}'.`;
+    default:
+      return `Denied by policy '${policyId}' (${reason}).`;
+  }
+}
+
+export function grantDenyMessage(reason: string): string {
+  switch (reason) {
+    case 'expired':
+      return 'The temporary grant has expired.';
+    case 'exhausted':
+      return 'The temporary grant has no remaining uses.';
+    case 'revoked':
+      return 'The temporary grant has been revoked.';
+    case 'clock-invalid':
+      return 'The system clock appears to be set before this grant was issued.';
+    case 'command-not-allowed':
+      return 'The temporary grant does not allow this executable.';
+    case 'hash-mismatch':
+      return 'The executable hash does not match the grant pin.';
+    default:
+      return `Denied (${reason}).`;
+  }
+}
+
+export function asAuditReason(reason: string): AuthorizationReason | undefined {
+  return (authorizationReasonSchema.options as readonly string[]).includes(reason)
+    ? (reason as AuthorizationReason)
+    : undefined;
+}
+
+export function describeError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}

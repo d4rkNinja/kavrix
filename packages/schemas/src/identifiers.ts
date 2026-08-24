@@ -27,6 +27,8 @@ export const auditEventIdSchema = opaqueId.brand<'AuditEventId'>();
 export const attachmentIdSchema = opaqueId.brand<'AttachmentId'>();
 export const historyIdSchema = opaqueId.brand<'HistoryId'>();
 export const inviteIdSchema = opaqueId.brand<'InviteId'>();
+export const policyIdSchema = opaqueId.brand<'PolicyId'>();
+export const grantIdSchema = opaqueId.brand<'GrantId'>();
 
 export type VaultId = z.infer<typeof vaultIdSchema>;
 export type DatabaseId = z.infer<typeof databaseIdSchema>;
@@ -44,3 +46,5 @@ export type AuditEventId = z.infer<typeof auditEventIdSchema>;
 export type AttachmentId = z.infer<typeof attachmentIdSchema>;
 export type HistoryId = z.infer<typeof historyIdSchema>;
 export type InviteId = z.infer<typeof inviteIdSchema>;
+export type PolicyId = z.infer<typeof policyIdSchema>;
+export type GrantId = z.infer<typeof grantIdSchema>;

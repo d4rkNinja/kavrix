@@ -1,3 +1,5 @@
+import type { ChildProcess } from 'node:child_process';
+
 import type { FieldScalarValue } from '@kavrix/schemas';
 
 /** A destination variable and one canonical, already-decrypted field scalar. */
@@ -107,10 +109,33 @@ export const RUNNER_LIMITS = Object.freeze({
   maxEnvironmentTotalBytes: 32 * 1_024,
 });
 
-export type RunnerOutputPolicy = Readonly<{
+export type RunnerOutputCapturePolicy = Readonly<{
   mode: 'capture';
   maxBytes?: number;
 }>;
+
+/**
+ * Inherit mode streams child output straight to this process's streams. No
+ * capture buffer exists, so secret redaction cannot be applied; callers that
+ * need redacted output must use capture mode instead.
+ */
+export type RunnerOutputInheritPolicy = Readonly<{
+  mode: 'inherit';
+}>;
+
+/**
+ * Pipe mode hands the raw child streams to the caller through `onSpawn` and
+ * buffers nothing. The caller owns consumption, framing, and lifecycle of the
+ * streams; timeouts and aborts still terminate the child.
+ */
+export type RunnerOutputPipePolicy = Readonly<{
+  mode: 'pipe';
+}>;
+
+export type RunnerOutputPolicy =
+  RunnerOutputCapturePolicy | RunnerOutputInheritPolicy | RunnerOutputPipePolicy;
+
+export type RunnerInputPolicy = 'ignore' | 'inherit' | 'pipe';
 
 export type SecureRunRequest = Readonly<{
   executable: string;
@@ -119,9 +144,12 @@ export type SecureRunRequest = Readonly<{
   environment?: readonly EnvironmentMapping[];
   inheritEnvironment?: readonly InheritableEnvironmentName[];
   output?: RunnerOutputPolicy;
+  input?: RunnerInputPolicy;
   timeoutMs?: number;
   terminationGraceMs?: number;
   signal?: AbortSignal;
+  /** Observation-only handle delivery for supervisor concerns like signal forwarding. */
+  onSpawn?: (child: ChildProcess) => void;
 }>;
 
 export type RunTermination = 'exit' | 'signal' | 'timeout' | 'aborted' | 'output-limit';

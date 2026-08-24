@@ -1,4 +1,4 @@
-{
+﻿{
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "composite": true,
@@ -20,6 +20,23 @@
     "src/index.ts",
     "src/init-onboarding.ts",
     "src/local-secrets.ts",
+    "src/execution/reveal-policy.ts",
+    "src/execution/register.ts",
+    "src/execution/cli-options.ts",
+    "src/execution/signals.ts",
+    "src/execution/policy-command.ts",
+    "src/execution/authorization-session.ts",
+    "src/execution/audit-command.ts",
+    "src/execution/agent-command.ts",
+    "src/execution/run-options.ts",
+    "src/execution/run-command.ts",
+    "src/execution/project-config.ts",
+    "src/execution/exit-codes.ts",
+    "src/execution/executable.ts",
+    "src/execution/engine.ts",
+    "src/execution/confirm.ts",
+    "src/execution/broker-protocol.ts",
+    "src/execution/authorization-state.ts",
     "src/local-vault-cli.ts",
     "src/version.ts"
   ],

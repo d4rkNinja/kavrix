@@ -53,6 +53,73 @@ Database recovery requires the matching recovery kit, database snapshot, and
 trusted anchor. Deleting or corrupting the anchor fails closed and is a manual
 recovery condition. Recovery does not erase old ciphertext snapshots.
 
+## Execution and authorization boundaries
+
+`kavrix run`, stored policies, temporary grants, and the agent firewall add a
+scoped-execution layer on top of the vault. Its guarantees are process hygiene
+and authorization, not a sandbox.
+
+What this layer genuinely provides:
+
+- Secrets reach only the addressed child's environment — never argv (the
+  runner rejects mapped secret values appearing in the executable or argument
+  list before spawn), never files, never the parent environment, never logs or
+  audit records.
+- Only explicitly requested credentials are decrypted; an unknown name fails
+  closed with `CREDENTIAL_MISSING` before any child exists.
+- Commands are spawned through fixed executable paths with `shell: false` and
+  argument arrays; shell wrappers cannot interpose between Kavrix and spawn.
+- Stored policies bind credentials to command allowlists, optional SHA-256
+  executable pins, execution-window TTLs, use counts, reveal permission, and
+  confirmation requirements; deny entries block every path including plain
+  runs and reveals. Evaluation happens before spawn and fails closed.
+- Grants are consumable authorizations sealed in the same AEAD state as
+  policies; expiry, exhaustion, and revocation are re-checked inside a locked
+  transition at consumption time, so two concurrent invocations can never both
+  claim the final use. Revoked/expired/exhausted/unknown references map to
+  distinct stable exit codes.
+- The authorization sidecar is encrypted under a key derived from the database
+  root key (HKDF-SHA-256) and authenticated against scope identity plus a
+  monotonic sequence: forgery, corruption, cross-database transplant, and any
+  byte-level tampering or reformatting fail closed as integrity failures.
+- Agent firewall sessions hand the agent a local broker endpoint and per-run
+  token but no credential material; each requested operation is authorized
+  against configured permissions, and the secret is injected directly into the
+  authorized child only. Token comparison is constant-time; denial always ends
+  with an explicit exit frame so denials are distinguishable from breakage.
+
+What this layer explicitly cannot do:
+
+- The authorized program can read its own environment by design and may print,
+  transform, or exfiltrate it. Same-user malware can inspect child memory,
+  platform process APIs where available (`/proc/<pid>/environ` subject to
+  kernel restrictions), attach debuggers where permitted, read crash dumps, or
+  capture swap. JavaScript cannot guarantee zeroization of injected strings or
+  buffers after child exit.
+- Default `run` mode hands the terminal to the child unfiltered; captured
+  `--json` mode redacts exact injected byte sequences from bounded output
+  (a child exceeding the per-stream bound is killed by an output-limit
+  termination) but cannot redact encodings or transformations of them.
+- Executable pinning narrows, but does not close, the resolve-to-spawn window:
+  a same-user attacker who replaces the file between hashing and spawn wins
+  that race. Portable open-then-execute of one descriptor is not available.
+- Termination reaches only the direct child; descendants it already forked
+  survive timeouts and aborts. Windows additionally copies a fixed set of
+  system variables into every child regardless of the supplied environment;
+  none of them carry released values.
+- Windows command scripts (.bat/.cmd/.com) are refused outright because
+  launching them requires cmd.exe argument re-parsing; users must invoke real
+  executables. This is fail-closed refusal, not protection.
+- Policy/grant state is authenticated against forgery and corruption, not
+  against a disk-level same-user attacker who restores older authentic sidecar
+  bytes; the monotonic sequence makes such rollback visible to audit review
+  and its effect is bounded by whatever TTLs and use counts were previously
+  recorded. Wall-clock checks reject regression before creation time, but a
+  same-user forward clock change is undetectable locally.
+- Lock contention over the authorization state fails closed rather than
+  blocking indefinitely; concurrent modification is serialized by the
+  protected-file lock.
+
 ## Sharing boundary
 
 Local-file sharing means running `kavrix db key create` and sharing the resulting
@@ -72,3 +139,14 @@ database-container acceptance on Windows/macOS/Linux, and a live MongoDB
 integration test only when `KAVRIX_MONGODB_URI` names a disposable transaction-
 capable topology. The repository does not claim live MongoDB proof when that URI
 is absent.
+
+The execution layer adds end-to-end suites (through the real CLI composition)
+covering environment-only injection with digest canaries and argv absence,
+exit-code/signal propagation, deny/reveal/confirmation/hash-pin/TTL policy
+paths, grant expiry/exhaustion/revocation, sealed-state tamper and reformat
+rejection, audit content without plaintext, and a live agent-broker session
+exercising allow, unknown-permission, deny-entry, confirmation-unavailable,
+unresolved-executable, missing-injection-mapping, oversized-output framing,
+and exit-code propagation. Windows-specific refusal semantics are asserted
+through injected platform parameters; POSIX process-group signal behavior is
+covered only where the platform provides it.

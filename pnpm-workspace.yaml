@@ -4,6 +4,7 @@ packages:
   - packages/crypto
   - packages/key-files
   - packages/storage
+  - packages/runner
 
 strictPeerDependencies: true
 preferWorkspacePackages: true

@@ -13,3 +13,4 @@ export * from './portable-key-rotation.js';
 export * from './rotation.js';
 export * from './secretstream.js';
 export * from './slots.js';
+export * from './state-envelope.js';

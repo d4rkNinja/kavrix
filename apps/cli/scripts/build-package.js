@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+﻿import { createHash } from 'node:crypto';
 import { mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { builtinModules, createRequire } from 'node:module';
 import { dirname, isAbsolute, relative, resolve } from 'node:path';
@@ -55,12 +55,18 @@ const reviewedRuntimePackages = await Promise.all(
   [
     ['commander', require],
     ['zod', require],
+    ['yaml', require],
     ['mongodb', require],
     ['libsodium-wrappers', cryptoRequire],
     ['libsodium', sodiumRequire],
   ].map(([name, resolver]) => readDependencyLicense(name, resolver)),
 );
 const licenseBanner = renderLicenseBanner(reviewedRuntimePackages);
+const builtinBridgeBanner = [
+  "import { createRequire as __kavrixCreateRequire } from 'node:module';",
+  'const __kavrixNodeRequire = __kavrixCreateRequire(import.meta.url);',
+  'const __kavrixNodeBuiltin = (name) => __kavrixNodeRequire(`node:${name}`);',
+].join('\n');
 
 assertSafeOutputDirectory();
 await rm(outputDirectory, { recursive: true, force: true });
@@ -68,7 +74,8 @@ await mkdir(outputDirectory, { recursive: true });
 
 const bundle = await build({
   absWorkingDir: packageDirectory,
-  banner: { js: licenseBanner },
+  plugins: [yamlBuiltinProcessShim()],
+  banner: { js: `${licenseBanner}\n${builtinBridgeBanner}` },
   bundle: true,
   chunkNames: 'chunks/chunk-[hash]',
   entryNames: '[name]',
@@ -113,6 +120,38 @@ await writeFile(
   `${JSON.stringify(sbom, null, 2)}\n`,
   'utf8',
 );
+
+/**
+ * The reviewed YAML parser is CommonJS and requires bare builtin names
+ * ('process', 'buffer'), which esbuild wraps as throwing dynamic requires
+ * when emitting ESM. Bridge them through createRequire against the
+ * `node:`-prefixed spellings Node resolves reliably.
+ */
+
+function yamlBuiltinProcessShim() {
+  const BARE_BUILTINS = ['process', 'buffer', 'util', 'stream', 'path', 'fs'];
+  return {
+    name: 'yaml-builtin-process-shim',
+    setup(build) {
+      build.onLoad(
+        { filter: /node_modules[\\/]+yaml[\\/]+dist[\\/].+\.js$/, namespace: 'file' },
+        async (args) => {
+          let text = await readFile(args.path, 'utf8');
+          for (const builtinName of BARE_BUILTINS) {
+            for (const quote of ["'", '"']) {
+              text = text.replaceAll(
+                `require(${quote}${builtinName}${quote})`,
+                `__kavrixNodeBuiltin('${builtinName}')`,
+              );
+            }
+          }
+          if (text === (await readFile(args.path, 'utf8'))) return undefined;
+          return { contents: text, loader: 'js' };
+        },
+      );
+    },
+  };
+}
 
 function assertPublicManifest(value) {
   if (value.name !== 'kavrix' || value.private !== false || value.type !== 'module') {
