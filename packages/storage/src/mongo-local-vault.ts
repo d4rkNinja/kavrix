@@ -1,4 +1,4 @@
-import { MongoClient, MongoServerError, type Collection, type Db } from 'mongodb';
+﻿import { MongoClient, MongoServerError, type Collection, type Db } from 'mongodb';
 
 import {
   localVaultDocumentSchema,
@@ -42,6 +42,8 @@ export class MongoLocalVaultError extends EncryptedVaultStoreError {
 
 export type MongoLocalVaultStoreOptions = Readonly<{
   collectionName?: string;
+  /** Explicit operator opt-in to plaintext transport for non-local hosts. */
+  allowInsecureTransport?: boolean;
 }>;
 
 export class MongoLocalVaultStore implements EncryptedVaultStore {
@@ -68,7 +70,9 @@ export class MongoLocalVaultStore implements EncryptedVaultStore {
     databaseName: string,
     options: MongoLocalVaultStoreOptions = {},
   ): Promise<MongoLocalVaultStore> {
-    assertMongoUriAllowed(uri);
+    assertMongoUriAllowed(uri, {
+      allowInsecureTransport: options.allowInsecureTransport === true,
+    });
     const client = new MongoClient(uri, {
       serverSelectionTimeoutMS: 5_000,
       connectTimeoutMS: 5_000,
@@ -213,7 +217,16 @@ function parseStoredDocument(value: StoredLocalVaultDocument): LocalVaultDocumen
   return parseDocument(withoutMongoId);
 }
 
-export function assertMongoUriAllowed(uri: string): void {
+/**
+ * Fail-closed URI policy: insecure-TLS flags are always rejected, and remote
+ * hosts require explicit TLS unless the caller passes an explicit
+ * allow-insecure-transport opt-in (an operator's conscious choice for
+ * isolated networks); local loopback is exempt from the TLS requirement.
+ */
+export function assertMongoUriAllowed(
+  uri: string,
+  transport: Readonly<{ allowInsecureTransport?: boolean }> = {},
+): void {
   let parsed: URL;
   try {
     parsed = new URL(uri);
@@ -252,7 +265,11 @@ export function assertMongoUriAllowed(uri: string): void {
   if (valuesFor('sslValidate').some(isFalse)) {
     throw new MongoLocalVaultError('connection');
   }
-  if (!isLocal && !tlsValues.some(isTrue)) {
+  if (
+    !isLocal &&
+    !tlsValues.some(isTrue) &&
+    transport.allowInsecureTransport !== true
+  ) {
     throw new MongoLocalVaultError('connection');
   }
 }

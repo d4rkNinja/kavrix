@@ -1,4 +1,4 @@
-import type { Readable } from 'node:stream';
+﻿import type { Readable } from 'node:stream';
 
 import { zeroize } from '@kavrix/crypto';
 import {
@@ -45,6 +45,7 @@ type DatabaseCommandOptions = Readonly<{
   outputKeyFile?: string;
   anchorFile?: string;
   json?: boolean;
+  allowInsecureTransport?: boolean;
 }>;
 
 export function addDatabaseOwnerCommands(db: Command): void {
@@ -198,7 +199,11 @@ async function handleDatabaseInit(options: DatabaseCommandOptions): Promise<void
   if (label === undefined || passphrase === undefined || passphrase !== confirmation)
     throw new DatabaseSessionError('invalid');
   const passphraseBytes = Buffer.from(passphrase, 'utf8');
-  const opened = await openStore(route, values[0]);
+  const opened = await openStore(
+    route,
+    values[0],
+    options.allowInsecureTransport === true,
+  );
   const registry = route.registry;
   const profile = route.profile;
   try {
@@ -332,7 +337,11 @@ async function handleRecoveryUse(options: DatabaseCommandOptions): Promise<void>
     route.datastore === 'mongodb'
       ? await readCommandSecrets(['database-url'], options, secretReader, false)
       : [];
-  const opened = await openStore(route, routingSecrets[0]);
+  const opened = await openStore(
+    route,
+    routingSecrets[0],
+    options.allowInsecureTransport === true,
+  );
   let recoveryPassphrase: Uint8Array | undefined;
   let newPassphrase: Uint8Array | undefined;
   try {
@@ -430,10 +439,10 @@ async function withOwnerSession(
   let passphrase: Uint8Array | undefined;
   let opened: Awaited<ReturnType<typeof openStore>>;
   if (route.datastore === 'file') {
-    opened = await openStore(route);
+    opened = await openStore(route, undefined, options.allowInsecureTransport === true);
   } else {
     values = await readCommandSecrets(['database-url'], options, secretReader, false);
-    opened = await openStore(route, values[0]);
+    opened = await openStore(route, values[0], options.allowInsecureTransport === true);
   }
   let session: DatabaseSession | undefined;
   try {
@@ -554,7 +563,8 @@ async function resolveRoute(options: DatabaseCommandOptions): Promise<ResolvedRo
 
 async function openStore(
   route: ResolvedRoute,
-  databaseUrl?: string,
+  databaseUrl: string | undefined,
+  allowInsecureTransport: boolean,
 ): Promise<
   Readonly<{
     store: EncryptedDatabaseStore;
@@ -578,6 +588,7 @@ async function openStore(
       {
         databaseCollectionName: route.databaseCollection ?? DEFAULT_DATABASE_COLLECTION,
         vaultCollectionName: route.vaultCollection ?? DEFAULT_VAULT_COLLECTION,
+        allowInsecureTransport,
       },
     ),
   };
@@ -615,7 +626,11 @@ function addRoutingOptions(command: Command, includeKey = true): void {
     .option('--data-file <path>', 'Encrypted local database path.')
     .option('--database <name>', 'MongoDB database routing name.')
     .option('--database-collection <name>', 'MongoDB database document collection.')
-    .option('--vault-collection <name>', 'MongoDB vault document collection.');
+    .option('--vault-collection <name>', 'MongoDB vault document collection.')
+    .option(
+      '--allow-insecure-transport',
+      'Explicitly permit unencrypted transport to a non-local MongoDB (isolated networks only).',
+    );
   if (includeKey)
     command.option('--key-file <path>', 'Protected database-owner key file.');
 }

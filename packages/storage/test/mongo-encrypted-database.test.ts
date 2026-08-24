@@ -130,6 +130,7 @@ describe('MongoEncryptedDatabaseStore', () => {
     mongodb.vaultCollection.createIndex.mockRejectedValueOnce(sensitive);
     mongodb.client.db.mockReturnValue({
       ...mongodb.database,
+      ...mongodb.database,
       collection: vi.fn((name: string) =>
         name === 'kavrix_databases'
           ? mongodb.databaseCollection
@@ -211,6 +212,7 @@ describe('MongoEncryptedDatabaseStore', () => {
     mongodb.vaultCollection.find.mockReturnValueOnce(cursor);
     mongodb.client.db.mockReturnValue({
       ...mongodb.database,
+      ...mongodb.database,
       command: vi.fn(),
       collection: vi.fn((name: string) =>
         name === 'kavrix_databases'
@@ -254,6 +256,7 @@ describe('MongoEncryptedDatabaseStore', () => {
     mongodb.databaseCollection.updateOne.mockResolvedValueOnce({ matchedCount: 1 });
     mongodb.vaultCollection.updateOne.mockResolvedValueOnce({ matchedCount: 1 });
     mongodb.client.db.mockReturnValue({
+      ...mongodb.database,
       ...mongodb.database,
       command: vi.fn(),
       collection: vi.fn((name: string) =>
@@ -305,6 +308,7 @@ describe('MongoEncryptedDatabaseStore', () => {
     });
     mongodb.client.db.mockReturnValue({
       ...mongodb.database,
+      ...mongodb.database,
       command: vi.fn(),
       collection: vi.fn((name: string) =>
         name === 'kavrix_databases'
@@ -349,6 +353,7 @@ describe('MongoEncryptedDatabaseStore', () => {
       vaultRevision(0),
     );
     mongodb.client.db.mockReturnValue({
+      ...mongodb.database,
       ...mongodb.database,
       command: vi.fn(),
       collection: vi.fn((name: string) =>
@@ -400,6 +405,7 @@ describe('MongoEncryptedDatabaseStore', () => {
     );
     mongodb.client.db.mockReturnValue({
       ...mongodb.database,
+      ...mongodb.database,
       command: vi.fn(),
       collection: vi.fn((name: string) =>
         name === 'kavrix_databases'
@@ -440,6 +446,7 @@ describe('MongoEncryptedDatabaseStore', () => {
       'mongodb://user:password@example.test/db_01JMONGOREDAC ciphertext AQID',
     );
     mongodb.client.db.mockReturnValue({
+      ...mongodb.database,
       ...mongodb.database,
       command: vi.fn(),
       collection: vi.fn((name: string) =>

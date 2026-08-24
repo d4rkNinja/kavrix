@@ -1,4 +1,4 @@
-import type { Command } from 'commander';
+﻿import type { Command } from 'commander';
 
 import type { DatabaseFlatCommandOptions } from '../database-flat-commands.js';
 
@@ -7,7 +7,7 @@ export type ExecutionCommandOptions = DatabaseFlatCommandOptions;
 
 /**
  * Merges options across the full command hierarchy, preferring explicitly set
- * values over inherited defaults — the same contract the core CLI applies.
+ * values over inherited defaults â€” the same contract the core CLI applies.
  */
 export function extractMergedOptions(
   command: Command,
@@ -51,6 +51,7 @@ export function executionFlatOptions(
     ...(typeof merged['keyFile'] === 'string' ? { keyFile: merged['keyFile'] } : {}),
     databaseUrlStdin: merged['databaseUrlStdin'] === true,
     passphraseStdin: merged['passphraseStdin'] === true,
+    allowInsecureTransport: merged['allowInsecureTransport'] === true,
   };
 }
 
@@ -66,6 +67,10 @@ export function addExecutionRoutingOptions(command: Command): Command {
     .option('--key-file <path>', 'Protected key file path override.')
     .option('--database-url-stdin', 'Read the MongoDB URI from standard input.')
     .option('--passphrase-stdin', 'Read the key passphrase from standard input.')
+    .option(
+      '--allow-insecure-transport',
+      'Explicitly permit unencrypted transport to a non-local MongoDB (isolated networks only).',
+    )
     .option('--secrets-stdin', 'Read every unlock secret from exact stdin frames.')
     .option(
       '--vault <id>',

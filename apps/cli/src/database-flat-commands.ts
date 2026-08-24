@@ -1,4 +1,4 @@
-import { zeroize } from '@kavrix/crypto';
+﻿import { zeroize } from '@kavrix/crypto';
 import { profileIdSchema, vaultIdSchema, type VaultId } from '@kavrix/schemas';
 import {
   FileEncryptedDatabaseStore,
@@ -36,6 +36,7 @@ export type DatabaseFlatCommandOptions = Readonly<{
   databaseUrlStdin?: boolean;
   passphraseStdin?: boolean;
   valueStdin?: boolean;
+  allowInsecureTransport?: boolean;
 }>;
 
 export type DatabaseFlatSecrets = Readonly<{
@@ -125,6 +126,7 @@ export async function openDatabaseFlatVault(
           {
             databaseCollectionName: profile.databaseCollection,
             vaultCollectionName: profile.vaultCollection,
+            allowInsecureTransport: options.allowInsecureTransport === true,
           },
         );
   let session: DatabaseSession | undefined;

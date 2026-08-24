@@ -1,4 +1,4 @@
-import {
+﻿import {
   databaseRevisionAnchorPath,
   validateSecureFileDestination,
   validateSecureFileSource,
@@ -29,6 +29,7 @@ export type DatabaseMigrationCommandOptions = Readonly<{
   profileConfigDir?: string;
   secretsStdin?: boolean;
   initialize?: boolean;
+  allowInsecureTransport?: boolean;
 }>;
 
 export type DatabaseMigrationCommandResult = Readonly<{
@@ -124,7 +125,10 @@ export async function executeDatabaseMigrationCommand(
       : await MongoLocalVaultStore.connect(
           secret([sourceDatabaseUrl ?? ''], 0),
           sourceProfile.database,
-          { collectionName: sourceProfile.vaultCollection },
+          {
+            collectionName: sourceProfile.vaultCollection,
+            allowInsecureTransport: options.allowInsecureTransport === true,
+          },
         );
   let sourceDocument: LocalVaultDocument | null;
   try {
@@ -149,6 +153,7 @@ export async function executeDatabaseMigrationCommand(
       {
         databaseCollectionName: destinationProfile.databaseCollection,
         vaultCollectionName: destinationProfile.vaultCollection,
+        allowInsecureTransport: options.allowInsecureTransport === true,
       },
     );
   };

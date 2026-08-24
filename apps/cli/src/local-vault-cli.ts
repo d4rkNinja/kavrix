@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from 'node:crypto';
+﻿import { createHash, randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { realpath } from 'node:fs/promises';
 import { homedir } from 'node:os';
@@ -160,6 +160,7 @@ export type LocalCliOptions = Readonly<{
   reveal?: boolean;
   json?: boolean;
   limit?: string;
+  allowInsecureTransport?: boolean;
 }>;
 
 export function buildLocalCli(): Command {
@@ -243,7 +244,11 @@ export function buildLocalCli(): Command {
       '--initialize',
       'Explicitly initialize an unbound file destination profile.',
     )
-    .option('--secrets-stdin', 'Read every migration secret from exact stdin frames.');
+    .option('--secrets-stdin', 'Read every migration secret from exact stdin frames.')
+    .option(
+      '--allow-insecure-transport',
+      'Explicitly permit unencrypted transport to a non-local MongoDB (isolated networks only).',
+    );
   migrateDatabase.action(async (...args: unknown[]) => {
     await handleMigrateDatabase(getOptions(args));
   });
@@ -541,6 +546,13 @@ export async function runLocalCli(argv: readonly string[]): Promise<void> {
                             : error instanceof AggregateError
                               ? error.message
                               : 'Kavrix command failed.';
+    if (
+      process.env['KAVRIX_DEBUG_CONNECT'] === '1' &&
+      error instanceof Error &&
+      error.stack
+    ) {
+      process.stderr.write(error.stack + '\n');
+    }
     process.stderr.write(colorizeError(message) + '\n');
     process.exitCode = codedExitCode(error) ?? 1;
   }
@@ -907,6 +919,10 @@ function addDatabaseOnlyOptions(command: Command): void {
     .option('--datastore <type>', 'Encrypted datastore: mongodb or file.', 'mongodb')
     .option('--data-file <path>', 'Encrypted local vault file path.')
     .option(
+      '--allow-insecure-transport',
+      'Explicitly permit unencrypted transport to a non-local MongoDB (isolated networks only).',
+    )
+    .option(
       '--database-url-stdin',
       'Read the MongoDB connection string from standard input (never from an argument).',
     )
@@ -1257,8 +1273,8 @@ export async function readInitStorageSelection(
   const render = (replace: boolean): void => {
     if (replace) output.write('\u001b[2A');
     output.write(
-      `\r\u001b[2K${selected === 'file' ? '❯' : ' '} Local encrypted file\n` +
-        `\r\u001b[2K${selected === 'mongodb' ? '❯' : ' '} MongoDB\n`,
+      `\r\u001b[2K${selected === 'file' ? 'â¯' : ' '} Local encrypted file\n` +
+        `\r\u001b[2K${selected === 'mongodb' ? 'â¯' : ' '} MongoDB\n`,
     );
   };
   return await new Promise((resolve, reject) => {
@@ -3651,6 +3667,7 @@ async function withStore(
   const databaseName = databaseNameFrom(databaseUrl, options.database);
   const store = await MongoLocalVaultStore.connect(databaseUrl, databaseName, {
     collectionName: options.collection,
+    allowInsecureTransport: options.allowInsecureTransport === true,
   });
   const state: MutableStoreOperationState = { mutation: 'none' };
   let operationError: unknown;

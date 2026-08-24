@@ -35,6 +35,8 @@ type StoredDocument = Readonly<{ _id: string }> & Record<string, unknown>;
 export type MongoEncryptedDatabaseStoreOptions = Readonly<{
   databaseCollectionName?: string;
   vaultCollectionName?: string;
+  /** Explicit operator opt-in to plaintext transport for non-local hosts. */
+  allowInsecureTransport?: boolean;
 }>;
 
 /**
@@ -72,7 +74,16 @@ export class MongoEncryptedDatabaseStore implements EncryptedDatabaseStore {
     databaseName: string,
     options: MongoEncryptedDatabaseStoreOptions = {},
   ): Promise<MongoEncryptedDatabaseStore> {
-    const collectionNames = parseConfiguration(uri, databaseName, options);
+    const allowInsecureTransport = options.allowInsecureTransport === true;
+    const collectionNames = parseConfiguration(
+      uri,
+      databaseName,
+      {
+        databaseCollectionName: options.databaseCollectionName,
+        vaultCollectionName: options.vaultCollectionName,
+      },
+      { allowInsecureTransport },
+    );
     let client: MongoClient | undefined;
     try {
       client = new MongoClient(uri, {
@@ -106,7 +117,16 @@ export class MongoEncryptedDatabaseStore implements EncryptedDatabaseStore {
     // touches it, so both collections must be materialized before any CAS
     // write. Index creation auto-creates the parent collection and is
     // idempotent, which keeps first use race-free on an empty deployment.
-    await this.#databases.createIndex({ _id: 1 }, { name: '_id_' });
+    const listing = this.#database.listCollections({
+      name: this.#databases.collectionName,
+    });
+    const listed =
+      typeof listing.toArray === 'function'
+        ? await listing.toArray()
+        : await Promise.resolve(listing as unknown as { name: string }[]);
+    if (listed.length === 0) {
+      await this.#database.createCollection(this.#databases.collectionName);
+    }
     await this.#vaults.createIndex(
       { databaseId: 1, id: 1 },
       { name: 'database_vault_identity', unique: true },
@@ -305,10 +325,11 @@ function parseConfiguration(
   uri: unknown,
   databaseName: unknown,
   options: unknown,
+  transport: Readonly<{ allowInsecureTransport?: boolean }> = {},
 ): Readonly<{ databaseCollectionName: string; vaultCollectionName: string }> {
   if (typeof uri !== 'string') throw new EncryptedDatabaseStoreError('connection');
   try {
-    assertMongoUriAllowed(uri);
+    assertMongoUriAllowed(uri, transport);
   } catch {
     throw new EncryptedDatabaseStoreError('connection');
   }
