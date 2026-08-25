@@ -48,7 +48,7 @@
   },
   "scripts": {
     "build": "tsc -b tsconfig.build.json --pretty false && node scripts/build-package.js",
-    "typecheck": "tsc -p tsconfig.json --pretty false",
+    "typecheck": "tsc -b tsconfig.build.json --pretty false && tsc -p tsconfig.json --pretty false",
     "test": "pnpm run build && vitest run --root ../.. apps/cli/test/local-vault-cli-view.test.ts apps/cli/test/package.test.ts",
     "test:coverage": "pnpm run build && vitest run --root ../.. apps/cli/test/local-vault-cli-view.test.ts apps/cli/test/package.test.ts --coverage --coverage.include=apps/cli/src/**",
     "prepack": "pnpm run build",
