@@ -79,7 +79,7 @@ function agentScript(observationFile: string): string {
     '  });',
     '}',
     '(async () => {',
-    `  const innerScript = 'const big = "x".repeat(700*1024); console.log("LEAKED:" + (process.env.GITHUB_TOKEN ?? "")); console.log(big); process.exit(3);';`,
+    `  const innerScript = 'const big = "x".repeat(700*1024); const nl = String.fromCharCode(10); process.stdout.write("LEAKED:" + (process.env.GITHUB_TOKEN ?? "") + nl); process.stdout.write(big + nl); process.exitCode = 3;';`,
     '  const allowed = await request("gh", [process.execPath, "-e", innerScript]);',
     '  const deniedUnknown = await request("unknown-permission", [process.execPath, "-e", "process.exit(0)"]);',
     '  const deniedEntry = await request("prod-db", [process.execPath, "-e", "process.exit(0)"]);',

@@ -1,5 +1,5 @@
 ﻿import { createHash } from 'node:crypto';
-import { chmod, mkdir, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { delimiter, join, sep } from 'node:path';
 
@@ -50,7 +50,7 @@ describe('resolveExecutable', () => {
     });
     expect(resolution.status).toBe('resolved');
     if (resolution.status !== 'resolved') return;
-    expect(resolution.absolutePath.toLowerCase()).toBe(tool.toLowerCase());
+    expect(resolution.absolutePath).toBe(await realpath(tool));
     expect(resolution.displayName).toBe(
       process.platform === 'win32' ? 'kavrix-path-tool' : 'kavrix-path-tool',
     );
@@ -65,7 +65,7 @@ describe('resolveExecutable', () => {
     });
     expect(resolution.status).toBe('resolved');
     if (resolution.status !== 'resolved') return;
-    expect(resolution.absolutePath).toBe(tool);
+    expect(resolution.absolutePath).toBe(await realpath(tool));
     expect(resolution.displayName).toBe('probe');
   });
 
@@ -135,7 +135,7 @@ describe('resolveExecutable', () => {
     });
     expect(resolution.status).toBe('resolved');
     if (resolution.status !== 'resolved') return;
-    expect(resolution.absolutePath).toBe(tool);
+    expect(resolution.absolutePath).toBe(await realpath(tool));
   });
 
   it('returns unresolved when PATH is empty or missing', async () => {
@@ -154,7 +154,7 @@ describe('resolveExecutable', () => {
     });
     expect(resolution.status).toBe('resolved');
     if (resolution.status !== 'resolved') return;
-    expect(resolution.absolutePath).toBe(tool);
+    expect(resolution.absolutePath).toBe(await realpath(tool));
   });
 
   it('refuses oversized files instead of hashing them', async () => {

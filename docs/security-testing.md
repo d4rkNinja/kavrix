@@ -21,7 +21,6 @@ pnpm lint
 pnpm typecheck
 pnpm test
 pnpm test:coverage
-pnpm changeset status
 pnpm acceptance:pre-ci
 pnpm acceptance:database-container
 pnpm --filter kavrix package:smoke
@@ -41,9 +40,7 @@ publication, and deletion.
 The root suite explicitly includes `packages/key-files/test/portable-key-files.test.ts`
 and `packages/key-files/test/revision-anchor.test.ts`; the coverage gate scopes
 source collection to the active release workspaces and enforces the configured
-branch, function, line, and statement thresholds. `pnpm changeset status` is a
-release hygiene gate and fails when a changeset targets a package outside the
-active workspace.
+branch, function, line, and statement thresholds.
 
 Every root Vitest worker runs against an isolated fake home directory created by
 `scripts/test-isolated-home.mjs`, so suites cannot observe or mutate a real

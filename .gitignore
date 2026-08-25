@@ -12,6 +12,7 @@ Thumbs.db
 .idea/
 .vscode/
 .worktrees/
+.superpowers/
 .kavrix/
 *.cvk
 *.kavrix-backup

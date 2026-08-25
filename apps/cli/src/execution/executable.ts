@@ -124,7 +124,7 @@ function searchDirectories(pathValue: string): string[] {
 function pathExtEntries(pathExtValue: string): readonly string[] {
   const entries = pathExtValue
     .split(';')
-    .map((entry) => entry.trim())
+    .map((entry) => entry.trim().toLowerCase())
     .filter((entry) => entry.startsWith('.'));
   return entries.length > 0 ? entries : ['.exe'];
 }

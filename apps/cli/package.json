@@ -55,13 +55,6 @@
     "pack:check": "pnpm pack --dry-run --json",
     "package:smoke": "pnpm run build && node scripts/smoke-packed-package.js"
   },
-  "devDependencies": {
-    "@kavrix/crypto": "workspace:*",
-    "@kavrix/key-files": "workspace:*",
-    "@kavrix/runner": "workspace:*",
-    "@kavrix/schemas": "workspace:*",
-    "@kavrix/storage": "workspace:*"
-  },
   "dependencies": {
     "mongodb": "7.5.0"
   }

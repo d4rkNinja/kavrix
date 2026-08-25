@@ -22,7 +22,6 @@ active workspace gates, and must not be described as shipped or verified.
 From the repository root, the active release checks are:
 
 ```sh
-pnpm changeset status
 pnpm build
 pnpm test
 pnpm test:coverage

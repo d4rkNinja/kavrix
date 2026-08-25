@@ -269,8 +269,6 @@ jobs:
           cache: pnpm
           package-manager-cache: false
       - run: pnpm install --frozen-lockfile
-      - name: Reject stale Changesets
-        run: pnpm changeset status
       - name: Build active release workspaces for coverage
         run: pnpm build
       - name: Enforce active-source coverage

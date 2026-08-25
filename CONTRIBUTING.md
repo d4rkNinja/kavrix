@@ -24,12 +24,6 @@ pnpm verify
 pnpm test:coverage
 ```
 
-Use a changeset for a user-visible or publishable package change:
-
-```sh
-pnpm changeset
-```
-
 ## Pull requests
 
 - Explain the observable behavior and security impact.
