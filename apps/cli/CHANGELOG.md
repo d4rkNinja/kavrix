@@ -10,3 +10,9 @@
   - `kavrix policy` / `kavrix grant` / `kavrix audit`: sealed authorization state with allowlists, executable pins, working-directory restrictions, reveal separation, temporary grants, and stable exit codes.
   - `kavrix agent run` / `kavrix agent exec`: brokered credential firewall for AI coding agents.
   - MongoDB store: eagerly materialize both collections on connect so first-use transactions are race-free on empty deployments.
+
+### Patch Changes
+
+- Explicit standalone routing (`--datastore` without `--profile`) now always selects the legacy single-vault path. An ambient current datastore profile no longer adopts such invocations into database-container mode, so commands with explicit routing behave identically on machines with and without a selected profile.
+- Guided `init` onboarding, flat credential commands, database commands, and `db ping` share that selection rule consistently.
+- Test-suite reliability: every Vitest worker runs against an isolated home directory so machine-local Kavrix state cannot influence results, stale MongoDB connection-shape assertions were corrected, and a load-sensitive key-files publication test tolerates transient Windows rename failures without weakening its assertions.

@@ -2,6 +2,44 @@
 
 All notable user-facing and security changes to Kavrix are recorded here.
 
+## 0.2.0
+
+### Added
+
+- Credential execution runtime (`kavrix run`): selected credentials are
+  injected into a child process environment only, never into argv or shell
+  history, with project-file environment mappings, exit-code and signal
+  propagation, and redacted JSON output capture.
+- Stored permission policies (`kavrix policy`) sealed in an
+  AEAD-authenticated sidecar: command allowlists, SHA-256 executable pins,
+  execution-window TTLs, working-directory restrictions, deny entries,
+  reveal gating, and confirmation requirements evaluated fail-closed before a
+  child spawns.
+- Temporary consumable grants (`kavrix grant`) with TTL, maximum uses, atomic
+  consumption under the protected-file lock, revocation, and distinct stable
+  exit codes for expired, exhausted, revoked, and unknown references.
+- Plaintext-free audit trail (`kavrix audit`) recording policy, grant,
+  authorization, confirmation, and completion events.
+- AI-agent credential firewall (`kavrix agent run` / `kavrix agent exec`):
+  agents start with no credential material and request each operation through
+  a per-session broker that enforces stored policies before injecting values.
+- Guided interactive `init` onboarding with datastore selection, destination
+  validation, masked secret handoff, and back/cancel navigation.
+
+### Fixed
+
+- Explicit standalone routing (`--datastore` without `--profile`) always uses
+  the legacy single-vault path; an ambient current datastore profile no longer
+  adopts such invocations into database-container mode.
+- MongoDB connections materialize both collections eagerly so first-use
+  transactions are race-free on empty deployments.
+
+### Verification
+
+- The test suite runs hermetically against isolated per-worker home
+  directories, packed-CLI acceptance passes end to end on Windows, and the
+  database-container acceptance continues to run in CI on Linux.
+
 ## 0.1.5 - 2026-08-21
 
 ### Fixed

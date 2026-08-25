@@ -1,13 +1,24 @@
 # kavrix
 
-A local, zero-knowledge credential vault that stores multiple independently
-encrypted vaults in a protected local database file or MongoDB. Kavrix encrypts
-private labels and values before storage; it does not require a Kavrix server.
+Kavrix is a zero-knowledge credential vault for the terminal. It encrypts
+credential names and values on your machine and stores authenticated ciphertext
+in a protected local database file or in your own MongoDB deployment. One
+database holds multiple independently encrypted vaults, and no Kavrix server,
+account, or telemetry exists anywhere in the path.
 
-## Install
+Tools consume credentials through tightly scoped execution: `kavrix run`
+injects only the requested values into a child process environment, permission
+policies and temporary grants bound what each executable may do, and
+`kavrix agent run` brokers every request from AI coding agents against those
+policies.
 
-Requires Node.js `>=24.12.0 <25` or `>=25.1.0`. MongoDB is optional; database
-writes require a transaction-capable replica set or sharded topology.
+## Requirements
+
+- Node.js `>=24.12.0 <25` or `>=25.1.0`
+- MongoDB only if you select that datastore; database writes require a
+  transaction-capable replica set or sharded topology
+
+## Installation
 
 ```sh
 npm install --global kavrix
@@ -18,68 +29,116 @@ kavrix --help
 ## Quick start
 
 ```sh
+# 1. Register and select a non-secret route to your datastore.
 kavrix db profile add work --datastore file \
   --data-file ./work.kavrix --key-file ./work.kavrix.key
 kavrix db profile use work
+
+# 2. Initialize the database and create a vault.
 kavrix db init --profile work
 kavrix db vault create --profile work
+
+# 3. Copy the returned opaque vault ID into the flat commands.
 kavrix put github/token --profile work --vault <vault-id>
-kavrix get github/token --profile work --vault <vault-id>
+kavrix get github/token --reveal --profile work --vault <vault-id>
 ```
 
-Commands prompt for sensitive input. Do not place secrets or MongoDB credentials
-in normal command arguments or shell history. Use `kavrix <command> --help` for
-the exact protected-input options available in this version.
+Sensitive input is prompted for or read from stdin; it is never accepted as a
+normal argument. Use `kavrix <command> --help` for the exact protected-input
+options in your installed version.
 
-## Main command groups
+## Command overview
 
-- `db profile`: manage protected non-secret datastore routes.
-- `db init`, `db status`: initialize or authenticate a multi-vault database.
-- `db vault`: create, list, inspect, or rename independently encrypted vaults.
-- `db recovery`: manage database-root recovery kits.
-- `migrate database`: explicitly copy a legacy version 2 vault into a database.
-- `db ping`: test direct MongoDB connectivity.
-- `init`, `vault`, `key`, `recovery`, `doctor`: version 2 compatibility commands.
-- `put`, `get`, `list`, `view`, `search`, `stats`: manage encrypted values.
-- `has`, `rename`, `remove`: inspect or change records without accidental reveal.
-- `vault list`, `vault status`: select and inspect vaults.
-- `key status|verify|copy|replicate|assign|rewrap`: manage protected key files.
-- `recovery create|verify|revoke|status|use`: manage protected recovery kits.
-- `doctor`, `doctor health`: authenticate, diagnose, and perform bounded safe repair.
+| Group                                                                      | Purpose                                                                               |
+| -------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
+| `db profile ...`                                                           | Manage non-secret datastore routes.                                                   |
+| `db init`, `db status`                                                     | Initialize or authenticate a multi-vault database.                                    |
+| `db vault ...`                                                             | Create, list, inspect, or rename encrypted vaults.                                    |
+| `db key create`                                                            | Create an exact-snapshot key for full local-file sharing.                             |
+| `db recovery ...`                                                          | Manage database-root recovery kits.                                                   |
+| `migrate database`                                                         | Copy one legacy version 2 vault into a database.                                      |
+| `put`, `get`, `list`, `view`, `search`, `stats`, `has`, `rename`, `remove` | Store, read, and organize credentials.                                                |
+| `key status/verify/copy/replicate/assign/rewrap`                           | Manage protected key files.                                                           |
+| `recovery create/verify/status/revoke/use`                                 | Manage recovery kits.                                                                 |
+| `doctor`, `doctor health`                                                  | Validate a vault; repair bounded transient state safely.                              |
+| `init`, `vault`, `legacy v2 commands`                                      | Version 2 compatibility surface.                                                      |
+| `run`                                                                      | Execute one command with selected credentials injected as environment variables only. |
+| `policy create/list/show/remove`                                           | Stored rules: allowlists, SHA-256 pins, TTLs, deny, confirmations.                    |
+| `grant create/list/revoke`                                                 | Temporary consumable authorizations with expiry and use caps.                         |
+| `audit`                                                                    | Plaintext-free security audit trail.                                                  |
+| `agent run`, `agent exec`                                                  | Credential firewall that brokers AI coding agents.                                    |
 
-Plaintext output is opt-in. `get` requires `--reveal`; listing and dashboard
+Plaintext output is always opt-in through `--reveal`; listing and dashboard
 commands never display credential values.
 
-## Security boundary
+## Running tools without pasting secrets
 
-Vault payloads and the private database catalog use XChaCha20-Poly1305
-authenticated encryption. Protected key and recovery files use Argon2id-derived
-keys and XChaCha20-Poly1305; HKDF-SHA-256 separates database, catalog, anchor,
-and vault wrapping purposes. Ciphertext is bound to exact database/vault identity,
-purpose, versions, revision, and metadata digest. Kavrix does not claim
-permanently unbreakable encryption.
+```sh
+kavrix run --secret AWS_KEY=aws/deploy-key -- terraform plan
 
-A DRK-authenticated local revision anchor detects database rollback,
-same-revision forks, and inconsistent catalog/vault heads. Normal database
-unlock fails closed if that anchor is missing or inconsistent.
+kavrix policy create deploy --secret aws/deploy-key \
+  --command terraform --hash terraform=<sha256> --ttl 30m
 
-MongoDB stores two collections of ciphertext plus visible opaque routing
-metadata; it never receives passphrases, DRKs, VRKs, labels, or decrypted values.
-Remote URIs must explicitly enable validated TLS. Kavrix cannot protect an unlocked machine from local
-administrators, same-user malware, keyloggers, terminal capture, or process-memory
-inspection. For local sharing, create a fresh share key with `kavrix db key create`
-and transfer it with its exact matching encrypted database snapshot. Deliver the
-passphrase separately; the pair grants access to all vaults. User identities,
-grants, roles, revocation, ownership
-transfer, environments, groups, structured items, and typed fields are not yet
-implemented. Losing all valid owner keys and database recovery kits makes the
-database unrecoverable by design.
+kavrix grant create aws/deploy-key --ttl 15m --max-uses 3
+
+kavrix agent run
+```
+
+Policies are evaluated fail-closed before any child process spawns, grants are
+consumed atomically and can be revoked immediately, and `kavrix audit` records
+policy, grant, authorization, and completion events without secret material.
+
+## Options worth knowing
+
+| Flag                                | What it does                                                               |
+| ----------------------------------- | -------------------------------------------------------------------------- |
+| `--profile`, `--profile-config-dir` | Select a datastore profile without storing secrets.                        |
+| `--vault <id>`                      | Select one opaque vault explicitly.                                        |
+| `--passphrase-stdin`                | Read the key passphrase from stdin.                                        |
+| `--database-url-stdin`              | Read the MongoDB URI from stdin.                                           |
+| `--value-stdin`                     | Read a credential value from stdin.                                        |
+| `--secrets-stdin`                   | Read every unlock secret from exact stdin frames.                          |
+| `--reveal`                          | The explicit guard that prints plaintext.                                  |
+| `--json`                            | Masked machine-readable output.                                            |
+| `--overwrite`                       | Opt in to replacing something that already exists.                         |
+| `--allow-insecure-transport`        | Explicit opt-in to unencrypted MongoDB transport (isolated networks only). |
+
+## Security model
+
+Vault payloads, the private database catalog, and wrapped keys use
+XChaCha20-Poly1305 authenticated encryption. Protected key and recovery files
+derive keys with Argon2id; HKDF-SHA-256 separates key purposes. Ciphertext is
+bound to exact database/vault identity, purpose, versions, revision, and a
+metadata digest, and a root-key-authenticated local revision anchor rejects
+rollback, forks, and inconsistent heads before plaintext is returned.
+
+MongoDB stores ciphertext plus opaque routing metadata in two collections; it
+never receives passphrases, root keys, labels, or decrypted values. Remote URIs
+must explicitly enable validated TLS.
+
+## Limitations
+
+- Kavrix cannot protect an unlocked machine from administrators, same-user
+  malware, keyloggers, terminal capture, or process-memory inspection, and an
+  authorized program can always read its own environment.
+- Losing all valid owner keys and all database recovery kits makes the database
+  permanently unrecoverable by design; there is no reset or escrow.
+- User identities, public enrollment, per-vault grants and roles, revocation
+  with rotation, ownership transfer, groups, structured items, and typed fields
+  are not yet implemented.
+- Windows command scripts (`.bat`, `.cmd`, `.com`) are refused for execution;
+  invoke real executables.
+
+For local sharing, create a fresh share key with `kavrix db key create` and
+transfer it with its exact matching encrypted database file; deliver the
+passphrase separately. The pair grants access to all vaults once unlocked.
 
 ## Documentation and support
 
 - [Full README](https://github.com/d4rkNinja/kavrix#readme)
 - [Command guide](https://github.com/d4rkNinja/kavrix/blob/main/docs/cli-reference.md)
 - [Threat model](https://github.com/d4rkNinja/kavrix/blob/main/docs/threat-model.md)
+- [Implementation status](https://github.com/d4rkNinja/kavrix/blob/main/docs/implementation-status.md)
 - [Security reports](https://github.com/d4rkNinja/kavrix/blob/main/SECURITY.md)
 - [Issue tracker](https://github.com/d4rkNinja/kavrix/issues)
 
