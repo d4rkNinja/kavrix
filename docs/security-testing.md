@@ -45,6 +45,11 @@ branch, function, line, and statement thresholds. `pnpm changeset status` is a
 release hygiene gate and fails when a changeset targets a package outside the
 active workspace.
 
+Every root Vitest worker runs against an isolated fake home directory created by
+`scripts/test-isolated-home.mjs`, so suites cannot observe or mutate a real
+machine-local datastore-profile registry under the user's home directory. Tests
+that exercise profile selection target an explicit protected config directory.
+
 `acceptance:database-container` packs the actual public package, installs it into
 an isolated temporary prefix with a dedicated npm cache, and invokes only that
 installed executable. Runtime-random passphrases, private labels, and plaintext

@@ -323,7 +323,10 @@ describe('datastore profiles', () => {
       expect(connect).toHaveBeenCalledWith(
         'mongodb://localhost/ignored-by-explicit-routing',
         'explicit_database',
-        { collectionName: 'explicit_collection' },
+        {
+          allowInsecureTransport: false,
+          collectionName: 'explicit_collection',
+        },
       );
       expect(ping).toHaveBeenCalledOnce();
       expect(close).toHaveBeenCalledOnce();
@@ -364,7 +367,10 @@ describe('datastore profiles', () => {
       expect(connect).toHaveBeenCalledWith(
         'mongodb://localhost/ignored-by-profile-routing',
         'credentials',
-        { collectionName: 'kavrix_vaults' },
+        {
+          allowInsecureTransport: false,
+          collectionName: 'kavrix_vaults',
+        },
       );
     } finally {
       write.mockRestore();

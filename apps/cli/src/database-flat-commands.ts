@@ -177,7 +177,9 @@ async function selectedDatabaseProfile(
       : { configDirectory: options.profileConfigDir };
   const registry =
     options.profile === undefined
-      ? await DatastoreProfileRegistry.openIfPresent(registryOptions)
+      ? hasExplicitStandaloneRouting(options)
+        ? null
+        : await DatastoreProfileRegistry.openIfPresent(registryOptions)
       : await DatastoreProfileRegistry.open(registryOptions);
   if (registry === null) return null;
   const profile =
@@ -186,6 +188,18 @@ async function selectedDatabaseProfile(
       : await registry.get(profileIdSchema.parse(options.profile));
   if (profile?.databaseId === undefined) return null;
   return resolveSelectedProfileRouting(profile, options);
+}
+
+/**
+ * Explicit standalone routing (`--datastore` without `--profile`) selects the
+ * legacy single-vault path; an ambient current profile must never adopt such
+ * an invocation into database-container mode.
+ */
+function hasExplicitStandaloneRouting(options: DatabaseFlatCommandOptions): boolean {
+  if (options.profile !== undefined) return false;
+  const overrides = options.routingOverrides;
+  if (overrides !== undefined) return overrides.datastore !== undefined;
+  return options.datastore !== undefined;
 }
 
 function resolveSelectedProfileRouting(

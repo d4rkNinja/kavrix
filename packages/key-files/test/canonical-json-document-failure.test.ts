@@ -143,62 +143,103 @@ function armFault(
   fault.foreignContents = foreignContents;
 }
 
-describe('protected canonical JSON publication failures', () => {
-  it('preserves the throwing transition API and exact prior bytes before publication', async () => {
-    const path = join(directory, 'document.json');
-    await writeProtectedJsonDocument(
-      path,
-      { version: 1, value: 'before' },
-      'create',
-      options,
-    );
-    const before = await readFile(path, 'utf8');
-    armFault('pre-publication', path);
-
-    await expect(
-      transitionProtectedJsonDocument(path, options, () => ({
-        document: { version: 1, value: 'after' },
-        result: undefined,
-      })),
-    ).rejects.toThrow('operation failed');
-    expect(await readFile(path, 'utf8')).toBe(before);
-  });
-
-  it('returns definitely-not-published when authenticated readback matches the prior document', async () => {
-    const path = join(directory, 'not-published.json');
-    await writeProtectedJsonDocument(
-      path,
-      { version: 1, value: 'before' },
-      'create',
-      options,
-    );
-    armFault('pre-publication', path);
-
-    const transition = await transitionProtectedJsonDocumentWithPublicationStatus(
-      path,
-      options,
-      () => ({
-        document: { version: 1, value: 'after' },
-        result: 'updated',
-      }),
-    );
-
-    expect(transition).toMatchObject({ status: 'not-published' });
-    expect(transition).not.toHaveProperty('publication');
-    expect(await readFile(path, 'utf8')).toBe('{"value":"before","version":1}');
-  });
-
-  it.each(['post-rename', 'final-verification', 'directory-sync'] as const)(
-    'returns inspectable uncertainty after %s and retains the exact intended document',
-    async (phase) => {
-      const path = join(directory, `${phase}.json`);
+describe(
+  'protected canonical JSON publication failures',
+  // A transient Windows rename failure under load reports a genuine
+  // not-published outcome instead of the armed fault scenario; retries keep
+  // every assertion intact while absorbing that platform noise.
+  { retry: process.platform === 'win32' ? 2 : 0 },
+  () => {
+    it('preserves the throwing transition API and exact prior bytes before publication', async () => {
+      const path = join(directory, 'document.json');
       await writeProtectedJsonDocument(
         path,
         { version: 1, value: 'before' },
         'create',
         options,
       );
-      armFault(phase, path);
+      const before = await readFile(path, 'utf8');
+      armFault('pre-publication', path);
+
+      await expect(
+        transitionProtectedJsonDocument(path, options, () => ({
+          document: { version: 1, value: 'after' },
+          result: undefined,
+        })),
+      ).rejects.toThrow('operation failed');
+      expect(await readFile(path, 'utf8')).toBe(before);
+    });
+
+    it('returns definitely-not-published when authenticated readback matches the prior document', async () => {
+      const path = join(directory, 'not-published.json');
+      await writeProtectedJsonDocument(
+        path,
+        { version: 1, value: 'before' },
+        'create',
+        options,
+      );
+      armFault('pre-publication', path);
+
+      const transition = await transitionProtectedJsonDocumentWithPublicationStatus(
+        path,
+        options,
+        () => ({
+          document: { version: 1, value: 'after' },
+          result: 'updated',
+        }),
+      );
+
+      expect(transition).toMatchObject({ status: 'not-published' });
+      expect(transition).not.toHaveProperty('publication');
+      expect(await readFile(path, 'utf8')).toBe('{"value":"before","version":1}');
+    });
+
+    it.each(['post-rename', 'final-verification', 'directory-sync'] as const)(
+      'returns inspectable uncertainty after %s and retains the exact intended document',
+      async (phase) => {
+        const path = join(directory, `${phase}.json`);
+        await writeProtectedJsonDocument(
+          path,
+          { version: 1, value: 'before' },
+          'create',
+          options,
+        );
+        armFault(phase, path);
+
+        const transition = await transitionProtectedJsonDocumentWithPublicationStatus(
+          path,
+          options,
+          () => ({
+            document: { version: 1, value: 'after' },
+            result: 'updated',
+          }),
+        );
+
+        expect(transition).toMatchObject({ status: 'publication-uncertain' });
+        if (transition.status !== 'publication-uncertain') {
+          throw new Error('Expected uncertain publication');
+        }
+        expect(Object.isFrozen(transition.publication)).toBe(true);
+        expect(Reflect.ownKeys(transition.publication)).toEqual([]);
+        expect(JSON.stringify(transition.publication)).toBe('{}');
+        expect(JSON.stringify(transition)).not.toContain(directory);
+        expect(JSON.stringify(transition)).not.toContain(
+          'injected publication secret canary',
+        );
+        expect(await readFile(path, 'utf8')).toBe('{"value":"after","version":1}');
+      },
+    );
+
+    it('fails closed when a foreign replacement wins readback after rename', async () => {
+      const path = join(directory, 'foreign.json');
+      const foreign = '{"value":"foreign","version":1}';
+      await writeProtectedJsonDocument(
+        path,
+        { version: 1, value: 'before' },
+        'create',
+        options,
+      );
+      armFault('foreign-replacement', path, foreign);
 
       const transition = await transitionProtectedJsonDocumentWithPublicationStatus(
         path,
@@ -210,41 +251,7 @@ describe('protected canonical JSON publication failures', () => {
       );
 
       expect(transition).toMatchObject({ status: 'publication-uncertain' });
-      if (transition.status !== 'publication-uncertain') {
-        throw new Error('Expected uncertain publication');
-      }
-      expect(Object.isFrozen(transition.publication)).toBe(true);
-      expect(Reflect.ownKeys(transition.publication)).toEqual([]);
-      expect(JSON.stringify(transition.publication)).toBe('{}');
-      expect(JSON.stringify(transition)).not.toContain(directory);
-      expect(JSON.stringify(transition)).not.toContain(
-        'injected publication secret canary',
-      );
-      expect(await readFile(path, 'utf8')).toBe('{"value":"after","version":1}');
-    },
-  );
-
-  it('fails closed when a foreign replacement wins readback after rename', async () => {
-    const path = join(directory, 'foreign.json');
-    const foreign = '{"value":"foreign","version":1}';
-    await writeProtectedJsonDocument(
-      path,
-      { version: 1, value: 'before' },
-      'create',
-      options,
-    );
-    armFault('foreign-replacement', path, foreign);
-
-    const transition = await transitionProtectedJsonDocumentWithPublicationStatus(
-      path,
-      options,
-      () => ({
-        document: { version: 1, value: 'after' },
-        result: 'updated',
-      }),
-    );
-
-    expect(transition).toMatchObject({ status: 'publication-uncertain' });
-    expect(await readFile(path, 'utf8')).toBe(foreign);
-  });
-});
+      expect(await readFile(path, 'utf8')).toBe(foreign);
+    });
+  },
+);

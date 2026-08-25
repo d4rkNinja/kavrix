@@ -490,7 +490,9 @@ async function resolveRoute(options: DatabaseCommandOptions): Promise<ResolvedRo
       : { configDirectory: options.profileConfigDir };
   const registry =
     options.profile === undefined
-      ? await DatastoreProfileRegistry.openIfPresent(registryOptions)
+      ? options.datastore === undefined
+        ? await DatastoreProfileRegistry.openIfPresent(registryOptions)
+        : null
       : await DatastoreProfileRegistry.open(registryOptions);
   const selected =
     registry === null

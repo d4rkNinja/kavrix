@@ -5,8 +5,12 @@
 // the slower process boundary enough time on hosted and local Windows runners.
 const testBoundaryTimeoutMs = process.platform === 'win32' ? 360_000 : 10_000;
 
+// Every suite must be hermetic: commands fall back to the real per-user
+// datastore profile registry under the home directory, so each worker gets an
+// isolated fake home and can never observe or mutate machine-local Kavrix state.
 export default defineConfig({
   test: {
+    setupFiles: ['./scripts/test-isolated-home.mjs'],
     fileParallelism: process.platform !== 'win32',
     hookTimeout: testBoundaryTimeoutMs,
     include: [

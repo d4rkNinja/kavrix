@@ -95,9 +95,11 @@ not be documented as available.
 The active release gate covers only the five workspaces listed above. Root
 Vitest includes the active CLI, schema, crypto, key-file, and storage suites,
 including the portable-key and revision-anchor security tests; its coverage
-scope is restricted to those same five source trees. Parked package sources are
-not counted as active release coverage and are not represented as shipped
-features in this ledger.
+scope is restricted to those same five source trees. Each Vitest worker runs
+against an isolated fake home directory so machine-local Kavrix state, such as a
+real datastore-profile registry, cannot influence results. Parked package
+sources are not counted as active release coverage and are not represented as
+shipped features in this ledger.
 
 The current verification commands and their platform limits are maintained in
 [`docs/security-testing.md`](security-testing.md). A feature is not marked

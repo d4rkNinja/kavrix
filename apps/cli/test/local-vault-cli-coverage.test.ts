@@ -1737,6 +1737,34 @@ describe(
         ),
       ).toContain('destroy datastore unavailable');
     });
+
+    it('keeps explicit standalone routing out of an ambient database-bound profile', async () => {
+      const value = await target();
+      const ambientConfig = join(value.directory, 'ambient-profile');
+      await runCli([
+        'db',
+        'profile',
+        'add',
+        'ambient',
+        '--config-dir',
+        ambientConfig,
+        '--datastore',
+        'file',
+        '--database-id',
+        'db_ambient',
+        '--data-file',
+        join(value.directory, 'ambient.database'),
+        '--key-file',
+        join(value.directory, 'ambient.key'),
+      ]);
+      await runCli(['db', 'profile', 'use', 'ambient', '--config-dir', ambientConfig]);
+      await initVault(value);
+      expect(await put(value, 'standalone', ALPHA_VALUE)).toMatchObject({
+        saved: true,
+        name: 'standalone',
+        revision: 1,
+      });
+    });
   },
 );
 

@@ -181,6 +181,7 @@ describe('database owner command composition', () => {
       true,
     );
     expect(connect).toHaveBeenCalledWith('mongodb://localhost:27017', 'kavrix', {
+      allowInsecureTransport: false,
       databaseCollectionName: 'kavrix_databases',
       vaultCollectionName: 'kavrix_vaults',
     });
@@ -248,6 +249,7 @@ describe('database owner command composition', () => {
       'mongodb://localhost:27018',
       'custom_database',
       {
+        allowInsecureTransport: false,
         databaseCollectionName: 'custom_databases',
         vaultCollectionName: 'custom_vaults',
       },

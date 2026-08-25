@@ -870,7 +870,9 @@ async function resolveProfileForPing(
       : { configDirectory: options.profileConfigDir };
   const registry =
     options.profile === undefined
-      ? await DatastoreProfileRegistry.openIfPresent(registryOptions)
+      ? overrides.datastore === undefined
+        ? await DatastoreProfileRegistry.openIfPresent(registryOptions)
+        : null
       : await DatastoreProfileRegistry.open(registryOptions);
   if (registry === null) return { options, profile: null };
   let profile: DatastoreProfile | null;
