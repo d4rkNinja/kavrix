@@ -93,6 +93,22 @@ importers:
       mongodb:
         specifier: 7.5.0
         version: 7.5.0
+    devDependencies:
+      '@kavrix/crypto':
+        specifier: workspace:*
+        version: link:../../packages/crypto
+      '@kavrix/key-files':
+        specifier: workspace:*
+        version: link:../../packages/key-files
+      '@kavrix/runner':
+        specifier: workspace:*
+        version: link:../../packages/runner
+      '@kavrix/schemas':
+        specifier: workspace:*
+        version: link:../../packages/schemas
+      '@kavrix/storage':
+        specifier: workspace:*
+        version: link:../../packages/storage
 
   packages/crypto:
     dependencies:

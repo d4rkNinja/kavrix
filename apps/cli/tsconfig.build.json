@@ -45,6 +45,7 @@
     { "path": "../../packages/schemas/tsconfig.build.json" },
     { "path": "../../packages/crypto/tsconfig.build.json" },
     { "path": "../../packages/key-files/tsconfig.build.json" },
-    { "path": "../../packages/storage/tsconfig.build.json" }
+    { "path": "../../packages/storage/tsconfig.build.json" },
+    { "path": "../../packages/runner/tsconfig.build.json" }
   ]
 }
