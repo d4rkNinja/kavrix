@@ -219,12 +219,6 @@ issues for them. Bug reports and feature requests go to the
 described in [CONTRIBUTING.md](CONTRIBUTING.md). The published npm package is
 built through GitHub Actions with trusted publishing and provenance.
 
-## Word-list attribution
-
-Generated passphrases use **EFF Short Wordlist for Passphrases #1**, from
-https://www.eff.org/files/2016/09/08/eff_short_wordlist_1.txt, licensed under
-CC BY 4.0: https://creativecommons.org/licenses/by/4.0/.
-
 ## License
 
 [MIT](LICENSE)
