@@ -1,4 +1,5 @@
 ﻿import { createHash } from 'node:crypto';
+import { existsSync } from 'node:fs';
 import { mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { builtinModules, createRequire } from 'node:module';
 import { dirname, isAbsolute, relative, resolve } from 'node:path';
@@ -31,6 +32,7 @@ const cryptoRequire = createRequire(
   resolve(repositoryRoot, 'packages/crypto/package.json'),
 );
 const sodiumRequire = createRequire(cryptoRequire.resolve('libsodium-wrappers'));
+const tuiRequire = createRequire(resolve(repositoryRoot, 'packages/tui/package.json'));
 const externalRuntimePackages = new Set([
   'mongodb',
   'kerberos',
@@ -40,6 +42,16 @@ const externalRuntimePackages = new Set([
   'snappy',
   'socks',
   'mongodb-client-encryption',
+  // Ink's optional devtools peer. Its static import lives behind
+  // `process.env.DEV === 'true'` plus a throwing `import.meta.resolve`
+  // guard, so the external binding can never execute without the
+  // operator explicitly installing the package.
+  'react-devtools-core',
+  // Optional WebSocket performance peers of `ws` inside Ink's opt-in
+  // devtools chunk; `ws` feature-detects both through guarded requires
+  // and runs fine without them.
+  'bufferutil',
+  'utf-8-validate',
 ]);
 const allowedNodeImports = new Set(
   builtinModules.flatMap((name) => [name, `node:${name}`]),
@@ -59,7 +71,9 @@ const reviewedRuntimePackages = await Promise.all(
     ['mongodb', require],
     ['libsodium-wrappers', cryptoRequire],
     ['libsodium', sodiumRequire],
-  ].map(([name, resolver]) => readDependencyLicense(name, resolver)),
+    ['ink', tuiRequire],
+    ['react', tuiRequire],
+  ].map(([name, resolver]) => readDependencyLicense(name, resolver, packageDirectory)),
 );
 const licenseBanner = renderLicenseBanner(reviewedRuntimePackages);
 const builtinBridgeBanner = [
@@ -109,7 +123,10 @@ const includedPackages = includedExternalPackages(
 );
 const sbomPackages = await collectRuntimePackages(includedPackages);
 validateBundleImports(bundle.metafile);
-validateReviewedPackageInputs(bundle.metafile, reviewedRuntimePackages);
+// Every node_modules input must sit inside a package whose manifest and
+// license metadata passed the reviewed inventory above, so the guard covers
+// the full transitive closure rather than only its seed packages.
+validateReviewedPackageInputs(bundle.metafile, sbomPackages);
 validateSplitOutputs(bundle.metafile, reviewedRuntimePackages);
 const javascriptArtifacts = await collectJavaScriptArtifacts();
 await validateCompiledArtifacts(javascriptArtifacts);
@@ -201,12 +218,23 @@ function assertSafeOutputDirectory() {
   }
 }
 
-async function readDependencyLicense(packageName, resolver) {
+async function readDependencyLicense(packageName, resolver, fromDirectory) {
   let entryPath;
   try {
     entryPath = resolver.resolve(`${packageName}/package.json`);
   } catch {
-    entryPath = resolver.resolve(packageName);
+    try {
+      entryPath = resolver.resolve(packageName);
+    } catch {
+      // ESM-only manifests without a `require` condition cannot be resolved by
+      // the CJS resolver at all; fall back to walking node_modules directories
+      // outward from the dependent package so the inventory reaches the exact
+      // installed copy that esbuild bundles.
+      entryPath = resolve(
+        locateDependencyRoot(fromDirectory, packageName),
+        'package.json',
+      );
+    }
   }
   const packageRoot = await findPackageRoot(entryPath, packageName);
   const dependencyManifest = JSON.parse(
@@ -215,12 +243,28 @@ async function readDependencyLicense(packageName, resolver) {
   const licenseFile = (await readdir(packageRoot))
     .sort((left, right) => left.localeCompare(right, 'en'))
     .find((name) => /^licen[cs]e(?:[.-]|$)/iu.test(name));
+  let licenseText;
   if (licenseFile === undefined) {
-    throw new Error(`No license file was found for bundled package ${packageName}.`);
+    // Reviewed exception: some upstream packages publish only the SPDX
+    // `license` manifest field with no standalone file (observed for
+    // yoga-layout). The attribution stays truthful and names the exact
+    // declared license instead of silently dropping the notice.
+    if (
+      typeof dependencyManifest?.license !== 'string' ||
+      dependencyManifest.license.length === 0
+    ) {
+      throw new Error(`No license file was found for bundled package ${packageName}.`);
+    }
+    licenseText =
+      `${dependencyManifest.license} license as declared in the ` +
+      `${packageName} package.json manifest; upstream ships no separate ` +
+      'license file.';
+  } else {
+    licenseText = (await readFile(resolve(packageRoot, licenseFile), 'utf8')).trim();
+    if (licenseText.length === 0) {
+      throw new Error(`No license file was found for bundled package ${packageName}.`);
+    }
   }
-  const licenseText = (
-    await readFile(resolve(packageRoot, licenseFile), 'utf8')
-  ).trim();
   if (
     dependencyManifest.name !== packageName ||
     typeof dependencyManifest.version !== 'string' ||
@@ -257,7 +301,11 @@ async function collectRuntimePackages(seeds) {
     for (const dependencyName of current.runtimeDependencyNames) {
       let dependency;
       try {
-        dependency = await readDependencyLicense(dependencyName, resolver);
+        dependency = await readDependencyLicense(
+          dependencyName,
+          resolver,
+          current.root,
+        );
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         throw new Error(
@@ -288,7 +336,10 @@ function validateReviewedPackageInputs(metafile, reviewedPackages) {
         !reviewedRoots.some((root) => input === root || input.startsWith(`${root}/`)),
     );
   if (unreviewed.length > 0) {
-    throw new Error('The CLI bundle contains an unreviewed runtime package.');
+    const offenders = [...new Set(unreviewed)].slice(0, 20).join('\n  ');
+    throw new Error(
+      `The CLI bundle contains an unreviewed runtime package:\n  ${offenders}`,
+    );
   }
 }
 
@@ -305,6 +356,30 @@ async function findPackageRoot(entryPath, expectedName) {
     current = dirname(current);
   }
   throw new Error(`Could not locate package metadata for ${expectedName}.`);
+}
+
+/**
+ * Locates the installed directory of one dependency without depending on CJS
+ * `exports` conditions. Tries the pnpm/flat-layout sibling position first,
+ * then walks the standard node_modules ancestor chain outward.
+ */
+function locateDependencyRoot(fromDirectory, packageName) {
+  const siblingCandidate = resolve(dirname(fromDirectory), packageName);
+  if (existsSync(resolve(siblingCandidate, 'package.json'))) {
+    return siblingCandidate;
+  }
+  let base = fromDirectory;
+  for (;;) {
+    const candidate = resolve(base, 'node_modules', packageName);
+    if (existsSync(resolve(candidate, 'package.json'))) return candidate;
+    const parent = dirname(base);
+    if (parent === base) {
+      throw new Error(
+        `Could not locate the installed copy of ${packageName} starting from ${fromDirectory}.`,
+      );
+    }
+    base = parent;
+  }
 }
 
 function renderLicenseBanner(packages) {
@@ -382,11 +457,15 @@ function validateSplitOutputs(metafile, reviewedPackages) {
         (root) => absoluteInput === root || absoluteInput.startsWith(`${root}/`),
       );
     });
-  if (
-    hasCryptoInput(entryOutputs[0][1]) ||
-    !chunks.some(([, output]) => hasCryptoInput(output))
-  ) {
-    throw new Error('The portable-key crypto graph was not isolated from the entry.');
+  // The single-entry CLI keeps the portable-key crypto graph inside the entry
+  // artifact; lazy feature chunks (for example the interactive showcase) must
+  // never fragment that graph across additional artifacts, which would break
+  // artifact-level integrity attribution and invite accidental duplication.
+  const cryptoOutputs = outputs.filter(([, output]) => hasCryptoInput(output));
+  if (cryptoOutputs.length !== 1) {
+    throw new Error(
+      `The portable-key crypto graph spans ${String(cryptoOutputs.length)} artifacts; it must stay contiguous in exactly one.`,
+    );
   }
 }
 

@@ -26,14 +26,14 @@
     "pnpm": ">=11.0.0"
   },
   "scripts": {
-    "build": "pnpm -r --if-present build",
+    "build": "pnpm --filter @kavrix/tui --if-present build && pnpm -r --if-present build",
     "clean": "pnpm -r --if-present clean",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "lint": "eslint . --max-warnings 0",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
-    "typecheck": "pnpm -r --if-present typecheck",
+    "typecheck": "pnpm --filter @kavrix/tui --if-present typecheck && pnpm -r --if-present typecheck",
     "verify": "pnpm build && pnpm format:check && pnpm lint && pnpm typecheck && pnpm test",
     "verify:all": "node scripts/verify-all.mjs",
     "verify:quick": "node scripts/verify-all.mjs --quick",
@@ -56,8 +56,11 @@
     "@kavrix/runner": "workspace:*",
     "@kavrix/schemas": "workspace:*",
     "@kavrix/storage": "workspace:*",
+    "@kavrix/tui": "workspace:*",
     "commander": "15.0.0",
     "esbuild": "0.28.1",
+    "ink": "catalog:",
+    "react": "catalog:",
     "yaml": "2.8.3",
     "zod": "4.4.3"
   },

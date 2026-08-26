@@ -68,6 +68,7 @@ import {
   MongoLocalVaultStore,
   type EncryptedVaultStore,
 } from '@kavrix/storage';
+import type { StorageShowcaseHandle } from '@kavrix/tui';
 import { Command } from 'commander';
 
 import { addDatabaseOwnerCommands } from './database-commands.js';
@@ -1402,12 +1403,15 @@ export async function readInitStorageSelection(
   };
   const restoreRawMode = input.isRaw;
   let selected: 'file' | 'mongodb' = 'file';
-  const render = (replace: boolean): void => {
-    if (replace) output.write('\u001b[2A');
-    output.write(
-      `\r\u001b[2K${selected === 'file' ? '❯' : ' '} Local encrypted file\n` +
-        `\r\u001b[2K${selected === 'mongodb' ? '❯' : ' '} MongoDB\n`,
-    );
+  // The showcase loads lazily behind a dynamic import so every non-interactive
+  // command skips the Ink/React graph entirely. Terminal listeners attach
+  // synchronously exactly as before, and bytes arriving while the showcase
+  // mounts are replayed in order, so no keystroke can be lost.
+  let showcase: StorageShowcaseHandle | undefined;
+  let mounted = false;
+  const bufferedInput: string[] = [];
+  const render = (): void => {
+    showcase?.select(selected);
   };
   return await new Promise((resolve, reject) => {
     let settled = false;
@@ -1420,16 +1424,15 @@ export async function readInitStorageSelection(
       input.off('data', onData);
       input.off('end', onEnd);
       input.off('error', onError);
-      try {
-        setRawMode(restoreRawMode);
-        input.pause();
-      } catch {
-        if (!(outcome instanceof Error)) {
-          outcome = new LocalCliError('Storage selection cleanup failed.');
-        }
-      }
-      if (outcome instanceof Error) reject(outcome);
-      else resolve(outcome);
+      void finalizeSelection(showcase, input, setRawMode, restoreRawMode, outcome).then(
+        (finalOutcome) => {
+          if (finalOutcome instanceof Error) reject(finalOutcome);
+          else resolve(finalOutcome);
+        },
+        () => {
+          reject(new LocalCliError('Storage selection cleanup failed.'));
+        },
+      );
     };
     const onError = (): void => {
       finish(new LocalCliError('Storage selection could not be read.'));
@@ -1439,6 +1442,10 @@ export async function readInitStorageSelection(
     };
     const onData = (chunk: Buffer | string): void => {
       const value = typeof chunk === 'string' ? chunk : chunk.toString('utf8');
+      if (!mounted) {
+        bufferedInput.push(value);
+        return;
+      }
       if (value.includes('\u0003')) {
         finish('cancel');
         return;
@@ -1462,23 +1469,23 @@ export async function readInitStorageSelection(
         if (pending.startsWith('\u001b[A')) {
           selected = 'file';
           pending = pending.slice(3);
-          render(true);
+          render();
           continue;
         }
         if (pending.startsWith('\u001b[B')) {
           selected = 'mongodb';
           pending = pending.slice(3);
-          render(true);
+          render();
           continue;
         }
         const key = pending[0]?.toLowerCase();
         pending = pending.slice(1);
         if (key === 'k') {
           selected = 'file';
-          render(true);
+          render();
         } else if (key === 'j') {
           selected = 'mongodb';
-          render(true);
+          render();
         }
       }
     };
@@ -1488,12 +1495,64 @@ export async function readInitStorageSelection(
       input.once('end', onEnd);
       input.on('data', onData);
       setRawMode(true);
-      render(false);
       input.resume();
     } catch {
       finish(new LocalCliError('Storage selection could not be started.'));
+      return;
     }
+    void (async () => {
+      try {
+        const { mountStorageSelectionShowcase } = await import('@kavrix/tui');
+        showcase = mountStorageSelectionShowcase({
+          stdout: output,
+          color: showcaseColorEnabled(output),
+        });
+        mounted = true;
+        render();
+        for (const value of bufferedInput.splice(0)) onData(value);
+      } catch {
+        finish(new LocalCliError('Storage selection could not be started.'));
+      }
+    })();
   });
+}
+
+/**
+ * Tears down the interactive showcase and the raw-mode terminal boundary in a
+ * fixed order. Any teardown failure converts the outcome into the stable
+ * cleanup error so callers can never observe a half-restored terminal.
+ */
+async function finalizeSelection(
+  showcase: StorageShowcaseHandle | undefined,
+  input: NodeJS.ReadStream,
+  setRawMode: (enabled: boolean) => void,
+  restoreRawMode: boolean,
+  outcome: 'file' | 'mongodb' | 'back' | 'cancel' | Error,
+): Promise<'file' | 'mongodb' | 'back' | 'cancel' | Error> {
+  let finalOutcome = outcome;
+  if (showcase !== undefined) {
+    try {
+      await showcase.end();
+    } catch {
+      if (!(finalOutcome instanceof Error)) {
+        finalOutcome = new LocalCliError('Storage selection cleanup failed.');
+      }
+    }
+  }
+  try {
+    setRawMode(restoreRawMode);
+    input.pause();
+  } catch {
+    if (!(finalOutcome instanceof Error)) {
+      finalOutcome = new LocalCliError('Storage selection cleanup failed.');
+    }
+  }
+  return finalOutcome;
+}
+
+function showcaseColorEnabled(output: NodeJS.WriteStream): boolean {
+  if (!output.isTTY) return false;
+  return process.env['NO_COLOR'] === undefined && process.env['TERM'] !== 'dumb';
 }
 
 function initOnboardingColorEnabled(): boolean {

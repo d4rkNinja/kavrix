@@ -202,7 +202,18 @@ async function main() {
     );
 
     const files = (await walkFiles(packageRoot)).sort();
-    assertExactPackageFiles(files);
+    // The interactive showcase ships as deterministic lazy chunks next to the
+    // entry; the allowlist stays exact while accepting only that chunk shape.
+    const chunkFiles = files.filter((file) => /^dist\/chunks\//u.test(file));
+    const fixedFiles = files.filter((file) => !/^dist\/chunks\//u.test(file));
+    assertExactPackageFiles(fixedFiles);
+    assert(chunkFiles.length > 0, 'Packed package is missing its lazy chunks');
+    for (const chunk of chunkFiles) {
+      assert(
+        /^dist\/chunks\/chunk-[A-Z0-9]+\.js$/u.test(chunk),
+        `Lazy chunk has a non-deterministic name: ${chunk}`,
+      );
+    }
     for (const file of files) {
       assertSafeText(await readFile(join(packageRoot, file), 'utf8'), file);
     }

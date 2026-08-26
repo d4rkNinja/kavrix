@@ -6,8 +6,9 @@ The supported product is the `kavrix` CLI in `apps/cli`. It persists one
 authenticated encrypted database with multiple independently encrypted vaults
 in a hardened local container or two MongoDB collections. Version 2 single-vault
 documents remain supported through stable compatibility commands and explicit
-copy-first migration. No Kavrix API server, sync daemon, SQLite cache, or
-interactive Ink TUI is required or shipped.
+copy-first migration. No Kavrix API server or sync daemon is required or
+shipped; the only interactive terminal surface is the schema-driven Ink
+showcase in `packages/tui` used by guided `init`.
 
 Active release workspaces:
 
@@ -16,6 +17,7 @@ Active release workspaces:
 - `@kavrix/key-files`: protected database-owner key, recovery-kit, legacy key, revision-anchor, and sealed authorization-state files.
 - `@kavrix/storage`: database-scoped local/MongoDB adapters and fail-closed URI/TLS policy.
 - `@kavrix/runner`: shell-free child execution with minimal environments and secret redaction in captured output.
+- `@kavrix/tui`: Ink components for the interactive init showcase (animated storage selection); presentational only, with static strings and no persistence or cryptography.
 - `kavrix`: CLI composition, masked input, sanitized rendering, credential execution, policy firewall, and npm package.
 
 The active-versus-parked source boundary and its verification commands are
@@ -25,8 +27,10 @@ are not workspace members, release artifacts, or evidence for the active release
 
 ## Implemented command surface
 
-- guided interactive root `init` onboarding with arrow-key local-file or MongoDB
-  selection, destination-local validation retries, protected user-data defaults,
+- guided interactive root `init` onboarding with an animated, colorful Ink
+  showcase for local-file or MongoDB selection (arrow keys, j/k, Enter, Esc,
+  Ctrl+C; plain numbered fallback without a TTY), destination-local validation
+  retries, protected user-data defaults,
   masked secret handoff, back/cancel navigation, and static recovery next steps;
   explicit and non-interactive init invocations retain their flag-driven behavior;
 - protected non-secret datastore profile add/list/use/status/remove;

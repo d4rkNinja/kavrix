@@ -5,6 +5,7 @@ packages:
   - packages/key-files
   - packages/storage
   - packages/runner
+  - packages/tui
 
 strictPeerDependencies: true
 preferWorkspacePackages: true
@@ -23,6 +24,7 @@ allowBuilds:
 catalog:
   '@types/node': 24.13.3
   '@types/react': 19.2.18
+  chalk: 5.6.2
   commander: 15.0.0
   fast-check: 4.9.0
   fastify: 5.11.0

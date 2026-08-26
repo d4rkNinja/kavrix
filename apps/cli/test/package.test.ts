@@ -42,12 +42,25 @@ describe('npm package contract', () => {
 
   it('contains only compiled artifacts and release metadata', () => {
     expect(existsSync(distRoot)).toBe(true);
-    expect(listFiles(distRoot).sort()).toEqual([
+    const files = listFiles(distRoot).sort();
+    const fixedArtifacts = files.filter(
+      (file) => !/^chunks\/chunk-[A-Z0-9]+\.js$/u.test(file),
+    );
+    const chunkArtifacts = files.filter((file) =>
+      /^chunks\/chunk-[A-Z0-9]+\.js$/u.test(file),
+    );
+    expect(fixedArtifacts).toEqual([
       'bin.js',
       'index.d.ts',
       'index.js',
       'kavrix.cdx.json',
     ]);
+    // The interactive showcase loads Ink/React through a dynamic import, so
+    // the bundler emits deterministic lazy chunks alongside the entry.
+    expect(chunkArtifacts.length).toBeGreaterThan(0);
+    for (const chunk of chunkArtifacts) {
+      expect(chunk).toMatch(/^chunks\/chunk-[A-Z0-9]+\.js$/u);
+    }
     expect(existsSync(join(cliRoot, 'README.md'))).toBe(true);
     expect(existsSync(join(cliRoot, 'LICENSE'))).toBe(true);
     expect(readFileSync(join(distRoot, 'index.js'), 'utf8')).toBe(

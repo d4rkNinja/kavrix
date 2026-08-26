@@ -2,6 +2,38 @@
 
 All notable user-facing and security changes to Kavrix are recorded here.
 
+## 0.2.2 - 2026-08-26
+
+### Added
+
+- The guided `init` storage selection is now an interactive Ink showcase:
+  animated color-cycling brandmark and accents, a live spinner, highlighted
+  option rows with descriptions, and the same key bindings as before
+  (Up/Down or j/k to choose, Enter to confirm, Esc to go back, Ctrl+C to
+  cancel). Terminals without a TTY keep the exact numbered line fallback, and
+  non-color environments (NO_COLOR, dumb TERM) render without styling. The
+  showcase ships as a lazily loaded bundle chunk, so non-interactive commands
+  never pay for the Ink/React graph.
+
+### Fixed
+
+- The Windows-only database-container acceptance suite expected the retired
+  generic "Database authentication failed." stderr for stale or tampered
+  local snapshots; it now pins the shipped rollback classification
+  ("The database snapshot was rejected as stale or forked.", exit 16) for an
+  authentic stale anchor, a stale database document, and a tampered anchor,
+  matching the error-mapping contract introduced in 0.2.1.
+- Interactive init no longer loses keystrokes typed during showcase startup;
+  terminal listeners attach before mounting and buffered input is replayed in
+  order.
+
+### Security and reliability
+
+- The packed package allowlist now covers every bundled dependency of the
+  showcase (Ink, React, and their reviewed runtime closure) with license
+  inventory and SBOM components; the portable-key crypto graph must remain
+  contiguous in exactly one compiled artifact.
+
 ## 0.2.1 - 2026-08-26
 
 ### Improved

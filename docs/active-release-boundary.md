@@ -1,6 +1,6 @@
 # Active release boundary
 
-Kavrix currently releases one public package, `kavrix`, and the five private
+Kavrix currently releases one public package, `kavrix`, and the six private
 workspace packages it needs to build and test that package:
 
 - `apps/cli` (`kavrix`)
@@ -9,10 +9,11 @@ workspace packages it needs to build and test that package:
 - `packages/key-files` (`@kavrix/key-files`)
 - `packages/storage` (`@kavrix/storage`)
 - `packages/runner` (`@kavrix/runner`)
+- `packages/tui` (`@kavrix/tui`)
 
 The source trees for `packages/client`, `packages/clipboard`, `packages/core`,
-`packages/import-export`, `packages/keychain`, `packages/local-store`,
-`packages/sync`, and `packages/tui` are parked/incubating.
+`packages/import-export`, `packages/keychain`, `packages/local-store`, and
+`packages/sync` are parked/incubating.
 They remain available for future work, but are deliberately absent from
 `pnpm-workspace.yaml`. They are not release packages, are not built by the
 active workspace gates, and must not be described as shipped or verified.
@@ -31,9 +32,10 @@ pnpm typecheck
 ```
 
 The root Vitest configuration includes the active CLI, schema, crypto, key-file,
-runner, and storage tests. In particular, the portable-key and revision-anchor
+runner, storage, and TUI tests. In particular, the portable-key and
+revision-anchor
 suites are part of the active security gate. Coverage is collected only from
-the six active source trees and uses the configured thresholds.
+the seven active source trees and uses the configured thresholds.
 
 The packed CLI, database-container acceptance, package allowlist, and audit
 checks remain required release gates. MongoDB integration requires an

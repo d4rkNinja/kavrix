@@ -15,6 +15,18 @@ export type TuiSaveResult =
       remote: ItemPayload;
     }>;
 
+/** Storage backends offered by the interactive init showcase. */
+export type ShowcaseStorageKind = 'file' | 'mongodb';
+
+export interface StorageSelectionShowcaseProps {
+  /** Currently highlighted storage backend. */
+  readonly selected: ShowcaseStorageKind;
+  /** ANSI styling is enabled only when the caller verified color support. */
+  readonly color?: boolean;
+  /** Restricts every rendered glyph to printable ASCII. */
+  readonly ascii?: boolean;
+}
+
 export interface TuiUseCasePort {
   /** Returns decrypted group metadata only after the caller has unlocked locally. */
   listGroups(signal: AbortSignal): Promise<readonly GroupPayload[]>;

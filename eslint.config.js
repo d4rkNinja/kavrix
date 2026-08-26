@@ -30,7 +30,6 @@ export default tseslint.config(
       'packages/core/**',
       'packages/clipboard/**',
       'packages/import-export/**',
-      'packages/tui/**',
       'packages/storage/src/collections.ts',
       'packages/storage/src/documents.ts',
       'packages/storage/src/mongo-backup-source.ts',

@@ -612,8 +612,9 @@ async function exerciseDatabaseContainer(run, paths) {
     );
     assert(
       rollbackFailure.stdout === '' &&
-        rollbackFailure.stderr === 'Database authentication failed.\n',
-      'a stale database snapshot did not fail with the redacted authentication error',
+        rollbackFailure.stderr ===
+          'The database snapshot was rejected as stale or forked.\n',
+      'a stale database snapshot did not fail with the pinned rollback error',
     );
   } finally {
     await writeFile(paths.primaryDataFile, currentDatabase);
@@ -633,8 +634,9 @@ async function exerciseDatabaseContainer(run, paths) {
     );
     assert(
       tamperedAnchorFailure.stdout === '' &&
-        tamperedAnchorFailure.stderr === 'Database authentication failed.\n',
-      'a tampered database anchor did not fail with the authentication error',
+        tamperedAnchorFailure.stderr ===
+          'The database snapshot was rejected as stale or forked.\n',
+      'a tampered database anchor did not fail with the pinned rollback error',
     );
   } finally {
     await writeFile(anchorPath, currentAnchor);

@@ -78,6 +78,7 @@ export default defineConfig({
       'packages/storage/test/mongo-encrypted-database.integration.test.ts',
       'packages/storage/test/mongo-local-vault.test.ts',
       'packages/storage/test/mongo-local-vault-uri.test.ts',
+      'packages/tui/test/**/*.test.ts',
     ],
     passWithNoTests: false,
     restoreMocks: true,
@@ -94,6 +95,7 @@ export default defineConfig({
         'packages/runner/src/**/*.{ts,tsx}',
         'packages/key-files/src/**/*.{ts,tsx}',
         'packages/storage/src/**/*.{ts,tsx}',
+        'packages/tui/src/**/*.{ts,tsx}',
       ],
       exclude: ['**/src/index.ts'],
       thresholds: {
