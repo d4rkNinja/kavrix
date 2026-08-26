@@ -2,12 +2,14 @@
 
 **Highlights**
 
-*Interactive Ink showcase for `kavrix init`* — the storage-selection step is now an animated, colorful Ink UI built in `packages/tui`:
+_Interactive Ink showcase for `kavrix init`_ — the storage-selection step is now an animated, colorful Ink UI built in `packages/tui`:
+
 - Color-cycling `KAVRIX` brandmark, live braille spinner, and per-option accents (green / yellow) that pulse every 120 ms. Respects `NO_COLOR`, `TERM=dumb`, and `--ascii` fallbacks.
 - Same key bindings as before: `↑/↓` or `j/k` to choose, `Enter` to confirm, `Esc` to go back, `Ctrl+C` to cancel. Without a TTY the exact numbered fallback (`Choose storage [1/2, …]`) is kept.
 - Ships as a lazily-loaded chunk (`dist/chunks/chunk-*.js`) so every non-interactive command never pays for the React/Ink graph.
 
-*Fixed Windows-only CI* — `acceptance:database-container` now pins the shipped `rollback` classification for stale/tampered snapshots:
+_Fixed Windows-only CI_ — `acceptance:database-container` now pins the shipped `rollback` classification for stale/tampered snapshots:
+
 - Expected `The database snapshot was rejected as stale or forked.` (exit 16) for authentic stale anchor, stale database document, and tampered anchor, matching the error-mapping contract from 0.2.1. Exit 10 remains only for wrong passphrases.
 - Packed-file allowlist and license inventory now cover the full showcase closure (ink 7.1.1, react 19.2.8 + 38 deps) with deterministic chunk names.
 
