@@ -795,10 +795,19 @@ function assertExactPackageFiles(files) {
   const normalized = [
     ...new Set(files.map((file) => file.replaceAll('\\', '/'))),
   ].sort();
+  const chunkFiles = normalized.filter((file) => /^dist\/chunks\//u.test(file));
+  const fixedFiles = normalized.filter((file) => !/^dist\/chunks\//u.test(file));
   assert(
-    JSON.stringify(normalized) === JSON.stringify(expectedPackageFiles),
+    JSON.stringify(fixedFiles) === JSON.stringify(expectedPackageFiles),
     'packed package does not match the exact public file allowlist',
   );
+  assert(chunkFiles.length > 0, 'packed package is missing its lazy chunks');
+  for (const chunk of chunkFiles) {
+    assert(
+      /^dist\/chunks\/chunk-[A-Z0-9]+\.js$/u.test(chunk),
+      `lazy chunk has a non-deterministic name: ${chunk}`,
+    );
+  }
 }
 
 function provePackageAllowlistRejectsExtras() {

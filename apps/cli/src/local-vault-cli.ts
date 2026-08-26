@@ -68,7 +68,6 @@ import {
   MongoLocalVaultStore,
   type EncryptedVaultStore,
 } from '@kavrix/storage';
-import type { StorageShowcaseHandle } from '@kavrix/tui';
 import { Command } from 'commander';
 
 import { addDatabaseOwnerCommands } from './database-commands.js';
@@ -1522,6 +1521,11 @@ export async function readInitStorageSelection(
  * fixed order. Any teardown failure converts the outcome into the stable
  * cleanup error so callers can never observe a half-restored terminal.
  */
+interface StorageShowcaseHandle {
+  select: (selected: 'file' | 'mongodb') => void;
+  end: () => Promise<void>;
+}
+
 async function finalizeSelection(
   showcase: StorageShowcaseHandle | undefined,
   input: NodeJS.ReadStream,
