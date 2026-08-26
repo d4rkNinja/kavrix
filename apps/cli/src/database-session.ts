@@ -2261,8 +2261,7 @@ function messageFor(code: DatabaseSessionErrorCode): string {
     invalid: 'The database operation is invalid.',
     'not-found': 'The requested vault was not found.',
     operation: 'The database operation failed.',
-    rollback:
-      'The trusted local database anchor is missing or rejected the stored snapshot as stale or forked.',
+    rollback: 'The database snapshot was rejected as stale or forked.',
   };
   return messages[code];
 }
