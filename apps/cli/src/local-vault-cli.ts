@@ -1501,7 +1501,14 @@ export async function readInitStorageSelection(
     }
     void (async () => {
       try {
-        const { mountStorageSelectionShowcase } = await import('@kavrix/tui');
+        const tuiShowcase = (await import('@kavrix/tui')) as unknown as {
+          mountStorageSelectionShowcase: (options: {
+            stdout: NodeJS.WriteStream;
+            color?: boolean;
+            ascii?: boolean;
+          }) => StorageShowcaseHandle;
+        };
+        const { mountStorageSelectionShowcase } = tuiShowcase;
         showcase = mountStorageSelectionShowcase({
           stdout: output,
           color: showcaseColorEnabled(output),
