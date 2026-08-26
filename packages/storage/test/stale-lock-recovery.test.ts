@@ -1,4 +1,4 @@
-import { lstat, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { constants, lstat, mkdtemp, open, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -46,6 +46,24 @@ function databaseLockPayload(pid: number): string {
   return JSON.stringify({ format: 'kavrix-database-lock', version: 1, pid });
 }
 
+/**
+ * Creates a lock fixture with the exact owner-only shape production writes.
+ * POSIX umask cannot strip bits from 0o600, so reclaim checks exercise lock
+ * metadata instead of failing on fixture permissions.
+ */
+async function writeLockFixture(path: string, payload: string): Promise<void> {
+  const handle = await open(
+    path,
+    constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY,
+    0o600,
+  );
+  try {
+    await handle.writeFile(payload, 'utf8');
+  } finally {
+    await handle.close();
+  }
+}
+
 afterEach(async () => {
   vi.clearAllMocks();
   const directories = temporaryDirectories.splice(0);
@@ -60,7 +78,7 @@ describe('stale lock recovery', () => {
     const first = await FileLocalVaultStore.open(target);
     await first.close();
 
-    await writeFile(`${target}.lock`, localLockPayload(deadPid()), 'utf8');
+    await writeLockFixture(`${target}.lock`, localLockPayload(deadPid()));
     const reopened = await FileLocalVaultStore.open(target);
     await expect(reopened.ping()).resolves.toBeUndefined();
     await reopened.close();
@@ -81,7 +99,7 @@ describe('stale lock recovery', () => {
     const first = await FileLocalVaultStore.open(target);
     await first.close();
     // Correct metadata but a live PID (this process) must remain busy.
-    await writeFile(`${target}.lock`, localLockPayload(process.pid), 'utf8');
+    await writeLockFixture(`${target}.lock`, localLockPayload(process.pid));
     await expect(FileLocalVaultStore.open(target)).rejects.toBeInstanceOf(
       FileLocalVaultError,
     );
@@ -95,7 +113,7 @@ describe('stale lock recovery', () => {
     const first = await FileEncryptedDatabaseStore.open(target);
     await first.close();
 
-    await writeFile(`${target}.lock`, databaseLockPayload(deadPid()), 'utf8');
+    await writeLockFixture(`${target}.lock`, databaseLockPayload(deadPid()));
     const reopened = await FileEncryptedDatabaseStore.open(target);
     await expect(
       reopened.listVaults(databaseIdSchema.parse('db_any')),
@@ -117,7 +135,7 @@ describe('stale lock recovery', () => {
     const target = join(await scratch(), 'vault.data');
     const first = await FileLocalVaultStore.open(target);
     await first.close();
-    await writeFile(
+    await writeLockFixture(
       `${target}.lock`,
       `{"pid":${String(deadPid())},${'x'.repeat(400)}}`,
     );
