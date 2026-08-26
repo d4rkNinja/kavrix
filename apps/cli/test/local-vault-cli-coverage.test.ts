@@ -1553,8 +1553,10 @@ describe(
           'vault_default',
         ]),
       ).toContain('Migration source and destination profiles must differ.');
+      // Unknown commands are usage errors with the documented exit code 2
+      // and commander's sanitized message, not a generic failure.
       expect(await runReported(['unknown-command'])).toContain(
-        'Kavrix command failed.',
+        "unknown command 'unknown-command'",
       );
       vi.spyOn(
         migrationCommands,

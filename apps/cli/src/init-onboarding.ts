@@ -48,6 +48,10 @@ export type InitOnboardingCompleteOptions = Readonly<{
   write: (text: string) => void;
   /** ANSI styling is enabled only when explicitly requested. */
   color?: boolean;
+  /** The datastore the wizard actually configured, for accurate next steps. */
+  datastore?: InitOnboardingStorage;
+  /** A database-bound profile is selected and will route flat commands. */
+  profileHijackWarning?: boolean;
 }>;
 
 export class InitOnboardingCancelledError extends Error {
@@ -214,32 +218,50 @@ export async function runInitOnboarding(
 }
 
 /**
- * Render the static post-init handoff. This intentionally accepts no command
- * state, paths, datastore names, or other user-entered values.
+ * Render the post-init handoff. Routing hints adapt to the configured
+ * datastore and warn when an ambient profile will hijack flat commands; the
+ * function never receives secret material.
  */
 export function writeInitOnboardingComplete(
   options: InitOnboardingCompleteOptions,
 ): void {
   const style = createStyler(options.color === true);
-  options.write(
-    [
+  const datastore = options.datastore ?? 'file';
+  const routing =
+    datastore === 'file'
+      ? '--datastore file --data-file <vault-path>'
+      : '--datastore mongodb';
+  const lines = [
+    '',
+    style('SETUP COMPLETE', '1;32'),
+    '',
+    `${style('[OK]', '32')} Vault initialized with client-side encryption.`,
+    `${style('[OK]', '32')} Datastore configured for ciphertext-only records.`,
+    `${style('[OK]', '32')} Portable key protected by your passphrase.`,
+    `${style('[!]', '33')} Recovery not configured; init does not create a recovery kit.`,
+    '',
+  ];
+  if (options.profileHijackWarning === true) {
+    lines.push(
+      style('NOTICE', '1;33') +
+        ' A database-bound datastore profile is currently selected.',
+      'Flat commands (`put`, `get`, `list`, `run`, ...) route through that',
+      'profile and require the matching `--vault <id>`. Pass explicit',
+      '`--datastore/--data-file` flags (as below) to bypass it, or select a',
+      'different profile with `kavrix db profile use <id>`.',
       '',
-      style('SETUP COMPLETE', '1;32'),
-      '',
-      `${style('[OK]', '32')} Vault initialized with client-side encryption.`,
-      `${style('[OK]', '32')} Datastore configured for ciphertext-only records.`,
-      `${style('[OK]', '32')} Portable key protected by your passphrase.`,
-      `${style('[!]', '33')} Recovery not configured; init does not create a recovery kit.`,
-      '',
-      'Next steps:',
-      '  kavrix recovery create --recovery-file <protected-path> <same datastore/key options>',
-      '  kavrix put <name> <same datastore/key options>',
-      '  kavrix list <same datastore/key options>',
-      '',
-      'Keep the portable key and recovery kit in separate secure locations.',
-      '',
-    ].join('\n'),
+    );
+  }
+  lines.push(
+    'Next steps:',
+    `  kavrix recovery create --recovery-file <protected-path> ${routing}`,
+    `  kavrix put <name> ${routing} --key-file <key-path> --passphrase-stdin`,
+    `  kavrix list ${routing} --key-file <key-path> --passphrase-stdin`,
+    '',
+    'Keep the portable key and recovery kit in separate secure locations.',
+    '',
   );
+  options.write(lines.join('\n'));
 }
 
 async function collectDestination(

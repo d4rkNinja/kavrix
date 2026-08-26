@@ -1,4 +1,4 @@
-﻿import type { ChildProcess } from 'node:child_process';
+import type { ChildProcess } from 'node:child_process';
 
 import { zeroize } from '@kavrix/crypto';
 import {
@@ -99,11 +99,17 @@ interface UnlockedScope {
   readonly scopeId: string;
 }
 
+interface ResolvedGrantRef {
+  readonly ref: string;
+  readonly grant: GrantRecord;
+}
+
 /**
  * Executes one child process whose environment carries only explicitly
- * requested credentials. Authorization completes before spawn; grant uses are
- * reserved under the sealed-state lock; decrypted values exist in memory only
- * for the lifetime of the request and are wiped (best effort) afterwards.
+ * requested credentials. Grants are resolved and every referenced credential
+ * is verified before anything is consumed; grant uses are reserved under the
+ * sealed-state lock immediately before spawn; decrypted values exist in memory
+ * only for the lifetime of the request and are wiped (best effort) afterwards.
  */
 export async function executeRun(options: RunCliOptions): Promise<RunOutcome> {
   const targetArguments = options.executableAndArgs;
@@ -133,39 +139,61 @@ export async function executeRun(options: RunCliOptions): Promise<RunOutcome> {
   const policyNames = options.policyIds ?? [];
   const grantRefs = options.grantRefs ?? [];
 
-  const strictNeededNames = new Set<string>([
-    ...mappings.map((mapping) => mapping.secret),
-  ]);
-  const looseNeededNames = new Set<string>(grantRefs);
-
   const flatSecrets = await readDatabaseFlatSecrets(options, []);
   const handle = await openDatabaseFlatVault(options, flatSecrets);
   let unlocked: UnlockedScope;
-  let missingName: string | undefined;
+  let resolvedGrants: readonly ResolvedGrantRef[];
   try {
-    const values = new Map<string, string>();
-    await handle.session.inspectVault(handle.vaultId, (payload) => {
-      const missing: string[] = [];
-      for (const name of strictNeededNames) {
-        const record = payload.records[name];
-        if (record === undefined) missing.push(name);
-        else values.set(name, record.value);
-      }
-      for (const name of looseNeededNames) {
-        const record = payload.records[name];
-        if (record !== undefined) values.set(name, record.value);
-      }
-      missingName = missing[0];
-    });
-    // Session callbacks must not throw: failures are surfaced after inspection
-    // so the session can close cleanly and map codes without translation.
-    if (missingName !== undefined) throw new MissingCredentialError(missingName);
-    unlocked = {
-      values,
-      authzKey: handle.session.authorizationStateKey(),
-      keyFile: handle.profile.keyFile,
+    // Resolve grant references against the sealed state first so the exact
+    // credential set is known before any vault inspection or consumption.
+    const authzKey = handle.session.authorizationStateKey();
+    const state = await AuthorizationState.open(handle.profile.keyFile, authzKey, {
+      scopeKind: 'database',
       scopeId: handle.session.databaseId,
-    };
+    });
+    try {
+      const snapshot = await state.read();
+      resolvedGrants = grantRefs.map((ref) => {
+        const located = locateGrant(snapshot.grants, ref);
+        if (located === undefined) {
+          throw grantInvalid(`No active grant matches '${ref}'.`);
+        }
+        return { ref, grant: located };
+      });
+      const neededNames = new Set<string>([
+        ...mappings.map((mapping) => mapping.secret),
+        ...resolvedGrants.map((resolved) => resolved.grant.secret),
+      ]);
+      const values = new Map<string, string>();
+      let missingName: string | undefined;
+      await handle.session.inspectVault(handle.vaultId, (payload) => {
+        const missing: string[] = [];
+        for (const name of neededNames) {
+          const record = payload.records[name];
+          if (record === undefined) missing.push(name);
+          else values.set(name, record.value);
+        }
+        missingName = missing[0];
+      });
+      // Session callbacks must not throw: failures are surfaced after inspection
+      // so the session can close cleanly and map codes without translation.
+      if (missingName !== undefined) throw new MissingCredentialError(missingName);
+      unlocked = {
+        values,
+        authzKey,
+        keyFile: handle.profile.keyFile,
+        scopeId: handle.session.databaseId,
+      };
+    } catch (error) {
+      if (error instanceof MissingCredentialError) {
+        throw new CodedCliError('CREDENTIAL_MISSING', error.message);
+      }
+      throw error;
+    } finally {
+      // Zeroes this probe's key copy; the caller reopens the state with the
+      // original bytes for the authorize-and-spawn phase.
+      state.close();
+    }
   } catch (error) {
     if (error instanceof MissingCredentialError) {
       throw new CodedCliError('CREDENTIAL_MISSING', error.message);
@@ -182,7 +210,7 @@ export async function executeRun(options: RunCliOptions): Promise<RunOutcome> {
       { request: targetRequest, args: targetRest },
       mappings,
       policyNames,
-      grantRefs,
+      resolvedGrants,
       unlocked.values,
       configDocument,
       state,
@@ -238,7 +266,7 @@ async function authorizeAndSpawn(
   target: RunTarget,
   mappings: readonly ResolvedMapping[],
   policyNames: readonly string[],
-  grantRefs: readonly string[],
+  resolvedGrants: readonly ResolvedGrantRef[],
   values: ReadonlyMap<string, string>,
   configDocument: ProjectConfigDocumentLike | null,
   state: AuthorizationState,
@@ -285,7 +313,7 @@ async function authorizeAndSpawn(
   // Stored deny entries block every use of their credential, attached or not.
   const involvedSecrets = new Set<string>([
     ...mappings.map((mapping) => mapping.secret),
-    ...grantRefs,
+    ...resolvedGrants.map((resolved) => resolved.grant.secret),
   ]);
   for (const [storedId, record] of Object.entries(snapshot.policies)) {
     const entry = record.definition;
@@ -339,13 +367,8 @@ async function authorizeAndSpawn(
     }
   }
 
-  const resolvedGrantIds: { ref: string; grant: GrantRecord }[] = [];
-  for (const ref of grantRefs) {
-    const located = locateGrant(snapshot.grants, ref);
-    if (located === undefined) {
-      throw grantInvalid(`No active grant matches '${ref}'.`);
-    }
-    const evaluation = evaluateGrantUse(located, context);
+  for (const resolved of resolvedGrants) {
+    const evaluation = evaluateGrantUse(resolved.grant, context);
     if (evaluation.status === 'denied') {
       const coded =
         evaluation.reason === 'command-not-allowed' ||
@@ -358,10 +381,9 @@ async function authorizeAndSpawn(
         evaluation.reason,
         undefined,
         coded,
-        located.secret,
+        resolved.grant.secret,
       );
     }
-    resolvedGrantIds.push({ ref, grant: located });
   }
 
   for (const confirmation of confirmations) {
@@ -397,7 +419,17 @@ async function authorizeAndSpawn(
     }
   }
 
-  for (const resolved of resolvedGrantIds) {
+  // Injection planning is pure validation: it runs before any grant use is
+  // consumed so a missing credential or invalid destination can never burn a
+  // use. Grants without an explicit environment variable inject under a name
+  // derived from the credential reference, matching `run --grant <secret>`.
+  const injections = buildInjections(
+    mappings,
+    resolvedGrants.map((r) => r.grant),
+    values,
+  );
+
+  for (const resolved of resolvedGrants) {
     await state.consumeGrantUse(resolved.grant.grantId, {
       executable: resolution.displayName,
       argvPreview,
@@ -418,12 +450,6 @@ async function authorizeAndSpawn(
       ...(argvPreview === undefined ? {} : { argvPreview: [...argvPreview] }),
     });
   }
-
-  const injections = buildInjections(
-    mappings,
-    resolvedGrantIds.map((resolved) => resolved.grant),
-    values,
-  );
 
   const childRef: { current: ChildProcess | null } = { current: null };
   const forwardSignals = forwardableSignals(platform);
@@ -473,9 +499,9 @@ async function authorizeAndSpawn(
       command: resolution.displayName,
       ...(argvPreview === undefined ? {} : { argvPreview: [...argvPreview] }),
       ...(result.exitCode === null ? {} : { exitCode: result.exitCode }),
-      ...(resolvedGrantIds[0] === undefined
+      ...(resolvedGrants[0] === undefined
         ? {}
-        : { grantId: resolvedGrantIds[0].grant.grantId }),
+        : { grantId: resolvedGrants[0].grant.grantId }),
     });
   } catch (error) {
     process.stderr.write(
@@ -484,7 +510,7 @@ async function authorizeAndSpawn(
   }
 
   const primaryPolicy = policyNames[0];
-  const primaryGrant = resolvedGrantIds[0]?.grant.grantId;
+  const primaryGrant = resolvedGrants[0]?.grant.grantId;
   return {
     ran: true,
     decision: {
@@ -572,6 +598,21 @@ function locateGrant(
 
 type Injection = EnvironmentMapping;
 
+/**
+ * Derives the destination variable used when a grant declares no explicit
+ * environment variable: non-alphanumeric runs collapse to underscores and the
+ * result is uppercased, so `production/database` injects as
+ * `PRODUCTION_DATABASE`. Returns undefined when no portable name can be
+ * derived; callers must then fail closed and ask for an explicit mapping.
+ */
+export function deriveInjectionName(secret: string): string | undefined {
+  const derived = secret
+    .replace(/[^A-Za-z0-9]+/gu, '_')
+    .replace(/^([0-9])/u, '_$1')
+    .toUpperCase();
+  return environmentVariableNameSchema.safeParse(derived).success ? derived : undefined;
+}
+
 function buildInjections(
   mappings: readonly ResolvedMapping[],
   grants: readonly GrantRecord[],
@@ -582,7 +623,18 @@ function buildInjections(
   for (const grant of grants) {
     if (grant.env !== undefined && grant.env.length > 0) {
       addPlannedInjection(planned, grant.env, grant.secret);
+      continue;
     }
+    // The documented bare form (`run --grant <secret>`) must inject the
+    // credential; resolve its destination up front or fail closed before any
+    // use is consumed.
+    const destination = deriveInjectionName(grant.secret);
+    if (destination === undefined) {
+      throw invalidConfiguration(
+        `Credential '${grant.secret}' cannot be mapped to an environment variable automatically; issue the grant with --env or pass --secret VARIABLE='${grant.secret}'.`,
+      );
+    }
+    addPlannedInjection(planned, destination, grant.secret);
   }
   const injections: Injection[] = [];
   for (const [destination, secret] of planned) {

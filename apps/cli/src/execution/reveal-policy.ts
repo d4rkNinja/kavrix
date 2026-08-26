@@ -36,8 +36,13 @@ export async function enforceRevealPolicy(
         secret,
         ...(decision.policyId === undefined ? {} : { policyId: decision.policyId }),
       });
+      // Deny entries block use as well as reveal; only reveal-scoped policies
+      // leave `run` available.
+      const denied = covering.some((entry) => entry.deny === true);
       throw authorizationDenied(
-        `Revealing '${secret}' is denied by policy; use is still permitted through \`kavrix run\`.`,
+        denied
+          ? `Revealing '${secret}' is denied by policy; a deny entry blocks every use of the credential.`
+          : `Revealing '${secret}' is denied by policy; use is still permitted through \`kavrix run\`.`,
       );
     }
   } catch (error) {

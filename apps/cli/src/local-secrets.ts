@@ -17,7 +17,8 @@ export type LocalSecretKind =
   | 'passphrase'
   | 'recovery-passphrase'
   | 'new-passphrase'
-  | 'field-value';
+  | 'field-value'
+  | 'field-value-base64';
 
 export class LocalSecretInput {
   readonly #input: Readable & {
@@ -293,12 +294,48 @@ function labelFor(kind: LocalSecretKind): string {
   if (kind === 'database-url') return 'database URL';
   if (kind === 'label') return 'private label';
   if (kind === 'field-value') return 'credential value';
+  if (kind === 'field-value-base64') return 'credential value (base64)';
   if (kind === 'recovery-passphrase') return 'recovery-kit passphrase';
   if (kind === 'new-passphrase') return 'new passphrase';
   return 'passphrase';
 }
 
+const BASE64_PATTERN =
+  /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u;
+
+/**
+ * Decodes one base64 frame into its exact text value. This is the supported
+ * automation path for values that contain line breaks or are empty: the
+ * encoded frame is a single newline-free line, so framing stays unambiguous
+ * while the stored value may contain any UTF-8 text within the size bound.
+ */
+function decodeBase64Value(frame: string): string {
+  const normalized = frame.trim();
+  if (!BASE64_PATTERN.test(normalized)) {
+    throw new LocalSecretInputError('The base64 value frame is not valid base64.');
+  }
+  const decoded = Buffer.from(normalized, 'base64');
+  if (decoded.byteLength > MAX_SECRET_BYTES) {
+    throw new LocalSecretInputError('Secret input exceeds the supported size.');
+  }
+  let value: string;
+  try {
+    value = STRICT_UTF8_DECODER.decode(decoded);
+  } catch {
+    throw new LocalSecretInputError(
+      'The base64 value frame does not decode to UTF-8 text.',
+    );
+  } finally {
+    decoded.fill(0);
+  }
+  if (value.includes('\0')) {
+    throw new LocalSecretInputError('Secret input must not contain NUL bytes.');
+  }
+  return value;
+}
+
 function validateSecret(value: string, kind?: LocalSecretKind): string {
+  if (kind === 'field-value-base64') return decodeBase64Value(value);
   if (
     value.length === 0 ||
     Buffer.byteLength(value, 'utf8') > MAX_SECRET_BYTES ||

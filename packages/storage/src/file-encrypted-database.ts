@@ -715,35 +715,156 @@ function hasControlCharacter(value: string): boolean {
   });
 }
 
+const LOCK_METADATA_FORMAT = 'kavrix-database-lock';
+const MAX_LOCK_METADATA_BYTES = 256;
+const STALE_LOCK_RECOVERY_ATTEMPTS = 3;
+
+type LockMetadata = Readonly<{ format: string; version: 1; pid: number }>;
+
+/**
+ * Reports whether the process that owns a surviving lock file is still
+ * addressable. `EPERM` means a live process the caller cannot signal;
+ * every other failure means no such process exists.
+ */
+function isProcessLive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return fileErrorCode(error) === 'EPERM';
+  }
+}
+
+async function writeLockMetadata(handle: FileHandle, pid: number): Promise<void> {
+  const metadata: LockMetadata = {
+    format: LOCK_METADATA_FORMAT,
+    version: 1,
+    pid,
+  };
+  // The payload is non-secret routing metadata bounded well below the
+  // container limits; it lets a later invocation distinguish a dead owner
+  // from a live one instead of bricking on a hard kill.
+  const payload = Buffer.from(JSON.stringify(metadata), 'utf8');
+  if (payload.byteLength > MAX_LOCK_METADATA_BYTES) {
+    throw new EncryptedDatabaseStoreError('operation');
+  }
+  await handle.write(payload, 0, payload.byteLength, 0);
+}
+
+/**
+ * Reads the recorded owner of an existing lock without trusting its content.
+ * Returns `undefined` for any foreign, malformed, or oversized payload so the
+ * caller treats the lock as live evidence and refuses normally.
+ */
+async function readLockOwner(lockPath: string): Promise<number | undefined> {
+  let handle: FileHandle | undefined;
+  try {
+    handle = await open(lockPath, constants.O_RDONLY);
+    const size = (await handle.stat()).size;
+    if (!Number.isInteger(size) || size <= 0 || size > MAX_LOCK_METADATA_BYTES) {
+      return undefined;
+    }
+    const contents = Buffer.alloc(size);
+    let offset = 0;
+    while (offset < size) {
+      const read = await handle.read(contents, offset, size - offset, offset);
+      if (read.bytesRead === 0) break;
+      offset += read.bytesRead;
+    }
+    if (offset !== size) return undefined;
+    const parsed: unknown = JSON.parse(contents.toString('utf8'));
+    if (typeof parsed !== 'object' || parsed === null) return undefined;
+    const record = parsed as Record<string, unknown>;
+    if (
+      record['format'] !== LOCK_METADATA_FORMAT ||
+      record['version'] !== 1 ||
+      typeof record['pid'] !== 'number'
+    ) {
+      return undefined;
+    }
+    return record['pid'];
+  } catch {
+    return undefined;
+  } finally {
+    await handle?.close().catch(() => undefined);
+  }
+}
+
 async function acquireLock(
   target: ResolvedFileTarget,
 ): Promise<Readonly<{ handle: FileHandle; identity: FileIdentity }>> {
   const { lockPath } = target;
-  let handle: FileHandle | undefined;
-  try {
-    await assertDirectoryIdentity(target);
-    handle = await open(
-      lockPath,
-      constants.O_CREAT | constants.O_EXCL | constants.O_RDWR,
-      0o600,
-    );
-    await setAndVerifyCreatedFile(lockPath, handle, 'lock');
-    await fileEncryptedDatabaseEffects.sync(handle);
-    const metadata = await handle.stat({ bigint: true });
-    await assertDirectoryIdentity(target);
-    return { handle, identity: identityOf(metadata) };
-  } catch (error) {
-    if (handle !== undefined)
-      await fileEncryptedDatabaseEffects.close(handle, 'lock').catch(() => undefined);
-    if (handle !== undefined)
-      await fileEncryptedDatabaseEffects
-        .unlink(lockPath, 'lock-acquire-cleanup')
-        .catch(() => undefined);
-    if (fileErrorCode(error) === 'EEXIST') {
+  for (let attempt = 0; ; attempt += 1) {
+    let handle: FileHandle | undefined;
+    try {
+      await assertDirectoryIdentity(target);
+      handle = await open(
+        lockPath,
+        constants.O_CREAT | constants.O_EXCL | constants.O_RDWR,
+        0o600,
+      );
+      await setAndVerifyCreatedFile(lockPath, handle, 'lock');
+      await writeLockMetadata(handle, process.pid);
+      await fileEncryptedDatabaseEffects.sync(handle);
+      const metadata = await handle.stat({ bigint: true });
+      await assertDirectoryIdentity(target);
+      return { handle, identity: identityOf(metadata) };
+    } catch (error) {
+      if (handle !== undefined)
+        await fileEncryptedDatabaseEffects.close(handle, 'lock').catch(() => undefined);
+      if (handle !== undefined)
+        await fileEncryptedDatabaseEffects
+          .unlink(lockPath, 'lock-acquire-cleanup')
+          .catch(() => undefined);
+      if (fileErrorCode(error) !== 'EEXIST') {
+        throw new EncryptedDatabaseStoreError('operation');
+      }
+      // An existing lock is only removable when it provably belongs to a
+      // process that no longer exists. Live owners, foreign shapes, and
+      // unreadable payloads all keep the fail-closed busy response.
       await inspectExistingLock(lockPath);
+      const ownerPid = await readLockOwner(lockPath);
+      if (
+        ownerPid !== undefined &&
+        !isProcessLive(ownerPid) &&
+        attempt + 1 < STALE_LOCK_RECOVERY_ATTEMPTS &&
+        (await removeStaleLock(lockPath, ownerPid))
+      ) {
+        continue;
+      }
       throw new EncryptedDatabaseStoreError('busy');
     }
-    throw new EncryptedDatabaseStoreError('operation');
+  }
+}
+
+/**
+ * Removes one proven-dead owner's lock only while an opened handle, the current
+ * pathname, and the re-read owner metadata still identify the same file.
+ * Any observed replacement keeps the lock in place and reports refusal.
+ */
+async function removeStaleLock(lockPath: string, deadPid: number): Promise<boolean> {
+  let handle: FileHandle | undefined;
+  try {
+    handle = await open(lockPath, noFollowReadFlags());
+    const metadata = await handle.stat({ bigint: true });
+    await assertOwnedPermissions(metadata, lockPath, true);
+    const currentPid = await readLockOwner(lockPath);
+    if (
+      currentPid !== deadPid ||
+      isProcessLive(currentPid) ||
+      !sameIdentity(
+        identityOf(metadata),
+        identityOf(await lstat(lockPath, { bigint: true })),
+      )
+    )
+      return false;
+    await fileEncryptedDatabaseEffects.unlink(lockPath, 'lock-release');
+    return true;
+  } catch {
+    return false;
+  } finally {
+    await handle?.close().catch(() => undefined);
   }
 }
 

@@ -60,10 +60,40 @@ are not workspace members, release artifacts, or evidence for the active release
   an agent with no credential material, brokers each requested operation over
   a local socket or named pipe behind a per-session token, evaluates the
   agent's configured permissions per request, and injects the secret directly
-  into the authorized child only.
+  into the authorized child only;
+- `kavrix frames [command]` stdin frame-contract reference and `kavrix status`
+  routing summary.
 
 Run `kavrix <command> --help` for exact options. Planned or retired commands must
 not be documented as available.
+
+## Recent hardening (post-0.2.0 external test report)
+
+- `run --grant` resolves the grant's credential in-session before consuming any
+  use; missing credentials fail with exit 11 without burning the use; grants
+  without `env` inject under a derived destination name (`production/database`
+  → `PRODUCTION_DATABASE`) and unmappable names fail closed with exit 14.
+- Session error mapping no longer reports duplicate labels, missing
+  credentials, invalid input, or secret-frame mistakes as "Database
+  authentication failed"; reviewed command-layer errors pass through and store
+  codes map to truthful classes with documented exit codes (10/11/14/15/16).
+- Usage errors exit `2`; wrong passphrases exit `10`; missing credentials exit
+  `11` per the CLI reference table.
+- Local file locks record their owner PID; locks from provably dead processes
+  are auto-removed on the next invocation while live owners keep failing
+  closed with a visible message. `db doctor health [--accept-current]` adds a
+  bounded container repair: full authenticated verification, then re-anchor of
+  the local rollback guard after explicit human consent.
+- Reserved vault identifiers (`__proto__`, `constructor`, `prototype`) are
+  refused at init with reviewed messages.
+- Multi-line and empty credential values are supported via
+  `put --value-stdin-base64` (one strict base64 frame).
+- The documented project-file example now validates; agent permissions require
+  `env` for exec injection as documented; search accepts glob patterns plus
+  `--case-sensitive`; credential names reject whitespace/slash/dot abuse;
+  owner-visible vault labels are available via `--show-labels`; share-key
+  staleness is warned at creation; `init` defaults to the local file datastore
+  outside the guided wizard.
 
 ## Security properties
 

@@ -1,5 +1,7 @@
 import { createHmac, hkdfSync, randomUUID } from 'node:crypto';
 
+import { ZodError } from 'zod';
+
 import {
   createDatabaseKeySlot,
   createDatabaseRecoverySlot,
@@ -42,6 +44,8 @@ import {
   transitionDatabaseRevisionAnchor,
   transitionOwnedDatabaseRevisionAnchor,
   validateSecureFileDestination,
+  writeDatabaseRevisionAnchor,
+  PortableKeyFileError,
   type DatabaseKeyFilePublication,
   type DatabaseKeyBinding,
   type ParsedDatabaseKeyFile,
@@ -87,11 +91,14 @@ import {
   type EncryptedDatabaseStore,
 } from '@kavrix/storage';
 
+import { LocalCliError } from './cli-error.js';
 import {
   DatastoreProfileError,
   validateDatastoreProfileBindingPublicationResult,
   type DatastoreProfileBindingPublicationResult,
 } from './datastore-profiles.js';
+import { LocalSecretInputError } from './local-secrets.js';
+import { CodedCliError } from './execution/exit-codes.js';
 
 const MAX_LABEL_BYTES = 1_024;
 const UTF8_ENCODER = new TextEncoder();
@@ -123,6 +130,7 @@ export type DatabaseSessionErrorCode =
   | 'ambiguous-commit'
   | 'authentication'
   | 'binding'
+  | 'busy'
   | 'close'
   | 'conflict'
   | 'duplicate'
@@ -131,10 +139,31 @@ export type DatabaseSessionErrorCode =
   | 'operation'
   | 'rollback';
 
+/** Stable documented exit codes for each session failure class. */
+const SESSION_EXIT_CODES: Readonly<Record<DatabaseSessionErrorCode, number>> =
+  Object.freeze({
+    'ambiguous-commit': 15,
+    authentication: 10,
+    binding: 16,
+    busy: 15,
+    close: 15,
+    conflict: 15,
+    duplicate: 14,
+    invalid: 14,
+    'not-found': 11,
+    operation: 15,
+    rollback: 16,
+  });
+
 export class DatabaseSessionError extends Error {
   public constructor(public readonly code: DatabaseSessionErrorCode) {
     super(messageFor(code));
     this.name = 'DatabaseSessionError';
+  }
+
+  /** Exit code from the stable CLI contract for this failure class. */
+  public get cliExitCode(): number {
+    return SESSION_EXIT_CODES[this.code];
   }
 }
 
@@ -172,7 +201,17 @@ export type DatabaseOpenOptions = Readonly<{
 }>;
 
 export type DatabaseOpenWithSecretOptions = Omit<DatabaseOpenOptions, 'passphrase'> &
-  Readonly<{ readPassphrase: () => Promise<Uint8Array> }>;
+  Readonly<{
+    readPassphrase: () => Promise<Uint8Array>;
+    /**
+     * Explicitly re-anchor the local rollback guard to the currently observed
+     * datastore state after full authenticated verification of every encrypted
+     * document. This consciously abandons rollback protection for revisions
+     * at or below the observed state and must only run after a human has
+     * verified the datastore contents.
+     */
+    acceptCurrentAnchor?: boolean;
+  }>;
 
 export type DatabaseRecoveryCreateOptions = Readonly<{
   recoveryFile: string;
@@ -206,6 +245,7 @@ export class DatabaseSession {
   #database: EncryptedDatabaseDocument;
   #catalog: DatabaseCatalogPayload;
   #closed = false;
+  readonly #acceptedCurrentAnchor: boolean;
 
   private constructor(
     options: Readonly<{
@@ -215,6 +255,7 @@ export class DatabaseSession {
       catalog: DatabaseCatalogPayload;
       rootKey: DatabaseRootKey;
       portableKey: PortableKey;
+      acceptedCurrentAnchor?: boolean;
     }>,
   ) {
     this.#store = options.store;
@@ -224,6 +265,12 @@ export class DatabaseSession {
     this.#catalog = options.catalog;
     this.#rootKey = options.rootKey;
     this.#portableKey = options.portableKey;
+    this.#acceptedCurrentAnchor = options.acceptedCurrentAnchor === true;
+  }
+
+  /** Whether this session re-anchored the local rollback guard on open. */
+  public get acceptedCurrentAnchor(): boolean {
+    return this.#acceptedCurrentAnchor;
   }
 
   public static async validateInitializationDestinations(
@@ -549,7 +596,8 @@ export class DatabaseSession {
         catalog,
         rootKey,
       );
-      await reconcileOpenAnchor({
+      const acceptedCurrentAnchor = await reconcileOpenAnchorWithMapping({
+        acceptCurrent: options.acceptCurrentAnchor === true,
         anchorFile,
         rootKey,
         observed,
@@ -569,6 +617,7 @@ export class DatabaseSession {
         catalog,
         rootKey,
         portableKey,
+        acceptedCurrentAnchor,
       });
       rootKey = undefined;
       portableKey = undefined;
@@ -1729,8 +1778,26 @@ async function reconcileOwnedAnchor(
   return transitioned.publication;
 }
 
+async function reconcileOpenAnchorWithMapping(
+  options: Parameters<typeof reconcileOpenAnchor>[0],
+): Promise<boolean> {
+  try {
+    return await reconcileOpenAnchor(options);
+  } catch (error) {
+    // Anchor verification failures mean the trusted local guard rejected the
+    // stored snapshot (or is missing): a rollback/integrity condition, never
+    // an authentication failure. Key-file passphrase problems are handled
+    // earlier in the open sequence, so this cannot mask wrong-passphrase.
+    if (error instanceof PortableKeyFileError && !options.acceptCurrent) {
+      throw new DatabaseSessionError('rollback');
+    }
+    throw error;
+  }
+}
+
 async function reconcileOpenAnchor(
   options: Readonly<{
+    acceptCurrent: boolean;
     anchorFile: string;
     rootKey: DatabaseRootKey;
     observed: DatabaseRevisionAnchor;
@@ -1741,13 +1808,37 @@ async function reconcileOpenAnchor(
     passphrase: Uint8Array;
     localShareBootstrap?: DatabaseRevisionAnchor | null;
   }>,
-): Promise<void> {
+): Promise<boolean> {
   if (options.localShareBootstrap === undefined) {
+    if (options.acceptCurrent) {
+      return await acceptCurrentAnchor(
+        options.anchorFile,
+        options.rootKey,
+        options.observed,
+      );
+    }
     await reconcileAnchor(options.anchorFile, options.rootKey, options.observed);
-    return;
+    return false;
   }
 
   try {
+    if (options.acceptCurrent) {
+      const matched = await acceptCurrentAnchor(
+        options.anchorFile,
+        options.rootKey,
+        options.observed,
+      );
+      if (options.localShareBootstrap !== null) {
+        await consumeDatabaseLocalShareBootstrap(
+          options.keyFile,
+          options.portableKey,
+          options.binding,
+          options.passphrase,
+          options.keyFileVersion,
+        );
+      }
+      return matched;
+    }
     await reconcileAnchor(options.anchorFile, options.rootKey, options.observed);
   } catch (error) {
     if (options.localShareBootstrap === null) throw error;
@@ -1787,6 +1878,42 @@ async function reconcileOpenAnchor(
       options.keyFileVersion,
     );
   }
+  return false;
+}
+
+/**
+ * Re-anchors the trusted local rollback guard to the observed datastore state.
+ * The caller must already have authenticated every encrypted document with
+ * the database root key, so the accepted state provably originated from a key
+ * holder; the rewrite then heals stale-or-forked anchors after a crash or a
+ * verified restore. Returns whether the previous anchor already matched.
+ */
+async function acceptCurrentAnchor(
+  path: string,
+  rootKey: DatabaseRootKey,
+  observed: DatabaseRevisionAnchor,
+): Promise<boolean> {
+  let trusted: DatabaseRevisionAnchor | undefined;
+  try {
+    trusted = await readDatabaseRevisionAnchor(path, rootKey);
+  } catch {
+    trusted = undefined;
+  }
+  const matchedBefore =
+    trusted !== undefined && canonicalJson(trusted) === canonicalJson(observed);
+  if (!matchedBefore) {
+    await writeDatabaseRevisionAnchor(
+      path,
+      rootKey,
+      observed,
+      trusted === undefined ? 'create' : 'replace',
+    );
+  }
+  await readDatabaseRevisionAnchor(path, rootKey, observed, {
+    requireExactVaultSet: true,
+  });
+  // The caller reports whether this open performed a re-anchor.
+  return !matchedBefore;
 }
 
 function anchorWithCreatedVault(
@@ -2011,13 +2138,34 @@ function now(): string {
   return timestampSchema.parse(new Date().toISOString());
 }
 
-function mapError(error: unknown): DatabaseSessionError {
+/**
+ * Normalizes one failure thrown inside a session operation.
+ *
+ * Deliberate command-layer failures raised inside session callbacks
+ * (`LocalCliError`, secret-input framing, coded execution errors) carry their
+ * own reviewed messages and exit codes and are returned unchanged so the user
+ * always sees the true cause. Cryptographic failures stay redacted as
+ * `authentication`; persistence failures map by store code; schema violations
+ * are deterministic input problems.
+ */
+function mapError(error: unknown): Error {
   if (error instanceof DatabaseSessionError) return error;
+  if (
+    error instanceof LocalCliError ||
+    error instanceof LocalSecretInputError ||
+    error instanceof CodedCliError
+  ) {
+    return error;
+  }
   if (error instanceof EncryptedDatabaseStoreError) {
     if (error.code === 'conflict' || error.code === 'exists')
       return new DatabaseSessionError('conflict');
+    if (error.code === 'busy') return new DatabaseSessionError('busy');
+    if (error.code === 'invalid' || error.code === 'unsupported')
+      return new DatabaseSessionError('invalid');
     return new DatabaseSessionError('operation');
   }
+  if (error instanceof ZodError) return new DatabaseSessionError('invalid');
   return new DatabaseSessionError('authentication');
 }
 
@@ -2106,13 +2254,15 @@ function messageFor(code: DatabaseSessionErrorCode): string {
     'ambiguous-commit': 'The database may have changed; reopen it before continuing.',
     authentication: 'Database authentication failed.',
     binding: 'Database binding validation failed.',
+    busy: 'The encrypted database is locked by another Kavrix process.',
     close: 'Database session cleanup failed.',
     conflict: 'The database changed while this operation was running.',
     duplicate: 'A vault with that label already exists.',
     invalid: 'The database operation is invalid.',
     'not-found': 'The requested vault was not found.',
     operation: 'The database operation failed.',
-    rollback: 'The database snapshot was rejected as stale or forked.',
+    rollback:
+      'The trusted local database anchor is missing or rejected the stored snapshot as stale or forked.',
   };
   return messages[code];
 }

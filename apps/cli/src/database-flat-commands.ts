@@ -36,6 +36,7 @@ export type DatabaseFlatCommandOptions = Readonly<{
   databaseUrlStdin?: boolean;
   passphraseStdin?: boolean;
   valueStdin?: boolean;
+  valueStdinBase64?: boolean;
   allowInsecureTransport?: boolean;
 }>;
 
@@ -63,7 +64,7 @@ export async function readDatabaseFlatSecrets(
     !options.vault.startsWith('vault_')
   ) {
     throw new DatabaseFlatCommandError(
-      'Select one database vault explicitly with --vault before reading secrets.',
+      `Select one database vault explicitly with --vault before reading secrets (selected profile '${sanitizeProfileId(profile.id)}').`,
     );
   }
   const kinds: LocalSecretKind[] = [
@@ -74,6 +75,7 @@ export async function readDatabaseFlatSecrets(
   const flags = kinds.map((kind) => {
     if (kind === 'database-url') return options.databaseUrlStdin === true;
     if (kind === 'passphrase') return options.passphraseStdin === true;
+    if (kind === 'field-value-base64') return options.valueStdinBase64 === true;
     return options.valueStdin === true;
   });
   const anyStdin = flags.some(Boolean);
@@ -231,4 +233,15 @@ function required(value: string | undefined): string {
     throw new DatabaseFlatCommandError('Secret input is incomplete.');
   }
   return value;
+}
+
+function sanitizeProfileId(value: string): string {
+  return Array.from(value)
+    .map((character) => {
+      const point = character.codePointAt(0) ?? 0;
+      return point < 32 || point === 127 || (point >= 128 && point <= 159)
+        ? '[CONTROL]'
+        : character;
+    })
+    .join('');
 }

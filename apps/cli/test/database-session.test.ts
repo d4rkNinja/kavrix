@@ -124,7 +124,7 @@ describe('DatabaseSession', () => {
         keyFile: recipientKey,
         passphrase: sharePassphrase,
       }),
-    ).rejects.toMatchObject({ code: 'authentication' });
+    ).rejects.toMatchObject({ code: 'rollback' });
     await missingAnchorStore.close();
 
     await owner.updateVault(alpha.id, (payload) => payload);
@@ -147,7 +147,7 @@ describe('DatabaseSession', () => {
         keyFile: staleKey,
         passphrase: sharePassphrase,
       }),
-    ).rejects.toMatchObject({ code: 'authentication' });
+    ).rejects.toMatchObject({ code: 'rollback' });
     await staleStore.close();
     zeroize(sharePassphrase);
   });
@@ -199,7 +199,7 @@ describe('DatabaseSession', () => {
           keyFile: shareKey,
           passphrase: sharePassphrase,
         }),
-      ).rejects.toMatchObject({ code: 'authentication' });
+      ).rejects.toMatchObject({ code: 'rollback' });
       expect(rewrapped).toBe(true);
       expect(await readFile(shareKey)).toEqual(rewrappedContents);
       const rewrappedFile = await readDatabaseKeyFile(
@@ -528,7 +528,9 @@ describe('DatabaseSession', () => {
     for (const [code, expected] of [
       ['exists', 'conflict'],
       ['conflict', 'conflict'],
-      ['invalid', 'operation'],
+      // Adapter `invalid` rejections are deterministic input problems and map
+      // to the truthful session code rather than a generic operation failure.
+      ['invalid', 'invalid'],
     ] as const) {
       const store = new MemoryDatabaseStore();
       const keyFile = join(directory, `${code}.kavrix-db-key`);
@@ -724,6 +726,8 @@ describe('DatabaseSession', () => {
       'AAAAAAAAAAAAAAAAAAAAAA';
     const failedClears: boolean[] = [];
     setDatabaseSessionZeroizationObserverForTest((value) => failedClears.push(value));
+    // Catalog tampering is a genuine cryptographic failure and stays
+    // authentication; only anchor rejections are integrity (rollback).
     await expect(
       DatabaseSession.open({
         store: tampered.store,
@@ -742,7 +746,7 @@ describe('DatabaseSession', () => {
         keyFile: missing.keyFile,
         passphrase: PASSPHRASE,
       }),
-    ).rejects.toMatchObject({ code: 'authentication' });
+    ).rejects.toMatchObject({ code: 'rollback' });
 
     for (const kind of ['lower', 'fork', 'missing-head'] as const) {
       const fixture = await make(kind);
@@ -778,13 +782,21 @@ describe('DatabaseSession', () => {
       await session.close();
       expect(rootCleared).toBe(true);
       setDatabaseSessionZeroizationObserverForTest(undefined);
+      // Forked heads and rewound databases reach the trusted anchor and
+      // report integrity (rollback); a catalog/vault-set mismatch is refused
+      // earlier while enumerating authenticated documents.
+      // A rewound database reaches the trusted anchor and reports integrity
+      // (rollback); forked vault digests fail authenticated enumeration and a
+      // cleared vault set fails the catalog comparison, both before the
+      // anchor, so they keep their cryptographic refusal codes.
+      const expectedCode = kind === 'lower' ? 'rollback' : 'authentication';
       await expect(
         DatabaseSession.open({
           store: fixture.store,
           keyFile: fixture.keyFile,
           passphrase: PASSPHRASE,
         }),
-      ).rejects.toMatchObject({ code: 'authentication' });
+      ).rejects.toMatchObject({ code: expectedCode });
     }
   });
 
@@ -877,16 +889,19 @@ describe('DatabaseSession', () => {
       }),
     ).rejects.toMatchObject({ code: 'authentication' });
     const beforeInvalidUpdate = await session.getVaultDocument(first.id);
+    // A schema-invalid update callback is a deterministic input problem, not
+    // an authentication failure; it must report its true cause.
     await expect(
       session.updateVault(first.id, () => ({ records: null }) as never),
-    ).rejects.toMatchObject({ code: 'authentication' });
+    ).rejects.toMatchObject({ code: 'invalid' });
     expect((await session.getVaultDocument(first.id)).revision).toBe(
       beforeInvalidUpdate.revision,
     );
 
     for (const [code, expected] of [
       ['exists', 'conflict'],
-      ['invalid', 'operation'],
+      // Adapter invalid rejections map to the truthful invalid code.
+      ['invalid', 'invalid'],
     ] as const) {
       store.createVaultError = code;
       await expect(session.createVault(`adapter-${code}`)).rejects.toMatchObject({

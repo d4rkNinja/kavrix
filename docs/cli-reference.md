@@ -3,7 +3,9 @@
 This guide follows the current public executable. `kavrix --help` and
 `kavrix <command> --help` are authoritative for the installed version.
 Database-container commands use `kavrix db ...`; stable version 2 compatibility
-commands remain at the root.
+commands remain at the root. `kavrix frames [command]` prints the exact stdin
+frame contract for every secret-reading command, and `kavrix status` shows the
+selected profile and active routing mode.
 
 ## 1. Register a datastore profile
 
@@ -162,13 +164,21 @@ It therefore recovers owner access to every vault in the database. Store its
 passphrase separately from the owner-key passphrase and keep the kit on a
 separate protected medium.
 
-| Goal                          | Command                              |
-| ----------------------------- | ------------------------------------ |
-| Create a kit                  | `kavrix db recovery create`          |
-| Verify a kit                  | `kavrix db recovery verify`          |
-| Inspect slot counts           | `kavrix db recovery status`          |
-| Revoke a non-final slot       | `kavrix db recovery revoke <slotId>` |
-| Create a fresh owner key file | `kavrix db recovery use`             |
+| Goal                           | Command                              |
+| ------------------------------ | ------------------------------------ |
+| Create a kit                   | `kavrix db recovery create`          |
+| Verify a kit                   | `kavrix db recovery verify`          |
+| Inspect slot counts            | `kavrix db recovery status`          |
+| Revoke a non-final slot        | `kavrix db recovery revoke <slotId>` |
+| Create a fresh owner key file  | `kavrix db recovery use`             |
+| Diagnose container trust state | `kavrix db doctor health`            |
+
+`kavrix db doctor health [--accept-current]` verifies the database binding,
+every encrypted document, and the trusted local anchor, and reports structured
+findings. With `--accept-current`, and only after the entire observed snapshot
+authenticates with the database root key, it rewrites the local rollback anchor
+to match; datastore content is never modified. See the troubleshooting section
+of `docs/local-database.md` before using it.
 
 Recovery use validates the kit, database binding, current datastore state, and
 trusted database anchor before writing a fresh owner key and anchor. Recovery
@@ -262,7 +272,12 @@ kavrix run \
 
 Project files keep mappings and policy definitions out of the shell. A project
 file contains references only, never plaintext values, and strict parsing
-fails closed on unknown keys:
+fails closed on unknown keys. Top-level `policies:` are reusable by
+`run --policy`; per-environment `policies:` are additional definitions scoped
+under `environments.<name>.policies`. The exact accepted shape is
+`environments.<name>.secrets.<ENV>` plus permission entries (each with
+`secret`, `commands`, and optional `hashes`, `env`, `reveal`, `ttl`,
+`maxUses`, `requireConfirmation`, `workingDirectory`, or `deny`):
 
 ```yaml
 # kavrix.yaml
@@ -281,12 +296,32 @@ environments:
         ttl: 30m
         # Optional: bind use to one directory subtree (canonical real path).
         workingDirectory: /srv/work/backend-api
+
+policies:
   npm-publish:
     secret: npm/publish-token
     commands: [npm]
     reveal: false
-    require_confirmation: [publish]
-    max_uses: 1
+    requireConfirmation: [publish]
+    maxUses: 1
+```
+
+`snake_case` aliases (`require_confirmation`, `max_uses`) are accepted on
+permission entries and normalized to camelCase.
+
+Agent firewall permissions live under top-level `agents.<name>.permissions`
+with the same permission-entry shape, and each entry used by
+`kavrix agent exec` must declare `env` (the destination variable for the
+injected secret) or the request is denied as `no-injection-mapping`:
+
+```yaml
+agents:
+  bot:
+    permissions:
+      gh-issue-list:
+        secret: github/development-token
+        commands: [gh]
+        env: GITHUB_TOKEN
 ```
 
 ```sh
@@ -337,6 +372,15 @@ kavrix grant revoke grant_<uuid>
 kavrix run --grant production/database -- psql ...
 ```
 
+`run --grant <ref>` accepts either a grant id or its credential name. The
+referenced credential is resolved in-session and verified to exist **before**
+any use is consumed, so a missing or unmappable credential never burns a use.
+A grant that declares `--env VARIABLE` injects the credential under that
+variable; a grant without `env` injects under a derived name (credential
+reference uppercased with non-alphanumeric runs collapsed to `_`, e.g.
+`production/database` → `PRODUCTION_DATABASE`). When no portable derived name
+exists, the run fails closed with exit 14 and asks for an explicit mapping.
+
 Stable exit codes carry the outcome to automation: success `0`, generic `1`,
 usage `2`, authentication `10`, credential missing `11`, authorization denied
 `12`, grant invalid/expired/exhausted `13`, invalid configuration `14`,
@@ -378,6 +422,10 @@ shell re-parsing.
 - Secret input is accepted only through masked prompts or explicit bounded stdin
   frames. Secrets are not normal flags, positional arguments, profiles, or
   environment variables.
+- Every stdin frame contract is machine-referenceable: `kavrix frames` lists
+  the exact frames for every secret-reading command, and `kavrix frames <command>`
+  prints one contract. Values that contain line breaks or are empty use the
+  dedicated base64 frame (`put --value-stdin-base64`, one base64 line).
 - On Windows, masked prompting preserves the terminal receiver, restores the
   prior raw-mode state on success/error/cancel, handles carriage return and
   backspace, and reports preparation/cleanup failures without echoing input.
@@ -386,6 +434,10 @@ shell re-parsing.
   and unsafe parent directories fail closed.
 - Terminal-rendered labels and names are treated as hostile and control sequences
   are sanitized. Non-interactive output is ANSI-free.
+- Credential names reject whitespace, control characters, leading/trailing or
+  doubled slashes, and dot segments; vault identifiers reject reserved words
+  (`__proto__`, `constructor`, `prototype`) and malformed shapes with explicit
+  messages.
 - Kavrix uses versioned XChaCha20-Poly1305, Argon2id, HKDF-SHA-256, and SHA-256;
   it does not claim encryption is permanently unbreakable.
 

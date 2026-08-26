@@ -1,4 +1,4 @@
-﻿import { createHash, randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { realpath } from 'node:fs/promises';
 import { homedir } from 'node:os';
@@ -103,9 +103,18 @@ import {
   type LocalSecretKind,
 } from './local-secrets.js';
 import { CLI_VERSION } from './version.js';
+import { applyStdinFrameHelp, registerFramesCommand } from './stdin-frames.js';
 import { registerExecutionCommands } from './execution/register.js';
-import { codedExitCode, isCodedCliError } from './execution/exit-codes.js';
+import {
+  authenticationFailure,
+  credentialMissing,
+  datastoreFailure,
+  isCodedCliError,
+  securityIntegrityFailure,
+} from './execution/exit-codes.js';
 import { enforceRevealPolicy } from './execution/reveal-policy.js';
+import { classifyCliFailure } from './cli-errors.js';
+import { LocalCliError } from './cli-error.js';
 
 const DEFAULT_KEY_FILE = './kavrix.key';
 const DEFAULT_DATA_FILE = './kavrix.vault';
@@ -118,6 +127,7 @@ const MONGO_COLLECTION_NAME_PATTERN = /^[A-Za-z0-9_-]{1,64}$/u;
 const REDACTED = '[REDACTED]';
 const MAX_LOCAL_PAYLOAD_BYTES = 4 * 1024 * 1024;
 const RESERVED_CREDENTIAL_NAMES = new Set(['__proto__', 'constructor', 'prototype']);
+const RESERVED_VAULT_IDENTIFIERS = new Set(['__proto__', 'constructor', 'prototype']);
 const ANSI_ESCAPE = String.fromCharCode(27);
 const ANSI_RESET = `${ANSI_ESCAPE}[0m`;
 const ANSI_BOLD_CYAN = `${ANSI_ESCAPE}[1;36m`;
@@ -144,6 +154,7 @@ export type LocalCliOptions = Readonly<{
   newPassphraseStdin?: boolean;
   recoveryPassphraseStdin?: boolean;
   valueStdin?: boolean;
+  valueStdinBase64?: boolean;
   confirmationStdin?: boolean;
   artifact?: readonly string[];
   keyFile: string;
@@ -160,6 +171,7 @@ export type LocalCliOptions = Readonly<{
   reveal?: boolean;
   json?: boolean;
   limit?: string;
+  caseSensitive?: boolean;
   allowInsecureTransport?: boolean;
 }>;
 
@@ -171,6 +183,9 @@ export function buildLocalCli(): Command {
     .version(CLI_VERSION)
     .helpCommand(false)
     .showHelpAfterError()
+    // Intercept parse failures so usage errors carry the documented exit
+    // code 2 instead of commander's default process exit.
+    .exitOverride()
     .configureOutput({
       writeOut: (text) =>
         process.stdout.write(colorizeHelp(text, process.stdout.isTTY)),
@@ -180,8 +195,30 @@ export function buildLocalCli(): Command {
 
   const init = program
     .command('init')
-    .description('Create a vault and a protected portable key file.');
-  addDatabaseOptions(init);
+    .description(
+      'Create a vault and a protected portable key file (local encrypted file by default).',
+    );
+  // Root init deliberately defaults to the local encrypted-file datastore;
+  // MongoDB requires an explicit `--datastore mongodb` choice outside the
+  // guided wizard as well.
+  init
+    .option('--datastore <type>', 'Encrypted datastore: file or mongodb.', 'file')
+    .option('--data-file <path>', 'Encrypted local vault file path.')
+    .option(
+      '--allow-insecure-transport',
+      'Explicitly permit unencrypted transport to a non-local MongoDB (isolated networks only).',
+    )
+    .option(
+      '--database-url-stdin',
+      'Read the MongoDB connection string from standard input (never from an argument).',
+    )
+    .option('--database <name>', 'MongoDB database name when it is not in the URI.')
+    .option('--collection <name>', 'MongoDB collection name.', DEFAULT_COLLECTION);
+  addDatastoreProfileSelectionOptions(init);
+  init.option(
+    '--passphrase-stdin',
+    'Read the key-file passphrase from standard input (never from an argument).',
+  );
   addKeyOptions(init);
   init.action(async (...args: unknown[]) => {
     let options = getOptions(args);
@@ -191,6 +228,8 @@ export function buildLocalCli(): Command {
     if (guided) {
       writeInitOnboardingComplete({
         color: initOnboardingColorEnabled(),
+        datastore: datastoreFrom(options),
+        profileHijackWarning: await selectedDatabaseBoundProfileExists(options),
         write: (text) => process.stderr.write(text),
       });
     }
@@ -262,7 +301,12 @@ export function buildLocalCli(): Command {
     '--value-stdin',
     'Read the credential value from standard input (never from an argument).',
   );
+  put.option(
+    '--value-stdin-base64',
+    'Read one base64-encoded credential value frame from standard input; supports multi-line and empty values.',
+  );
   put.option('--overwrite', 'Replace an existing credential explicitly.');
+  put.option('--json', 'Emit machine-readable output (the default).');
   put.action(async (...args: unknown[]) => {
     await handlePut(getName(args), getOptions(args));
   });
@@ -271,7 +315,8 @@ export function buildLocalCli(): Command {
     .command('get <name>')
     .description(
       'Read one credential value; use --reveal for explicit plaintext output.',
-    );
+    )
+    .option('--json', 'Emit masked machine-readable output (the default).');
   addDatabaseOptions(get);
   addKeyOptions(get);
   get.option('--reveal', 'Explicitly print the decrypted value to stdout.');
@@ -281,7 +326,8 @@ export function buildLocalCli(): Command {
 
   const list = program
     .command('list')
-    .description('List credential names without revealing values.');
+    .description('List credential names without revealing values.')
+    .option('--json', 'Emit machine-readable output even on a terminal.');
   addDatabaseOptions(list);
   addKeyOptions(list);
   list.action(async (...args: unknown[]) => {
@@ -302,12 +348,19 @@ export function buildLocalCli(): Command {
 
   const search = program
     .command('search <pattern>')
-    .description('Find credential names without searching or revealing their values.');
+    .description(
+      'Find credential names by glob (*, ?) or substring without searching or revealing values.',
+    )
+    .option('--limit <count>', 'Maximum matches to display.', '50')
+    .option('--json', 'Emit machine-readable output.')
+    .option(
+      '--ignore-case',
+      'Match the pattern case-insensitively (the default).',
+      true,
+    )
+    .option('--case-sensitive', 'Match the pattern case-sensitively.');
   addDatabaseOptions(search);
   addKeyOptions(search);
-  search
-    .option('--limit <count>', 'Maximum matches to display.', '50')
-    .option('--json', 'Emit machine-readable output.');
   search.action(async (...args: unknown[]) => {
     await handleSearch(getName(args), getOptions(args));
   });
@@ -324,7 +377,8 @@ export function buildLocalCli(): Command {
 
   const remove = program
     .command('remove <name>')
-    .description('Delete one credential value.');
+    .description('Delete one credential value.')
+    .option('--json', 'Emit machine-readable output (the default).');
   addDatabaseOptions(remove);
   addKeyOptions(remove);
   remove.action(async (...args: unknown[]) => {
@@ -333,7 +387,8 @@ export function buildLocalCli(): Command {
 
   const has = program
     .command('has <name>')
-    .description('Check whether a credential exists without revealing its value.');
+    .description('Check whether a credential exists without revealing its value.')
+    .option('--json', 'Emit machine-readable output even on a terminal.');
   addDatabaseOptions(has);
   addKeyOptions(has);
   has.action(async (...args: unknown[]) => {
@@ -342,7 +397,8 @@ export function buildLocalCli(): Command {
 
   const rename = program
     .command('rename <from> <to>')
-    .description('Rename a credential while keeping its encrypted value.');
+    .description('Rename a credential while keeping its encrypted value.')
+    .option('--json', 'Emit machine-readable output (the default).');
   addDatabaseOptions(rename);
   addKeyOptions(rename);
   rename.action(async (...args: unknown[]) => {
@@ -352,7 +408,8 @@ export function buildLocalCli(): Command {
 
   const doctor = program
     .command('doctor')
-    .description('Decrypt and validate the local vault without revealing values.');
+    .description('Decrypt and validate the local vault without revealing values.')
+    .option('--json', 'Emit machine-readable output (the default).');
   addDatabaseOptions(doctor);
   addKeyOptions(doctor);
   doctor.action(async (...args: unknown[]) => {
@@ -493,15 +550,15 @@ export function buildLocalCli(): Command {
     await handleKeyStatus(getOptions(args));
   });
   for (const name of ['copy', 'replicate', 'assign'] as const) {
-    addKeyCopyOptions(
-      key
-        .command(name)
-        .description(
-          'Create another protected key file with the same vault binding; it is not independently revocable.',
-        ),
-    ).action(async (...args: unknown[]) => {
-      await handleKeyCopy(getOptions(args));
-    });
+    const description =
+      name === 'copy'
+        ? 'Create another protected key file with the same vault binding; it is not independently revocable.'
+        : `Deprecated alias of \`key copy\`; behavior and output are identical.`;
+    addKeyCopyOptions(key.command(name).description(description)).action(
+      async (...args: unknown[]) => {
+        await handleKeyCopy(getOptions(args));
+      },
+    );
   }
   addKeyRewrapOptions(
     key
@@ -512,40 +569,86 @@ export function buildLocalCli(): Command {
   });
 
   registerExecutionCommands(program);
+  registerFramesCommand(program);
+  applyStdinFrameHelp(program);
+
+  const status = program
+    .command('status')
+    .description(
+      'Show the CLI version, selected datastore profile, and active routing mode.',
+    );
+  addDatastoreProfileSelectionOptions(status);
+  status.option('--json', 'Emit machine-readable output even on a terminal.');
+  status.action(async (...args: unknown[]) => {
+    await handleStatus(getOptions(args));
+  });
 
   return program;
+}
+
+/** Reports non-secret routing facts so scripts can detect the active universe. */
+async function handleStatus(options: LocalCliOptions): Promise<void> {
+  const registryOptions =
+    options.profileConfigDir === undefined
+      ? {}
+      : { configDirectory: options.profileConfigDir };
+  const registry =
+    options.profile === undefined && options.datastore === undefined
+      ? await DatastoreProfileRegistry.openIfPresent(registryOptions)
+      : options.profile === undefined
+        ? null
+        : await DatastoreProfileRegistry.open(registryOptions);
+  const profile =
+    registry === null
+      ? null
+      : options.profile === undefined
+        ? await registry.current()
+        : await registry.get(parseCommandProfileId(options.profile));
+  const result = {
+    version: CLI_VERSION,
+    platform: process.platform,
+    routing:
+      profile === null
+        ? 'legacy-v2'
+        : profile.databaseId !== undefined
+          ? 'database-container'
+          : 'unbound-profile',
+    selectedProfile:
+      profile === null
+        ? null
+        : {
+            id: sanitizeTerminalText(profile.id),
+            datastore: profile.datastore,
+            ...(profile.databaseId === undefined
+              ? {}
+              : { databaseId: sanitizeTerminalText(profile.databaseId) }),
+          },
+  };
+  if (options.json === true || !process.stdout.isTTY) {
+    writeJson(result);
+    return;
+  }
+  const lines = [
+    paint(ANSI_BOLD_CYAN, 'KAVRIX / STATUS'),
+    `  Version:        ${sanitizeTerminalText(result.version)}`,
+    `  Routing:        ${result.routing}`,
+  ];
+  if (profile !== null) {
+    lines.push(
+      `  Profile:        ${sanitizeTerminalText(profile.id)} (${profile.datastore}${profile.databaseId === undefined ? '' : ', database-bound'})`,
+    );
+  } else {
+    lines.push('  Profile:        (none selected)');
+  }
+  lines.push('', '');
+  process.stdout.write(lines.join('\n'));
 }
 
 export async function runLocalCli(argv: readonly string[]): Promise<void> {
   try {
     await buildLocalCli().parseAsync(argv);
   } catch (error) {
-    const message =
-      error instanceof LocalCliError
-        ? error.message
-        : isCodedCliError(error)
-          ? error.message
-          : error instanceof LocalSecretInputError
-            ? error.message
-            : error instanceof EncryptedVaultStoreError
-              ? error.message
-              : error instanceof DatastoreProfileError
-                ? error.message
-                : error instanceof DatabaseMigrationError
-                  ? error.message
-                  : error instanceof DatabaseMigrationCommandError
-                    ? error.message
-                    : error instanceof DatabaseFlatCommandError
-                      ? error.message
-                      : error instanceof DatabaseSessionError
-                        ? error.message
-                        : error instanceof PortableKeyFileError
-                          ? error.message
-                          : error instanceof InitOnboardingCancelledError
-                            ? error.message
-                            : error instanceof AggregateError
-                              ? error.message
-                              : 'Kavrix command failed.';
+    const { message, exitCode } = classifyCliFailure(error);
     if (
       process.env['KAVRIX_DEBUG_CONNECT'] === '1' &&
       error instanceof Error &&
@@ -553,15 +656,10 @@ export async function runLocalCli(argv: readonly string[]): Promise<void> {
     ) {
       process.stderr.write(error.stack + '\n');
     }
-    process.stderr.write(colorizeError(message) + '\n');
-    process.exitCode = codedExitCode(error) ?? 1;
-  }
-}
-
-class LocalCliError extends Error {
-  public constructor(message: string) {
-    super(message);
-    this.name = 'LocalCliError';
+    if (message.length > 0) {
+      process.stderr.write(colorizeError(message) + '\n');
+    }
+    process.exitCode = exitCode;
   }
 }
 
@@ -595,6 +693,7 @@ interface MutableStoreOperationState {
 
 type DatastoreProfileCommandOptions = Readonly<{
   configDir?: string;
+  profileConfigDir?: string;
   datastore?: string;
   databaseId?: string;
   dataFile?: string;
@@ -673,10 +772,17 @@ function addDatastoreProfileCommands(db: Command): void {
 }
 
 function addProfileConfigOption(command: Command): void {
-  command.option(
-    '--config-dir <path>',
-    'Protected datastore-profile configuration directory.',
-  );
+  // `--config-dir` is the historical spelling for `db profile` subcommands;
+  // `--profile-config-dir` is the shared standard across every other command.
+  command
+    .option(
+      '--config-dir <path>',
+      'Protected datastore-profile configuration directory.',
+    )
+    .option(
+      '--profile-config-dir <path>',
+      'Protected datastore-profile configuration directory.',
+    );
 }
 
 function profileCommandOptions(
@@ -731,8 +837,10 @@ async function handleProfileRemove(
 async function openDatastoreProfileRegistry(
   options: DatastoreProfileCommandOptions,
 ): Promise<DatastoreProfileRegistry> {
+  // Both spellings select the same protected configuration directory.
+  const configDirectory = options.profileConfigDir ?? options.configDir;
   return DatastoreProfileRegistry.open(
-    options.configDir === undefined ? {} : { configDirectory: options.configDir },
+    configDirectory === undefined ? {} : { configDirectory },
   );
 }
 
@@ -1122,6 +1230,28 @@ function shouldRunInitOnboarding(options: LocalCliOptions): boolean {
   return Object.keys(options.routingOverrides ?? {}).length === 0;
 }
 
+/** Whether an ambient database-bound profile will route flat commands. */
+async function selectedDatabaseBoundProfileExists(
+  options: LocalCliOptions,
+): Promise<boolean> {
+  try {
+    const registryOptions =
+      options.profileConfigDir === undefined
+        ? {}
+        : { configDirectory: options.profileConfigDir };
+    const registry = await DatastoreProfileRegistry.openIfPresent(registryOptions);
+    if (registry === null) return false;
+    const profile =
+      options.profile === undefined
+        ? await registry.current()
+        : await registry.get(parseCommandProfileId(options.profile));
+    return profile?.databaseId !== undefined;
+  } catch {
+    // A hint must never fail init; absence of a warning is honest here.
+    return false;
+  }
+}
+
 async function readInitOnboardingOptions(
   base: LocalCliOptions,
 ): Promise<LocalCliOptions> {
@@ -1275,8 +1405,8 @@ export async function readInitStorageSelection(
   const render = (replace: boolean): void => {
     if (replace) output.write('\u001b[2A');
     output.write(
-      `\r\u001b[2K${selected === 'file' ? 'â¯' : ' '} Local encrypted file\n` +
-        `\r\u001b[2K${selected === 'mongodb' ? 'â¯' : ' '} MongoDB\n`,
+      `\r\u001b[2K${selected === 'file' ? '❯' : ' '} Local encrypted file\n` +
+        `\r\u001b[2K${selected === 'mongodb' ? '❯' : ' '} MongoDB\n`,
     );
   };
   return await new Promise((resolve, reject) => {
@@ -1799,8 +1929,15 @@ async function handleMigrateDatabase(options: LocalCliOptions): Promise<void> {
 
 async function handlePut(name: string, options: LocalCliOptions): Promise<void> {
   validateCredentialName(name);
+  const valueKind: LocalSecretKind =
+    options.valueStdinBase64 === true ? 'field-value-base64' : 'field-value';
+  if (options.valueStdin === true && options.valueStdinBase64 === true) {
+    throw new LocalCliError(
+      'Use either --value-stdin or --value-stdin-base64, not both.',
+    );
+  }
   if (await usesDatabaseContainer(options)) {
-    const values = await readDatabaseFlatSecrets(options, ['field-value']);
+    const values = await readDatabaseFlatSecrets(options, [valueKind]);
     const value = requiredSecret(values.extras, 0);
     await withDatabaseFlatVault(options, values, async (session, vaultId) => {
       const updated = await session.updateVault(vaultId, (payload) => {
@@ -1816,10 +1953,7 @@ async function handlePut(name: string, options: LocalCliOptions): Promise<void> 
     });
     return;
   }
-  const values = await readSecrets(
-    ['database-url', 'passphrase', 'field-value'],
-    options,
-  );
+  const values = await readSecrets(['database-url', 'passphrase', valueKind], options);
   const databaseUrl = requiredSecret(values, 0);
   const passphrase = requiredSecret(values, 1);
   const value = requiredSecret(values, 2);
@@ -1861,7 +1995,7 @@ async function handleGet(name: string, options: LocalCliOptions): Promise<void> 
       const document = await session.inspectVault(vaultId, (payload) => {
         found = payload.records[name];
       });
-      if (found === undefined) throw new LocalCliError('Credential was not found.');
+      if (found === undefined) throw credentialMissing();
       if (options.reveal === true) {
         await enforceRevealPolicy(session, profile, name);
         const value = process.stdout.isTTY
@@ -1881,7 +2015,7 @@ async function handleGet(name: string, options: LocalCliOptions): Promise<void> 
     try {
       const payload = await decryptVaultPayload(document, rootKey);
       const record = payload.records[name];
-      if (record === undefined) throw new LocalCliError('Credential was not found.');
+      if (record === undefined) throw credentialMissing();
       if (options.reveal === true) {
         const value = process.stdout.isTTY
           ? sanitizeTerminalText(record.value)
@@ -1906,7 +2040,12 @@ async function handleList(options: LocalCliOptions): Promise<void> {
           left.localeCompare(right),
         );
       });
-      writeJson({ revision: document.revision, names });
+      const result = { revision: document.revision, names };
+      if (options.json === true || !process.stdout.isTTY) {
+        writeJson(result);
+        return;
+      }
+      process.stdout.write(renderVaultList(vaultId, document.revision, names));
     });
     return;
   }
@@ -1918,16 +2057,46 @@ async function handleList(options: LocalCliOptions): Promise<void> {
     const rootKey = await unlockVault(document, options.keyFile, passphrase);
     try {
       const payload = await decryptVaultPayload(document, rootKey);
-      writeJson({
-        revision: document.revision,
-        names: Object.keys(payload.records).sort((left, right) =>
-          left.localeCompare(right),
-        ),
-      });
+      const names = Object.keys(payload.records).sort((left, right) =>
+        left.localeCompare(right),
+      );
+      if (options.json === true || !process.stdout.isTTY) {
+        writeJson({ revision: document.revision, names });
+        return;
+      }
+      process.stdout.write(renderVaultList(document.id, document.revision, names));
     } finally {
       zeroize(rootKey);
     }
   });
+}
+
+function renderVaultList(
+  vaultId: string,
+  revision: number,
+  names: readonly string[],
+): string {
+  const lines = [
+    paint(ANSI_BOLD_CYAN, 'KAVRIX / VAULT LIST'),
+    `  Vault ${paint(ANSI_MAGENTA, sanitizeTerminalText(vaultId))}  |  Revision ${String(revision)}  |  Credentials ${String(names.length)}`,
+    '',
+  ];
+  if (names.length === 0) {
+    lines.push(paint(ANSI_YELLOW, '  No credentials stored in this vault.'));
+    return lines.join('\n').concat('\n');
+  }
+  for (const name of names) {
+    lines.push(`  ${paint(ANSI_GREEN, truncateDisplay(name, 64))}`);
+  }
+  lines.push(
+    '',
+    paint(
+      ANSI_DIM,
+      '  Values are never listed. Use `view <name> --reveal` to inspect one.',
+    ),
+    '',
+  );
+  return lines.join('\n');
 }
 
 async function handleView(
@@ -1955,8 +2124,7 @@ async function handleView(
           .filter(([credentialName]) => name === undefined || credentialName === name)
           .sort(([left], [right]) => left.localeCompare(right));
       });
-      if (name !== undefined && entries.length === 0)
-        throw new LocalCliError('Credential was not found.');
+      if (name !== undefined && entries.length === 0) throw credentialMissing();
       if (options.reveal === true && name !== undefined) {
         await enforceRevealPolicy(session, profile, name);
       }
@@ -1991,7 +2159,7 @@ async function handleView(
         .filter(([credentialName]) => name === undefined || credentialName === name)
         .sort(([left], [right]) => left.localeCompare(right));
       if (name !== undefined && entries.length === 0) {
-        throw new LocalCliError('Credential was not found.');
+        throw credentialMissing();
       }
       if (options.json === true || !process.stdout.isTTY) {
         writeJson({
@@ -2013,21 +2181,50 @@ async function handleView(
   });
 }
 
+/**
+ * Builds the credential-name matcher for `search`. Patterns containing `*` or
+ * `?` are anchored globs; anything else is a substring match. Case handling is
+ * explicit: insensitive unless `--case-sensitive` is passed.
+ */
+export function buildSearchMatcher(
+  pattern: string,
+  ignoreCase: boolean,
+): (name: string) => boolean {
+  const normalize = (value: string): string =>
+    ignoreCase ? value.toLocaleLowerCase() : value;
+  const normalizedPattern = normalize(pattern);
+  if (!/[*?]/u.test(normalizedPattern)) {
+    return (name) => normalize(name).includes(normalizedPattern);
+  }
+  const source = Array.from(normalizedPattern)
+    .map((character) => {
+      if (character === '*') return '.*';
+      if (character === '?') return '.';
+      // Escape regex metacharacters so globs never smuggle expressions.
+      return character.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+    })
+    .join('');
+  const regex = new RegExp(`^${source}$`, 'us');
+  return (name) => regex.test(normalize(name));
+}
+
 async function handleSearch(term: string, options: LocalCliOptions): Promise<void> {
-  const normalizedTerm = term.trim().toLocaleLowerCase();
+  const normalizedTerm = term.trim();
   if (normalizedTerm.length === 0)
     throw new LocalCliError('A search pattern is required.');
   if (normalizedTerm.length > 128) {
     throw new LocalCliError('Search patterns are limited to 128 characters.');
   }
   const limit = parseLimit(options.limit);
+  const ignoreCase = options.caseSensitive !== true;
+  const matchesName = buildSearchMatcher(normalizedTerm, ignoreCase);
   if (await usesDatabaseContainer(options)) {
     const values = await readDatabaseFlatSecrets(options, []);
     await withDatabaseFlatVault(options, values, async (session, vaultId) => {
       let matches: [string, LocalVaultPayload['records'][string]][] = [];
       const document = await session.inspectVault(vaultId, (payload) => {
         matches = Object.entries(payload.records)
-          .filter(([name]) => name.toLocaleLowerCase().includes(normalizedTerm))
+          .filter(([name]) => matchesName(name))
           .sort(([left], [right]) => left.localeCompare(right));
       });
       const result = {
@@ -2055,7 +2252,7 @@ async function handleSearch(term: string, options: LocalCliOptions): Promise<voi
     try {
       const payload = await decryptVaultPayload(document, rootKey);
       const matches = Object.entries(payload.records)
-        .filter(([name]) => name.toLocaleLowerCase().includes(normalizedTerm))
+        .filter(([name]) => matchesName(name))
         .sort(([left], [right]) => left.localeCompare(right));
       const result = {
         vaultId: document.id,
@@ -2140,8 +2337,7 @@ async function handleRemove(name: string, options: LocalCliOptions): Promise<voi
     const values = await readDatabaseFlatSecrets(options, []);
     await withDatabaseFlatVault(options, values, async (session, vaultId) => {
       const updated = await session.updateVault(vaultId, (payload) => {
-        if (payload.records[name] === undefined)
-          throw new LocalCliError('Credential was not found.');
+        if (payload.records[name] === undefined) throw credentialMissing();
         return localVaultPayloadSchema.parse({
           records: Object.fromEntries(
             Object.entries(payload.records).filter(([key]) => key !== name),
@@ -2161,7 +2357,7 @@ async function handleRemove(name: string, options: LocalCliOptions): Promise<voi
     try {
       const payload = await decryptVaultPayload(document, rootKey);
       if (payload.records[name] === undefined) {
-        throw new LocalCliError('Credential was not found.');
+        throw credentialMissing();
       }
       const updatedPayload = localVaultPayloadSchema.parse({
         records: Object.fromEntries(
@@ -2185,6 +2381,12 @@ async function handleRemove(name: string, options: LocalCliOptions): Promise<voi
 
 async function handleHas(name: string, options: LocalCliOptions): Promise<void> {
   validateCredentialName(name);
+  const present = (exists: boolean): string =>
+    options.json === true || !process.stdout.isTTY
+      ? ''
+      : exists
+        ? `${sanitizeTerminalText(name)}: present`
+        : `${sanitizeTerminalText(name)}: absent`;
   if (await usesDatabaseContainer(options)) {
     const values = await readDatabaseFlatSecrets(options, []);
     await withDatabaseFlatVault(options, values, async (session, vaultId) => {
@@ -2192,7 +2394,9 @@ async function handleHas(name: string, options: LocalCliOptions): Promise<void> 
       const document = await session.inspectVault(vaultId, (payload) => {
         exists = Object.hasOwn(payload.records, name);
       });
-      writeJson({ exists, name, revision: document.revision });
+      const line = present(exists);
+      if (line.length > 0) process.stdout.write(line + '\n');
+      else writeJson({ exists, name, revision: document.revision });
     });
     return;
   }
@@ -2204,11 +2408,10 @@ async function handleHas(name: string, options: LocalCliOptions): Promise<void> 
     const rootKey = await unlockVault(document, options.keyFile, passphrase);
     try {
       const payload = await decryptVaultPayload(document, rootKey);
-      writeJson({
-        exists: Object.hasOwn(payload.records, name),
-        name,
-        revision: document.revision,
-      });
+      const exists = Object.hasOwn(payload.records, name);
+      const line = present(exists);
+      if (line.length > 0) process.stdout.write(line + '\n');
+      else writeJson({ exists, name, revision: document.revision });
     } finally {
       zeroize(rootKey);
     }
@@ -2228,7 +2431,7 @@ async function handleRename(
     await withDatabaseFlatVault(options, values, async (session, vaultId) => {
       const updated = await session.updateVault(vaultId, (payload) => {
         const source = payload.records[from];
-        if (source === undefined) throw new LocalCliError('Credential was not found.');
+        if (source === undefined) throw credentialMissing();
         if (Object.hasOwn(payload.records, to))
           throw new LocalCliError('The destination credential already exists.');
         return localVaultPayloadSchema.parse({
@@ -2252,7 +2455,7 @@ async function handleRename(
     try {
       const payload = await decryptVaultPayload(document, rootKey);
       const source = payload.records[from];
-      if (source === undefined) throw new LocalCliError('Credential was not found.');
+      if (source === undefined) throw credentialMissing();
       if (Object.hasOwn(payload.records, to)) {
         throw new LocalCliError('The destination credential already exists.');
       }
@@ -2430,13 +2633,12 @@ async function handleDoctorHealth(options: LocalCliOptions): Promise<void> {
           },
         });
       } catch (error) {
-        const detail =
-          error instanceof LocalCliError && error.message.includes('rollback')
-            ? 'The trusted local revision anchor rejected this database snapshot as a rollback or fork.'
-            : error instanceof LocalCliError &&
-                error.message.includes('revision anchor')
-              ? 'The trusted local revision anchor is missing or invalid.'
-              : 'The portable key could not be authenticated.';
+        const message = error instanceof Error ? error.message : '';
+        const detail = message.includes('rollback')
+          ? 'The trusted local revision anchor rejected this database snapshot as a rollback or fork.'
+          : message.includes('revision anchor')
+            ? 'The trusted local revision anchor is missing or invalid.'
+            : 'The portable key could not be authenticated.';
         addManualRecovery('portable-key', detail);
         return;
       }
@@ -3173,7 +3375,7 @@ async function createVaultDocument(
   portableKey: Uint8Array,
   rootKey: VaultRootKey,
 ): Promise<LocalVaultDocument> {
-  const id = vaultIdSchema.parse(vaultValue);
+  const id = parseVaultIdentifier(vaultValue);
   const schemaVersion = supportedSchemaVersionSchema.parse(CURRENT_SCHEMA_VERSION);
   const cryptographicVersion = supportedCryptographicVersionSchema.parse(
     CURRENT_CRYPTOGRAPHIC_VERSION,
@@ -3228,7 +3430,7 @@ async function requireVault(
   vaultValue: string,
 ): Promise<LocalVaultDocument> {
   const document = await store.get(vaultValue);
-  if (document === null) throw new LocalCliError('Vault is not initialized.');
+  if (document === null) throw datastoreFailure('Vault is not initialized.');
   return document;
 }
 
@@ -3242,7 +3444,7 @@ async function unlockVault(
   }> = {},
 ): Promise<VaultRootKey> {
   if (document.keySlot.type !== 'portable-key') {
-    throw new LocalCliError('Vault unlock configuration is invalid.');
+    throw securityIntegrityFailure('Vault unlock configuration is invalid.');
   }
   const passphraseBytes = Buffer.from(passphrase, 'utf8');
   let parsedKey: Awaited<ReturnType<typeof readPortableKeyFile>> | undefined;
@@ -3277,7 +3479,7 @@ async function unlockVault(
         throw error;
       }
       if (behavior.acceptCurrent !== true) {
-        throw new LocalCliError(
+        throw securityIntegrityFailure(
           'Vault revision anchor is missing. Run `kavrix doctor health --accept-current` only after verifying the current database state.',
         );
       }
@@ -3289,7 +3491,7 @@ async function unlockVault(
         (document.revision === anchor.revision &&
           expectedAnchor.metadataDigest !== anchor.metadataDigest))
     ) {
-      throw new LocalCliError(
+      throw securityIntegrityFailure(
         'Vault rollback detected. The database snapshot is older or forked.',
       );
     }
@@ -3306,8 +3508,11 @@ async function unlockVault(
     return rootKey;
   } catch (error) {
     zeroize(rootKey);
-    if (error instanceof LocalCliError) throw error;
-    throw new LocalCliError('Vault unlock failed.');
+    // Reviewed integrity and configuration failures keep their precise
+    // messages and codes; only unrecognized unlock failures collapse to the
+    // generic authentication error.
+    if (error instanceof LocalCliError || isCodedCliError(error)) throw error;
+    throw authenticationFailure('Vault unlock failed.');
   } finally {
     zeroize(parsedKey?.key);
     zeroize(passphraseBytes);
@@ -3345,7 +3550,7 @@ async function decryptVaultPayload(
       JSON.parse(Buffer.from(plaintext).toString('utf8')) as unknown,
     );
   } catch {
-    throw new LocalCliError('Vault decryption failed.');
+    throw securityIntegrityFailure('Vault decryption failed.');
   } finally {
     zeroize(plaintext);
   }
@@ -3377,18 +3582,18 @@ async function requireCurrentRevisionAnchor(
     });
   } catch (error) {
     if (error instanceof PortableKeyFileError && error.code === 'KEY_FILE_NOT_FOUND') {
-      throw new LocalCliError(
+      throw securityIntegrityFailure(
         'Vault revision anchor is missing; recovery operations require the trusted local anchor.',
       );
     }
-    throw new LocalCliError('Vault revision anchor is invalid.');
+    throw securityIntegrityFailure('Vault revision anchor is invalid.');
   }
   const expected = localVaultRevisionAnchor(document);
   if (
     anchor.revision !== document.revision ||
     anchor.metadataDigest !== expected.metadataDigest
   ) {
-    throw new LocalCliError(
+    throw securityIntegrityFailure(
       'Vault rollback detected. The database snapshot does not match the trusted local anchor.',
     );
   }
@@ -3531,6 +3736,47 @@ function encodePayload(payload: LocalVaultPayload): Uint8Array {
 function validateCredentialName(name: string): void {
   if (RESERVED_CREDENTIAL_NAMES.has(name)) {
     throw new LocalCliError('That credential name is reserved.');
+  }
+  // Names become record keys and terminal output; ambiguous or hostile
+  // spellings are refused rather than silently accepted.
+  if (
+    name.length === 0 ||
+    name.length > 256 ||
+    // Control characters cannot appear in safe credential names.
+    // eslint-disable-next-line no-control-regex
+    /[\u0000-\u001f\u007f]/u.test(name) ||
+    /\s/u.test(name)
+  ) {
+    throw new LocalCliError(
+      'Credential names must be 1-256 characters without whitespace or control characters.',
+    );
+  }
+  if (
+    name.startsWith('/') ||
+    name.endsWith('/') ||
+    name.includes('//') ||
+    name === '.' ||
+    name === '..'
+  ) {
+    throw new LocalCliError(
+      'Credential names must not start or end with "/", contain "//", or be a dot segment.',
+    );
+  }
+}
+
+/**
+ * Validates one opaque vault identifier for commands that create or select a
+ * legacy vault. Prototype-polluting identifiers and schema-invalid shapes are
+ * refused with reviewed messages instead of raw validation failures.
+ */
+export function parseVaultIdentifier(value: string): LocalVaultDocument['id'] {
+  if (RESERVED_VAULT_IDENTIFIERS.has(value)) {
+    throw new LocalCliError('That vault identifier is reserved.');
+  }
+  try {
+    return vaultIdSchema.parse(value);
+  } catch {
+    throw new LocalCliError('Vault identifier is invalid.');
   }
 }
 
@@ -3770,6 +4016,7 @@ async function readSecrets(
     if (kind === 'passphrase') return options.passphraseStdin === true;
     if (kind === 'new-passphrase') return options.newPassphraseStdin === true;
     if (kind === 'recovery-passphrase') return options.recoveryPassphraseStdin === true;
+    if (kind === 'field-value-base64') return options.valueStdinBase64 === true;
     return options.valueStdin === true;
   });
   const anyStdin = flags.some(Boolean);
@@ -3806,7 +4053,8 @@ function asError(error: unknown): Error {
     error instanceof DatabaseMigrationError ||
     error instanceof DatabaseMigrationCommandError ||
     error instanceof DatabaseFlatCommandError ||
-    error instanceof DatabaseSessionError
+    error instanceof DatabaseSessionError ||
+    isCodedCliError(error)
   )
     return error;
   return new LocalCliError('Kavrix operation failed.');

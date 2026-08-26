@@ -296,7 +296,8 @@ describe('root init onboarding composition', () => {
     const output = stderr.mock.calls.flat().join('');
     expect(output).toContain('portable key file path is invalid');
     expect(output).not.toContain('Kavrix command failed');
-    expect(process.exitCode).toBe(1);
+    // Invalid configuration input carries the documented stable exit code.
+    expect(process.exitCode).toBe(14);
   });
 });
 

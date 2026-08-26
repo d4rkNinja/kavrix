@@ -71,7 +71,6 @@ export function addExecutionRoutingOptions(command: Command): Command {
       '--allow-insecure-transport',
       'Explicitly permit unencrypted transport to a non-local MongoDB (isolated networks only).',
     )
-    .option('--secrets-stdin', 'Read every unlock secret from exact stdin frames.')
     .option(
       '--vault <id>',
       'Opaque vault identifier holding the credentials.',

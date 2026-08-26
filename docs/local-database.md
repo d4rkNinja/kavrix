@@ -60,12 +60,61 @@ server may answer `db ping` but cannot provide the required publication contract
 - Every non-local host, including `mongodb+srv://`, must explicitly set
   `tls=true` or `ssl=true`.
 - `tls=false`, `ssl=false`, `sslValidate=false`, and insecure certificate or
-  hostname options are rejected.
+  hostname options are rejected. `--allow-insecure-transport` relaxes exactly
+  one rule — it permits a plaintext (non-TLS) connection to a non-local host
+  for isolated networks; it never re-enables `tls=false`/`sslValidate=false`
+  URI parameters, which are refused regardless of the flag.
 - Supply the URI only through the masked prompt or the command's exact protected
   stdin frame. It is never a profile field, normal argument, or environment setting.
 
 The adapter uses bounded connection/server/socket timeouts and maps validation,
 conflict, existence, and dependency failures to generic fail-closed errors.
+
+## Locks, crash recovery, and bounded repair
+
+Every local database container is guarded by an exclusive sibling lock file
+(`<data>.kavrix.lock`) that records its owning process ID. A hard kill
+(Ctrl+C, terminal close, OOM) can leave that lock behind. The next invocation
+detects the recorded owner: a live process yields a clear "locked by another
+Kavrix process" error, while a provably dead owner's lock is removed
+automatically before the command proceeds. Malformed or foreign lock files are
+not removed automatically and require an operator to identify and remove the
+stale artifact after confirming no Kavrix process owns it. Manual deletion is
+also required if the filesystem prevents safe automatic removal.
+
+If a process died mid-write in the era before owner-ID locks, or a datastore
+was restored from an older snapshot, the trusted local rollback anchor may
+reject the stored state as stale or forked. Kavrix refuses such snapshots;
+the bounded remedy is:
+
+```sh
+kavrix db doctor health                    # diagnose: binding, documents, anchor
+kavrix db doctor health --accept-current   # after human verification only
+```
+
+`--accept-current` fully authenticates every encrypted document with the
+database root key first; if that succeeds it rewrites the local rollback
+anchor to the observed state. Datastore content is never modified, and the
+flag consciously trades rollback protection for recoverability — verify the
+datastore contents independently before using it.
+
+## Sharing caveats
+
+A share key authorizes the exact snapshot that existed when `db key create`
+ran. Database writes after that moment are invisible to recipients who open
+with earlier copies; create a fresh share key after meaningful updates.
+On Windows, plain `Copy-Item` inherits ACEs (for example `SYSTEM:(F)`) that
+fail Kavrix's user-only ACL policy. Strip inherited ACEs before transfer:
+
+```powershell
+icacls <file> /inheritance:r
+```
+
+## Vault labels
+
+Labels live inside the encrypted catalog. Owner commands redact them by
+default (`[REDACTED]`); pass `--show-labels` to `db vault list` or
+`db vault status` to display decrypted labels after authenticating.
 
 ## Switching and binding
 

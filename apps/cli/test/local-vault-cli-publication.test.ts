@@ -492,7 +492,10 @@ describe('legacy local-vault publication boundaries', () => {
       initArgs(target.data, target.key),
       `${PASSPHRASE}\n${PASSPHRASE}\n`,
     );
-    const name = 'hostile\u001b[31m-name-Δ';
+    // Control-character names are refused at input by validateCredentialName;
+    // hostile-but-valid spellings must still round-trip byte-exact, and the
+    // [CONTROL] rewrite itself is covered by the sanitizeJsonValue unit test.
+    const name = 'hostile-name-"quoted"-Δ-日本語';
     await runWithStdin(
       [
         'put',
@@ -517,6 +520,7 @@ describe('legacy local-vault publication boundaries', () => {
       await runWithStdin(
         [
           'list',
+          '--json',
           '--datastore',
           'file',
           '--data-file',
@@ -533,10 +537,9 @@ describe('legacy local-vault publication boundaries', () => {
     const serialized = output.join('');
     expect(serialized).not.toContain('\u001b');
     expect(JSON.parse(serialized)).toEqual({
-      names: ['hostile[CONTROL][31m-name-Δ'],
+      names: ['hostile-name-"quoted"-Δ-日本語'],
       revision: 1,
     });
-    expect(serialized).toContain('CONTROL');
   });
 
   it('fails closed instead of dropping colliding sanitized object keys', () => {

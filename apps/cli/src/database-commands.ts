@@ -7,13 +7,20 @@ import {
   validateSecureFileDestination,
   validateSecureFileSource,
 } from '@kavrix/key-files';
-import { profileIdSchema, vaultIdSchema, type DatabaseId } from '@kavrix/schemas';
+import {
+  profileIdSchema,
+  vaultIdSchema,
+  type DatabaseId,
+  type VaultId,
+} from '@kavrix/schemas';
 import {
   FileEncryptedDatabaseStore,
   MongoEncryptedDatabaseStore,
   type EncryptedDatabaseStore,
 } from '@kavrix/storage';
 import type { Command } from 'commander';
+
+import { DatabaseFlatCommandError } from './database-flat-commands.js';
 
 import {
   DatastoreProfileRegistry,
@@ -45,6 +52,8 @@ type DatabaseCommandOptions = Readonly<{
   outputKeyFile?: string;
   anchorFile?: string;
   json?: boolean;
+  acceptCurrent?: boolean;
+  showLabels?: boolean;
   allowInsecureTransport?: boolean;
 }>;
 
@@ -85,6 +94,26 @@ export function addDatabaseOwnerCommands(db: Command): void {
   );
   keyCreate.action(async (...args: unknown[]) =>
     handleDatabaseKeyCreate(optionsFrom(args)),
+  );
+
+  const doctor = db
+    .command('doctor')
+    .description('Inspect and repair local trust state.');
+  const doctorHealth = doctor
+    .command('health')
+    .description(
+      'Verify the encrypted database binding, snapshot authenticity, and rollback anchor.',
+    );
+  addRoutingOptions(doctorHealth);
+  addSecretOption(doctorHealth);
+  doctorHealth
+    .option(
+      '--accept-current',
+      'Re-anchor the local rollback guard to the observed datastore after manually verifying it (heals stale or forked anchors).',
+    )
+    .option('--json', 'Emit machine-readable output even on a terminal.');
+  doctorHealth.action(async (...args: unknown[]) =>
+    handleDatabaseDoctorHealth(optionsFrom(args)),
   );
 
   const recovery = db
@@ -159,10 +188,15 @@ export function addDatabaseVaultCommands(vault: Command): void {
 
   const list = vault
     .command('list')
-    .description('List locally decrypted vault labels.');
+    .description('List vault identifiers and locally decrypted labels.');
   addRoutingOptions(list);
   addSecretOption(list);
-  list.option('--json', 'Emit machine-readable output.');
+  list
+    .option(
+      '--show-labels',
+      'Show decrypted private labels to the authenticated owner (redacted by default).',
+    )
+    .option('--json', 'Emit machine-readable output.');
   list.action(async (...args: unknown[]) => handleVaultList(optionsFrom(args)));
 
   const status = vault
@@ -170,6 +204,10 @@ export function addDatabaseVaultCommands(vault: Command): void {
     .description('Show authenticated vault metadata.');
   addRoutingOptions(status);
   addSecretOption(status);
+  status.option(
+    '--show-labels',
+    'Include the decrypted private label for the authenticated owner.',
+  );
   status.action(async (vaultId: string, ...args: unknown[]) =>
     handleVaultStatus(vaultId, optionsFrom(args)),
   );
@@ -250,11 +288,144 @@ async function handleDatabaseKeyCreate(options: DatabaseCommandOptions): Promise
       const passphrase = Buffer.from(extras[0], 'utf8');
       try {
         writeOutput(await session.createLocalShareKey({ keyFile, passphrase }));
+        process.stderr.write(
+          [
+            '',
+            'Share-key notice: this key authorizes the database snapshot that exists',
+            'right now. Recipients who open with it see only that snapshot; later',
+            'database writes are invisible to previously distributed copies. Create a',
+            'fresh share key after meaningful updates so recipients stay current.',
+            '',
+          ].join('\n'),
+        );
       } finally {
         zeroize(passphrase);
       }
     },
   );
+}
+
+type DoctorHealthReport = Readonly<{
+  healthy: boolean;
+  datastore: 'file' | 'mongodb';
+  checks: readonly Record<string, unknown>[];
+  autoHealed: readonly string[];
+  manualRecoveryRequired: readonly string[];
+  revision?: number;
+  vaultCount?: number;
+}>;
+
+/**
+ * Verifies the full local trust chain for one encrypted database container.
+ * `--accept-current` performs the only bounded repair Kavrix offers for
+ * containers: after the entire observed snapshot authenticates with the
+ * database root key, the trusted local rollback anchor is rewritten to match,
+ * healing anchors left stale or forked by a crash mid-write. Datastore content
+ * is never modified.
+ */
+async function handleDatabaseDoctorHealth(
+  options: DatabaseCommandOptions,
+): Promise<void> {
+  const acceptCurrent = options.acceptCurrent === true;
+  const route = await resolveRoute(options);
+  const checks: Record<string, unknown>[] = [];
+  const autoHealed: string[] = [];
+  const manualRecoveryRequired: string[] = [];
+  let report: DoctorHealthReport | undefined;
+  const secretReader = commandSecretReader();
+  const initialKinds: LocalSecretKind[] =
+    route.datastore === 'mongodb' ? ['database-url', 'passphrase'] : ['passphrase'];
+  const initialValues = await readCommandSecrets(
+    initialKinds,
+    options,
+    secretReader,
+    true,
+  );
+  const opened = await openStore(
+    route,
+    route.datastore === 'mongodb' ? initialValues[0] : undefined,
+    options.allowInsecureTransport === true,
+  );
+  let passphrase: Uint8Array | undefined;
+  try {
+    passphrase = Buffer.from(
+      initialValues[route.datastore === 'mongodb' ? 1 : 0] ?? '',
+      'utf8',
+    );
+    const readPassphrase = (): Promise<Uint8Array> =>
+      Promise.resolve(Uint8Array.from(passphrase ?? new Uint8Array(0)));
+    let session: DatabaseSession | undefined;
+    try {
+      session = await DatabaseSession.openWithSecret({
+        store: opened.store,
+        keyFile: route.keyFile,
+        ...(route.expectedDatabaseId === undefined
+          ? {}
+          : { expectedDatabaseId: route.expectedDatabaseId }),
+        readPassphrase,
+        acceptCurrentAnchor: acceptCurrent,
+      });
+      if (session.acceptedCurrentAnchor) {
+        autoHealed.push('revision-anchor-accepted-current');
+      }
+      const status = session.status();
+      checks.push({
+        name: 'database-container',
+        status: 'ok',
+        detail:
+          'The database binding, every encrypted document, and the rollback anchor authenticated.',
+        revision: status.revision,
+        vaultCount: status.vaultCount,
+      });
+      report = {
+        healthy: true,
+        datastore: route.datastore,
+        checks,
+        autoHealed,
+        manualRecoveryRequired,
+        revision: status.revision,
+        vaultCount: status.vaultCount,
+      };
+    } catch (error) {
+      const failure = error instanceof Error ? error : undefined;
+      const detail = describeDoctorFailure(failure);
+      manualRecoveryRequired.push(detail);
+      checks.push({
+        name: 'database-container',
+        status: 'manual-recovery',
+        detail,
+      });
+      report = {
+        healthy: false,
+        datastore: route.datastore,
+        checks,
+        autoHealed,
+        manualRecoveryRequired,
+      };
+    } finally {
+      if (session !== undefined) await session.close().catch(() => undefined);
+    }
+  } finally {
+    zeroize(passphrase);
+    await opened.store.close().catch(() => undefined);
+  }
+  // Every path through the try/catch above assigns a full report.
+  writeOutput(report);
+  if (!report.healthy) process.exitCode = 15;
+}
+
+function describeDoctorFailure(error: Error | undefined): string {
+  const message = error?.message ?? 'The encrypted database could not be opened.';
+  if (message.includes('stale or forked')) {
+    return (
+      'The trusted rollback anchor rejected the stored snapshot as stale or forked. ' +
+      'Verify the datastore contents independently, then re-run with --accept-current to re-anchor.'
+    );
+  }
+  if (message.includes('locked by another')) {
+    return `${message} Close the other Kavrix process; a dead process leaves no lock once detected.`;
+  }
+  return message;
 }
 
 async function handleRecoveryCreate(options: DatabaseCommandOptions): Promise<void> {
@@ -386,12 +557,13 @@ async function handleVaultCreate(options: DatabaseCommandOptions): Promise<void>
 }
 
 async function handleVaultList(options: DatabaseCommandOptions): Promise<void> {
+  const showLabels = options.showLabels === true;
   await withOwnerSession(options, [], (session) => {
     writeOutput({
       vaults: session.listVaults().map((entry) => ({
         id: entry.id,
         createdAt: entry.createdAt,
-        label: REDACTED_LABEL,
+        label: showLabels ? sanitize(entry.label) : REDACTED_LABEL,
       })),
     });
   });
@@ -402,12 +574,22 @@ async function handleVaultStatus(
   options: DatabaseCommandOptions,
 ): Promise<void> {
   await withOwnerSession(options, [], async (session) => {
-    const id = vaultIdSchema.parse(vaultId);
+    const id = parseVaultIdentifier(vaultId);
     await session.getVault(id);
     const document = await session.getVaultDocument(id);
+    const label =
+      options.showLabels === true
+        ? sanitize(
+            (
+              session.listVaults().find((entry) => entry.id === id) ?? {
+                label: REDACTED_LABEL,
+              }
+            ).label,
+          )
+        : REDACTED_LABEL;
     writeOutput({
       vaultId: id,
-      label: REDACTED_LABEL,
+      label,
       revision: document.revision,
     });
   });
@@ -418,10 +600,26 @@ async function handleVaultRename(
   options: DatabaseCommandOptions,
 ): Promise<void> {
   await withOwnerSession(options, ['label'], async (session, extras) => {
-    const id = vaultIdSchema.parse(vaultId);
+    const id = parseVaultIdentifier(vaultId);
     await session.renameVault(id, extras[0] ?? '');
     writeOutput({ renamed: true, vaultId: id });
   });
+}
+
+/**
+ * Validates one vault identifier with a reviewed message. Prototype-polluting
+ * identifiers are refused explicitly and malformed shapes fail as input
+ * errors instead of raw validation dumps.
+ */
+function parseVaultIdentifier(value: string): VaultId {
+  if (value === '__proto__' || value === 'constructor' || value === 'prototype') {
+    throw new DatabaseSessionError('invalid');
+  }
+  try {
+    return vaultIdSchema.parse(value);
+  } catch {
+    throw new DatabaseFlatCommandError('Vault ID is invalid.');
+  }
 }
 
 async function withOwnerSession(
