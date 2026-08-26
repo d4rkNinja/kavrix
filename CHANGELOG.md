@@ -2,6 +2,64 @@
 
 All notable user-facing and security changes to Kavrix are recorded here.
 
+## 0.2.1 - 2026-08-26
+
+### Improved
+
+- Minor performance improvements and a better CLI user experience: commands now
+  explain their exact stdin frame contracts in `--help` (plus the new
+  `kavrix frames <command>` reference), errors name their true cause instead of
+  generic authentication or failure messages, and `kavrix status` reports the
+  active datastore universe and selected profile.
+
+### Added
+
+- `kavrix db doctor health`: verifies the binding, every encrypted document,
+  and the rollback anchor; `--accept-current` performs the only bounded repair
+  for containers by fully authenticating the observed snapshot before
+  re-anchoring local rollback protection. Datastore content is never modified,
+  and unhealthy results exit nonzero.
+- Multi-line and empty credential values through `put --value-stdin-base64`
+  with byte-exact round trips.
+- Owner-visible vault labels via an explicit `--show-labels` opt-in on
+  `db vault list` and `db vault status`, redacted by default everywhere else.
+- Glob-or-substring search matching with explicit case handling
+  (`--case-sensitive`; insensitive by default).
+- A share-key snapshot notice at `db key create` so recipients are warned that
+  later database writes are invisible to previously distributed copies.
+
+### Security and reliability
+
+- Lock files record their owning process ID. After a hard kill, the next
+  invocation detects a dead owner and removes its lock automatically while
+  keeping live owners, foreign shapes, and replaced files fail-closed busy;
+  removal re-verifies file identity immediately before unlinking.
+- `run --grant` resolves grants in-session: bare grants inject under a derived
+  environment variable, declared `env` mappings are honored, referenced
+  credentials are verified before any use is consumed, and unmappable names
+  fail closed without burning a use.
+- Documented exit codes are honored globally (wrong passphrase `10`, missing
+  credential or vault `11`, usage and frame mistakes `2`, invalid
+  configuration `14`); duplicate, rename, remove, unknown-vault, and
+  recovery-frame failures now report their real cause instead of
+  "Database authentication failed."
+- Vault and credential identifiers reject reserved prototype-polluting names
+  consistently, and credential names refuse whitespace, control characters,
+  slash abuse, and dot segments.
+- Corrected project YAML documentation (policy placement under
+  `environments.<name>.policies`), documented mandatory agent `env`
+  permissions, TLS versus `--allow-insecure-transport` semantics, and the
+  Windows `icacls /inheritance:r` sharing recipe.
+
+### Verification
+
+- Added end-to-end regression suites covering the external test report's
+  findings: grant execution and consumption guarantees, exit-code mapping,
+  multi-line base64 values, name validation, search semantics, reserved
+  identifiers, owner labels, stale-lock recovery, and anchor repair.
+- Format, lint, typecheck, build, unit/integration tests, and package-content
+  checks pass on the release commit.
+
 ## 0.2.0
 
 ### Added

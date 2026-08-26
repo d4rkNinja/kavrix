@@ -1,6 +1,6 @@
 {
   "name": "kavrix",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Zero-knowledge credential vault command-line interface",
   "license": "MIT",
   "repository": {
