@@ -1,9 +1,11 @@
 ﻿import { defineConfig } from 'vitest/config';
 
 // Windows security tests invoke the platform ACL verifier repeatedly across
-// multi-step database workflows. Keep the fail-closed checks real while giving
-// the slower process boundary enough time on hosted and local Windows runners.
-const testBoundaryTimeoutMs = process.platform === 'win32' ? 360_000 : 10_000;
+// multi-step database workflows, and macOS hosted runners are similarly slow
+// for suites that spawn real child processes (agent broker, packed runs).
+// Keep the fail-closed checks real while giving the process boundary enough
+// time on every hosted runner; fast suites still finish in milliseconds.
+const testBoundaryTimeoutMs = process.platform === 'win32' ? 360_000 : 120_000;
 
 // Every suite must be hermetic: commands fall back to the real per-user
 // datastore profile registry under the home directory, so each worker gets an
