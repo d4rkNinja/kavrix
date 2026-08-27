@@ -7,10 +7,12 @@ authenticated encrypted database with multiple independently encrypted vaults
 in a hardened local container or two MongoDB collections. Version 2 single-vault
 documents remain supported through stable compatibility commands and explicit
 copy-first migration. No Kavrix API server or sync daemon is required or
-shipped; `kavrix init` now generates a declarative `~/.kavrix/config.toml`
-with all non-secret options and examples instead of the previous guided
-wizard, though the schema-driven Ink showcase in `packages/tui` remains
-available for interactive storage selection.
+shipped; the legacy-compatible root `kavrix init` now generates a protected,
+non-secret `~/.kavrix/config.toml` onboarding reference instead of the previous
+guided wizard. Current commands do not load it automatically. The schema-driven
+Ink showcase in `packages/tui`
+remains available as the presentation boundary for interactive storage
+selection, but the 0.2.3 no-argument TTY `init` path does not invoke it.
 
 Active release workspaces:
 
@@ -19,8 +21,8 @@ Active release workspaces:
 - `@kavrix/key-files`: protected database-owner key, recovery-kit, legacy key, revision-anchor, and sealed authorization-state files.
 - `@kavrix/storage`: database-scoped local/MongoDB adapters and fail-closed URI/TLS policy.
 - `@kavrix/runner`: shell-free child execution with minimal environments and secret redaction in captured output.
-- `@kavrix/tui`: Ink components for the interactive init showcase (animated storage selection); presentational only, with static strings and no persistence or cryptography.
-- `kavrix`: CLI composition, declarative `config.toml` generation, masked input, sanitized rendering, credential execution, policy firewall, and npm package.
+- `@kavrix/tui`: Ink components for the interactive storage-selection showcase (animated); presentational only, with static strings and no persistence or cryptography.
+- `kavrix`: CLI composition, protected `config.toml` onboarding-reference generation, masked input, sanitized rendering, credential execution, policy firewall, and npm package.
 
 The active-versus-parked source boundary and its verification commands are
 recorded in [Active release boundary](active-release-boundary.md). The source
@@ -29,14 +31,11 @@ are not workspace members, release artifacts, or evidence for the active release
 
 ## Implemented command surface
 
-- declarative `init` that generates `~/.kavrix/config.toml`
-  (`%USERPROFILE%\\.kavrix\\config.toml` on Windows) with every non-secret
-  option, proper `#` comments, and working examples (datastore, dataFile,
-  keyFile, database/collection, vault label, etc.); the file lives in the
-  secure `~/.kavrix` directory (mode `0o600` / user-only ACL) and is never
-  overwritten once created; the previous guided wizard and its animated
-  showcase remain available for the interactive storage-selection step
-  but are superseded by the config file for `init`;
+- legacy-compatible `init` that generates `~/.kavrix/config.toml`
+  (`%USERPROFILE%\\.kavrix\\config.toml` on Windows) as a non-secret onboarding
+  reference for the canonical profile/database/vault commands; it is not
+  loaded automatically, lives in the secure `~/.kavrix` directory (mode
+  `0o600` / user-only ACL), and is never overwritten once created;
 - protected non-secret datastore profile add/list/use/status/remove;
 - file/MongoDB database initialization, authenticated status, and MongoDB ping;
 - encrypted database vault create/list/status/rename;
@@ -68,7 +67,9 @@ are not workspace members, release artifacts, or evidence for the active release
   an agent with no credential material, brokers each requested operation over
   a local socket or named pipe behind a per-session token, evaluates the
   agent's configured permissions per request, and injects the secret directly
-  into the authorized child only;
+  into the authorized child only; requests have finite queue-wait and depth
+  bounds, while frame size/rate, pending relay storage, and active child-stdin
+  buffering are bounded and abusive connections are torn down;
 - `kavrix frames [command]` stdin frame-contract reference and `kavrix status`
   routing summary.
 
@@ -130,14 +131,16 @@ not be documented as available.
 
 ## Verification boundary
 
-The active release gate covers only the five workspaces listed above. Root
-Vitest includes the active CLI, schema, crypto, key-file, and storage suites,
-including the portable-key and revision-anchor security tests; its coverage
-scope is restricted to those same five source trees. Each Vitest worker runs
-against an isolated fake home directory so machine-local Kavrix state, such as a
-real datastore-profile registry, cannot influence results. Parked package
-sources are not counted as active release coverage and are not represented as
-shipped features in this ledger.
+The active release gate covers the seven workspaces listed above: `apps/cli`,
+`packages/schemas`, `packages/crypto`, `packages/key-files`, `packages/storage`,
+`packages/runner`, and `packages/tui`. Root Vitest includes the active CLI,
+schema, crypto, key-file, storage, runner, and TUI suites, including the
+portable-key and revision-anchor security tests; its coverage scope is
+restricted to those same seven source trees. Each Vitest worker runs against an
+isolated fake home directory so machine-local Kavrix state, such as a real
+datastore-profile registry, cannot influence results. Parked package sources
+are not counted as active release coverage and are not represented as shipped
+features in this ledger.
 
 The current verification commands and their platform limits are maintained in
 [`docs/security-testing.md`](security-testing.md). A feature is not marked

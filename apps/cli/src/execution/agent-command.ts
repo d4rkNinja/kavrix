@@ -9,12 +9,14 @@ import {
 } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { performance } from 'node:perf_hooks';
 
 import {
   agentBrokerClientFrameSchema,
   agentBrokerRequestSchema,
   agentBrokerServerFrameSchema,
   authorizationReasonSchema,
+  MAX_BROKER_DATA_BYTES,
   secretValueSchema,
   type AgentBrokerClientFrame,
   type AgentBrokerRequest,
@@ -57,11 +59,39 @@ export const AGENT_TOKEN_ENV = 'KAVRIX_AGENT_TOKEN';
 /** @internal Test-only broker access; production callers use executeAgentRun. */
 export async function startAgentBrokerForTest(
   session: BrokerSession,
+  limitOverrides: Readonly<Partial<BrokerLimits>> = {},
 ): Promise<ReturnType<typeof startBroker>> {
-  return await startBroker(session);
+  return await startBroker(session, limitOverrides);
 }
 
 const CONNECT_TIMEOUT_MS = 10_000;
+
+interface BrokerLimits {
+  readonly queueWaitTimeoutMs: number;
+  readonly maxQueuedRequests: number;
+  readonly frameRateWindowMs: number;
+  readonly maxClientFramesPerWindow: number;
+  readonly maxPendingClientFrames: number;
+  readonly maxPendingClientBytes: number;
+  readonly hardTeardownGraceMs: number;
+}
+
+const DEFAULT_BROKER_LIMITS: BrokerLimits = {
+  queueWaitTimeoutMs: 10_000,
+  maxQueuedRequests: 32,
+  frameRateWindowMs: 1_000,
+  maxClientFramesPerWindow: 256,
+  maxPendingClientFrames: 64,
+  maxPendingClientBytes: 4 * 1024 * 1024,
+  hardTeardownGraceMs: 50,
+};
+
+/**
+ * Stable v1 busy error. The closed decision-reason schema remains unchanged;
+ * clients receive `invalid-request`, this stderr detail, and the required exit.
+ */
+const BROKER_BUSY_ERROR = 'kavrix agent: broker busy; retry the request.\n';
+const BROKER_FLOOD_ERROR = 'kavrix agent: broker resource limit exceeded.\n';
 
 export interface AgentRunOptions extends DatabaseFlatCommandOptions {
   readonly agentName: string;
@@ -283,7 +313,20 @@ export async function executeAgentExec(options: AgentExecOptions): Promise<unkno
     };
 
     socket.on('data', (chunk: Buffer) => {
-      for (const line of decoder.push(chunk)) {
+      let lines: readonly string[];
+      try {
+        lines = decoder.push(chunk);
+      } catch {
+        socket.destroy();
+        if (!settled) {
+          settled = true;
+          rejectPromise(
+            new CodedCliError('USAGE_ERROR', 'The Kavrix agent broker failed.'),
+          );
+        }
+        return;
+      }
+      for (const line of lines) {
         let parsedFrame: unknown;
         try {
           parsedFrame = JSON.parse(line) as unknown;
@@ -336,7 +379,17 @@ export async function executeAgentExec(options: AgentExecOptions): Promise<unkno
     socket.write(`${JSON.stringify(request)}\n`);
     process.stdin.on('data', (chunk: Buffer | string) => {
       const bytes = typeof chunk === 'string' ? Buffer.from(chunk, 'utf8') : chunk;
-      sendClientFrame(socket, { v: 1, event: 'stdin', data: bytes.toString('base64') });
+      for (let offset = 0; offset < bytes.byteLength; offset += MAX_BROKER_DATA_BYTES) {
+        const bounded = bytes.subarray(
+          offset,
+          Math.min(offset + MAX_BROKER_DATA_BYTES, bytes.byteLength),
+        );
+        sendClientFrame(socket, {
+          v: 1,
+          event: 'stdin',
+          data: bounded.toString('base64'),
+        });
+      }
     });
     process.stdin.on('end', () => {
       sendClientFrame(socket, { v: 1, event: 'close-stdin' });
@@ -408,12 +461,29 @@ interface BrokerSession {
   queue: Promise<void>;
 }
 
+interface BrokerRuntime {
+  readonly limits: BrokerLimits;
+  queuedRequests: number;
+}
+
 interface ConnectionContext {
   readonly session: BrokerSession;
+  readonly runtime: BrokerRuntime;
+  readonly terminated: Promise<void>;
+  readonly resolveTerminated: () => void;
   requestSeen: boolean;
+  authenticatedRequest: AgentBrokerRequest | undefined;
+  terminatedHard: boolean;
+  decisionSent: boolean;
+  exitSent: boolean;
+  currentChild: ChildProcess | undefined;
   stdinSink: ((frame: AgentBrokerClientFrame) => void) | undefined;
   /** Frames that arrive before the authorized child owns its stdin. */
   readonly pendingClientFrames: AgentBrokerClientFrame[];
+  pendingClientBytes: number;
+  stdinBackpressured: boolean;
+  frameBudget: number;
+  lastFrameAt: number;
 }
 
 interface BrokerListener {
@@ -421,14 +491,21 @@ interface BrokerListener {
   cleanup: () => Promise<void>;
 }
 
-function startBroker(session: BrokerSession): Promise<BrokerListener> {
+function startBroker(
+  session: BrokerSession,
+  limitOverrides: Readonly<Partial<BrokerLimits>> = {},
+): Promise<BrokerListener> {
   const isWindows = session.platform === 'win32';
+  const runtime: BrokerRuntime = {
+    limits: { ...DEFAULT_BROKER_LIMITS, ...limitOverrides },
+    queuedRequests: 0,
+  };
   const endpoint = isWindows
     ? `\\\\.\\pipe\\kavrix-agent-${randomUUID()}`
     : join(tmpdir(), `kavrix-agent-${randomUUID()}.sock`);
   return new Promise<BrokerListener>((resolveListener, rejectListener) => {
     const server: Server = createServer((socket) => {
-      void handleConnection(socket, session).catch(() => socket.destroy());
+      void handleConnection(socket, session, runtime).catch(() => socket.destroy());
     });
     server.on('error', (error) => {
       rejectListener(new CodedCliError('DATASTORE_FAILURE', describeError(error)));
@@ -456,18 +533,46 @@ function startBroker(session: BrokerSession): Promise<BrokerListener> {
   });
 }
 
-async function handleConnection(socket: Socket, session: BrokerSession): Promise<void> {
+async function handleConnection(
+  socket: Socket,
+  session: BrokerSession,
+  runtime: BrokerRuntime,
+): Promise<void> {
+  let resolveTerminated = (): void => undefined;
+  const terminated = new Promise<void>((resolvePromise) => {
+    resolveTerminated = resolvePromise;
+  });
   const context: ConnectionContext = {
     session,
+    runtime,
+    terminated,
+    resolveTerminated,
     requestSeen: false,
+    authenticatedRequest: undefined,
+    terminatedHard: false,
+    decisionSent: false,
+    exitSent: false,
+    currentChild: undefined,
     stdinSink: undefined,
     pendingClientFrames: [],
+    pendingClientBytes: 0,
+    stdinBackpressured: false,
+    frameBudget: runtime.limits.maxClientFramesPerWindow,
+    lastFrameAt: performance.now(),
   };
   const decoder = new NdjsonDecoder();
   await new Promise<void>((resolveConnection) => {
     socket.setNoDelay(true);
     socket.on('data', (chunk: Buffer) => {
-      for (const line of decoder.push(chunk)) {
+      let lines: readonly string[];
+      try {
+        lines = decoder.push(chunk);
+      } catch {
+        terminateBrokerConnection(socket, context, BROKER_FLOOD_ERROR);
+        resolveConnection();
+        return;
+      }
+      for (const line of lines) {
         if (!context.requestSeen) {
           context.requestSeen = true;
           void dispatchRequest(line, socket, context)
@@ -477,20 +582,29 @@ async function handleConnection(socket: Socket, session: BrokerSession): Promise
             });
           continue;
         }
-        handleRelayLine(line, context);
+        handleRelayLine(line, socket, context);
       }
     });
     socket.on('error', () => {
+      abortConnection(context);
       resolveConnection();
     });
     socket.on('close', () => {
-      context.stdinSink = undefined;
+      abortConnection(context);
       resolveConnection();
     });
   });
 }
 
-function handleRelayLine(line: string, context: ConnectionContext): void {
+function handleRelayLine(
+  line: string,
+  socket: Socket,
+  context: ConnectionContext,
+): void {
+  if (context.terminatedHard || exceedsFrameRate(context)) {
+    terminateBrokerConnection(socket, context, BROKER_FLOOD_ERROR);
+    return;
+  }
   let parsedFrame: unknown;
   try {
     parsedFrame = JSON.parse(line) as unknown;
@@ -500,12 +614,129 @@ function handleRelayLine(line: string, context: ConnectionContext): void {
   const frame = agentBrokerClientFrameSchema.safeParse(parsedFrame);
   if (!frame.success) return;
   if (context.stdinSink === undefined) {
+    const frameBytes = Buffer.byteLength(line, 'utf8');
+    if (
+      context.pendingClientFrames.length >=
+        context.runtime.limits.maxPendingClientFrames ||
+      context.pendingClientBytes + frameBytes >
+        context.runtime.limits.maxPendingClientBytes
+    ) {
+      terminateBrokerConnection(socket, context, BROKER_FLOOD_ERROR);
+      return;
+    }
     // The child is still starting; retain the frame so an early end-of-input
     // is never lost.
     context.pendingClientFrames.push(frame.data);
+    context.pendingClientBytes += frameBytes;
     return;
   }
   context.stdinSink(frame.data);
+}
+
+function exceedsFrameRate(context: ConnectionContext): boolean {
+  const now = performance.now();
+  const elapsed = Math.max(0, now - context.lastFrameAt);
+  const capacity = context.runtime.limits.maxClientFramesPerWindow;
+  context.frameBudget = Math.min(
+    capacity,
+    context.frameBudget +
+      (elapsed / context.runtime.limits.frameRateWindowMs) * capacity,
+  );
+  context.lastFrameAt = now;
+  if (context.frameBudget < 1) return true;
+  context.frameBudget -= 1;
+  return false;
+}
+
+function abortConnection(context: ConnectionContext): void {
+  if (context.terminatedHard) return;
+  context.terminatedHard = true;
+  context.stdinSink = undefined;
+  context.stdinBackpressured = false;
+  context.pendingClientFrames.length = 0;
+  context.pendingClientBytes = 0;
+  try {
+    context.currentChild?.kill('SIGKILL');
+  } catch {
+    // The process may already have exited; the connection still fails closed.
+  }
+  context.resolveTerminated();
+}
+
+function connectionIsTerminated(context: ConnectionContext): boolean {
+  return context.terminatedHard;
+}
+
+function terminateBrokerConnection(
+  socket: Socket,
+  context: ConnectionContext,
+  message: string,
+): void {
+  if (context.terminatedHard) return;
+  const request = context.authenticatedRequest;
+  if (request !== undefined) {
+    if (!context.decisionSent) {
+      context.session.counters.denied += 1;
+      sendDecisionFrame(socket, context, {
+        v: 1,
+        event: 'decision',
+        outcome: 'deny',
+        reason: 'invalid-request',
+      });
+      void auditBestEffort(context.session.state, {
+        actor: 'agent',
+        action: 'authorization-denied',
+        permissionKey: request.permission,
+        command: safeCommandName(request.argv[0] ?? ''),
+        reason: 'invalid-request',
+      }).catch(() => undefined);
+    }
+    sendServerFrame(socket, {
+      v: 1,
+      event: 'stderr',
+      data: Buffer.from(message, 'utf8').toString('base64'),
+    });
+    sendExitFrame(socket, context, {
+      v: 1,
+      event: 'exit',
+      exitCode: 1,
+      signal: null,
+    });
+  }
+
+  abortConnection(context);
+  if (request === undefined) {
+    socket.destroy();
+    return;
+  }
+  socket.end();
+  const timer = setTimeout(() => {
+    socket.destroy();
+  }, context.runtime.limits.hardTeardownGraceMs);
+  timer.unref();
+}
+
+async function waitForQueueTurn(
+  previous: Promise<void>,
+  context: ConnectionContext,
+): Promise<'ready' | 'terminated' | 'timeout'> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      previous.then(
+        () => 'ready' as const,
+        () => 'ready' as const,
+      ),
+      context.terminated.then(() => 'terminated' as const),
+      new Promise<'timeout'>((resolveTimeout) => {
+        timer = setTimeout(() => {
+          resolveTimeout('timeout');
+        }, context.runtime.limits.queueWaitTimeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
 }
 
 async function dispatchRequest(
@@ -526,14 +757,38 @@ async function dispatchRequest(
     socket.destroy();
     return;
   }
+  context.authenticatedRequest = parsed.data;
+
+  const { runtime } = context;
+  if (runtime.queuedRequests >= runtime.limits.maxQueuedRequests) {
+    terminateBrokerConnection(socket, context, BROKER_BUSY_ERROR);
+    return;
+  }
+
   // Serialize authorized executions so stdio frames never interleave.
-  const previous = session.queue;
-  const current = previous.then(
-    () => handleAuthorizedExec(socket, context, parsed.data),
-    () => handleAuthorizedExec(socket, context, parsed.data),
-  );
-  session.queue = current.catch(() => undefined);
-  await current;
+  const previous = session.queue.catch(() => undefined);
+  let releaseQueue = (): void => undefined;
+  const currentGate = new Promise<void>((resolveGate) => {
+    releaseQueue = resolveGate;
+  });
+  session.queue = previous.then(() => currentGate);
+  runtime.queuedRequests += 1;
+  let countedAsQueued = true;
+
+  try {
+    const queueOutcome = await waitForQueueTurn(previous, context);
+    runtime.queuedRequests -= 1;
+    countedAsQueued = false;
+    if (queueOutcome === 'timeout') {
+      terminateBrokerConnection(socket, context, BROKER_BUSY_ERROR);
+      return;
+    }
+    if (queueOutcome === 'terminated' || context.terminatedHard) return;
+    await handleAuthorizedExec(socket, context, parsed.data);
+  } finally {
+    if (countedAsQueued) runtime.queuedRequests -= 1;
+    releaseQueue();
+  }
 }
 
 async function handleAuthorizedExec(
@@ -544,10 +799,20 @@ async function handleAuthorizedExec(
   const { session } = context;
   const deny = async (reason: AuthorizationReason): Promise<void> => {
     session.counters.denied += 1;
-    sendServerFrame(socket, { v: 1, event: 'decision', outcome: 'deny', reason });
+    sendDecisionFrame(socket, context, {
+      v: 1,
+      event: 'decision',
+      outcome: 'deny',
+      reason,
+    });
     // Every request terminates with exactly one exit frame so clients can
     // distinguish a denial from a broken connection.
-    sendServerFrame(socket, { v: 1, event: 'exit', exitCode: 1, signal: null });
+    sendExitFrame(socket, context, {
+      v: 1,
+      event: 'exit',
+      exitCode: 1,
+      signal: null,
+    });
     await auditBestEffort(session.state, {
       actor: 'agent',
       action: 'authorization-denied',
@@ -635,7 +900,7 @@ async function handleAuthorizedExec(
     return;
   }
 
-  sendServerFrame(socket, {
+  sendDecisionFrame(socket, context, {
     v: 1,
     event: 'decision',
     outcome: 'allow',
@@ -652,6 +917,8 @@ async function handleAuthorizedExec(
       ? { argvPreview: boundedPreview(request.argv.slice(1)) }
       : {}),
   });
+
+  if (context.terminatedHard) return;
 
   let result;
   try {
@@ -671,11 +938,13 @@ async function handleAuthorizedExec(
       ...(window === undefined ? {} : { timeoutMs: window }),
     });
   } catch {
+    if (connectionIsTerminated(context)) return;
     await deny('invalid-request');
     return;
   }
 
-  sendServerFrame(socket, {
+  if (connectionIsTerminated(context)) return;
+  sendExitFrame(socket, context, {
     v: 1,
     event: 'exit',
     exitCode: result.exitCode,
@@ -695,6 +964,7 @@ function wireChildRelay(
   context: ConnectionContext,
   child: ChildProcess,
 ): void {
+  context.currentChild = child;
   const pump = async (
     readable: NodeJS.ReadableStream | null,
     event: 'stdout' | 'stderr',
@@ -712,7 +982,25 @@ function wireChildRelay(
       return;
     }
     if (frame.event === 'stdin') {
-      child.stdin.write(Buffer.from(frame.data, 'base64'));
+      const bytes = Buffer.from(frame.data, 'base64');
+      if (
+        child.stdin.writableLength + bytes.byteLength >
+        context.runtime.limits.maxPendingClientBytes
+      ) {
+        terminateBrokerConnection(socket, context, BROKER_FLOOD_ERROR);
+        return;
+      }
+      const writable = child.stdin.write(bytes);
+      if (!writable && !context.stdinBackpressured) {
+        context.stdinBackpressured = true;
+        socket.pause();
+        child.stdin.once('drain', () => {
+          context.stdinBackpressured = false;
+          if (!context.terminatedHard && context.currentChild === child) {
+            socket.resume();
+          }
+        });
+      }
       return;
     }
     child.stdin.end();
@@ -721,10 +1009,33 @@ function wireChildRelay(
     sink(pending);
   }
   context.pendingClientFrames.length = 0;
+  context.pendingClientBytes = 0;
   context.stdinSink = sink;
   child.once('close', () => {
     context.stdinSink = undefined;
+    context.stdinBackpressured = false;
+    if (!context.terminatedHard) socket.resume();
+    if (context.currentChild === child) context.currentChild = undefined;
   });
+}
+
+function sendDecisionFrame(
+  socket: Socket,
+  context: ConnectionContext,
+  frame: Extract<AgentBrokerServerFrame, { event: 'decision' }>,
+): void {
+  context.decisionSent = true;
+  sendServerFrame(socket, frame);
+}
+
+function sendExitFrame(
+  socket: Socket,
+  context: ConnectionContext,
+  frame: Extract<AgentBrokerServerFrame, { event: 'exit' }>,
+): void {
+  if (context.exitSent) return;
+  context.exitSent = true;
+  sendServerFrame(socket, frame);
 }
 
 function sendServerFrame(socket: Socket, frame: AgentBrokerServerFrame): void {

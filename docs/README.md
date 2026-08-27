@@ -2,9 +2,14 @@
 
 This documentation describes the supported Kavrix product: one local CLI that
 stores multiple independently encrypted vaults inside an encrypted local-file
-or MongoDB database container. Legacy version 2 single-vault documents remain a
-read-only migration source and retain their stable compatibility commands.
-Historical API, sync-daemon, SQLite, and TUI designs are not runtime paths.
+or MongoDB database container. Legacy version 2 single-vault documents remain
+supported through their stable compatibility commands and explicit migration.
+Historical API, sync-daemon, and SQLite designs are not runtime paths. The
+active `packages/tui` workspace contains the presentational Ink storage-selection
+showcase; it has no persistence or cryptographic authority, and the 0.2.3
+no-argument TTY `init` path now creates a protected, non-secret `config.toml`
+onboarding reference instead of initializing a vault or launching that
+showcase. Current commands do not load the file automatically.
 
 ## Start here
 
@@ -12,6 +17,8 @@ Historical API, sync-daemon, SQLite, and TUI designs are not runtime paths.
 - [Datastore policy](local-database.md): local two-file sharing and MongoDB transaction/TLS requirements.
 - [Recovery kits](backup-and-recovery.md): create, verify, revoke, and use protected recovery material.
 - [Direct CLI model](direct-access-cli.md): why no Kavrix server is required.
+- [Terminal output and Ink showcase](tui-guide.md): sanitized output and the
+  active storage-selection presentation boundary.
 
 ## Security model
 

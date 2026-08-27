@@ -2,16 +2,45 @@
 
 All notable user-facing and security changes to Kavrix are recorded here.
 
+## 0.2.4 - 2026-08-27
+
+### Security and reliability
+
+- The local agent broker now bounds queued request wait and client-frame
+  resources. Requests that cannot acquire the serialized session promptly fail
+  closed with a retryable busy result; frame-size, frame-rate, pending-frame,
+  and active child-stdin limits tear down abusive connections and preserve the
+  broker's required exit handling.
+- The first-run `config.toml` text now states its real boundary: it is a
+  protected, non-secret onboarding reference, not an automatically loaded
+  settings file. The reference and terminal output teach the canonical
+  profile → database → vault path instead of implying that edited values are
+  consumed by `kavrix init`.
+- Oversized NDJSON frames and decoded relay chunks are rejected before parsing
+  or child delivery, and active child-stdin buffering now applies backpressure
+  within a hard byte limit.
+- Removed the unused `smol-toml` development dependency and its moderate
+  denial-of-service advisory; the post-removal audit reports no known
+  vulnerabilities.
+
+Verification covered the full repository gate, focused broker and onboarding
+regressions, packed all-command acceptance, package smoke, package-content dry
+run, website lint/typecheck/build, production-browser checks, and a
+moderate-severity dependency audit. The trusted-publishing workflow additionally
+requires exact-commit CI, CodeQL, and Linux Docker-backed database-container
+evidence before publication.
+
 ## 0.2.3 - 2026-08-27
 
 ### Changed
 
-- `kavrix init` now generates a declarative `config.toml` instead of the
-  interactive wizard. On first run (TTY, no `--secrets-stdin` or routing
-  flags), it creates `~/.kavrix/config.toml`
-  (`%USERPROFILE%\\.kavrix\\config.toml` on Windows) with every non-secret
-  option, proper `#` comments, and working examples. Edit the file, then run
-  `kavrix init --secrets-stdin` to initialize. Secrets (passphrases,
+- Legacy-compatible `kavrix init` now generates a protected onboarding
+  `config.toml` reference
+  instead of the interactive wizard. On first run (TTY, no `--secrets-stdin`
+  or routing flags), it creates `~/.kavrix/config.toml`
+  (`%USERPROFILE%\\.kavrix\\config.toml` on Windows) with non-secret command
+  examples; it does not initialize a vault and is not loaded automatically.
+  Secrets (passphrases,
   MongoDB URLs) are never written to the file and are still read via
   masked prompts or `--passphrase-stdin` / `--database-url-stdin`. The file
   is created inside the secure `~/.kavrix` directory (mode `0o600` on
@@ -20,9 +49,14 @@ All notable user-facing and security changes to Kavrix are recorded here.
 
 ### Added
 
-- New module `apps/cli/src/kavrix-config.ts` with `zod`-validated schema,
-  `smol-toml` parsing, and `flattenConfig` support for `[datastore]` tables.
-  `generateDefaultConfigToml()` is the single source for the template.
+- New module `apps/cli/src/kavrix-config.ts`; `generateDefaultConfigToml()` is
+  the single source for the protected onboarding reference.
+
+### Release status
+
+- The `v0.2.1` Git tag and changelog entry record an intermediate build, but no
+  npm `0.2.1` package or GitHub release was published. Published 0.2.x releases
+  therefore skip that version; `0.2.2` superseded it.
 
 ## 0.2.2 - 2026-08-26
 

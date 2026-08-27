@@ -26,6 +26,17 @@ snapshots.
 
 ## Legacy version 2 recovery
 
+Legacy recovery applies only to the compatibility single-vault format. It is
+separate from `db recovery`: it does not unwrap a database root key or recover a
+database-container vault. Route the command explicitly to the legacy data file
+and matching key file, and keep the source and recovery artifacts protected.
+
+The lifecycle below creates, verifies, revokes, and uses a passphrase-protected
+recovery kit. `use` authenticates the kit and trusted revision anchor before
+writing a replacement key file and rotating the current version 2 vault root
+key. It cannot recover a forgotten recovery passphrase or erase older encrypted
+snapshots.
+
 ## Lifecycle
 
 ```sh

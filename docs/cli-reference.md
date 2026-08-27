@@ -7,6 +7,14 @@ commands remain at the root. `kavrix frames [command]` prints the exact stdin
 frame contract for every secret-reading command, and `kavrix status` shows the
 selected profile and active routing mode.
 
+The canonical first-run path is `db profile`, then `db init`, then `db vault
+create`. A bare root `kavrix init` is retained for legacy version 2
+single-vault compatibility. On a first TTY invocation with no routing or secret
+flags it creates the non-secret `~/.kavrix/config.toml` template and does not
+initialize a vault. The protected file is an onboarding reference and is not
+loaded automatically; copy the profile examples you need, then use explicit
+protected prompts or stdin flows for secrets.
+
 ## 1. Register a datastore profile
 
 Profiles contain routing data, never connection credentials or unlock secrets.

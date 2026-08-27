@@ -73,7 +73,9 @@ conflict, existence, and dependency failures to generic fail-closed errors.
 ## Locks, crash recovery, and bounded repair
 
 Every local database container is guarded by an exclusive sibling lock file
-(`<data>.kavrix.lock`) that records its owning process ID. A hard kill
+named `<data-file>.lock` (implemented as `${targetPath}.lock`) that records its
+owning process ID. For example,
+`./work.kavrix` is guarded by `./work.kavrix.lock`. A hard kill
 (Ctrl+C, terminal close, OOM) can leave that lock behind. The next invocation
 detects the recorded owner: a live process yields a clear "locked by another
 Kavrix process" error, while a provably dead owner's lock is removed

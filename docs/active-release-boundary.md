@@ -11,7 +11,7 @@ workspace packages it needs to build and test that package:
 - `packages/runner` (`@kavrix/runner`)
 - `packages/tui` (`@kavrix/tui`)
 
-The source trees for `packages/client`, `packages/clipboard`, `packages/core`,
+The source trees for `packages/client`, `packages/clipboard`,
 `packages/import-export`, `packages/keychain`, `packages/local-store`, and
 `packages/sync` are parked/incubating.
 They remain available for future work, but are deliberately absent from

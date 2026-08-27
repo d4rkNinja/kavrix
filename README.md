@@ -34,6 +34,15 @@ kavrix --help
 
 ## Quick start
 
+The canonical first-run path is a non-secret datastore profile, followed by
+database initialization and vault creation. A bare `kavrix init` is retained
+only for legacy version 2 single-vault compatibility: on a first TTY run with
+no routing or secret flags it creates `~/.kavrix/config.toml`
+(`%USERPROFILE%\\.kavrix\\config.toml` on Windows) and does not initialize a
+vault. The protected file is a non-secret onboarding reference; current
+commands do not load it automatically. Copy the profile examples you need and
+use an explicit protected prompt or stdin flow for secrets.
+
 ```sh
 # 1. Register and select a non-secret route to your datastore.
 kavrix db profile add work --datastore file \
@@ -91,7 +100,7 @@ history.
 | `kavrix recovery ...`  | Create, verify, inspect, revoke, or use recovery kits.      |
 | `kavrix doctor`        | Authenticate and validate a vault without revealing values. |
 | `kavrix doctor health` | Diagnose and safely repair bounded transient state.         |
-| `kavrix init`          | Create a legacy-compatible version 2 single vault.          |
+| `kavrix init`          | Legacy version 2 single-vault compatibility path.           |
 
 ## Running tools without pasting secrets
 
@@ -120,7 +129,8 @@ child process spawns.
 ## AI coding agents
 
 ```sh
-kavrix agent run
+kavrix agent run --agent bot --config kavrix.yaml \
+  --profile work --vault <vault-id> -- <agent-executable>
 ```
 
 An agent started this way holds no credential material. When it needs one, it
@@ -161,9 +171,10 @@ catalog/vault heads are rejected before plaintext is returned, and a missing or
 invalid anchor fails closed.
 
 MongoDB stores ciphertext plus opaque routing metadata in two collections. It
-can observe IDs, revisions, timestamps, ciphertext sizes, and access patterns;
-it cannot read database names, vault names, credential labels, or values. Remote
-connections must explicitly enable validated TLS.
+can observe the MongoDB database and collection namespaces, opaque IDs,
+revisions, timestamps, ciphertext sizes, and access patterns. Human-readable
+Kavrix database labels, vault labels, credential labels, and values remain
+encrypted. Remote connections must explicitly enable validated TLS.
 
 Details: [threat model](docs/threat-model.md),
 [cryptography](docs/cryptography.md), [data model](docs/data-model.md).
@@ -171,8 +182,10 @@ Details: [threat model](docs/threat-model.md),
 ## Backups and recovery
 
 Keep at least one database recovery kit on separate protected media from the
-active owner key, and verify it with `kavrix recovery verify` before you rely
-on it. Back up datastore ciphertext and protected recovery material separately.
+active owner key, and verify it with
+`kavrix db recovery verify --profile work --recovery-file <path>` before you
+rely on it. Back up datastore ciphertext and protected recovery material
+separately.
 
 For local-file sharing, generate a fresh share key with `kavrix db key create`
 and transfer it together with the exact matching database file. That pair grants

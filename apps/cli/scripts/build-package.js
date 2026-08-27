@@ -73,7 +73,6 @@ const reviewedRuntimePackages = await Promise.all(
     ['libsodium', sodiumRequire],
     ['ink', tuiRequire],
     ['react', tuiRequire],
-    ['smol-toml', require],
   ].map(([name, resolver]) => readDependencyLicense(name, resolver, packageDirectory)),
 );
 const licenseBanner = renderLicenseBanner(reviewedRuntimePackages);

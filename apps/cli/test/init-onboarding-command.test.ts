@@ -1,3 +1,4 @@
+import { mkdir } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
@@ -19,6 +20,7 @@ const readlineMocks = vi.hoisted(() => {
 });
 const secureDirectoryMocks = vi.hoisted(() => ({
   ensure: vi.fn<(path: string) => Promise<string>>(),
+  validateFile: vi.fn<(path: string, maximumBytes?: number) => Promise<void>>(),
 }));
 
 vi.mock('node:readline/promises', () => ({
@@ -26,7 +28,11 @@ vi.mock('node:readline/promises', () => ({
 }));
 vi.mock('@kavrix/key-files', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@kavrix/key-files')>();
-  return { ...actual, ensureSecureDirectory: secureDirectoryMocks.ensure };
+  return {
+    ...actual,
+    ensureSecureDirectory: secureDirectoryMocks.ensure,
+    validateSecureFileSource: secureDirectoryMocks.validateFile,
+  };
 });
 
 import { PortableKeyFileError } from '@kavrix/key-files';
@@ -56,6 +62,11 @@ beforeEach(() => {
     return answer;
   });
   secureDirectoryMocks.ensure.mockReset();
+  secureDirectoryMocks.ensure.mockImplementation(async (path) => {
+    await mkdir(path, { recursive: true });
+    return path;
+  });
+  secureDirectoryMocks.validateFile.mockReset();
   setTty(true);
 });
 
@@ -132,7 +143,7 @@ describe('root init onboarding composition', () => {
     ).toBe('unsafe-default-directory');
   });
 
-  it('creates the declarative config file for interactive no-option init', async () => {
+  it('creates the onboarding reference for interactive no-option init', async () => {
     const stderr = vi.spyOn(process.stderr, 'write').mockReturnValue(true);
 
     await buildLocalCli().parseAsync(['node', 'kavrix', 'init']);
@@ -231,7 +242,7 @@ describe('root init onboarding composition', () => {
     expectEveryInterfaceClosed();
   });
 
-  it('creates the declarative config for an eligible terminal', async () => {
+  it('creates the onboarding reference for an eligible terminal', async () => {
     vi.stubEnv('TERM', 'xterm-256color');
     vi.stubEnv('NO_COLOR', undefined);
     const stderr = vi.spyOn(process.stderr, 'write').mockReturnValue(true);

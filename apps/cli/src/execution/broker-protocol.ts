@@ -8,24 +8,35 @@
 
 export const MAX_FRAME_BYTES = 2 * 1024 * 1024;
 
+export class BrokerFrameTooLargeError extends Error {
+  public constructor() {
+    super('The agent broker frame exceeds the maximum size.');
+    this.name = 'BrokerFrameTooLargeError';
+  }
+}
+
 export class NdjsonDecoder {
-  private buffer = '';
+  private buffer = Buffer.alloc(0);
 
   public push(chunk: Buffer): readonly string[] {
-    this.buffer += chunk.toString('utf8');
-    if (this.buffer.length > MAX_FRAME_BYTES * 2) {
-      // A peer flooding us with unterminated bytes loses everything
-      // buffered so far; the connection is torn down by the caller.
-      this.buffer = '';
-      return [];
-    }
+    let pending =
+      this.buffer.byteLength === 0 ? chunk : Buffer.concat([this.buffer, chunk]);
     const lines: string[] = [];
-    let newline = this.buffer.indexOf('\n');
+    let newline = pending.indexOf(0x0a);
     while (newline >= 0) {
-      lines.push(this.buffer.slice(0, newline));
-      this.buffer = this.buffer.slice(newline + 1);
-      newline = this.buffer.indexOf('\n');
+      if (newline > MAX_FRAME_BYTES) {
+        this.buffer = Buffer.alloc(0);
+        throw new BrokerFrameTooLargeError();
+      }
+      lines.push(pending.subarray(0, newline).toString('utf8'));
+      pending = pending.subarray(newline + 1);
+      newline = pending.indexOf(0x0a);
     }
+    if (pending.byteLength > MAX_FRAME_BYTES) {
+      this.buffer = Buffer.alloc(0);
+      throw new BrokerFrameTooLargeError();
+    }
+    this.buffer = Buffer.from(pending);
     return lines;
   }
 }

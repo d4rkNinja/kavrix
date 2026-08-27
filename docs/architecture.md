@@ -58,9 +58,12 @@ for database files.
   orchestration (`run`), authorization evaluation (policies, grants, reveal),
   the agent broker/client, sanitized output, and stable exit codes.
 
-No API server, sync daemon, SQLite store, or TUI is required. The public package
-bundles the CLI and reviewed cryptographic/schema libraries while leaving the
-MongoDB driver external and pinned.
+No API server, sync daemon, or SQLite store is required. The active
+`@kavrix/tui` workspace supplies an optional presentational Ink showcase for
+interactive storage selection; it owns no persistence or cryptographic state
+and is loaded lazily. The public package bundles the CLI and reviewed
+cryptographic/schema libraries while leaving the MongoDB driver external and
+pinned.
 
 ## Authorization state
 

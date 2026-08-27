@@ -5,9 +5,9 @@ direct MongoDB behavior when a disposable MongoDB prerequisite is available.
 
 The active release workspace is `apps/cli`, `packages/schemas`,
 `packages/crypto`, `packages/key-files`, `packages/storage`, and
-`packages/runner`. The other package directories remain source-present but
-parked/incubating: they are not workspace members, are not release artifacts,
-and are not counted by the root Vitest or coverage gate. See
+`packages/runner`, and `packages/tui`. The other package directories remain
+source-present but parked/incubating: they are not workspace members, are not
+release artifacts, and are not counted by the root Vitest or coverage gate. See
 [Active release boundary](active-release-boundary.md) for the complete boundary
 and command list.
 

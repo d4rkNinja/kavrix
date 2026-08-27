@@ -737,6 +737,16 @@ const BASE64_CHUNK_PATTERN =
 export const MAX_BROKER_ARGV_ENTRIES = 128;
 export const MAX_BROKER_ARG_CHARS = 8_192;
 export const MAX_BROKER_FRAME_BYTES = 2 * 1024 * 1024;
+export const MAX_BROKER_DATA_BYTES = 512 * 1024;
+export const MAX_BROKER_DATA_BASE64_CHARS = 4 * Math.ceil(MAX_BROKER_DATA_BYTES / 3);
+
+const brokerDataSchema = z
+  .string()
+  .max(MAX_BROKER_DATA_BASE64_CHARS)
+  .regex(BASE64_CHUNK_PATTERN, 'Frames carry standard base64')
+  .refine((value) => Buffer.from(value, 'base64').byteLength <= MAX_BROKER_DATA_BYTES, {
+    message: 'Frame data exceeds the decoded byte limit',
+  });
 
 /** One client request to execute an authorized operation through the broker. */
 export const agentBrokerRequestSchema = z
@@ -768,7 +778,7 @@ export const agentBrokerOutputFrameSchema = z
   .object({
     v: z.literal(1),
     event: z.enum(['stdout', 'stderr']),
-    data: z.string().regex(BASE64_CHUNK_PATTERN, 'Frames carry standard base64'),
+    data: brokerDataSchema,
   })
   .strict();
 
@@ -795,7 +805,7 @@ export const agentBrokerClientFrameSchema = z.discriminatedUnion('event', [
     .object({
       v: z.literal(1),
       event: z.literal('stdin'),
-      data: z.string().regex(BASE64_CHUNK_PATTERN),
+      data: brokerDataSchema,
     })
     .strict(),
   z.object({ v: z.literal(1), event: z.literal('close-stdin') }).strict(),

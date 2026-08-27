@@ -1,11 +1,17 @@
 ﻿import { randomUUID } from 'node:crypto';
 import { rm } from 'node:fs/promises';
+import { connect as netConnect } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
 
 import { deriveAuthorizationStateKey } from '@kavrix/crypto';
-import { permissionEntrySchema } from '@kavrix/schemas';
+import {
+  permissionEntrySchema,
+  type AgentBrokerClientFrame,
+  type AgentBrokerRequest,
+  type AgentBrokerServerFrame,
+} from '@kavrix/schemas';
 import { createSecureTestDirectory } from '../../../packages/key-files/test/secure-temporary-directory.js';
 import { afterAll, describe, expect, it, vi } from 'vitest';
 
@@ -15,7 +21,7 @@ import {
   executeAgentExec,
   startAgentBrokerForTest,
 } from '../src/execution/agent-command.js';
-import { connect as netConnect } from 'node:net';
+import { MAX_FRAME_BYTES } from '../src/execution/broker-protocol.js';
 import {
   AuthorizationState,
   parsePolicyId,
@@ -23,6 +29,111 @@ import {
 import { executionFlatOptions } from '../src/execution/cli-options.js';
 
 const directories: string[] = [];
+
+interface RawBrokerClient {
+  readonly frames: AgentBrokerServerFrame[];
+  readonly done: Promise<readonly AgentBrokerServerFrame[]>;
+  readonly waitForFrame: (
+    predicate: (frame: AgentBrokerServerFrame) => boolean,
+  ) => Promise<AgentBrokerServerFrame>;
+  readonly sendFrames: (frames: readonly AgentBrokerClientFrame[]) => void;
+  readonly sendRaw: (value: string | Buffer) => void;
+}
+
+async function openRawBrokerRequest(
+  endpoint: string,
+  request: AgentBrokerRequest,
+  onFrame: (frame: AgentBrokerServerFrame) => void = () => undefined,
+): Promise<RawBrokerClient> {
+  const socket = netConnect(endpoint);
+  await new Promise<void>((resolveConnect, rejectConnect) => {
+    socket.once('connect', resolveConnect);
+    socket.once('error', rejectConnect);
+  });
+
+  const frames: AgentBrokerServerFrame[] = [];
+  const waiters: Array<{
+    readonly predicate: (frame: AgentBrokerServerFrame) => boolean;
+    readonly resolve: (frame: AgentBrokerServerFrame) => void;
+  }> = [];
+  let buffer = '';
+  let resolveDone = (_frames: readonly AgentBrokerServerFrame[]): void => undefined;
+  let settled = false;
+  const done = new Promise<readonly AgentBrokerServerFrame[]>((resolvePromise) => {
+    resolveDone = resolvePromise;
+  });
+  const finish = (): void => {
+    if (settled) return;
+    settled = true;
+    resolveDone(frames);
+  };
+
+  socket.on('data', (chunk: Buffer) => {
+    buffer += chunk.toString('utf8');
+    let newline = buffer.indexOf('\n');
+    while (newline >= 0) {
+      const frame = JSON.parse(buffer.slice(0, newline)) as AgentBrokerServerFrame;
+      buffer = buffer.slice(newline + 1);
+      frames.push(frame);
+      onFrame(frame);
+      for (let index = waiters.length - 1; index >= 0; index -= 1) {
+        const waiter = waiters[index];
+        if (waiter !== undefined && waiter.predicate(frame)) {
+          waiters.splice(index, 1);
+          waiter.resolve(frame);
+        }
+      }
+      if (frame.event === 'exit') {
+        socket.end();
+        finish();
+      }
+      newline = buffer.indexOf('\n');
+    }
+  });
+  socket.on('close', finish);
+  socket.on('error', finish);
+  socket.write(`${JSON.stringify(request)}\n`);
+
+  return {
+    frames,
+    done,
+    waitForFrame(predicate) {
+      const existing = frames.find(predicate);
+      if (existing !== undefined) return Promise.resolve(existing);
+      return new Promise<AgentBrokerServerFrame>((resolveFrame) => {
+        waiters.push({ predicate, resolve: resolveFrame });
+      });
+    },
+    sendFrames(clientFrames) {
+      for (const frame of clientFrames) {
+        socket.write(`${JSON.stringify(frame)}\n`);
+      }
+    },
+    sendRaw(value) {
+      socket.write(value);
+    },
+  };
+}
+
+function execBrokerRequest(token: string, script: string): AgentBrokerRequest {
+  return {
+    v: 1,
+    token,
+    op: 'exec',
+    permission: 'gh',
+    argv: [process.execPath, '-e', script],
+  };
+}
+
+function decodedStderr(frames: readonly AgentBrokerServerFrame[]): string {
+  return frames
+    .filter(
+      (frame): frame is Extract<AgentBrokerServerFrame, { event: 'stderr' }> =>
+        frame.event === 'stderr',
+    )
+    .map((frame) => Buffer.from(frame.data, 'base64').toString('utf8'))
+    .join('');
+}
 
 afterAll(async () => {
   vi.unstubAllEnvs();
@@ -337,6 +448,227 @@ describe('in-process broker and client round trip', () => {
     }
     state.close();
   }, 60_000);
+
+  it('serializes concurrent authorized broker requests without interleaving', async () => {
+    const directory = await createSecureTestDirectory(
+      join(tmpdir(), 'kavrix-broker-serialize-'),
+    );
+    directories.push(directory);
+    const scope = { scopeKind: 'database' as const, scopeId: 'db_broker_serialize' };
+    const state = await AuthorizationState.open(
+      join(directory, 'owner.key'),
+      deriveAuthorizationStateKey(new Uint8Array(32).fill(17), scope),
+      scope,
+    );
+    const token = randomUUID().replaceAll('-', '') + randomUUID().replaceAll('-', '');
+    const session = {
+      token,
+      permissions: {
+        gh: permissionEntrySchema.parse({
+          secret: 'x/y',
+          commands: ['node'],
+          env: 'SERIALIZE_TOKEN',
+        }),
+      },
+      secrets: new Map([['x/y', 'serialize-canary']]),
+      state,
+      platform: process.platform,
+      counters: { allowed: 0, denied: 0 },
+      queue: Promise.resolve(),
+    };
+    const broker = await startAgentBrokerForTest(session);
+    const order: string[] = [];
+    try {
+      const first = await openRawBrokerRequest(
+        broker.endpoint,
+        execBrokerRequest(token, 'setTimeout(() => process.exit(0), 200)'),
+        (frame) => order.push(`first:${frame.event}`),
+      );
+      await first.waitForFrame(
+        (frame) => frame.event === 'decision' && frame.outcome === 'allow',
+      );
+      const second = await openRawBrokerRequest(
+        broker.endpoint,
+        execBrokerRequest(token, 'process.exit(0)'),
+        (frame) => order.push(`second:${frame.event}`),
+      );
+      await Promise.all([first.done, second.done]);
+
+      expect(order.indexOf('first:exit')).toBeLessThan(
+        order.indexOf('second:decision'),
+      );
+      expect(session.counters).toEqual({ allowed: 2, denied: 0 });
+    } finally {
+      session.secrets = new Map();
+      await broker.cleanup();
+      state.close();
+    }
+  }, 30_000);
+
+  it('returns the stable busy error for queue timeout and queue-depth overload', async () => {
+    const directory = await createSecureTestDirectory(
+      join(tmpdir(), 'kavrix-broker-busy-'),
+    );
+    directories.push(directory);
+    const scope = { scopeKind: 'database' as const, scopeId: 'db_broker_busy' };
+    const state = await AuthorizationState.open(
+      join(directory, 'owner.key'),
+      deriveAuthorizationStateKey(new Uint8Array(32).fill(19), scope),
+      scope,
+    );
+    const token = randomUUID().replaceAll('-', '') + randomUUID().replaceAll('-', '');
+    const session = {
+      token,
+      permissions: {
+        gh: permissionEntrySchema.parse({
+          secret: 'x/y',
+          commands: ['node'],
+          env: 'BUSY_TOKEN',
+        }),
+      },
+      secrets: new Map([['x/y', 'busy-canary']]),
+      state,
+      platform: process.platform,
+      counters: { allowed: 0, denied: 0 },
+      queue: Promise.resolve(),
+    };
+    const broker = await startAgentBrokerForTest(session, {
+      queueWaitTimeoutMs: 120,
+      maxQueuedRequests: 1,
+      hardTeardownGraceMs: 25,
+    });
+    try {
+      const active = await openRawBrokerRequest(
+        broker.endpoint,
+        execBrokerRequest(token, 'setTimeout(() => process.exit(0), 500)'),
+      );
+      await active.waitForFrame(
+        (frame) => frame.event === 'decision' && frame.outcome === 'allow',
+      );
+      const timedOut = await openRawBrokerRequest(
+        broker.endpoint,
+        execBrokerRequest(token, 'process.exit(0)'),
+      );
+      await new Promise<void>((resolvePromise) => {
+        setTimeout(resolvePromise, 25);
+      });
+      const overloaded = await openRawBrokerRequest(
+        broker.endpoint,
+        execBrokerRequest(token, 'process.exit(0)'),
+      );
+
+      const [activeFrames, timedOutFrames, overloadedFrames] = await Promise.all([
+        active.done,
+        timedOut.done,
+        overloaded.done,
+      ]);
+      expect(activeFrames.some((frame) => frame.event === 'exit')).toBe(true);
+      for (const frames of [timedOutFrames, overloadedFrames]) {
+        expect(frames).toContainEqual({
+          v: 1,
+          event: 'decision',
+          outcome: 'deny',
+          reason: 'invalid-request',
+        });
+        expect(decodedStderr(frames)).toBe(
+          'kavrix agent: broker busy; retry the request.\n',
+        );
+        expect(frames).toContainEqual({
+          v: 1,
+          event: 'exit',
+          exitCode: 1,
+          signal: null,
+        });
+      }
+      expect(session.counters).toEqual({ allowed: 1, denied: 2 });
+    } finally {
+      session.secrets = new Map();
+      await broker.cleanup();
+      state.close();
+    }
+  }, 30_000);
+
+  it('tears down authenticated clients that exceed relay rate or size', async () => {
+    const directory = await createSecureTestDirectory(
+      join(tmpdir(), 'kavrix-broker-flood-'),
+    );
+    directories.push(directory);
+    const scope = { scopeKind: 'database' as const, scopeId: 'db_broker_flood' };
+    const state = await AuthorizationState.open(
+      join(directory, 'owner.key'),
+      deriveAuthorizationStateKey(new Uint8Array(32).fill(23), scope),
+      scope,
+    );
+    const token = randomUUID().replaceAll('-', '') + randomUUID().replaceAll('-', '');
+    const session = {
+      token,
+      permissions: {
+        gh: permissionEntrySchema.parse({
+          secret: 'x/y',
+          commands: ['node'],
+          env: 'FLOOD_TOKEN',
+        }),
+      },
+      secrets: new Map([['x/y', 'flood-canary']]),
+      state,
+      platform: process.platform,
+      counters: { allowed: 0, denied: 0 },
+      queue: Promise.resolve(),
+    };
+    const broker = await startAgentBrokerForTest(session, {
+      frameRateWindowMs: 1_000,
+      maxClientFramesPerWindow: 4,
+      hardTeardownGraceMs: 25,
+    });
+    try {
+      const client = await openRawBrokerRequest(
+        broker.endpoint,
+        execBrokerRequest(
+          token,
+          'process.stdout.write("ready\\n"); setTimeout(() => process.exit(0), 5000)',
+        ),
+      );
+      await client.waitForFrame((frame) => frame.event === 'stdout');
+      const startedAt = Date.now();
+      client.sendFrames(
+        Array.from({ length: 5 }, () => ({
+          v: 1 as const,
+          event: 'stdin' as const,
+          data: Buffer.from('x').toString('base64'),
+        })),
+      );
+      const frames = await client.done;
+
+      expect(Date.now() - startedAt).toBeLessThan(1_000);
+      expect(decodedStderr(frames)).toBe(
+        'kavrix agent: broker resource limit exceeded.\n',
+      );
+      expect(frames.filter((frame) => frame.event === 'exit')).toEqual([
+        { v: 1, event: 'exit', exitCode: 1, signal: null },
+      ]);
+
+      const oversized = await openRawBrokerRequest(
+        broker.endpoint,
+        execBrokerRequest(
+          token,
+          'process.stdout.write("ready\\n"); setTimeout(() => process.exit(0), 5000)',
+        ),
+      );
+      await oversized.waitForFrame((frame) => frame.event === 'stdout');
+      oversized.sendRaw(Buffer.alloc(MAX_FRAME_BYTES + 1, 0x61));
+      const oversizedFrames = await oversized.done;
+      expect(decodedStderr(oversizedFrames)).toBe(
+        'kavrix agent: broker resource limit exceeded.\n',
+      );
+      expect(oversizedFrames.filter((frame) => frame.event === 'exit')).toEqual([
+        { v: 1, event: 'exit', exitCode: 1, signal: null },
+      ]);
+    } finally {
+      session.secrets = new Map();
+      await broker.cleanup();
+      state.close();
+    }
+  }, 30_000);
 
   it('destroys connections that send malformed protocol lines', async () => {
     const directory = await createSecureTestDirectory(

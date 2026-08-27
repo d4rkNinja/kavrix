@@ -61,7 +61,6 @@
     "esbuild": "0.28.1",
     "ink": "catalog:",
     "react": "catalog:",
-    "smol-toml": "catalog:",
     "yaml": "2.8.3",
     "zod": "4.4.3"
   },

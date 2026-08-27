@@ -12,5 +12,7 @@ The direct storage boundary is implemented by
 `packages/storage`; database orchestration is split across the focused database
 session, command, migration, and profile modules in `apps/cli/src`.
 
-The old server/client/TUI workflow is historical and is not built, tested, or
-included in the npm package.
+The old server/client workflow is historical and is not built, tested, or
+included in the npm package. The active `@kavrix/tui` workspace is limited to
+the lazy-loaded, presentational Ink storage-selection showcase; it has no
+server, persistence, or cryptographic authority.

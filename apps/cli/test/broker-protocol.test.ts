@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
+import { agentBrokerClientFrameSchema, MAX_BROKER_DATA_BYTES } from '@kavrix/schemas';
+
 import {
+  BrokerFrameTooLargeError,
+  MAX_FRAME_BYTES,
   NdjsonDecoder,
   boundedPreview,
   safeCommandName,
@@ -22,12 +26,31 @@ describe('ndjson framing', () => {
     expect(decoder.push(Buffer.from('\n', 'utf8'))).toEqual(['no-newline-yet']);
   });
 
-  it('drops buffered bytes when a peer floods without newlines', () => {
+  it('rejects oversized unterminated and newline-delimited frames', () => {
     const decoder = new NdjsonDecoder();
-    const flood = Buffer.alloc(5 * 1024 * 1024, 0x61);
-    expect(decoder.push(flood)).toEqual([]);
-    // The decoder recovers: subsequent well-formed frames parse normally.
-    expect(decoder.push(Buffer.from('{"ok":true}\n', 'utf8'))).toEqual(['{"ok":true}']);
+    const flood = Buffer.alloc(MAX_FRAME_BYTES + 1, 0x61);
+    expect(() => decoder.push(flood)).toThrow(BrokerFrameTooLargeError);
+
+    const newlineFlood = Buffer.concat([flood, Buffer.from('\n')]);
+    expect(() => decoder.push(newlineFlood)).toThrow(BrokerFrameTooLargeError);
+
+    // The decoder fails closed for the offending frame without poisoning a
+    // fresh connection decoder.
+    const fresh = new NdjsonDecoder();
+    expect(fresh.push(Buffer.from('{"ok":true}\n', 'utf8'))).toEqual(['{"ok":true}']);
+  });
+});
+
+describe('broker relay data bounds', () => {
+  it('rejects a decoded stdin chunk above the bounded relay size', () => {
+    const oversized = Buffer.alloc(MAX_BROKER_DATA_BYTES + 1).toString('base64');
+    expect(
+      agentBrokerClientFrameSchema.safeParse({
+        v: 1,
+        event: 'stdin',
+        data: oversized,
+      }).success,
+    ).toBe(false);
   });
 });
 
