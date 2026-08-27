@@ -7,8 +7,10 @@ authenticated encrypted database with multiple independently encrypted vaults
 in a hardened local container or two MongoDB collections. Version 2 single-vault
 documents remain supported through stable compatibility commands and explicit
 copy-first migration. No Kavrix API server or sync daemon is required or
-shipped; the only interactive terminal surface is the schema-driven Ink
-showcase in `packages/tui` used by guided `init`.
+shipped; `kavrix init` now generates a declarative `~/.kavrix/config.toml`
+with all non-secret options and examples instead of the previous guided
+wizard, though the schema-driven Ink showcase in `packages/tui` remains
+available for interactive storage selection.
 
 Active release workspaces:
 
@@ -18,7 +20,7 @@ Active release workspaces:
 - `@kavrix/storage`: database-scoped local/MongoDB adapters and fail-closed URI/TLS policy.
 - `@kavrix/runner`: shell-free child execution with minimal environments and secret redaction in captured output.
 - `@kavrix/tui`: Ink components for the interactive init showcase (animated storage selection); presentational only, with static strings and no persistence or cryptography.
-- `kavrix`: CLI composition, masked input, sanitized rendering, credential execution, policy firewall, and npm package.
+- `kavrix`: CLI composition, declarative `config.toml` generation, masked input, sanitized rendering, credential execution, policy firewall, and npm package.
 
 The active-versus-parked source boundary and its verification commands are
 recorded in [Active release boundary](active-release-boundary.md). The source
@@ -27,12 +29,14 @@ are not workspace members, release artifacts, or evidence for the active release
 
 ## Implemented command surface
 
-- guided interactive root `init` onboarding with an animated, colorful Ink
-  showcase for local-file or MongoDB selection (arrow keys, j/k, Enter, Esc,
-  Ctrl+C; plain numbered fallback without a TTY), destination-local validation
-  retries, protected user-data defaults,
-  masked secret handoff, back/cancel navigation, and static recovery next steps;
-  explicit and non-interactive init invocations retain their flag-driven behavior;
+- declarative `init` that generates `~/.kavrix/config.toml`
+  (`%USERPROFILE%\\.kavrix\\config.toml` on Windows) with every non-secret
+  option, proper `#` comments, and working examples (datastore, dataFile,
+  keyFile, database/collection, vault label, etc.); the file lives in the
+  secure `~/.kavrix` directory (mode `0o600` / user-only ACL) and is never
+  overwritten once created; the previous guided wizard and its animated
+  showcase remain available for the interactive storage-selection step
+  but are superseded by the config file for `init`;
 - protected non-secret datastore profile add/list/use/status/remove;
 - file/MongoDB database initialization, authenticated status, and MongoDB ping;
 - encrypted database vault create/list/status/rename;

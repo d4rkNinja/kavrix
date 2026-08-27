@@ -2,6 +2,28 @@
 
 All notable user-facing and security changes to Kavrix are recorded here.
 
+## 0.2.3 - 2026-08-27
+
+### Changed
+
+- `kavrix init` now generates a declarative `config.toml` instead of the
+  interactive wizard. On first run (TTY, no `--secrets-stdin` or routing
+  flags), it creates `~/.kavrix/config.toml`
+  (`%USERPROFILE%\\.kavrix\\config.toml` on Windows) with every non-secret
+  option, proper `#` comments, and working examples. Edit the file, then run
+  `kavrix init --secrets-stdin` to initialize. Secrets (passphrases,
+  MongoDB URLs) are never written to the file and are still read via
+  masked prompts or `--passphrase-stdin` / `--database-url-stdin`. The file
+  is created inside the secure `~/.kavrix` directory (mode `0o600` on
+  Unix, user-only ACL on Windows) and is never overwritten if it already
+  exists.
+
+### Added
+
+- New module `apps/cli/src/kavrix-config.ts` with `zod`-validated schema,
+  `smol-toml` parsing, and `flattenConfig` support for `[datastore]` tables.
+  `generateDefaultConfigToml()` is the single source for the template.
+
 ## 0.2.2 - 2026-08-26
 
 ### Added

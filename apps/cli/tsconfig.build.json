@@ -41,6 +41,7 @@
     "src/execution/broker-protocol.ts",
     "src/execution/authorization-state.ts",
     "src/local-vault-cli.ts",
+    "src/kavrix-config.ts",
     "src/version.ts"
   ],
   "exclude": ["test/**/*.ts"],

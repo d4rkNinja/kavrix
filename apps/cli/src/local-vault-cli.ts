@@ -94,7 +94,6 @@ import {
   InitOnboardingCancelledError,
   InitOnboardingDestinationError,
   runInitOnboarding,
-  writeInitOnboardingComplete,
   type InitOnboardingPatch,
 } from './init-onboarding.js';
 import {
@@ -221,18 +220,39 @@ export function buildLocalCli(): Command {
   );
   addKeyOptions(init);
   init.action(async (...args: unknown[]) => {
-    let options = getOptions(args);
+    const options = getOptions(args);
     const guided = shouldRunInitOnboarding(options);
-    if (guided) options = await readInitOnboardingOptions(options);
-    await handleInit(options);
     if (guided) {
-      writeInitOnboardingComplete({
-        color: initOnboardingColorEnabled(),
-        datastore: datastoreFrom(options),
-        profileHijackWarning: await selectedDatabaseBoundProfileExists(options),
-        write: (text) => process.stderr.write(text),
-      });
+      const { ensureKavrixConfig, getConfigPathForDisplay } =
+        await import('./kavrix-config.js');
+      const configPath = await ensureKavrixConfig();
+      const displayPath = getConfigPathForDisplay();
+      const color = initOnboardingColorEnabled();
+      const style = (text: string, code: string): string =>
+        color ? `\u001b[${code}m${text}\u001b[0m` : text;
+      process.stderr.write(
+        [
+          '',
+          style('Kavrix configuration', '1;36'),
+          '',
+          `Created ${style(displayPath, '1')} with all options, comments, and examples.`,
+          `Full path: ${configPath}`,
+          '',
+          'Edit the file to set your datastore, paths, and other options.',
+          'Secrets (passphrases, MongoDB URLs) are never stored there — they are',
+          'read via masked prompts or --passphrase-stdin / --database-url-stdin.',
+          '',
+          `Next: edit ${displayPath}`,
+          'Then run:  kavrix init --secrets-stdin   # then enter label, passphrase x2',
+          'Or for MongoDB: kavrix init --datastore mongodb --secrets-stdin',
+          '',
+          'See `kavrix init --help` and `kavrix frames init` for stdin contracts.',
+          '',
+        ].join('\n'),
+      );
+      return;
     }
+    await handleInit(options);
   });
 
   const destroy = program
@@ -1231,6 +1251,7 @@ function shouldRunInitOnboarding(options: LocalCliOptions): boolean {
 }
 
 /** Whether an ambient database-bound profile will route flat commands. */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept for backwards compatibility with tests and future guided flows
 async function selectedDatabaseBoundProfileExists(
   options: LocalCliOptions,
 ): Promise<boolean> {
@@ -1252,6 +1273,7 @@ async function selectedDatabaseBoundProfileExists(
   }
 }
 
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept for backwards compatibility with tests and future guided flows
 async function readInitOnboardingOptions(
   base: LocalCliOptions,
 ): Promise<LocalCliOptions> {
