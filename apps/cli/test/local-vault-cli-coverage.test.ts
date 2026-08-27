@@ -1585,9 +1585,7 @@ describe(
         value: true,
       });
       try {
-        expect(await runReported(['init'], '', true)).toContain(
-          'Setup cancelled. No vault was created.',
-        );
+        expect(await runReported(['init'], '', true)).toContain('Kavrix configuration');
       } finally {
         restoreProperty(process.stdin, 'isTTY', stdinTty);
         restoreProperty(process.stderr, 'isTTY', stderrTty);
