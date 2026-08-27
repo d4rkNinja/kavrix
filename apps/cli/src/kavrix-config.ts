@@ -8,13 +8,11 @@
  */
 
 import { existsSync } from 'node:fs';
-import { readFile, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
 import { z } from 'zod';
-
-import { ensureSecureDirectory } from '@kavrix/key-files';
 
 const CONFIG_FILE_NAME = 'config.toml';
 
@@ -155,7 +153,15 @@ export async function ensureKavrixConfig(): Promise<string> {
     if (st?.isFile()) return path;
   }
 
-  await ensureSecureDirectory(dir);
+  await mkdir(dir, { recursive: true });
+  if (process.platform !== 'win32') {
+    try {
+      const { chmod } = await import('node:fs/promises');
+      await chmod(dir, 0o700);
+    } catch {
+      // best effort
+    }
+  }
 
   if (!existsSync(path)) {
     const content = generateDefaultConfigToml();

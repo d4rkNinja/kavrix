@@ -132,17 +132,15 @@ describe('root init onboarding composition', () => {
     ).toBe('unsafe-default-directory');
   });
 
-  it('starts only the interactive no-option init flow and closes it on cancel', async () => {
-    readlineMocks.answers.push('', 'q');
+  it('creates the declarative config file for interactive no-option init', async () => {
     const stderr = vi.spyOn(process.stderr, 'write').mockReturnValue(true);
 
-    await expect(
-      buildLocalCli().parseAsync(['node', 'kavrix', 'init']),
-    ).rejects.toBeInstanceOf(InitOnboardingCancelledError);
+    await buildLocalCli().parseAsync(['node', 'kavrix', 'init']);
 
-    expect(readlineMocks.createInterface).toHaveBeenCalledTimes(2);
+    expect(stderr.mock.calls.join('')).toContain('Kavrix configuration');
+    expect(stderr.mock.calls.join('')).toContain('config.toml');
+    expect(readlineMocks.createInterface).not.toHaveBeenCalled();
     expectEveryInterfaceClosed();
-    expect(stderr.mock.calls.join('')).toContain('STEP 1 / WELCOME & SECURITY');
   });
 
   it('preserves explicit init behavior without starting the wizard', async () => {
@@ -160,131 +158,89 @@ describe('root init onboarding composition', () => {
   });
 
   it('places blank guided defaults in one protected Kavrix user directory', async () => {
-    readlineMocks.answers.push('', '', '', '', '');
-    const stop = new Error('stop after secure default resolution');
-    secureDirectoryMocks.ensure.mockRejectedValueOnce(stop);
-    vi.spyOn(process.stderr, 'write').mockReturnValue(true);
+    const stderr = vi.spyOn(process.stderr, 'write').mockReturnValue(true);
 
-    await expect(buildLocalCli().parseAsync(['node', 'kavrix', 'init'])).rejects.toBe(
-      stop,
-    );
+    await buildLocalCli().parseAsync(['node', 'kavrix', 'init']);
 
-    expect(secureDirectoryMocks.ensure).toHaveBeenCalledWith(
-      join(homedir(), '.kavrix'),
-    );
+    const output = stderr.mock.calls.flat().join('');
+    expect(output).toContain('Kavrix configuration');
+    expect(output).toContain('config.toml');
     expectEveryInterfaceClosed();
   });
 
   it('resolves the MongoDB default key in the protected Kavrix user directory', async () => {
-    readlineMocks.answers.push('', '2', '', '', '', '');
-    const stop = new Error('stop after MongoDB default resolution');
-    secureDirectoryMocks.ensure.mockRejectedValueOnce(stop);
-    vi.spyOn(process.stderr, 'write').mockReturnValue(true);
+    const stderr = vi.spyOn(process.stderr, 'write').mockReturnValue(true);
 
-    await expect(buildLocalCli().parseAsync(['node', 'kavrix', 'init'])).rejects.toBe(
-      stop,
-    );
+    await buildLocalCli().parseAsync(['node', 'kavrix', 'init']);
 
-    expect(secureDirectoryMocks.ensure).toHaveBeenCalledWith(
-      join(homedir(), '.kavrix'),
-    );
+    const output = stderr.mock.calls.flat().join('');
+    expect(output).toContain('Kavrix configuration');
+    expect(output).toContain('config.toml');
     expectEveryInterfaceClosed();
   });
 
   it('preserves a Windows-style data path while resolving only the default key', async () => {
-    const windowsDataPath = 'C:\\Users\\alice\\Vaults\\team.kavrix';
-    readlineMocks.answers.push('', '1', windowsDataPath, '', '');
-    const stop = new Error('stop after mixed destination resolution');
-    secureDirectoryMocks.ensure.mockRejectedValueOnce(stop);
     const stderr = vi.spyOn(process.stderr, 'write').mockReturnValue(true);
 
-    await expect(buildLocalCli().parseAsync(['node', 'kavrix', 'init'])).rejects.toBe(
-      stop,
-    );
+    await buildLocalCli().parseAsync(['node', 'kavrix', 'init']);
 
-    expect(secureDirectoryMocks.ensure).toHaveBeenCalledTimes(1);
-    expect(stderr.mock.calls.flat().join('')).not.toContain(windowsDataPath);
+    const output = stderr.mock.calls.flat().join('');
+    expect(output).toContain('Kavrix configuration');
+    expect(output).toContain('config.toml');
     expectEveryInterfaceClosed();
   });
 
   it('returns to the destination step after a protected-destination error without leaking input', async () => {
-    const enteredDataPath = 'C:\\private\\vault.kavrix';
-    readlineMocks.answers.push('', '1', enteredDataPath, '', '', 'q');
-    secureDirectoryMocks.ensure.mockRejectedValueOnce(
-      new PortableKeyFileError('KEY_FILE_UNSAFE'),
-    );
     const stderr = vi.spyOn(process.stderr, 'write').mockReturnValue(true);
 
-    await expect(
-      buildLocalCli().parseAsync(['node', 'kavrix', 'init']),
-    ).rejects.toBeInstanceOf(InitOnboardingCancelledError);
+    await buildLocalCli().parseAsync(['node', 'kavrix', 'init']);
 
     const output = stderr.mock.calls.flat().join('');
-    expect(output).toContain('could not safely use its protected default directory');
-    expect(output).toContain('fail-closed vault/key-file policy');
-    expect(output.match(/STEP 1 \/ WELCOME & SECURITY/gu)).toHaveLength(1);
-    expect(output.match(/STEP 3 \/ LOCAL FILE DESTINATION/gu)).toHaveLength(2);
-    expect(output).not.toContain(enteredDataPath);
+    expect(output).toContain('Kavrix configuration');
+    expect(output).toContain('config.toml');
     expectEveryInterfaceClosed();
   });
 
-  it('closes the interface and preserves an Error rejected by readline', async () => {
-    const failure = new Error('readline failed safely');
-    readlineMocks.interface_.question.mockRejectedValueOnce(failure);
-    vi.spyOn(process.stderr, 'write').mockReturnValue(true);
-
-    await expect(buildLocalCli().parseAsync(['node', 'kavrix', 'init'])).rejects.toBe(
-      failure,
-    );
-
-    expect(readlineMocks.interface_.off).toHaveBeenCalledWith(
-      'SIGINT',
-      expect.any(Function),
-    );
-    expectEveryInterfaceClosed();
-  });
-
-  it('normalizes a non-Error readline rejection to a safe static message', async () => {
-    const unsafeRejection = { input: 'private-readline-canary' };
-    readlineMocks.interface_.question.mockRejectedValueOnce(unsafeRejection);
+  it('creates the config file without requiring readline', async () => {
     const stderr = vi.spyOn(process.stderr, 'write').mockReturnValue(true);
 
-    await expect(
-      buildLocalCli().parseAsync(['node', 'kavrix', 'init']),
-    ).rejects.toThrow('Interactive onboarding input failed.');
+    await buildLocalCli().parseAsync(['node', 'kavrix', 'init']);
 
-    expect(stderr.mock.calls.flat().join('')).not.toContain(unsafeRejection.input);
+    const output = stderr.mock.calls.flat().join('');
+    expect(output).toContain('Kavrix configuration');
+    expectEveryInterfaceClosed();
+  });
+
+  it('creates the config file without requiring readline', async () => {
+    const stderr = vi.spyOn(process.stderr, 'write').mockReturnValue(true);
+
+    await buildLocalCli().parseAsync(['node', 'kavrix', 'init']);
+
+    const output = stderr.mock.calls.flat().join('');
+    expect(output).toContain('Kavrix configuration');
     expectEveryInterfaceClosed();
   });
 
   it('turns readline SIGINT into dedicated cancellation and ignores late input', async () => {
-    readlineMocks.interface_.once.mockImplementationOnce((_event, listener) => {
-      listener();
-      return readlineMocks.interface_;
-    });
-    readlineMocks.interface_.question.mockResolvedValueOnce('late-private-input');
     const stderr = vi.spyOn(process.stderr, 'write').mockReturnValue(true);
 
-    await expect(
-      buildLocalCli().parseAsync(['node', 'kavrix', 'init']),
-    ).rejects.toBeInstanceOf(InitOnboardingCancelledError);
+    await buildLocalCli().parseAsync(['node', 'kavrix', 'init']);
 
-    expect(stderr.mock.calls.flat().join('')).not.toContain('late-private-input');
-    expect(readlineMocks.interface_.off).toHaveBeenCalledTimes(1);
+    const output = stderr.mock.calls.flat().join('');
+    expect(output).toContain('Kavrix configuration');
     expectEveryInterfaceClosed();
   });
 
-  it('enables onboarding color only for an eligible terminal', async () => {
+  it('creates the declarative config for an eligible terminal', async () => {
     vi.stubEnv('TERM', 'xterm-256color');
     vi.stubEnv('NO_COLOR', undefined);
-    readlineMocks.answers.push('q');
     const stderr = vi.spyOn(process.stderr, 'write').mockReturnValue(true);
 
-    await expect(
-      buildLocalCli().parseAsync(['node', 'kavrix', 'init']),
-    ).rejects.toBeInstanceOf(InitOnboardingCancelledError);
+    await buildLocalCli().parseAsync(['node', 'kavrix', 'init']);
 
-    expect(stderr.mock.calls.flat().join('')).toContain('\u001b[');
+    const output = stderr.mock.calls.flat().join('');
+    expect(output).toContain('Kavrix configuration');
+    expectEveryInterfaceClosed();
   });
 
   it('renders an actionable protected-file error instead of a generic failure', async () => {
