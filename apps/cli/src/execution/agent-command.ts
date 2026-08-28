@@ -576,7 +576,13 @@ async function handleConnection(
         if (!context.requestSeen) {
           context.requestSeen = true;
           void dispatchRequest(line, socket, context)
-            .catch(() => socket.destroy())
+            .catch(() => {
+              if (context.exitSent) {
+                endBrokerSocket(socket, context.runtime.limits.hardTeardownGraceMs);
+                return;
+              }
+              socket.destroy();
+            })
             .finally(() => {
               resolveConnection();
             });
@@ -709,10 +715,15 @@ function terminateBrokerConnection(
     socket.destroy();
     return;
   }
+  endBrokerSocket(socket, context.runtime.limits.hardTeardownGraceMs);
+}
+
+function endBrokerSocket(socket: Socket, hardTeardownGraceMs: number): void {
+  if (socket.destroyed) return;
   socket.end();
   const timer = setTimeout(() => {
     socket.destroy();
-  }, context.runtime.limits.hardTeardownGraceMs);
+  }, hardTeardownGraceMs);
   timer.unref();
 }
 

@@ -662,6 +662,73 @@ describe('in-process broker and client round trip', () => {
     }
   }, 30_000);
 
+  it('flushes the terminal exit frame when completion auditing fails', async () => {
+    const directory = await createSecureTestDirectory(
+      join(tmpdir(), 'kavrix-broker-audit-failure-'),
+    );
+    directories.push(directory);
+    const scope = {
+      scopeKind: 'database' as const,
+      scopeId: 'db_broker_audit_failure',
+    };
+    const state = await AuthorizationState.open(
+      join(directory, 'owner.key'),
+      deriveAuthorizationStateKey(new Uint8Array(32).fill(23), scope),
+      scope,
+    );
+    const recordEvent = state.recordEvent.bind(state);
+    vi.spyOn(state, 'recordEvent').mockImplementation(async (event) => {
+      if (event.action === 'execution-completed') {
+        throw new Error('forced completion audit failure');
+      }
+      return await recordEvent(event);
+    });
+    const token = randomUUID().replaceAll('-', '') + randomUUID().replaceAll('-', '');
+    const session = {
+      token,
+      permissions: {
+        gh: permissionEntrySchema.parse({
+          secret: 'x/y',
+          commands: ['node'],
+          env: 'AUDIT_FAILURE_TOKEN',
+        }),
+      },
+      secrets: new Map([['x/y', 'audit-failure-canary']]),
+      state,
+      platform: process.platform,
+      counters: { allowed: 0, denied: 0 },
+      queue: Promise.resolve(),
+    };
+    const broker = await startAgentBrokerForTest(session, {
+      hardTeardownGraceMs: 25,
+    });
+    try {
+      const client = await openRawBrokerRequest(
+        broker.endpoint,
+        execBrokerRequest(token, 'process.exit(0)'),
+      );
+      const frames = await client.done;
+
+      expect(frames).toContainEqual({
+        v: 1,
+        event: 'decision',
+        outcome: 'allow',
+        reason: 'policy-allowed',
+      });
+      expect(frames).toContainEqual({
+        v: 1,
+        event: 'exit',
+        exitCode: 0,
+        signal: null,
+      });
+      expect(session.counters).toEqual({ allowed: 1, denied: 0 });
+    } finally {
+      session.secrets = new Map();
+      await broker.cleanup();
+      state.close();
+    }
+  }, 30_000);
+
   it('tears down authenticated clients that exceed relay rate or size', async () => {
     const directory = await createSecureTestDirectory(
       join(tmpdir(), 'kavrix-broker-flood-'),
