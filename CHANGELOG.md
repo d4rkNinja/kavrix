@@ -2,6 +2,27 @@
 
 All notable user-facing and security changes to Kavrix are recorded here.
 
+## 0.2.5 - 2026-08-28
+
+### Added
+
+- Read-only policy developer tooling: `policy check`, `policy explain`,
+  `policy lint`, `policy diff`, and review-only least-privilege suggestions
+  from positive sanitized audit events. These commands authenticate database
+  and authorization metadata without decrypting credential payloads or
+  mutating the authorization sidecar.
+- `grant show` and expanded grant listings expose live status, remaining uses,
+  expiry, and effective restrictions without reading the credential.
+
+### Security and reliability
+
+- Policy-gated execution now requires every explicit credential mapping to be
+  covered by the selected policy set, and selected policy credentials
+  participate in stored-deny evaluation even for process-only runs.
+- Machine-readable CLI output escapes terminal control characters, derived
+  authorization keys are cleared before policy analysis begins, and packed
+  database acceptance exercises the new read-only commands byte-for-byte.
+
 ## 0.2.4 - 2026-08-27
 
 ### Security and reliability

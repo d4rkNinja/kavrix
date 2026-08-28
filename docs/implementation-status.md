@@ -51,15 +51,23 @@ are not workspace members, release artifacts, or evidence for the active release
   injection, exit-code and signal preservation, optional project-file
   environment mappings, JSON capture with redaction, and no plaintext temp
   files (database-container profiles required);
-- stored permission policies (`kavrix policy create|list|show|remove`) sealed
+- stored permission policies (`kavrix policy
+create|list|show|remove|check|explain|lint|diff|suggest`) sealed
   in a DRK-derived, AEAD-authenticated sidecar bound to the database scope
   with a monotonic sequence; deny entries, command allowlists, SHA-256
   executable pins, execution-window TTLs, reveal gating, and confirmation
-  requirements are evaluated fail-closed before any child spawns;
-- temporary consumable grants (`kavrix grant <secret>|create|list|revoke`)
+  requirements are evaluated fail-closed before any child spawns; read-only
+  checks and explanations authenticate database metadata but never decrypt a
+  vault payload, mutate authorization state, or create a missing sidecar;
+- semantic policy linting for shadowed, impossible, overly broad, and expired
+  authorization records; non-applying policy diffs; and review-only,
+  monotonic-tightening suggestions derived solely from positive sanitized
+  events in the bounded audit ring;
+- temporary consumable grants (`kavrix grant <secret>|create|list|show|revoke`)
   with TTL, maximum uses, atomic use reservation under the protected-file
   lock, revocation, and distinct stable exit codes for expired, exhausted,
-  revoked, and not-found references;
+  revoked, and not-found references; inspection reports remaining uses,
+  expiry, and effective restrictions without reading the credential;
 - an append-bounded audit trail (`kavrix audit`) inside the same sealed state
   recording policy, grant, authorization, confirmation, and completion events
   with sanitized bounded metadata only;
@@ -180,6 +188,10 @@ Execution-layer limits that are verified or documented rather than claimed away:
   but a same-user attacker who can rewrite the datastore can also restore older
   authentic sidecar bytes; sequence numbers make regressions visible to audit
   review, not cryptographically impossible;
+- read-only policy/grant/audit inspection verifies the key binding, database
+  metadata, exact revision anchor, and sealed authorization state, but
+  deliberately does not decrypt or verify catalog/vault ciphertext; any later
+  credential-reading operation performs the full authenticated open;
 - agent descendants inherit the broker endpoint and session token; policy still
   gates every individual request, and secrets live in broker memory for the
   session lifetime subject to the same unlocked-host inspection limits.

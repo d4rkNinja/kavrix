@@ -43,6 +43,21 @@ export const STDIN_FRAME_CONTRACTS: Readonly<Record<string, string>> = Object.fr
   'db recovery revoke': '[mongodb-url,] passphrase',
   'db recovery use':
     'routing frames, then recovery-passphrase, new-passphrase, new-passphrase-confirm',
+  'policy create': '[mongodb-url,] passphrase',
+  'policy check': '[mongodb-url,] passphrase',
+  'policy explain': '[mongodb-url,] passphrase',
+  'policy lint': '[mongodb-url,] passphrase',
+  'policy diff': '[mongodb-url,] passphrase',
+  'policy suggest': '[mongodb-url,] passphrase',
+  'policy list': '[mongodb-url,] passphrase',
+  'policy show': '[mongodb-url,] passphrase',
+  'policy remove': '[mongodb-url,] passphrase',
+  grant: '[mongodb-url,] passphrase',
+  'grant create': '[mongodb-url,] passphrase',
+  'grant list': '[mongodb-url,] passphrase',
+  'grant show': '[mongodb-url,] passphrase',
+  'grant revoke': '[mongodb-url,] passphrase',
+  audit: '[mongodb-url,] passphrase',
   'migrate database --secrets-stdin':
     'source-passphrase, destination-passphrase, migrated-vault-label',
   'migrate database --initialize --secrets-stdin (file destination)':

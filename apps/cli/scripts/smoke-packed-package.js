@@ -301,6 +301,13 @@ async function main() {
       [['recovery', '--help'], 'Create protected recovery kits'],
       [['key', '--help'], 'Protected key-file lifecycle'],
       [['view', '--help'], 'Show a readable vault dashboard'],
+      [['policy', '--help'], 'Manage stored credential permission policies'],
+      [['policy', 'check', '--help'], 'Simulate one invocation'],
+      [['policy', 'explain', '--help'], 'Explain the ordered rules'],
+      [['policy', 'lint', '--help'], 'shadowed, or expired authorization rules'],
+      [['policy', 'diff', '--help'], 'Preview the semantic change'],
+      [['policy', 'suggest', '--help'], 'least-privilege policy tightenings'],
+      [['grant', 'show', '--help'], 'Inspect one grant'],
     ]) {
       const result = run(process.execPath, [bin, ...args], installRoot);
       assertSafeText(result.stdout + result.stderr, `kavrix ${args.join(' ')} output`);

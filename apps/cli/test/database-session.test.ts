@@ -1533,6 +1533,94 @@ describe('DatabaseSession', () => {
       await reopened.close();
     }
   });
+
+  it('opens authorization metadata without decrypting credential payloads or rewriting anchors', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'kavrix-authz-metadata-'));
+    const store = new MemoryDatabaseStore();
+    const keyFile = join(directory, 'owner.kavrix-db-key');
+    const initialized = await DatabaseSession.initialize({
+      store,
+      keyFile,
+      passphrase: PASSPHRASE,
+      label: 'authorization metadata',
+    });
+    const session = await DatabaseSession.open({
+      store,
+      keyFile,
+      passphrase: PASSPHRASE,
+    });
+    const vault = await session.createVault('credential vault');
+    await session.updateVault(vault.id, (payload) => ({
+      ...payload,
+      records: {
+        ...payload.records,
+        'service/token': {
+          value: 'plaintext-ciphertext-canary',
+          updatedAt: new Date().toISOString(),
+        },
+      },
+    }));
+    await session.close();
+
+    const storedVault = store.vaults.get(vault.id);
+    if (storedVault === undefined) throw new Error('missing fixture');
+    const ciphertext = storedVault.encryptedPayload.ciphertext;
+    store.vaults.set(vault.id, {
+      ...storedVault,
+      encryptedPayload: {
+        ...storedVault.encryptedPayload,
+        ciphertext: `${ciphertext.startsWith('A') ? 'B' : 'A'}${ciphertext.slice(1)}`,
+      },
+    });
+    const databaseBefore = structuredClone(store.database);
+    const vaultBefore = structuredClone(store.vaults.get(vault.id));
+    const anchorFile = databaseRevisionAnchorPath(keyFile);
+    const anchorBefore = await readFile(anchorFile);
+
+    const accessHandle = await DatabaseSession.openAuthorizationStateAccess({
+      store,
+      keyFile,
+      passphrase: PASSPHRASE,
+      expectedDatabaseId: initialized.databaseId,
+    });
+    expect(accessHandle.databaseId).toBe(initialized.databaseId);
+    expect(accessHandle.authorizationStateKey.byteLength).toBe(32);
+    zeroize(accessHandle.authorizationStateKey);
+    expect(store.database).toEqual(databaseBefore);
+    expect(store.vaults.get(vault.id)).toEqual(vaultBefore);
+    await expect(readFile(anchorFile)).resolves.toEqual(anchorBefore);
+
+    const extraVaultId = vaultIdSchema.parse('vault_metadata_extra');
+    store.vaults.set(extraVaultId, { ...storedVault, id: extraVaultId });
+    await expect(
+      DatabaseSession.openAuthorizationStateAccess({
+        store,
+        keyFile,
+        passphrase: PASSPHRASE,
+      }),
+    ).rejects.toMatchObject({ code: 'rollback' });
+    store.vaults.delete(extraVaultId);
+
+    await expect(
+      DatabaseSession.open({ store, keyFile, passphrase: PASSPHRASE }),
+    ).rejects.toMatchObject({ code: 'authentication' });
+    await expect(
+      DatabaseSession.openAuthorizationStateAccess({
+        store,
+        keyFile,
+        passphrase: Buffer.from('wrong horse battery staple', 'utf8'),
+      }),
+    ).rejects.toMatchObject({ code: 'authentication' });
+
+    await rm(anchorFile);
+    await expect(
+      DatabaseSession.openAuthorizationStateAccess({
+        store,
+        keyFile,
+        passphrase: PASSPHRASE,
+      }),
+    ).rejects.toMatchObject({ code: 'rollback' });
+  });
 });
 
 class MemoryDatabaseStore implements EncryptedDatabaseStore {

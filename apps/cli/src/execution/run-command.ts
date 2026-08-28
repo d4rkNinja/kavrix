@@ -310,10 +310,24 @@ async function authorizeAndSpawn(
 
   const snapshot = await state.read();
 
+  const selectedPolicies = policyNames.map((policyId) => {
+    const entry = findPolicy(snapshot, configDocument, policyId);
+    if (entry === undefined) {
+      throw invalidConfiguration(`Policy '${policyId}' is not defined.`);
+    }
+    return { policyId, entry };
+  });
+
   // Stored deny entries block every use of their credential, attached or not.
+  // A selected policy's credential is involved even when the policy is being
+  // used as a process-only gate with no explicit environment mapping. This
+  // keeps real execution aligned with metadata-only policy simulation.
   const involvedSecrets = new Set<string>([
     ...mappings.map((mapping) => mapping.secret),
     ...resolvedGrants.map((resolved) => resolved.grant.secret),
+    ...selectedPolicies.flatMap(({ entry }) =>
+      entry.secret === undefined ? [] : [entry.secret],
+    ),
   ]);
   for (const [storedId, record] of Object.entries(snapshot.policies)) {
     const entry = record.definition;
@@ -337,11 +351,7 @@ async function authorizeAndSpawn(
 
   let ttlCapMs: number | undefined;
   const confirmations: { policyId: string; entry: PermissionEntry }[] = [];
-  for (const policyId of policyNames) {
-    const entry = findPolicy(snapshot, configDocument, policyId);
-    if (entry === undefined) {
-      throw invalidConfiguration(`Policy '${policyId}' is not defined.`);
-    }
+  for (const { policyId, entry } of selectedPolicies) {
     const decision = evaluatePermission(entry, context);
     if (decision.outcome === 'deny') {
       return await denyExecution(
@@ -364,6 +374,31 @@ async function authorizeAndSpawn(
     }
     if (window !== undefined) {
       ttlCapMs = ttlCapMs === undefined ? window : Math.min(ttlCapMs, window);
+    }
+  }
+
+  // When the caller opts into policy-gated execution, every explicitly mapped
+  // credential must be covered by at least one selected policy. Otherwise a
+  // policy for a less-sensitive credential could be presented while injecting
+  // a different credential into the authorized process.
+  if (selectedPolicies.length > 0) {
+    const coveredSecrets = new Set(
+      selectedPolicies.flatMap(({ entry }) =>
+        entry.secret === undefined ? [] : [entry.secret],
+      ),
+    );
+    const uncovered = mappings.find((mapping) => !coveredSecrets.has(mapping.secret));
+    if (uncovered !== undefined) {
+      return await denyExecution(
+        state,
+        'user',
+        'invalid-request',
+        selectedPolicies[0]?.policyId,
+        authorizationDenied(
+          `Credential '${uncovered.secret}' is not covered by a selected policy.`,
+        ),
+        uncovered.secret,
+      );
     }
   }
 

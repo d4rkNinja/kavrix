@@ -85,8 +85,10 @@ root gate:
   environment purity, exit-code and signal-code propagation (`128+n`),
   captured-output redaction, project-file mappings and conflict rejection,
   deny/reveal/confirmation/hash-pin/TTL policy paths, grant expiry/exhaustion/
-  revocation/name-vs-id resolution, audit content without plaintext, sealed-
-  state tamper and reformat failures, and a live agent-broker session covering
+  revocation/name-vs-id resolution, policy-to-credential binding, read-only
+  check/explain/lint/diff/suggest and grant-inspection state invariance, audit
+  content without plaintext, sealed-state tamper and reformat failures, and a
+  live agent-broker session covering
   allow with oversized-output framing, unknown permission, deny entry,
   confirmation-unavailable, unresolved executable, missing injection mapping,
   and exit-frame protocol termination.
@@ -94,6 +96,11 @@ root gate:
 Platform caveats: Windows command-script refusal is asserted through injected
 platform parameters plus native `.cmd` cases on Windows runners; POSIX signal
 exit-code mapping is exercised only where the platform delivers signals.
+
+Packed database-container acceptance also invokes the installed archive's
+policy check/explain/lint/diff/suggest and grant-show commands, verifies their
+machine contracts, and compares the sealed authorization sidecar byte for byte
+before and after every read-only group.
 
 ## MongoDB integration
 

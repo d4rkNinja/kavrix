@@ -344,6 +344,137 @@ async function assertCredentialExact(
   assert(result.code === 0 && result.signal === null, `get ${name} did not succeed`);
 }
 
+async function exerciseReadOnlyPolicyTooling(run, paths, passphrase) {
+  const route = [...profileRoute(paths, 'primary'), '--passphrase-stdin', '--json'];
+  await run(
+    [
+      'policy',
+      'create',
+      'packed-node',
+      ...route,
+      '--secret',
+      'service/first',
+      '--command',
+      'node',
+      '--ttl',
+      '30m',
+    ],
+    [passphrase],
+  );
+
+  const statePath = `${paths.primaryKeyFile}.authorization`;
+  const policyState = await readFile(statePath);
+  const check = parseJson(
+    await run(
+      [
+        'policy',
+        'check',
+        'packed-node',
+        ...route,
+        '--',
+        process.execPath,
+        '-e',
+        'process.exit(0)',
+      ],
+      [passphrase],
+    ),
+    'packed policy check',
+  );
+  assert(
+    check.credentialRead === false && check.outcome === 'allow',
+    'packed policy check did not return a read-only allow decision',
+  );
+  const explanation = parseJson(
+    await run(
+      [
+        'policy',
+        'explain',
+        'packed-node',
+        ...route,
+        '--',
+        process.execPath,
+        '-e',
+        'process.exit(0)',
+      ],
+      [passphrase],
+    ),
+    'packed policy explain',
+  );
+  assert(
+    explanation.credentialRead === false && Array.isArray(explanation.checks),
+    'packed policy explain did not return a rule trace',
+  );
+  const lint = parseJson(
+    await run(['policy', 'lint', ...route], [passphrase]),
+    'packed policy lint',
+  );
+  assert(lint.errors === 0, 'packed policy lint reported an error');
+  const diff = parseJson(
+    await run(
+      [
+        'policy',
+        'diff',
+        'packed-node',
+        ...route,
+        '--secret',
+        'service/first',
+        '--command',
+        'node',
+        '--ttl',
+        '15m',
+      ],
+      [passphrase],
+    ),
+    'packed policy diff',
+  );
+  assert(diff.changed === true, 'packed policy diff did not detect a change');
+  const suggestions = parseJson(
+    await run(['policy', 'suggest', ...route], [passphrase]),
+    'packed policy suggest',
+  );
+  assert(
+    suggestions.reviewOnly === true && Array.isArray(suggestions.suggestions),
+    'packed policy suggest was not review-only',
+  );
+  assert(
+    (await readFile(statePath)).equals(policyState),
+    'read-only packed policy tooling mutated authorization state',
+  );
+
+  const grant = parseJson(
+    await run(
+      [
+        'grant',
+        'create',
+        'service/first',
+        ...route,
+        '--command',
+        'node',
+        '--ttl',
+        '15m',
+        '--max-uses',
+        '2',
+      ],
+      [passphrase],
+    ),
+    'packed grant create',
+  );
+  assert(typeof grant.grantId === 'string', 'packed grant creation returned no ID');
+  const grantState = await readFile(statePath);
+  const shown = parseJson(
+    await run(['grant', 'show', grant.grantId, ...route], [passphrase]),
+    'packed grant show',
+  );
+  assert(
+    shown.status === 'active' && shown.remainingUses === 2,
+    'packed grant inspection returned incorrect effective state',
+  );
+  assert(
+    (await readFile(statePath)).equals(grantState),
+    'packed grant inspection mutated authorization state',
+  );
+}
+
 async function exerciseConcurrentConflict(run, paths, profile, passphrase, label) {
   const args = [
     'db',
@@ -488,6 +619,7 @@ async function exerciseDatabaseContainer(run, paths) {
     'service/second',
     canaryB,
   );
+  await exerciseReadOnlyPolicyTooling(run, paths, primaryPassphrase);
 
   await run(
     [

@@ -1,5 +1,5 @@
 ﻿import { randomUUID } from 'node:crypto';
-import { rm } from 'node:fs/promises';
+import { access as accessPath, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { connect as netConnect } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -7,13 +7,14 @@ import { PassThrough } from 'node:stream';
 
 import { deriveAuthorizationStateKey } from '@kavrix/crypto';
 import {
+  databaseIdSchema,
   permissionEntrySchema,
   type AgentBrokerClientFrame,
   type AgentBrokerRequest,
   type AgentBrokerServerFrame,
 } from '@kavrix/schemas';
 import { createSecureTestDirectory } from '../../../packages/key-files/test/secure-temporary-directory.js';
-import { afterAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   AGENT_BROKER_ENV,
@@ -22,13 +23,19 @@ import {
   startAgentBrokerForTest,
 } from '../src/execution/agent-command.js';
 import { MAX_FRAME_BYTES } from '../src/execution/broker-protocol.js';
+import * as databaseFlatCommands from '../src/database-flat-commands.js';
 import {
   AuthorizationState,
   parsePolicyId,
 } from '../src/execution/authorization-state.js';
+import { withAuthorizationSnapshot } from '../src/execution/authorization-session.js';
 import { executionFlatOptions } from '../src/execution/cli-options.js';
 
 const directories: string[] = [];
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 interface RawBrokerClient {
   readonly frames: AgentBrokerServerFrame[];
@@ -246,6 +253,73 @@ describe('authorization state wrappers', () => {
       state.close();
     }
   }, 30_000);
+});
+
+describe('authorization snapshot wrapper', () => {
+  it('zeroizes the derived key before the callback and does not create a sidecar', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'kavrix-authz-snapshot-lifetime-'));
+    directories.push(directory);
+    const keyFile = join(directory, 'owner.key');
+    const authorizationStateKey = new Uint8Array(32).fill(0xa5);
+
+    vi.spyOn(databaseFlatCommands, 'usesDatabaseContainer').mockResolvedValue(true);
+    vi.spyOn(databaseFlatCommands, 'readDatabaseFlatSecrets').mockResolvedValue({
+      passphrase: 'unused',
+      extras: [],
+    });
+    vi.spyOn(
+      databaseFlatCommands,
+      'openDatabaseAuthorizationStateAccess',
+    ).mockResolvedValue({
+      databaseId: databaseIdSchema.parse('db_snapshot_lifetime'),
+      keyFile,
+      authorizationStateKey,
+    });
+
+    const result = await withAuthorizationSnapshot(
+      { profileConfigDir: directory, vault: 'vault_snapshot' },
+      (snapshot) => {
+        expect(snapshot).toEqual({ policies: {}, grants: {}, audit: [] });
+        expect(authorizationStateKey).toEqual(new Uint8Array(32));
+        return 'snapshot-result';
+      },
+    );
+
+    expect(result).toBe('snapshot-result');
+    await expect(accessPath(`${keyFile}.authorization`)).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
+  });
+
+  it('zeroizes the derived key when reading a malformed sidecar fails', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'kavrix-authz-snapshot-failure-'));
+    directories.push(directory);
+    const keyFile = join(directory, 'owner.key');
+    const authorizationStateKey = new Uint8Array(32).fill(0x5a);
+    await writeFile(`${keyFile}.authorization`, 'malformed authorization state');
+
+    vi.spyOn(databaseFlatCommands, 'usesDatabaseContainer').mockResolvedValue(true);
+    vi.spyOn(databaseFlatCommands, 'readDatabaseFlatSecrets').mockResolvedValue({
+      passphrase: 'unused',
+      extras: [],
+    });
+    vi.spyOn(
+      databaseFlatCommands,
+      'openDatabaseAuthorizationStateAccess',
+    ).mockResolvedValue({
+      databaseId: databaseIdSchema.parse('db_snapshot_failure'),
+      keyFile,
+      authorizationStateKey,
+    });
+
+    await expect(
+      withAuthorizationSnapshot(
+        { profileConfigDir: directory, vault: 'vault_snapshot' },
+        () => 'unreachable',
+      ),
+    ).rejects.toThrow();
+    expect(authorizationStateKey).toEqual(new Uint8Array(32));
+  });
 });
 
 describe('agent exec client guards', () => {

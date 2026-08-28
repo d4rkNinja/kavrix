@@ -1,8 +1,9 @@
 ﻿import type { Command } from 'commander';
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import {
+  emitJson,
   flattenRecords,
   formatRecordLine,
   isRecord,
@@ -22,6 +23,68 @@ import { CodedCliError } from '../src/execution/exit-codes.js';
 import { extractMergedOptions } from '../src/execution/cli-options.js';
 
 describe('register render helpers', () => {
+  it('escapes every terminal control code point while preserving JSON values', () => {
+    const controlCodePoints = [
+      ...Array.from({ length: 0x20 }, (_, codePoint) => codePoint),
+      0x7f,
+      ...Array.from({ length: 0x20 }, (_, index) => 0x80 + index),
+    ];
+    const hostile = String.fromCodePoint(...controlCodePoints);
+    const output: string[] = [];
+    const write = vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => {
+      output.push(String(chunk));
+      return true;
+    });
+    try {
+      emitJson({ value: hostile });
+    } finally {
+      write.mockRestore();
+    }
+
+    expect(output).toHaveLength(1);
+    const serialized = output[0];
+    expect(serialized).toBeDefined();
+    const line = serialized?.endsWith('\n')
+      ? serialized.slice(0, -1)
+      : (serialized ?? '');
+    expect(line).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/u);
+    expect(line).not.toContain('\n');
+    expect(JSON.parse(line)).toEqual({ value: hostile });
+  });
+
+  it('keeps policy and grant-shaped JSON parseable with hostile metadata', () => {
+    const value = {
+      policy: {
+        id: 'deploy',
+        commands: ['terraform', 'git\r\nstatus'],
+        note: 'ESC\u001b[31mCSI\u009b31mOSC\u001b]8;;https://attacker.invalid\u0007link\u001b\\ST\u009c',
+      },
+      grant: {
+        grantId: 'grant-1',
+        policyId: 'deploy',
+        status: 'active',
+        command: 'node\u007f',
+      },
+    };
+    const output: string[] = [];
+    const write = vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => {
+      output.push(String(chunk));
+      return true;
+    });
+    try {
+      emitJson(value);
+    } finally {
+      write.mockRestore();
+    }
+
+    const serialized = output.join('');
+    expect(serialized).toMatch(/\n$/u);
+    const line = serialized.slice(0, -1);
+    expect(line).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/u);
+    expect(line.split('\n')).toHaveLength(1);
+    expect(JSON.parse(line)).toEqual(value);
+  });
+
   it('flattens arrays, known containers, and single records', () => {
     const arrayCase = [{ id: 'a' }];
     expect(flattenRecords(arrayCase)).toEqual(arrayCase);
@@ -82,6 +145,60 @@ describe('register render helpers', () => {
       'grant_x  a/b  node,gh  status=active  reveal=true  ttl=15m  maxUses=3  expires=soon',
     );
     expect(formatRecordLine({ id: 'pol', deny: true })).toBe('pol  DENY');
+  });
+
+  it('formats policy diagnostics and strips terminal controls from metadata', () => {
+    expect(
+      formatRecordLine({
+        policyId: 'deploy',
+        secret: 'aws/key',
+        command: 'terraform',
+        outcome: 'deny',
+        reason: 'hash-mismatch',
+        credentialRead: false,
+      }),
+    ).toContain(
+      'policy=deploy credential=aws/key command=terraform outcome=deny reason=hash-mismatch credentialRead=false',
+    );
+    expect(
+      formatRecordLine({
+        order: 2,
+        kind: 'hash',
+        status: 'not-matched',
+        effect: 'deny',
+        policyId: 'deploy',
+        note: '\u001b]8;;https://attacker.invalid\u0007unsafe\nline',
+      }),
+    ).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/u);
+    expect(
+      formatRecordLine({
+        field: 'commands',
+        impact: 'tightens',
+        before: ['node', 'git'],
+        after: ['node'],
+      }),
+    ).toContain('before=["node","git"] after=["node"]');
+  });
+
+  it('renders effective grant restrictions and provenance in human output', () => {
+    expect(
+      formatRecordLine({
+        grantId: 'grant_x',
+        secret: 'a/b',
+        commands: ['node'],
+        status: 'active',
+        remainingUses: 2,
+        actor: 'agent',
+        hashes: { node: 'a'.repeat(64) },
+        env: 'SERVICE_TOKEN',
+        provenance: {
+          createdByPolicyId: 'deploy',
+          agentPermissionKey: 'publish',
+        },
+      }),
+    ).toContain(
+      'actor=agent  hashes={"node":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}  env=SERVICE_TOKEN  createdByPolicy=deploy  agentPermission=publish',
+    );
   });
 
   it('coerces primitives and renders name=value pairs', () => {
@@ -152,6 +269,9 @@ describe('policy presentation helpers', () => {
     expect(grantStatus({ ...base, maxUses: 1, usedCount: 1 } as never, at)).toBe(
       'exhausted',
     );
+    expect(
+      grantStatus({ ...base, createdAt: '2026-08-22T12:30:00.000Z' } as never, at),
+    ).toBe('clock-invalid');
   });
 
   it('parses hash pins strictly', () => {

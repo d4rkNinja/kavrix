@@ -213,6 +213,11 @@ export type DatabaseOpenWithSecretOptions = Omit<DatabaseOpenOptions, 'passphras
     acceptCurrentAnchor?: boolean;
   }>;
 
+export type DatabaseAuthorizationStateAccess = Readonly<{
+  databaseId: DatabaseId;
+  authorizationStateKey: Uint8Array;
+}>;
+
 export type DatabaseRecoveryCreateOptions = Readonly<{
   recoveryFile: string;
   passphrase: Uint8Array;
@@ -626,6 +631,69 @@ export class DatabaseSession {
       throw mapError(error);
     } finally {
       zeroize(catalogBytes);
+      zeroize(rootKey);
+      if (rootKey !== undefined) observeCleared(rootKey);
+      zeroize(portableKey);
+      zeroize(passphrase);
+    }
+  }
+
+  /**
+   * Unlocks only the database metadata needed to authenticate and derive the
+   * sealed authorization-state key. Credential vault payloads are deliberately
+   * not decrypted on this path; policy tooling must not read credential data.
+   */
+  public static async openAuthorizationStateAccess(
+    options: DatabaseOpenOptions,
+  ): Promise<DatabaseAuthorizationStateAccess> {
+    let passphrase: Uint8Array | undefined;
+    let portableKey: PortableKey | undefined;
+    let rootKey: DatabaseRootKey | undefined;
+    try {
+      const publicBinding = await readDatabaseKeyFileBinding(options.keyFile);
+      if (
+        options.expectedDatabaseId !== undefined &&
+        publicBinding.databaseId !== options.expectedDatabaseId
+      ) {
+        throw new DatabaseSessionError('binding');
+      }
+      const database = await options.store.getDatabase(publicBinding.databaseId);
+      if (database?.id !== publicBinding.databaseId) {
+        throw new DatabaseSessionError('binding');
+      }
+      if (database.keySlot.id !== publicBinding.keySlotId) {
+        throw new DatabaseSessionError('binding');
+      }
+
+      passphrase = Uint8Array.from(options.passphrase);
+      const parsed = await readDatabaseKeyFile(
+        options.keyFile,
+        passphrase,
+        publicBinding,
+      );
+      portableKey = parsed.portableKey;
+      rootKey = await unlockDatabaseKeySlot(
+        database.keySlot,
+        portableKey,
+        slotBinding(database, database.keySlot),
+      );
+      const vaults = await options.store.listVaults(database.id);
+      const observed = anchorFromVaults(database, vaults);
+      await verifyReadOnlyOpenAnchor({
+        anchorFile: options.anchorFile ?? databaseRevisionAnchorPath(options.keyFile),
+        rootKey,
+        observed,
+      });
+      return {
+        databaseId: database.id,
+        authorizationStateKey: deriveAuthorizationStateKey(rootKey, {
+          scopeKind: 'database',
+          scopeId: database.id,
+        }),
+      };
+    } catch (error) {
+      throw mapError(error);
+    } finally {
       zeroize(rootKey);
       if (rootKey !== undefined) observeCleared(rootKey);
       zeroize(portableKey);
@@ -1666,6 +1734,15 @@ async function authenticateDatabaseState(
   rootKey: DatabaseRootKey,
 ): Promise<DatabaseRevisionAnchor> {
   const vaults = await store.listVaults(database.id);
+  assertCatalogVaultSet(catalog, vaults);
+  for (const vault of vaults) await authenticateVault(vault, rootKey);
+  return anchorFromVaults(database, vaults);
+}
+
+function assertCatalogVaultSet(
+  catalog: DatabaseCatalogPayload,
+  vaults: readonly DatabaseVaultDocument[],
+): void {
   const catalogIds = [...catalog.vaults.map((entry) => entry.id)].sort();
   const storedIds = [...vaults.map((vault) => vault.id)].sort();
   if (
@@ -1673,8 +1750,6 @@ async function authenticateDatabaseState(
     catalogIds.some((id, index) => id !== storedIds[index])
   )
     throw new DatabaseSessionError('authentication');
-  for (const vault of vaults) await authenticateVault(vault, rootKey);
-  return anchorFromVaults(database, vaults);
 }
 
 async function authenticateVault(
@@ -1755,6 +1830,31 @@ async function reconcileAnchor(
     return;
   }
   throw new DatabaseSessionError('rollback');
+}
+
+async function verifyReadOnlyOpenAnchor(
+  options: Readonly<{
+    anchorFile: string;
+    rootKey: DatabaseRootKey;
+    observed: DatabaseRevisionAnchor;
+  }>,
+): Promise<void> {
+  try {
+    const trusted = await readDatabaseRevisionAnchor(
+      options.anchorFile,
+      options.rootKey,
+      options.observed,
+      { requireExactVaultSet: true },
+    );
+    if (canonicalJson(trusted) !== canonicalJson(options.observed)) {
+      throw new DatabaseSessionError('rollback');
+    }
+  } catch (error) {
+    if (error instanceof PortableKeyFileError) {
+      throw new DatabaseSessionError('rollback');
+    }
+    throw error;
+  }
 }
 
 async function reconcileOwnedAnchor(

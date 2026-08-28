@@ -82,6 +82,11 @@ What this layer genuinely provides:
   root key (HKDF-SHA-256) and authenticated against scope identity plus a
   monotonic sequence: forgery, corruption, cross-database transplant, and any
   byte-level tampering or reformatting fail closed as integrity failures.
+- Policy check/explain/lint/diff/suggest, grant inspection, and audit viewing
+  authenticate key binding, database metadata, the exact local revision anchor,
+  and the sealed authorization sidecar without decrypting the catalog or any
+  vault payload. Read-only inspection neither creates a missing sidecar nor
+  appends an audit event.
 - Agent firewall sessions hand the agent a local broker endpoint and per-run
   token but no credential material; each requested operation is authorized
   against configured permissions, and the secret is injected directly into the
@@ -116,6 +121,11 @@ What this layer explicitly cannot do:
   and its effect is bounded by whatever TTLs and use counts were previously
   recorded. Wall-clock checks reject regression before creation time, but a
   same-user forward clock change is undetectable locally.
+- The metadata-only inspection path does not verify credential ciphertext or
+  prove that a referenced credential exists. This is intentional separation of
+  policy review from secret access; the first later operation that reads a
+  credential performs the full catalog/vault authenticated open and fails
+  closed on corruption or absence.
 - Lock contention over the authorization state fails closed rather than
   blocking indefinitely; concurrent modification is serialized by the
   protected-file lock.

@@ -6,23 +6,28 @@ import {
   executeGrantCreate,
   executeGrantList,
   executeGrantRevoke,
+  executeGrantShow,
+  executePolicyCheck,
+  executePolicyCreate,
+  executePolicyDiff,
+  executePolicyExplain,
+  executePolicyLint,
+  executePolicyList,
+  executePolicyRemove,
+  executePolicyShow,
+  executePolicySuggest,
 } from './policy-command.js';
 import {
-  extractMergedOptions,
-  executionFlatOptions,
   addExecutionRoutingOptions,
+  executionFlatOptions,
+  extractMergedOptions,
 } from './cli-options.js';
 import {
+  CLI_EXIT_CODES,
   invalidConfiguration,
   isCodedCliError,
   toErrorEnvelope,
 } from './exit-codes.js';
-import {
-  executePolicyCreate,
-  executePolicyList,
-  executePolicyRemove,
-  executePolicyShow,
-} from './policy-command.js';
 import { executeRun } from './run-command.js';
 
 function collectExecutionOption(
@@ -118,83 +123,112 @@ function registerPolicy(program: Command): void {
     .command('policy')
     .description('Manage stored credential permission policies.');
 
-  const create = policy
-    .command('create <id>')
-    .description('Create or replace one stored permission policy.')
-    .option('--secret <name>', 'Credential this policy protects.')
-    .option(
-      '--command <name>',
-      'Allowed executable; repeatable.',
-      collectExecutionOption,
-      [],
-    )
-    .option(
-      '--hash <pin>',
-      'Executable pin (COMMAND=SHA256HEX); repeatable.',
-      collectExecutionOption,
-      [],
-    )
-    .option(
-      '--env <variable>',
-      'Destination variable when used through grants or agents.',
-    )
-    .option('--reveal', 'Explicitly allow plaintext reveal of this credential.')
-    .option('--deny', 'Forbid every use of this credential.')
-    .option('--ttl <duration>', 'Maximum execution window per use (e.g. 30m).')
-    .option(
-      '--workdir <path>',
-      'Restrict use to invocations inside this directory subtree.',
-    )
-    .option(
-      '--max-uses <count>',
-      'Maximum uses when issued as a grant.',
-      parsePositiveInt,
-    )
-    .option(
-      '--require-confirmation [spec]',
-      'Ask before use: flag alone always asks; comma list asks on first-argument match.',
-    )
-    .option('--json', 'Emit machine-readable output.');
+  const create = addPolicyDefinitionOptions(
+    policy
+      .command('create <id>')
+      .description('Create or replace one stored permission policy.'),
+  ).option('--json', 'Emit machine-readable output.');
   addExecutionRoutingOptions(create);
   create.action(async (...args: unknown[]) => {
     const command = args.at(-1) as Command;
     const merged = extractMergedOptions(command);
-    const id = positionalId(command.args[0]);
-    // A bare `--require-confirmation` flag arrives as `true`; a value arrives
-    // as its string form. Both normalize into the schema's union shape.
-    const rawConfirmation: unknown = merged['requireConfirmation'];
-    const confirmation =
-      rawConfirmation === undefined
-        ? undefined
-        : typeof rawConfirmation === 'boolean'
-          ? rawConfirmation
-          : typeof rawConfirmation === 'string'
-            ? parseConfirmationSpec(rawConfirmation)
-            : undefined;
     await guard(merged['json'] === true, () =>
-      executePolicyCreate({
+      executePolicyCreate(
+        policyDefinitionOptions(merged, positionalId(command.args[0])),
+      ),
+    );
+  });
+
+  const check = policy
+    .command('check <id>')
+    .description('Simulate one invocation without reading the credential.')
+    .allowUnknownOption(true)
+    .allowExcessArguments(true)
+    .option('--json', 'Emit machine-readable output.');
+  addExecutionRoutingOptions(check);
+  check.action(async (...args: unknown[]) => {
+    const command = args.at(-1) as Command;
+    const merged = extractMergedOptions(command);
+    let outcome: 'allow' | 'deny' | 'confirm' | undefined;
+    await guard(merged['json'] === true, async () => {
+      const result = await executePolicyCheck({
         ...executionFlatOptions(merged),
-        id,
-        ...(optString(merged['secret']) === undefined
-          ? {}
-          : { secret: optString(merged['secret']) }),
-        commands: asStrings(merged['command']),
-        hashes: asStrings(merged['hash']),
-        ...(optString(merged['env']) === undefined
-          ? {}
-          : { env: optString(merged['env']) }),
-        reveal: merged['reveal'] === true ? true : undefined,
-        deny: merged['deny'] === true ? true : undefined,
-        ...(optString(merged['ttl']) === undefined
-          ? {}
-          : { ttl: optString(merged['ttl']) }),
-        ...(optString(merged['workdir']) === undefined
-          ? {}
-          : { workdir: optString(merged['workdir']) }),
-        ...(typeof merged['maxUses'] === 'number'
-          ? { maxUses: merged['maxUses'] }
-          : {}),
-        ...(confirmation === undefined ? {} : { requireConfirmation: confirmation }),
+        policyId: positionalId(command.args[0]),
+        executableAndArgs: command.args.slice(1),
+      });
+      outcome = result.outcome;
+      return result;
+    });
+    if (outcome === 'deny') process.exitCode = CLI_EXIT_CODES.authorizationDenied;
+    if (outcome === 'confirm') {
+      process.exitCode = CLI_EXIT_CODES.confirmationRequired;
+    }
+  });
+
+  const explain = policy
+    .command('explain <id>')
+    .description('Explain the ordered rules for one simulated invocation.')
+    .allowUnknownOption(true)
+    .allowExcessArguments(true)
+    .option('--json', 'Emit machine-readable output.');
+  addExecutionRoutingOptions(explain);
+  explain.action(async (...args: unknown[]) => {
+    const command = args.at(-1) as Command;
+    const merged = extractMergedOptions(command);
+    await guard(merged['json'] === true, () =>
+      executePolicyExplain({
+        ...executionFlatOptions(merged),
+        policyId: positionalId(command.args[0]),
+        executableAndArgs: command.args.slice(1),
+      }),
+    );
+  });
+
+  const lint = policy
+    .command('lint')
+    .description('Find ineffective, broad, shadowed, or expired authorization rules.')
+    .option('--json', 'Emit machine-readable output.');
+  addExecutionRoutingOptions(lint);
+  lint.action(async (...args: unknown[]) => {
+    const command = args.at(-1) as Command;
+    const merged = extractMergedOptions(command);
+    let errors = 0;
+    await guard(merged['json'] === true, async () => {
+      const result = await executePolicyLint(executionFlatOptions(merged));
+      errors = result.errors;
+      return result;
+    });
+    if (errors > 0) process.exitCode = CLI_EXIT_CODES.invalidConfiguration;
+  });
+
+  const diff = addPolicyDefinitionOptions(
+    policy
+      .command('diff <id>')
+      .description('Preview the semantic change before replacing a policy.'),
+  ).option('--json', 'Emit machine-readable output.');
+  addExecutionRoutingOptions(diff);
+  diff.action(async (...args: unknown[]) => {
+    const command = args.at(-1) as Command;
+    const merged = extractMergedOptions(command);
+    await guard(merged['json'] === true, () =>
+      executePolicyDiff(policyDefinitionOptions(merged, positionalId(command.args[0]))),
+    );
+  });
+
+  const suggest = policy
+    .command('suggest')
+    .description('Suggest review-only least-privilege policy tightenings.')
+    .option('--limit <count>', 'Maximum retained audit events to inspect.', '100')
+    .option('--json', 'Emit machine-readable output.');
+  addExecutionRoutingOptions(suggest);
+  suggest.action(async (...args: unknown[]) => {
+    const command = args.at(-1) as Command;
+    const merged = extractMergedOptions(command);
+    const limit = optString(merged['limit']);
+    await guard(merged['json'] === true, () =>
+      executePolicySuggest({
+        ...executionFlatOptions(merged),
+        ...(limit === undefined ? {} : { limit: parseLimit(limit) }),
       }),
     );
   });
@@ -239,12 +273,86 @@ function registerPolicy(program: Command): void {
   });
 }
 
+function addPolicyDefinitionOptions(command: Command): Command {
+  return command
+    .option('--secret <name>', 'Credential this policy protects.')
+    .option(
+      '--command <name>',
+      'Allowed executable; repeatable.',
+      collectExecutionOption,
+      [],
+    )
+    .option(
+      '--hash <pin>',
+      'Executable pin (COMMAND=SHA256HEX); repeatable.',
+      collectExecutionOption,
+      [],
+    )
+    .option(
+      '--env <variable>',
+      'Destination variable when used through grants or agents.',
+    )
+    .option('--reveal', 'Explicitly allow plaintext reveal of this credential.')
+    .option('--deny', 'Forbid every use of this credential.')
+    .option('--ttl <duration>', 'Maximum execution window per use (e.g. 30m).')
+    .option(
+      '--workdir <path>',
+      'Restrict use to invocations inside this directory subtree.',
+    )
+    .option(
+      '--max-uses <count>',
+      'Maximum uses when issued as a grant.',
+      parsePositiveInt,
+    )
+    .option(
+      '--require-confirmation [spec]',
+      'Ask before use: flag alone always asks; comma list asks on first-argument match.',
+    );
+}
+
+function policyDefinitionOptions(
+  merged: Readonly<Record<string, unknown>>,
+  id: string,
+): Parameters<typeof executePolicyCreate>[0] {
+  const rawConfirmation = merged['requireConfirmation'];
+  const confirmation =
+    rawConfirmation === undefined
+      ? undefined
+      : typeof rawConfirmation === 'boolean'
+        ? rawConfirmation
+        : typeof rawConfirmation === 'string'
+          ? parseConfirmationSpec(rawConfirmation)
+          : undefined;
+  return {
+    ...executionFlatOptions(merged),
+    id,
+    ...(optString(merged['secret']) === undefined
+      ? {}
+      : { secret: optString(merged['secret']) }),
+    commands: asStrings(merged['command']),
+    hashes: asStrings(merged['hash']),
+    ...(optString(merged['env']) === undefined
+      ? {}
+      : { env: optString(merged['env']) }),
+    reveal: merged['reveal'] === true ? true : undefined,
+    deny: merged['deny'] === true ? true : undefined,
+    ...(optString(merged['ttl']) === undefined
+      ? {}
+      : { ttl: optString(merged['ttl']) }),
+    ...(optString(merged['workdir']) === undefined
+      ? {}
+      : { workdir: optString(merged['workdir']) }),
+    ...(typeof merged['maxUses'] === 'number' ? { maxUses: merged['maxUses'] } : {}),
+    ...(confirmation === undefined ? {} : { requireConfirmation: confirmation }),
+  };
+}
+
 // ---- grant -----------------------------------------------------------------
 
 function registerGrant(program: Command): void {
   const grant = program
     .command('grant [secretRef]')
-    .description('Issue, list, or revoke temporary consumable authorizations.')
+    .description('Issue, inspect, list, or revoke temporary consumable authorizations.')
     // The documented bare form `kavrix grant <secret>` accepts creation flags
     // directly so it behaves exactly like `grant create`.
     .option('--json', 'Emit machine-readable output.')
@@ -300,6 +408,18 @@ function registerGrant(program: Command): void {
     );
   });
 
+  const show = grant.command('show <grantId>').description('Inspect one grant.');
+  show.action(async (...args: unknown[]) => {
+    const command = args.at(-1) as Command;
+    const merged = extractMergedOptions(command);
+    await guard(merged['json'] === true, () =>
+      executeGrantShow({
+        ...executionFlatOptions(merged),
+        grantId: requirePositional(command.args[0], 'grant id'),
+      }),
+    );
+  });
+
   const revoke = grant.command('revoke <grantId>').description('Revoke one grant.');
   revoke.action(async (...args: unknown[]) => {
     const command = args.at(-1) as Command;
@@ -319,7 +439,7 @@ function registerGrant(program: Command): void {
     const first = operands[0];
     if (first === undefined || first.length === 0) {
       process.stderr.write(
-        'Specify a secret, or use `kavrix grant create|list|revoke`.\n',
+        'Specify a secret, or use `kavrix grant create|list|show|revoke`.\n',
       );
       process.exitCode = 2;
       return;
@@ -455,13 +575,38 @@ async function guardOrRender(
 // ---- output and parsing helpers ---------------------------------------------
 
 export function emitJson(value: unknown): void {
-  process.stdout.write(`${JSON.stringify(value)}\n`);
+  // JSON.stringify can return undefined for unsupported top-level values even
+  // though the TypeScript declaration exposes only its usual string result.
+  const serialized = JSON.stringify(value) as string | undefined;
+  // JSON.stringify escapes C0 characters inside strings, but leaves DEL and
+  // C1 controls literal. Escape the full terminal-control range at the final
+  // output boundary so hostile values cannot execute in a consuming terminal.
+  const safeSerialized =
+    serialized === undefined
+      ? serialized
+      : serialized.replace(
+          // eslint-disable-next-line no-control-regex
+          /[\u0000-\u001f\u007f-\u009f]/gu,
+          (character) => `\\u${character.charCodeAt(0).toString(16).padStart(4, '0')}`,
+        );
+  process.stdout.write(`${safeSerialized ?? 'undefined'}\n`);
 }
 
 export function renderHuman(value: unknown): void {
   if (isRunOutcome(value) || isAgentRunSummary(value)) {
     // The child owns the terminal; supervisors stay silent on success.
     return;
+  }
+  if (isRecord(value)) {
+    const nestedKey = ['checks', 'changes', 'findings', 'suggestions'].find((key) =>
+      Array.isArray(value[key]),
+    );
+    if (nestedKey !== undefined) {
+      const summary = formatRecordLine(value);
+      if (summary.length > 0) process.stdout.write(`${summary}\n`);
+      renderRecordLines((value[nestedKey] as unknown[]).filter(isRecord));
+      return;
+    }
   }
   renderRecordLines(flattenRecords(value));
 }
@@ -482,7 +627,15 @@ function isAgentRunSummary(value: unknown): boolean {
 export function flattenRecords(value: unknown): readonly Record<string, unknown>[] {
   if (Array.isArray(value)) return value.filter(isRecord);
   if (!isRecord(value)) return [];
-  for (const key of ['policies', 'grants', 'events']) {
+  for (const key of [
+    'policies',
+    'grants',
+    'events',
+    'checks',
+    'changes',
+    'findings',
+    'suggestions',
+  ]) {
     const nested = value[key];
     if (Array.isArray(nested)) return nested.filter(isRecord);
   }
@@ -511,6 +664,113 @@ export function renderRecordLines(records: readonly Record<string, unknown>[]): 
 }
 
 export function formatRecordLine(record: Record<string, unknown>): string {
+  if (isRecord(record['decision'])) {
+    const decision = record['decision'];
+    return [
+      named('policy', record['policyId']),
+      named('credential', record['secret']),
+      named('command', record['command']),
+      named('outcome', decision['outcome']),
+      named('reason', decision['reason']),
+      named('ttlMs', record['executionWindowMs']),
+      'credentialRead=false',
+    ]
+      .filter((part) => part.length > 0)
+      .join(' ');
+  }
+  if (typeof record['outcome'] === 'string' && 'policyId' in record) {
+    return [
+      named('policy', record['policyId']),
+      named('credential', record['secret']),
+      named('command', record['command']),
+      named('outcome', record['outcome']),
+      named('reason', record['reason']),
+      named('ttlMs', record['executionWindowMs']),
+      'credentialRead=false',
+    ]
+      .filter((part) => part.length > 0)
+      .join(' ');
+  }
+  if (typeof record['order'] === 'number' && typeof record['kind'] === 'string') {
+    return [
+      `#${text(record['order'])}`,
+      text(record['kind']),
+      named('status', record['status']),
+      named('effect', record['effect']),
+      named('policy', record['policyId']),
+      named('related', record['relatedPolicyId']),
+      named('expected', record['expected']),
+      named('actual', record['actual']),
+      text(record['note']),
+    ]
+      .filter((part) => part.length > 0)
+      .join(' ');
+  }
+  if (typeof record['field'] === 'string' && 'impact' in record) {
+    return [
+      text(record['field']),
+      named('impact', record['impact']),
+      named('before', record['before']),
+      named('after', record['after']),
+    ]
+      .filter((part) => part.length > 0)
+      .join(' ');
+  }
+  if (typeof record['category'] === 'string' && 'severity' in record) {
+    return [
+      text(record['severity']).toUpperCase(),
+      text(record['category']),
+      named('code', record['code']),
+      `${text(record['targetType'])}=${text(record['targetId'])}`,
+      named('related', record['relatedIds']),
+      text(record['message']),
+    ]
+      .filter((part) => part.length > 0)
+      .join(' ');
+  }
+  if (typeof record['suggestionId'] === 'string') {
+    return [
+      text(record['suggestionId']),
+      named('policy', record['policyId']),
+      named('credential', record['secret']),
+      named('current', record['currentCommands']),
+      named('proposed', record['proposedCommands']),
+      named('uses', record['observedUses']),
+      'review=true',
+      'confidence=low',
+    ]
+      .filter((part) => part.length > 0)
+      .join(' ');
+  }
+  if ('checkedPolicies' in record && 'checkedGrants' in record) {
+    return [
+      named('policies', record['checkedPolicies']),
+      named('grants', record['checkedGrants']),
+      named('errors', record['errors']),
+      named('warnings', record['warnings']),
+    ]
+      .filter((part) => part.length > 0)
+      .join(' ');
+  }
+  if (typeof record['operation'] === 'string' && 'changed' in record) {
+    return [
+      text(record['id']),
+      named('operation', record['operation']),
+      named('changed', record['changed']),
+    ]
+      .filter((part) => part.length > 0)
+      .join(' ');
+  }
+  if ('reviewOnly' in record && 'coverage' in record) {
+    return [
+      named('auditEvents', record['retainedAuditEvents']),
+      named('positiveEvents', record['positiveAuthorizationEvents']),
+      named('coverage', record['coverage']),
+      'reviewOnly=true',
+    ]
+      .filter((part) => part.length > 0)
+      .join(' ');
+  }
   if (typeof record['occurredAt'] === 'string') {
     const parts = [
       text(record['occurredAt']),
@@ -525,6 +785,7 @@ export function formatRecordLine(record: Record<string, unknown>): string {
     ].filter((part) => part.length > 0);
     return parts.join(' ');
   }
+  const provenance = isRecord(record['provenance']) ? record['provenance'] : {};
   const parts = [
     text(record['id']) || text(record['grantId']),
     text(record['secret']),
@@ -536,20 +797,30 @@ export function formatRecordLine(record: Record<string, unknown>): string {
     record['deny'] === true ? 'DENY' : '',
     named('ttl', record['ttl']),
     named('maxUses', record['maxUses']),
+    named('remainingUses', record['remainingUses']),
     named('expires', record['expiresAt']),
+    named('expiresInMs', record['expiresInMs']),
+    named('actor', record['actor']),
+    named('hashes', record['hashes']),
+    named('env', record['env']),
+    named('createdByPolicy', provenance['createdByPolicyId']),
+    named('agentPermission', provenance['agentPermissionKey']),
   ].filter((part) => part.length > 0);
   return parts.join('  ');
 }
 
 export function text(value: unknown): string {
-  if (typeof value === 'string') return value;
+  if (typeof value === 'string') return safeTerminalText(value);
   if (typeof value === 'number') return String(value);
   if (typeof value === 'boolean') return String(value);
   return '';
 }
 
 export function named(name: string, value: unknown): string {
-  const rendered = text(value);
+  const rendered =
+    Array.isArray(value) || isRecord(value)
+      ? safeTerminalText(JSON.stringify(value))
+      : text(value);
   return rendered.length === 0 ? '' : `${name}=${rendered}`;
 }
 
@@ -601,13 +872,19 @@ function parseConfirmationSpec(spec: string): boolean | readonly string[] {
 }
 
 function singleLine(message: string): string {
-  // Strip terminal control sequences before emitting machine-readable JSON.
-  const sanitized = message.replace(
+  return safeTerminalText(message, 512);
+}
+
+function safeTerminalText(value: string, maxLength = 1024): string {
+  const sanitized = value.replace(
+    // C0/C1 terminal controls include ANSI CSI/OSC introducers and line breaks.
     // eslint-disable-next-line no-control-regex
-    /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/gu,
+    /[\u0000-\u001f\u007f-\u009f]/gu,
     ' ',
   );
-  return sanitized.length > 512 ? `${sanitized.slice(0, 509)}...` : sanitized;
+  return sanitized.length > maxLength
+    ? `${sanitized.slice(0, Math.max(0, maxLength - 3))}...`
+    : sanitized;
 }
 
 function requireTtl(value: unknown): string {

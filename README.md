@@ -112,9 +112,17 @@ kavrix run --secret AWS_KEY=aws/deploy-key -- terraform plan
 kavrix policy create deploy --secret aws/deploy-key \
   --command terraform --hash terraform=<sha256> --ttl 30m --require-confirmation
 
+# Simulate and explain without reading the credential.
+kavrix policy check deploy -- terraform plan
+kavrix policy explain deploy -- terraform plan
+kavrix policy lint
+kavrix policy diff deploy --secret aws/deploy-key --command terraform --ttl 15m
+kavrix policy suggest
+
 # Hand out access that expires and can be revoked.
 kavrix grant create aws/deploy-key --ttl 15m --max-uses 3
 kavrix grant list
+kavrix grant show <grant-id>
 kavrix grant revoke <grant-id>
 
 # Review what happened, without secret material.
@@ -124,7 +132,9 @@ kavrix audit
 Policies support command allowlists, SHA-256 executable pins, execution-window
 TTLs, working-directory restrictions, deny rules, reveal gating, and
 confirmation requirements. Every decision is evaluated fail-closed before a
-child process spawns.
+child process spawns. Policy simulation, explanation, linting, diffing, and
+suggestions authenticate authorization metadata without decrypting credential
+payloads or mutating the audit/state sidecar.
 
 ## AI coding agents
 

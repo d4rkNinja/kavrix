@@ -44,6 +44,8 @@ export default defineConfig({
       'apps/cli/test/execution-signals.test.ts',
       'apps/cli/test/execution-policy.test.ts',
       'apps/cli/test/execution-policy-grants.test.ts',
+      'apps/cli/test/execution-policy-analysis.test.ts',
+      'apps/cli/test/execution-policy-tooling.test.ts',
       'apps/cli/test/execution-run.test.ts',
       'apps/cli/test/execution-run-grants.test.ts',
       'apps/cli/test/report-regressions.test.ts',

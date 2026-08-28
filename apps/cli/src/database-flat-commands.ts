@@ -1,5 +1,10 @@
 ﻿import { zeroize } from '@kavrix/crypto';
-import { profileIdSchema, vaultIdSchema, type VaultId } from '@kavrix/schemas';
+import {
+  profileIdSchema,
+  vaultIdSchema,
+  type DatabaseId,
+  type VaultId,
+} from '@kavrix/schemas';
 import {
   FileEncryptedDatabaseStore,
   MongoEncryptedDatabaseStore,
@@ -46,6 +51,10 @@ export type DatabaseFlatSecrets = Readonly<{
   extras: readonly string[];
 }>;
 
+export type DatabaseFlatSecretReadOptions = Readonly<{
+  requireVaultSelection?: boolean;
+}>;
+
 export async function usesDatabaseContainer(
   options: DatabaseFlatCommandOptions,
 ): Promise<boolean> {
@@ -55,13 +64,14 @@ export async function usesDatabaseContainer(
 export async function readDatabaseFlatSecrets(
   options: DatabaseFlatCommandOptions,
   extras: readonly LocalSecretKind[],
+  readOptions: DatabaseFlatSecretReadOptions = {},
 ): Promise<DatabaseFlatSecrets> {
   const profile = await selectedDatabaseProfile(options);
   if (profile === null)
     throw new DatabaseFlatCommandError('A database profile is required.');
   if (
-    options.vault === LEGACY_DEFAULT_VAULT_ID ||
-    !options.vault.startsWith('vault_')
+    readOptions.requireVaultSelection !== false &&
+    (options.vault === LEGACY_DEFAULT_VAULT_ID || !options.vault.startsWith('vault_'))
   ) {
     throw new DatabaseFlatCommandError(
       `Select one database vault explicitly with --vault before reading secrets (selected profile '${sanitizeProfileId(profile.id)}').`,
@@ -105,6 +115,64 @@ export type OpenDatabaseFlatVaultHandle = Readonly<{
   vaultId: VaultId;
   profile: DatastoreProfile;
 }>;
+
+export type DatabaseAuthorizationStateAccessHandle = Readonly<{
+  databaseId: DatabaseId;
+  keyFile: string;
+  authorizationStateKey: Uint8Array;
+}>;
+
+/**
+ * Authenticates database metadata and derives the authorization-state key
+ * without decrypting any credential vault payload. The datastore is closed
+ * before this function returns; callers own and must zeroize the derived key.
+ */
+export async function openDatabaseAuthorizationStateAccess(
+  options: DatabaseFlatCommandOptions,
+  secrets: DatabaseFlatSecrets,
+): Promise<DatabaseAuthorizationStateAccessHandle> {
+  const profile = await selectedDatabaseProfile(options);
+  if (profile?.databaseId === undefined) {
+    throw new DatabaseFlatCommandError('A database profile is required.');
+  }
+  const store =
+    profile.datastore === 'file'
+      ? await FileEncryptedDatabaseStore.open(profile.dataFile)
+      : await MongoEncryptedDatabaseStore.connect(
+          required(secrets.databaseUrl),
+          profile.database,
+          {
+            databaseCollectionName: profile.databaseCollection,
+            vaultCollectionName: profile.vaultCollection,
+            allowInsecureTransport: options.allowInsecureTransport === true,
+          },
+        );
+  const passphrase = Buffer.from(secrets.passphrase, 'utf8');
+  let authorizationStateKey: Uint8Array | undefined;
+  let storeClosed = false;
+  let transferred = false;
+  try {
+    const access = await DatabaseSession.openAuthorizationStateAccess({
+      store,
+      keyFile: profile.keyFile,
+      passphrase,
+      expectedDatabaseId: profile.databaseId,
+    });
+    authorizationStateKey = access.authorizationStateKey;
+    await store.close();
+    storeClosed = true;
+    transferred = true;
+    return Object.freeze({
+      databaseId: access.databaseId,
+      keyFile: profile.keyFile,
+      authorizationStateKey,
+    });
+  } finally {
+    zeroize(passphrase);
+    if (!transferred) zeroize(authorizationStateKey);
+    if (!storeClosed) await store.close().catch(() => undefined);
+  }
+}
 
 /**
  * Opens one bound database vault session. Callers own the handle lifecycle

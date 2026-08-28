@@ -63,8 +63,8 @@ options in your installed version.
 | `doctor`, `doctor health`                                                  | Validate a vault; repair bounded transient state safely.                              |
 | `init`, `vault`, `legacy v2 commands`                                      | Version 2 compatibility surface.                                                      |
 | `run`                                                                      | Execute one command with selected credentials injected as environment variables only. |
-| `policy create/list/show/remove`                                           | Stored rules: allowlists, SHA-256 pins, TTLs, deny, confirmations.                    |
-| `grant create/list/revoke`                                                 | Temporary consumable authorizations with expiry and use caps.                         |
+| `policy create/list/show/remove/check/explain/lint/diff/suggest`           | Stored rules plus read-only simulation, diagnostics, previews, and narrowing advice.  |
+| `grant create/list/show/revoke`                                            | Temporary consumable authorizations with live expiry, restrictions, and use caps.     |
 | `audit`                                                                    | Plaintext-free security audit trail.                                                  |
 | `agent run`, `agent exec`                                                  | Credential firewall that brokers AI coding agents.                                    |
 
@@ -78,8 +78,13 @@ kavrix run --secret AWS_KEY=aws/deploy-key -- terraform plan
 
 kavrix policy create deploy --secret aws/deploy-key \
   --command terraform --hash terraform=<sha256> --ttl 30m
+kavrix policy check deploy -- terraform plan
+kavrix policy explain deploy -- terraform plan
+kavrix policy lint
+kavrix policy suggest
 
 kavrix grant create aws/deploy-key --ttl 15m --max-uses 3
+kavrix grant show <grant-id>
 
 kavrix agent run
 ```
@@ -87,6 +92,9 @@ kavrix agent run
 Policies are evaluated fail-closed before any child process spawns, grants are
 consumed atomically and can be revoked immediately, and `kavrix audit` records
 policy, grant, authorization, and completion events without secret material.
+The policy developer tools and grant inspection authenticate metadata without
+decrypting credential payloads, modifying audit state, or creating a missing
+authorization sidecar.
 
 ## Options worth knowing
 

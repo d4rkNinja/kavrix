@@ -368,6 +368,52 @@ kavrix policy create github-development \
 restricts every later use to invocations launched inside that subtree
 (fail-closed when the invocation directory cannot be resolved).
 
+Policy development and review are available without decrypting a credential
+payload:
+
+```sh
+kavrix policy check github-development -- gh pr view 42
+kavrix policy explain github-development -- gh pr view 42
+kavrix policy lint
+kavrix policy diff github-development \
+  --secret github/development-token --command git --command gh --ttl 15m
+kavrix policy suggest --limit 100
+```
+
+`policy check` resolves and hashes the proposed executable, evaluates the stored
+deny, command, hash, working-directory, execution-window TTL, and confirmation
+rules, and reports `credentialRead: false`. It exits `0` for allow, `12` for
+deny, and `17` when the real run would require confirmation. `policy explain`
+returns the same result plus the ordered rule trace and is informational (exit
+`0` even when the simulated result is deny or confirm). Neither command checks
+that the named credential currently exists, reads its ciphertext, prompts for
+confirmation, consumes a grant, or appends an audit event.
+
+`policy lint` reports shadowed allow rules, ineffective or impossible settings,
+heuristically broad policies, and retained expired grants. Errors exit `14` for
+CI; warnings alone exit `0`. A policy `--ttl` is a per-execution time cap, not a
+policy expiration date. `policy diff` accepts the same definition flags as
+`policy create` and classifies each semantic change as tightening, widening, or
+changing without applying it. `policy suggest` considers only positive,
+sanitized authorization events from the bounded audit ring and can only propose
+narrowing an existing command allowlist. Suggestions are low-confidence,
+review-only output: absence from the retained audit ring is not proof that a
+command is unused, and nothing is applied automatically.
+
+These read-only commands authenticate the key binding and the current database
+metadata against the exact local revision anchor, then open only the sealed
+authorization sidecar. They do not create a missing sidecar or rewrite its
+bytes. Consequently they deliberately do not verify credential ciphertext
+integrity; a later command that actually reads a credential still performs the
+full authenticated catalog and vault open and fails closed on corruption.
+
+When `kavrix run` includes one or more `--policy` options, every credential
+provided through an explicit `--secret` mapping must be covered by at least one
+selected policy. A policy for one credential cannot be presented while a
+different explicit credential is injected. Selected policy credentials also
+participate in stored-deny evaluation even when the policy is used only as a
+process gate, keeping real execution aligned with `policy check`.
+
 Temporary grants are consumable authorizations evaluated against wall-clock
 TTL, use counts, command allowlists, and pins at consumption time under an
 exclusive lock, so concurrent invocations cannot both claim the last use:
@@ -376,6 +422,7 @@ exclusive lock, so concurrent invocations cannot both claim the last use:
 kavrix grant production/database --command psql --ttl 15m   # documented bare form
 kavrix grant create production/database --command psql --ttl 15m --max-uses 2
 kavrix grant list
+kavrix grant show grant_<uuid>
 kavrix grant revoke grant_<uuid>
 kavrix run --grant production/database -- psql ...
 ```
@@ -388,6 +435,10 @@ variable; a grant without `env` injects under a derived name (credential
 reference uppercased with non-alphanumeric runs collapsed to `_`, e.g.
 `production/database` → `PRODUCTION_DATABASE`). When no portable derived name
 exists, the run fails closed with exit 14 and asks for an explicit mapping.
+`grant list` and `grant show` report the live status (including a fail-closed
+`clock-invalid` state), remaining uses, expiry and time remaining, actor,
+command/hash restrictions, injection variable, and provenance without reading
+the credential.
 
 Stable exit codes carry the outcome to automation: success `0`, generic `1`,
 usage `2`, authentication `10`, credential missing `11`, authorization denied

@@ -20,6 +20,7 @@
     "src/execution/cli-options.ts",
     "src/execution/signals.ts",
     "src/execution/policy-command.ts",
+    "src/execution/policy-analysis.ts",
     "src/execution/authorization-session.ts",
     "src/execution/audit-command.ts",
     "src/execution/agent-command.ts",

@@ -93,6 +93,28 @@ export class AuthorizationState {
     return new AuthorizationState(statePath, Uint8Array.from(keyBytes), scope);
   }
 
+  /**
+   * Reads the current sealed document without creating a missing sidecar. This
+   * is the authoritative entry point for inspection and simulation commands:
+   * an empty result is a read-only view, not an implicit state mutation.
+   */
+  public static async readSnapshot(
+    keyFile: string,
+    keyBytes: Uint8Array,
+    scope: AuthorizationScope,
+  ): Promise<AuthorizationStateSnapshot> {
+    try {
+      const loaded = await readAuthorizationStateFile(
+        authorizationStatePath(keyFile),
+        keyBytes,
+        scope,
+      );
+      return loaded?.state ?? { policies: {}, grants: {}, audit: [] };
+    } catch (error) {
+      throw mapStateError(error);
+    }
+  }
+
   public async read(): Promise<AuthorizationStateSnapshot> {
     try {
       const loaded = await readAuthorizationStateFile(
