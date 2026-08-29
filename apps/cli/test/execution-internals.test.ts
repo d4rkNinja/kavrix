@@ -590,6 +590,35 @@ describe('in-process broker and client round trip', () => {
       deriveAuthorizationStateKey(new Uint8Array(32).fill(19), scope),
       scope,
     );
+    const recordEvent = state.recordEvent.bind(state);
+    let releaseFirstAudit = (): void => undefined;
+    let markFirstAuditStarted = (): void => undefined;
+    const firstAuditGate = new Promise<void>((resolvePromise) => {
+      releaseFirstAudit = resolvePromise;
+    });
+    const firstAuditStarted = new Promise<void>((resolvePromise) => {
+      markFirstAuditStarted = resolvePromise;
+    });
+    let firstAudit = true;
+    let auditInFlight = false;
+    let overlappingAuditObserved = false;
+    vi.spyOn(state, 'recordEvent').mockImplementation(async (event) => {
+      if (auditInFlight) {
+        overlappingAuditObserved = true;
+        throw new Error('concurrent broker audit');
+      }
+      auditInFlight = true;
+      try {
+        if (firstAudit) {
+          firstAudit = false;
+          markFirstAuditStarted();
+          await firstAuditGate;
+        }
+        return await recordEvent(event);
+      } finally {
+        auditInFlight = false;
+      }
+    });
     const token = randomUUID().replaceAll('-', '') + randomUUID().replaceAll('-', '');
     const session = {
       token,
@@ -609,8 +638,10 @@ describe('in-process broker and client round trip', () => {
     const broker = await startAgentBrokerForTest(session, {
       queueWaitTimeoutMs: 120,
       maxQueuedRequests: 1,
+      maxPendingAuditOperations: 2,
       hardTeardownGraceMs: 25,
     });
+    let brokerCleaned = false;
     try {
       const active = await openRawBrokerRequest(
         broker.endpoint,
@@ -619,24 +650,22 @@ describe('in-process broker and client round trip', () => {
       await active.waitForFrame(
         (frame) => frame.event === 'decision' && frame.outcome === 'allow',
       );
+      await firstAuditStarted;
       const timedOut = await openRawBrokerRequest(
         broker.endpoint,
         execBrokerRequest(token, 'process.exit(0)'),
       );
-      await new Promise<void>((resolvePromise) => {
-        setTimeout(resolvePromise, 25);
+      await vi.waitFor(() => {
+        expect(broker.queuedRequestsForTest()).toBe(1);
       });
       const overloaded = await openRawBrokerRequest(
         broker.endpoint,
         execBrokerRequest(token, 'process.exit(0)'),
       );
-
-      const [activeFrames, timedOutFrames, overloadedFrames] = await Promise.all([
-        active.done,
+      const [timedOutFrames, overloadedFrames] = await Promise.all([
         timedOut.done,
         overloaded.done,
       ]);
-      expect(activeFrames.some((frame) => frame.event === 'exit')).toBe(true);
       for (const frames of [timedOutFrames, overloadedFrames]) {
         expect(frames).toContainEqual({
           v: 1,
@@ -655,9 +684,18 @@ describe('in-process broker and client round trip', () => {
         });
       }
       expect(session.counters).toEqual({ allowed: 1, denied: 2 });
-    } finally {
-      session.secrets = new Map();
+      expect(overlappingAuditObserved).toBe(false);
+      releaseFirstAudit();
+      const activeFrames = await active.done;
+      expect(activeFrames.some((frame) => frame.event === 'exit')).toBe(true);
       await broker.cleanup();
+      brokerCleaned = true;
+      expect(session.secrets.size).toBe(0);
+      expect(state.recordEvent).toHaveBeenCalledTimes(3);
+    } finally {
+      releaseFirstAudit();
+      session.secrets = new Map();
+      if (!brokerCleaned) await broker.cleanup();
       state.close();
     }
   }, 30_000);

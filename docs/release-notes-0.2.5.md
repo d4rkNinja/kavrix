@@ -40,6 +40,14 @@ set and applies stored denies to selected policy credentials even when no
 credential is injected, preventing a policy for one credential from being used
 as cover for another.
 
+## Agent broker reliability
+
+Authorization audit writes are serialized across the unlocked broker session,
+preventing concurrent client activity from racing sealed-state revisions. The
+best-effort denial-audit backlog is bounded under abusive traffic, broker
+cleanup waits for queued audits, and terminal protocol frames are flushed
+before a client connection closes.
+
 ## Release verification
 
 The release is gated by the complete local preflight, exact-commit CI and

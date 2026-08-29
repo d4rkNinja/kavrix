@@ -73,6 +73,7 @@ interface BrokerLimits {
   readonly maxClientFramesPerWindow: number;
   readonly maxPendingClientFrames: number;
   readonly maxPendingClientBytes: number;
+  readonly maxPendingAuditOperations: number;
   readonly hardTeardownGraceMs: number;
 }
 
@@ -83,6 +84,7 @@ const DEFAULT_BROKER_LIMITS: BrokerLimits = {
   maxClientFramesPerWindow: 256,
   maxPendingClientFrames: 64,
   maxPendingClientBytes: 4 * 1024 * 1024,
+  maxPendingAuditOperations: 32,
   hardTeardownGraceMs: 50,
 };
 
@@ -464,6 +466,8 @@ interface BrokerSession {
 interface BrokerRuntime {
   readonly limits: BrokerLimits;
   queuedRequests: number;
+  auditQueue: Promise<void>;
+  pendingAuditOperations: number;
 }
 
 interface ConnectionContext {
@@ -489,6 +493,7 @@ interface ConnectionContext {
 interface BrokerListener {
   endpoint: string;
   cleanup: () => Promise<void>;
+  queuedRequestsForTest: () => number;
 }
 
 function startBroker(
@@ -499,6 +504,8 @@ function startBroker(
   const runtime: BrokerRuntime = {
     limits: { ...DEFAULT_BROKER_LIMITS, ...limitOverrides },
     queuedRequests: 0,
+    auditQueue: Promise.resolve(),
+    pendingAuditOperations: 0,
   };
   const endpoint = isWindows
     ? `\\\\.\\pipe\\kavrix-agent-${randomUUID()}`
@@ -519,12 +526,15 @@ function startBroker(
       void ready.then(() => {
         resolveListener({
           endpoint,
+          queuedRequestsForTest: () => runtime.queuedRequests,
           cleanup: async () => {
             await new Promise<void>((resolveClose) => {
               server.close(() => {
                 resolveClose();
               });
             });
+            session.secrets = new Map();
+            await runtime.auditQueue.catch(() => undefined);
             if (!isWindows) await unlink(endpoint).catch(() => undefined);
           },
         });
@@ -689,13 +699,17 @@ function terminateBrokerConnection(
         outcome: 'deny',
         reason: 'invalid-request',
       });
-      void auditBestEffort(context.session.state, {
-        actor: 'agent',
-        action: 'authorization-denied',
-        permissionKey: request.permission,
-        command: safeCommandName(request.argv[0] ?? ''),
-        reason: 'invalid-request',
-      }).catch(() => undefined);
+      void auditBestEffort(
+        context,
+        {
+          actor: 'agent',
+          action: 'authorization-denied',
+          permissionKey: request.permission,
+          command: safeCommandName(request.argv[0] ?? ''),
+          reason: 'invalid-request',
+        },
+        true,
+      ).catch(() => undefined);
     }
     sendServerFrame(socket, {
       v: 1,
@@ -824,7 +838,7 @@ async function handleAuthorizedExec(
       exitCode: 1,
       signal: null,
     });
-    await auditBestEffort(session.state, {
+    await auditBestEffort(context, {
       actor: 'agent',
       action: 'authorization-denied',
       permissionKey: request.permission,
@@ -876,7 +890,7 @@ async function handleAuthorizedExec(
       executable: resolution.displayName,
       argumentsPreview: boundedPreview(request.argv.slice(1)),
     });
-    await auditBestEffort(session.state, {
+    await auditBestEffort(context, {
       actor: 'agent',
       action:
         approval === 'granted'
@@ -918,7 +932,7 @@ async function handleAuthorizedExec(
     reason: decision.reason,
   });
   session.counters.allowed += 1;
-  await auditBestEffort(session.state, {
+  await auditBestEffort(context, {
     actor: 'agent',
     action: 'authorization-allowed',
     permissionKey: request.permission,
@@ -961,7 +975,7 @@ async function handleAuthorizedExec(
     exitCode: result.exitCode,
     signal: result.signal ?? null,
   });
-  await auditBestEffort(session.state, {
+  await auditBestEffort(context, {
     actor: 'agent',
     action: 'execution-completed',
     permissionKey: request.permission,
@@ -1092,10 +1106,31 @@ function waitForConnect(socket: Socket): Promise<void> {
 }
 
 async function auditBestEffort(
-  state: AuthorizationState,
+  context: ConnectionContext,
   event: Parameters<AuthorizationState['recordEvent']>[0],
+  dropIfSaturated = false,
 ): Promise<void> {
-  await state.recordEvent(event);
+  // Busy/flood denials are already returned to the authenticated client. Keep
+  // their best-effort audit backlog bounded so abuse cannot extend the
+  // unlocked session's secret lifetime without limit. Required audits never
+  // use this branch and retain their fail-closed behavior.
+  if (
+    dropIfSaturated &&
+    context.runtime.pendingAuditOperations >=
+      context.runtime.limits.maxPendingAuditOperations
+  ) {
+    return;
+  }
+  context.runtime.pendingAuditOperations += 1;
+  const operation = context.runtime.auditQueue
+    .catch(() => undefined)
+    .then(() => context.session.state.recordEvent(event))
+    .then(() => undefined)
+    .finally(() => {
+      context.runtime.pendingAuditOperations -= 1;
+    });
+  context.runtime.auditQueue = operation.catch(() => undefined);
+  await operation;
 }
 
 function describeError(error: unknown): string {

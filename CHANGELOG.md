@@ -2,7 +2,7 @@
 
 All notable user-facing and security changes to Kavrix are recorded here.
 
-## 0.2.5 - 2026-08-28
+## 0.2.5 - 2026-08-29
 
 ### Added
 
@@ -22,6 +22,10 @@ All notable user-facing and security changes to Kavrix are recorded here.
 - Machine-readable CLI output escapes terminal control characters, derived
   authorization keys are cleared before policy analysis begins, and packed
   database acceptance exercises the new read-only commands byte-for-byte.
+- The local agent broker serializes authorization audit writes, bounds the
+  best-effort denial-audit backlog under abusive traffic, waits for queued
+  audits during cleanup, and flushes terminal protocol frames before closing a
+  client connection.
 
 ## 0.2.4 - 2026-08-27
 
