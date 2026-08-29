@@ -39,7 +39,9 @@ jobs:
   verify:
     name: Verify (${{ matrix.label }})
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 60
+    # Windows shards run serially and are file-duration-skewed; retain enough
+    # headroom for the complete security suite instead of cancelling a valid run.
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
