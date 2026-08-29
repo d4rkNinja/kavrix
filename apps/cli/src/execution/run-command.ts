@@ -47,6 +47,7 @@ import {
   type ResolvedMapping,
   type RunCliOptions,
 } from './run-options.js';
+import { effectiveExitCode, forwardableSignals } from './signals.js';
 
 export interface RunOutcome {
   readonly ran: boolean;
@@ -527,13 +528,15 @@ async function authorizeAndSpawn(
     }
   }
 
+  const exitCode = effectiveExitCode(result);
+
   try {
     await state.recordEvent({
       actor: 'user',
       action: 'execution-completed',
       command: resolution.displayName,
       ...(argvPreview === undefined ? {} : { argvPreview: [...argvPreview] }),
-      ...(result.exitCode === null ? {} : { exitCode: result.exitCode }),
+      exitCode,
       ...(resolvedGrants[0] === undefined
         ? {}
         : { grantId: resolvedGrants[0].grant.grantId }),
@@ -564,7 +567,7 @@ async function authorizeAndSpawn(
       displayName: resolution.displayName,
       path: resolution.absolutePath,
     },
-    exitCode: result.exitCode ?? signalExitCode(result.signal),
+    exitCode,
     signal: result.signal,
     termination: result.termination,
     ...(jsonMode
@@ -703,24 +706,6 @@ export function addPlannedInjection(
     );
   }
   planned.set(destination, secret);
-}
-
-function forwardableSignals(platform: NodeJS.Platform): readonly NodeJS.Signals[] {
-  return platform === 'win32'
-    ? ['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGBREAK']
-    : ['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGQUIT'];
-}
-
-function signalExitCode(signal: NodeJS.Signals | null): number {
-  if (signal === null) return 1;
-  const table: Partial<Record<NodeJS.Signals, number>> = {
-    SIGHUP: 129,
-    SIGINT: 130,
-    SIGQUIT: 131,
-    SIGKILL: 137,
-    SIGTERM: 143,
-  };
-  return table[signal] ?? 128;
 }
 
 function decodeSanitized(buffer: Buffer | undefined): string {

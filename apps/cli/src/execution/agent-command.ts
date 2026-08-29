@@ -51,7 +51,7 @@ import {
   tokensMatch,
 } from './broker-protocol.js';
 import { loadProjectConfig } from './project-config.js';
-import { forwardableSignals, signalExitCode } from './signals.js';
+import { effectiveExitCode, forwardableSignals, signalExitCode } from './signals.js';
 
 export const AGENT_BROKER_ENV = 'KAVRIX_AGENT_BROKER';
 export const AGENT_TOKEN_ENV = 'KAVRIX_AGENT_TOKEN';
@@ -242,7 +242,7 @@ export async function executeAgentRun(options: AgentRunOptions): Promise<unknown
     agent: options.agentName,
     allowedRequests: session.counters.allowed,
     deniedRequests: session.counters.denied,
-    exitCode: result.exitCode ?? signalExitCode(result.signal),
+    exitCode: effectiveExitCode(result),
     signal: result.signal,
     termination: result.termination,
   };
@@ -969,10 +969,11 @@ async function handleAuthorizedExec(
   }
 
   if (connectionIsTerminated(context)) return;
+  const exitCode = effectiveExitCode(result);
   sendExitFrame(socket, context, {
     v: 1,
     event: 'exit',
-    exitCode: result.exitCode,
+    exitCode,
     signal: result.signal ?? null,
   });
   await auditBestEffort(context, {
@@ -980,7 +981,7 @@ async function handleAuthorizedExec(
     action: 'execution-completed',
     permissionKey: request.permission,
     command: resolution.displayName,
-    ...(result.exitCode === null ? {} : { exitCode: result.exitCode }),
+    exitCode,
   });
 }
 

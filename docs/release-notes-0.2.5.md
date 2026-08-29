@@ -48,6 +48,14 @@ best-effort denial-audit backlog is bounded under abusive traffic, broker
 cleanup waits for queued audits, and terminal protocol frames are flushed
 before a client connection closes.
 
+## Execution safety
+
+Timeout, abort, and bounded-output termination now remain non-zero even when a
+fast child exits before the requested signal is observed. In particular,
+truncated `--json` capture preserves the documented exit `143` and
+`termination: "output-limit"` contract instead of allowing incomplete output to
+appear successful.
+
 ## Release verification
 
 The release is gated by the complete local preflight, exact-commit CI and

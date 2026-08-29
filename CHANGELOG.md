@@ -26,6 +26,10 @@ All notable user-facing and security changes to Kavrix are recorded here.
   best-effort denial-audit backlog under abusive traffic, waits for queued
   audits during cleanup, and flushes terminal protocol frames before closing a
   client connection.
+- Supervised timeout, abort, and output-limit termination now fail closed with
+  a non-zero effective exit code even when a fast child exits before the
+  requested signal is observed; bounded JSON output retains the documented
+  exit `143` contract.
 
 ## 0.2.4 - 2026-08-27
 

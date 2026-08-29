@@ -364,7 +364,7 @@ describe('kavrix run', () => {
         '--',
         process.execPath,
         '-e',
-        'process.stdout.write("y".repeat(128 * 1024))',
+        'process.stdout.write("y".repeat(128 * 1024)); setInterval(() => {}, 1_000)',
       ],
       passphraseFrame(),
     );

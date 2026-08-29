@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
-import { forwardableSignals, signalExitCode } from '../src/execution/signals.js';
+import {
+  effectiveExitCode,
+  forwardableSignals,
+  signalExitCode,
+} from '../src/execution/signals.js';
 
 describe('forwardableSignals', () => {
   it('includes console-break forwarding on Windows only', () => {
@@ -31,5 +35,36 @@ describe('signalExitCode', () => {
 
   it('falls back to the generic 128 baseline for uncommon signals', () => {
     expect(signalExitCode('SIGUSR2')).toBe(128);
+  });
+});
+
+describe('effectiveExitCode', () => {
+  it('fails closed when a child exits zero after a supervised termination was requested', () => {
+    expect(
+      effectiveExitCode({
+        exitCode: 0,
+        signal: null,
+        termination: 'output-limit',
+      }),
+    ).toBe(143);
+    expect(
+      effectiveExitCode({ exitCode: 0, signal: null, termination: 'timeout' }),
+    ).toBe(143);
+  });
+
+  it('preserves ordinary exits and observed termination signals', () => {
+    expect(effectiveExitCode({ exitCode: 0, signal: null, termination: 'exit' })).toBe(
+      0,
+    );
+    expect(
+      effectiveExitCode({
+        exitCode: null,
+        signal: 'SIGKILL',
+        termination: 'output-limit',
+      }),
+    ).toBe(137);
+    expect(
+      effectiveExitCode({ exitCode: 7, signal: null, termination: 'aborted' }),
+    ).toBe(7);
   });
 });
