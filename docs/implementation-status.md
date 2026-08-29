@@ -16,13 +16,13 @@ selection, but the 0.2.3 no-argument TTY `init` path does not invoke it.
 
 Active release workspaces:
 
-- `@kavrix/schemas`: canonical database-container, vault, legacy, envelope, policy, and authorization-state schemas.
+- `@kavrix/schemas`: canonical database-container, vault, legacy, structured-vault, envelope, policy, and authorization-state schemas.
 - `@kavrix/crypto`: DRK/VRK hierarchy, key derivation, wrapping, authenticated encryption, sealed state envelopes, and secure-byte helpers.
 - `@kavrix/key-files`: protected database-owner key, recovery-kit, legacy key, revision-anchor, and sealed authorization-state files.
 - `@kavrix/storage`: database-scoped local/MongoDB adapters and fail-closed URI/TLS policy.
 - `@kavrix/runner`: shell-free child execution with minimal environments and secret redaction in captured output.
 - `@kavrix/tui`: Ink components for the interactive storage-selection showcase (animated); presentational only, with static strings and no persistence or cryptography.
-- `kavrix`: CLI composition, protected `config.toml` onboarding-reference generation, masked input, sanitized rendering, credential execution, policy firewall, and npm package.
+- `kavrix`: CLI composition, protected `config.toml` onboarding-reference generation, masked input, sanitized rendering, credential execution, policy firewall, structured database-vault projection, and npm package.
 
 The active-versus-parked source boundary and its verification commands are
 recorded in [Active release boundary](active-release-boundary.md). The source
@@ -42,6 +42,9 @@ are not workspace members, release artifacts, or evidence for the active release
 - database-owner key status, whole-local-database share-key creation, and database recovery create/verify/status/revoke/use;
 - explicit legacy version 2 migration into an existing or explicitly initialized local database;
 - encrypted put/get/list/view/search/stats operations;
+- structured project-context/environment, service/group, credential-item, and
+  typed-field create/list/read/rename/remove operations for database vaults,
+  with protected field input and schema/authorization-gated reveal;
 - explicit override and reveal controls;
 - has, rename, remove, vault list, and vault status;
 - protected key-file status, verify, copy, replicate, assign, and rewrap;
@@ -84,6 +87,33 @@ create|list|show|remove|check|explain|lint|diff|suggest`) sealed
 Run `kavrix <command> --help` for exact options. Planned or retired commands must
 not be documented as available.
 
+## Structured database-vault model
+
+Database vaults created by the 0.2.6 implementation use a versioned structured
+payload. It keeps project contexts (including an optional environment label),
+groups/services, credential items, typed field definitions and values, notes,
+expiry/rotation metadata, and encrypted attachment/history records inside the
+existing client-encrypted vault envelope. `groups` is the canonical persisted
+schema name; service is its product-level alias. The aggregate schema binds the
+payload to its vault ID and rejects unknown versions, duplicate identities,
+dangling references, cross-vault ownership, and invalid field/policy shapes.
+
+The root flat commands remain backward-compatible. They project only the
+default project context and default group/service, with one canonical `value`
+password field per flat record. Names are literal, so a name such as
+`github/token` is not interpreted as hierarchy. Non-default structured entities
+remain encrypted and are not exposed by the flat projection. Legacy flat
+database payloads stay flat for ordinary root reads and updates; explicit
+structured updates upgrade them, and database migration stages legacy records
+into the default structured context/service.
+
+The schemas and session/projection layer preserve notes, expiry/rotation,
+attachments, and history when structured payloads are read or updated. They are
+not represented as additional server-side records, and the 0.2.6 command
+surface does not add attachment/history transfer or mutation claims to this
+status ledger. Field-level copy, reveal, reauthentication, and export policies
+remain schema-driven; plaintext field values never cross the storage boundary.
+
 ## Recent hardening (post-0.2.0 external test report)
 
 - `run --grant` resolves the grant's credential in-session before consuming any
@@ -115,6 +145,10 @@ not be documented as available.
 ## Security properties
 
 - plaintext labels, values, DRKs, VRKs, and unlock keys do not cross the storage boundary;
+- project contexts, groups/services, item metadata, typed fields, notes, and
+  attachment/history relationships are inside the authenticated client-side
+  vault payload; MongoDB receives only the resulting opaque envelope and
+  routing metadata;
 - database/catalog/wrapped-key AAD binds database and vault identity, purpose,
   versions, revision, and authenticated metadata digests;
 - a DRK-authenticated local anchor rejects rollback, same-revision forks, and
@@ -125,7 +159,9 @@ not be documented as available.
 - local publication is atomic and MongoDB multi-document publication requires transactions;
 - remote MongoDB requires explicit validated TLS and insecure TLS flags are rejected;
 - protected files use bounded formats, atomic creation, and permission checks;
-- terminal output is sanitized and values are masked unless reveal is explicit;
+- terminal output is sanitized; present sensitive values are masked unless an
+  authorized reveal is explicit, while non-sensitive fields may render as
+  escaped JSON according to their schema;
 - the authorization sidecar is sealed with XChaCha20-Poly1305 under a key
   derived (HKDF-SHA-256) from the database root key and bound to the exact
   scope identity and sequence; any tampering or reformatting fails closed;
@@ -198,12 +234,17 @@ Execution-layer limits that are verified or documented rather than claimed away:
 
 User identities, public enrollment, recipient discovery, vault grants, reader/
 editor/owner roles, revocation with VRK rotation, and ownership transfer are not
-implemented. Environments beyond project-file secret mappings, groups/services,
-structured items, and typed fields are also deferred. Legacy version 2 vaults
-support `get --reveal` semantics unchanged; policies, grants, audit, run, and
-agent commands require a database-container profile. Local-file mode has no
-fine-grained sharing: sharing its data file and a freshly generated matching
-share key grants full database access once unlocked.
+implemented. Project contexts, groups/services, structured items, typed fields,
+notes, expiry/rotation metadata, and encrypted attachment/history records are
+now modeled inside database-vault payloads; the root compatibility commands
+intentionally expose only the default context/service projection. The 0.2.6
+command surface does not claim attachment/history transfer or mutation support.
+Project-file environment mappings remain an execution feature, not a second
+vault hierarchy. Legacy version 2 vaults support `get --reveal` semantics
+unchanged; policies, grants, audit, run, and agent commands require a
+database-container profile. Local-file mode has no fine-grained sharing:
+sharing its data file and a freshly generated matching share key grants full
+database access once unlocked.
 
 Kavrix does not protect an unlocked host from administrators, same-user malware,
 keyloggers, screen/terminal/clipboard capture, process-memory inspection, swap,

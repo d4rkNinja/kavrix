@@ -115,7 +115,9 @@ the encrypted catalog. Ordinary list/status output returns opaque IDs and
 `[REDACTED]`, not labels. `db vault create --secrets-stdin` expects the database
 key passphrase followed by the private vault label; MongoDB mode prepends its URI.
 
-The current database container keeps the existing flat credential payload. Pass
+New database vaults keep a versioned structured payload. The existing root
+commands remain a compatibility projection over the default project context,
+default service/group, and each item's canonical `value` password field. Pass
 the returned opaque vault ID explicitly to every credential command:
 
 ```sh
@@ -126,6 +128,51 @@ kavrix list --profile work --vault <vault-id>
 
 If a database contains more than one vault and `--vault` is omitted, the CLI
 fails before requesting the passphrase rather than guessing.
+
+### Structured project credentials
+
+Structured commands require a database-container profile and an explicit vault.
+They resolve names exactly and fail on missing or ambiguous parents:
+
+```sh
+kavrix context create payments --environment production \
+  --profile work --vault <vault-id>
+kavrix service create postgres --context payments \
+  --profile work --vault <vault-id>
+kavrix item create primary --context payments --service postgres \
+  --profile work --vault <vault-id>
+kavrix field set password --type password \
+  --context payments --service postgres --item primary \
+  --profile work --vault <vault-id>
+```
+
+`context` is also available as `environment`, `service` as `group`, and `item`
+as `credential`. Each family provides create/list/rename/remove operations;
+parents can be removed only when empty. `item show` reports metadata and field
+states without values. Removing an item also removes its owned encrypted
+attachment and history records from the aggregate.
+
+`field set` reads the value only through a masked prompt or protected stdin; a
+value is never accepted in argv. For controlled automation, provide both
+`--passphrase-stdin` and `--value-stdin` (or `--value-stdin-base64`) so the exact
+frames are database-key passphrase followed by field value. Supported types
+include `username`, `password`, `api-key`, `url`, `certificate`, `totp-secret`
+(`totp-seed` alias), `recovery-code-list` (`recovery-code` alias), `json`, and
+`environment-map`. Environment maps use one `KEY=VALUE` entry per line.
+
+`field list` exposes the schema policies but not field values. `field get`
+returns ordinary non-sensitive values as escaped JSON and returns `[REDACTED]`
+for a present sensitive value unless `--reveal` is explicit, the field's
+reveal policy permits it, and the outer stored reveal policy also allows it.
+Use `--reveal-base64` instead for an authorized byte-preserving transport of a
+multiline sensitive value. The default context, service, and canonical `value`
+field cannot be renamed or removed because they anchor flat-command
+compatibility. Other field removal archives the definition/value inside the
+item rather than silently discarding its schema history.
+
+Notes, expiry/rotation metadata, attachment ownership, and encrypted history
+are part of the structured payload and survive these operations. Version 0.2.6
+does not add attachment transfer or history-restore commands.
 
 ## 4. Store and read credentials
 
@@ -502,12 +549,17 @@ shell re-parsing.
 
 ## 13. Current limits
 
-The database container currently supports encrypted database/vault labels and
-the flat credential record payload; project-file environments cover secret
-mappings only. Groups/services, structured items, and typed fields are
-deferred. Policies, grants, audit, run, and agent commands require a
-database-container profile; legacy version 2 vaults keep their existing
-compatibility commands and can migrate with the copy-first flow in section 7.
+The database container supports encrypted database/vault labels and structured
+project contexts, groups/services, credential items, and typed fields. Its root
+credential commands remain the default-context/service compatibility
+projection described above. Notes, expiry/rotation metadata, attachment
+ownership, and encrypted history records are modeled and preserved, but 0.2.6
+does not add attachment transfer or history-restore commands. Project-file
+environments cover execution mappings only; they are not a second vault
+hierarchy. Structured commands, policies, grants, audit, run, and agent commands
+require a database-container profile. Legacy version 2 vaults keep their
+existing compatibility commands and can migrate with the copy-first flow in
+section 7.
 
 User identity files, public enrollment, recipient discovery, vault grants,
 reader/editor/owner roles, signed writer revisions, revocation by VRK rotation,

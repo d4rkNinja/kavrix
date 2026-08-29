@@ -47,6 +47,7 @@ export const fieldEditorRegistry: Readonly<Record<FieldType, FieldEditorDescript
   Object.freeze({
     text,
     secret,
+    password: secret,
     username: text,
     email: text,
     url: text,

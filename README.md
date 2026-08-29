@@ -3,9 +3,12 @@
 Kavrix is a zero-knowledge credential vault and credential firewall for the
 terminal. It encrypts credentials and their labels on your machine and stores
 authenticated ciphertext in a hardened local database file or in your own
-MongoDB deployment. One database holds multiple independently encrypted vaults,
-and tools consume credentials through tightly scoped execution instead of
-plaintext files:
+MongoDB deployment. One database holds multiple independently encrypted vaults.
+Within a database vault, the private credential model is structured as project
+context/environment → group/service → credential item → typed fields, with
+notes, expiry/rotation metadata, and encrypted attachment/history records
+preserved by the vault schema. Tools consume credentials through tightly scoped
+execution instead of plaintext files:
 
 - `kavrix run` injects only the requested credentials into a child process
   environment.
@@ -61,9 +64,26 @@ kavrix list --profile work --vault <vault-id>
 kavrix get github/token --reveal --profile work --vault <vault-id>
 ```
 
+The quick-start commands use the backward-compatible flat projection. In a
+structured database vault, `github/token` remains one literal item name and is
+represented in the default project context and default group/service with a
+schema-driven `value` password field. Structured entities outside that default
+projection remain private to the encrypted vault model; the flat commands do
+not reinterpret path separators as hierarchy.
+
 Sensitive input is always prompted for or read from stdin. Never place
 passwords, keys, recovery secrets, or database URIs in shell arguments or shell
 history.
+
+## Credential model
+
+The structured model supports field definitions such as username, password, API
+key, URL, certificate, TOTP seed, recovery-code list, JSON, and environment-map
+values. Each field carries its own copy, reveal, reauthentication, and export
+policies, so policy decisions remain schema-driven. New database vaults use a
+versioned structured payload; existing flat database payloads remain readable
+and writable through the root commands and are upgraded only by explicit
+structured access or migration.
 
 ## Everyday commands
 
@@ -178,7 +198,9 @@ digest.
 A revision anchor authenticated by the database root key is stored beside each
 active owner key file. Rollback attempts, same-revision forks, and inconsistent
 catalog/vault heads are rejected before plaintext is returned, and a missing or
-invalid anchor fails closed.
+invalid anchor fails closed. Structured contexts, groups/services, item
+metadata, field definitions, notes, and attachment/history relationships stay
+inside the client-encrypted vault payload.
 
 MongoDB stores ciphertext plus opaque routing metadata in two collections. It
 can observe the MongoDB database and collection namespaces, opaque IDs,
@@ -217,6 +239,11 @@ no one else ever held the required material.
   program does with values it was given.
 - User identities, public enrollment, recipient discovery, per-vault grants and
   roles, revocation with rotation, and ownership transfer are not implemented.
+- Project contexts, groups/services, structured items, typed fields, notes,
+  expiry/rotation metadata, and encrypted attachment/history records are
+  modeled in database vaults. Root flat commands intentionally expose only the
+  default context/service projection; 0.2.6 does not claim attachment/history
+  transfer or mutation commands.
 - Windows command scripts (`.bat`, `.cmd`, `.com`) are refused for execution
   because launching them requires shell argument re-parsing; invoke real
   executables.

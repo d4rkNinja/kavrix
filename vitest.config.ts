@@ -22,6 +22,8 @@ export default defineConfig({
       'apps/cli/test/database-commands.test.ts',
       'apps/cli/test/database-flat-commands.test.ts',
       'apps/cli/test/database-migration.test.ts',
+      'apps/cli/test/structured-vault-commands.test.ts',
+      'apps/cli/test/structured-vault-projection.test.ts',
       'apps/cli/test/datastore-profile-publication.test.ts',
       'apps/cli/test/datastore-profiles.test.ts',
       'apps/cli/test/init-onboarding.test.ts',

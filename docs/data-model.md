@@ -1,9 +1,11 @@
 # Data model
 
-The canonical contracts live in `packages/schemas/src/database-container.ts`
-and `packages/schemas/src/local-vault.ts`. The database-container format is the
+The canonical contracts live in `packages/schemas/src/database-container.ts`,
+`packages/schemas/src/local-vault.ts`, and
+`packages/schemas/src/structured-vault.ts`. The database-container format is the
 current multi-vault model. The local-vault version 2 format remains supported as
-an explicit, copy-first migration source.
+an explicit, copy-first migration source and as a legacy payload at the
+database-vault boundary.
 
 ## Database document and private catalog
 
@@ -21,14 +23,64 @@ output. Database and vault labels are not plaintext indexes.
 
 Each vault document contains its opaque database/vault IDs, the VRK wrapped for
 the database owner, database and vault revisions, timestamps, metadata digest,
-and the authenticated encrypted flat credential payload. Credential names,
-values, and record timestamps are inside that payload. `list`, `search`, and
-`view` decrypt locally; values remain masked unless a guarded reveal flow is
-explicitly requested.
+and an authenticated encrypted credential payload. The payload is either the
+legacy flat version 2 record map or the versioned structured representation.
+Credential names, values, field definitions, and record timestamps are inside
+that payload. `list`, `search`, and `view` decrypt locally; values remain masked
+unless a guarded reveal flow is explicitly requested.
 
-The current flat payload is a compatibility projection. Environments, groups,
-items, and typed fields have not been implemented yet and are not present as a
-partially supported hierarchy.
+### Structured vault payload
+
+New database vaults use the structured payload defined by
+`structuredVaultPayloadSchema`. Its private hierarchy is:
+
+```text
+database
+└── vault
+    └── project context (optional environment label)
+        └── group / service
+            └── credential item
+                ├── typed fields and schema-driven field policies
+                ├── notes, tags, expiry, and rotation metadata
+                ├── encrypted attachment records
+                └── encrypted history records
+```
+
+The persisted collection is named `groups` because it reuses the canonical
+`groupPayloadSchema`; “service” is the product vocabulary alias for that level.
+Project contexts, groups, items, attachments, and history records carry opaque
+identifiers and are checked for duplicate identities, dangling references, and
+cross-vault ownership before plaintext is used. The top-level payload carries
+the vault ID and a separate structured-payload version, so an authenticated
+payload cannot be replayed into another vault or silently interpreted as a
+different representation.
+
+Typed field definitions are canonical contracts from
+`packages/schemas/src/fields.ts`. They cover, among other types, username,
+password, API key, URL, certificate, TOTP seed, recovery-code list, JSON, and
+environment-map values. Copy, reveal, reauthentication, and export behavior is
+stored on each field definition through its policy values; unknown policy or
+field combinations fail schema validation. Notes, expiry/rotation metadata,
+attachments, and history are modeled in the item and encrypted-record schemas;
+the compatibility root commands preserve records outside their projection.
+
+### Flat compatibility projection
+
+The root `put`, `get`, `list`, `view`, `search`, `stats`, `has`, `rename`, and
+`remove` commands continue to operate on a deliberately narrow projection: the
+default project context, the default group/service, and each item's canonical
+`value` password field. A flat name, including a path separator such as
+`github/token`, remains one literal item title; it is never parsed as a project,
+service, or item path. Non-default contexts, groups/services, and items are
+invisible to this projection, and an invalid or colliding projection fails
+closed rather than guessing.
+
+An existing flat database payload remains flat when it is read or updated by
+these root commands. Explicit structured access upgrades a legacy payload to
+the in-memory hierarchy, and a structured update persists that upgrade. The
+projection adapter in `apps/cli/src/structured-vault-projection.ts` preserves
+structured identities and metadata while applying a flat update; it does not
+create a parallel plaintext record store.
 
 ## What storage can observe
 
@@ -75,11 +127,13 @@ forward-reconcile its authenticated companion anchor after an owner mutation.
 ## Legacy migration
 
 `kavrix migrate database` authenticates and decrypts one version 2 source vault,
-copies its complete flat payload into a newly encrypted destination vault, then
-reopens and compares the result before reporting success. The source document,
-source key, and source anchor remain unchanged. Initialization of a new local
-destination is explicit with `--initialize`; there is no silent in-place format
-upgrade.
+stages its records into the destination's default project context and
+default group/service as structured items, then reopens and compares the result
+before reporting success. The root flat projection therefore retains the same
+names and values after migration, while the destination also has the
+structured-field representation. The source document, source key, and source
+anchor remain unchanged. Initialization of a new local destination is explicit
+with `--initialize`; there is no silent in-place format upgrade.
 
 ## Validation
 

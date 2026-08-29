@@ -18,6 +18,7 @@ import {
 export const fieldTypeSchema = z.enum([
   'text',
   'secret',
+  'password',
   'username',
   'email',
   'url',
@@ -55,6 +56,7 @@ export const fieldTypeSchema = z.enum([
 
 const sensitiveFieldTypes = new Set<z.infer<typeof fieldTypeSchema>>([
   'secret',
+  'password',
   'api-key',
   'access-token',
   'refresh-token',

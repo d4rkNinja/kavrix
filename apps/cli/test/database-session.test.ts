@@ -56,6 +56,11 @@ import {
   setDatabaseSessionZeroizationObserverForTest,
 } from '../src/database-session.js';
 import {
+  DEFAULT_PROJECT_CONTEXT_ID,
+  DEFAULT_SERVICE_ID,
+  DEFAULT_VALUE_FIELD_KEY,
+} from '../src/structured-vault-projection.js';
+import {
   DatastoreProfileError,
   DatastoreProfileRegistry,
 } from '../src/datastore-profiles.js';
@@ -239,6 +244,12 @@ describe('DatabaseSession', () => {
     });
     const first = await session.createVault('alpha-label-canary');
     const second = await session.createVault('beta-label-canary');
+    await session.inspectStructuredVault(first.id, (payload) => {
+      expect(payload.vaultId).toBe(first.id);
+      expect(payload.projectContexts[0]?.id).toBe(DEFAULT_PROJECT_CONTEXT_ID);
+      expect(payload.groups[0]?.id).toBe(DEFAULT_SERVICE_ID);
+      expect(payload.items).toEqual([]);
+    });
     expect((await session.listVaults()).map((entry) => entry.label)).toEqual([
       'alpha-label-canary',
       'beta-label-canary',
@@ -253,6 +264,10 @@ describe('DatabaseSession', () => {
       },
     }));
     expect((await session.getVaultDocument(first.id)).revision).toBe(1);
+    await session.inspectStructuredVault(first.id, (payload) => {
+      expect(payload.items[0]?.title).toBe('changed');
+      expect(payload.items[0]?.itemFields[0]?.stableKey).toBe(DEFAULT_VALUE_FIELD_KEY);
+    });
     await session.close();
     const reopened = await DatabaseSession.open({
       store,
@@ -893,6 +908,9 @@ describe('DatabaseSession', () => {
     // an authentication failure; it must report its true cause.
     await expect(
       session.updateVault(first.id, () => ({ records: null }) as never),
+    ).rejects.toMatchObject({ code: 'invalid' });
+    await expect(
+      session.updateStructuredVault(first.id, () => ({ records: {} }) as never),
     ).rejects.toMatchObject({ code: 'invalid' });
     expect((await session.getVaultDocument(first.id)).revision).toBe(
       beforeInvalidUpdate.revision,

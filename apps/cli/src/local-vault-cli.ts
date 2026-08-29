@@ -104,6 +104,7 @@ import {
 import { CLI_VERSION } from './version.js';
 import { applyStdinFrameHelp, registerFramesCommand } from './stdin-frames.js';
 import { registerExecutionCommands } from './execution/register.js';
+import { registerStructuredVaultCommands } from './structured-vault-commands.js';
 import {
   authenticationFailure,
   credentialMissing,
@@ -589,6 +590,7 @@ export function buildLocalCli(): Command {
   });
 
   registerExecutionCommands(program);
+  registerStructuredVaultCommands(program);
   registerFramesCommand(program);
   applyStdinFrameHelp(program);
 

@@ -428,6 +428,75 @@ describe('database owner command composition', () => {
       ),
     ).toEqual({ renamed: true, vaultId });
 
+    const structuredItem = 'structured-primary';
+    const publicUsername = 'alice-structured-integration';
+    const structuredRoute = [
+      '--profile',
+      'local',
+      '--profile-config-dir',
+      directory,
+      '--passphrase-stdin',
+    ];
+    expect(
+      await execute(
+        [passphrase],
+        'item',
+        'create',
+        structuredItem,
+        '--context',
+        'Default project',
+        '--service',
+        'Default service',
+        '--vault',
+        vaultId,
+        ...structuredRoute,
+      ),
+    ).toMatchObject({ created: true, type: 'item', title: structuredItem });
+    expect(
+      await execute(
+        [passphrase, publicUsername],
+        'field',
+        'set',
+        'username',
+        '--type',
+        'username',
+        '--context',
+        'Default project',
+        '--service',
+        'Default service',
+        '--item',
+        structuredItem,
+        '--vault',
+        vaultId,
+        ...structuredRoute,
+        '--value-stdin',
+      ),
+    ).toMatchObject({ saved: true, type: 'field', name: 'username' });
+    expect(
+      await execute(
+        [passphrase],
+        'field',
+        'get',
+        'username',
+        '--context',
+        'Default project',
+        '--service',
+        'Default service',
+        '--item',
+        structuredItem,
+        '--vault',
+        vaultId,
+        ...structuredRoute,
+      ),
+    ).toMatchObject({
+      context: 'Default project',
+      service: 'Default service',
+      item: structuredItem,
+      name: 'username',
+      type: 'username',
+      value: publicUsername,
+    });
+
     expect(
       await execute(
         [
@@ -538,6 +607,7 @@ describe('database owner command composition', () => {
 
     expect(requests).toContainEqual(['label', 'new-passphrase', 'new-passphrase']);
     expect(requests).toContainEqual(['passphrase', 'label']);
+    expect(requests).toContainEqual(['passphrase', 'field-value']);
     expect(requests).toContainEqual([
       'passphrase',
       'recovery-passphrase',
@@ -571,12 +641,14 @@ describe('database owner command composition', () => {
       expect(serialized).not.toContain('private-project-label');
       expect(serialized).not.toContain('renamed-project-label');
       expect(serialized).not.toContain('other-private-database-label');
+      expect(serialized).not.toContain(publicUsername);
     }
     expect(JSON.stringify(allArgv)).not.toContain(passphrase);
     expect(JSON.stringify(allArgv)).not.toContain('private-database-label');
     expect(JSON.stringify(allArgv)).not.toContain('private-project-label');
     expect(JSON.stringify(allArgv)).not.toContain('renamed-project-label');
     expect(JSON.stringify(allArgv)).not.toContain('other-private-database-label');
+    expect(JSON.stringify(allArgv)).not.toContain(publicUsername);
     expect(allOutput.join('')).not.toContain(passphrase);
     expect(allOutput.join('')).not.toContain('private-database-label');
     expect(allOutput.join('')).not.toContain('private-project-label');

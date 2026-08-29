@@ -2,6 +2,47 @@
 
 All notable user-facing and security changes to Kavrix are recorded here.
 
+## 0.2.6 - 2026-08-29
+
+### Added
+
+- Versioned structured database-vault payloads organize credentials by project
+  context/environment, service/group, and item, while reusing the canonical
+  typed-field, note, expiry, attachment, and history contracts.
+- New `context`/`environment`, `service`/`group`, `item`/`credential`, and
+  `field` command families provide exact-name hierarchy management and
+  schema-driven typed values. Field values enter only through masked prompts
+  or protected stdin. Non-sensitive values use escaped JSON output; sensitive
+  values remain redacted unless an explicit reveal passes both the field policy
+  and the stored authorization policy, with base64 available for multiline-safe
+  authorized transport.
+- The typed-field vocabulary now includes an explicit sensitive `password`
+  type alongside username, API key, URL, certificate, TOTP seed, recovery-code
+  list, JSON, and environment-map fields.
+
+### Compatibility
+
+- Existing root commands keep their behavior through a default project/service
+  projection with one canonical `value` password field per flat credential.
+  Literal flat names are never split into hierarchy segments, and non-default
+  structured entities remain outside the flat view.
+- Existing flat database payloads remain flat under ordinary root reads and
+  writes. Structured operations and explicit database migration perform the
+  versioned upgrade; no parallel plaintext or server-visible hierarchy is
+  introduced.
+
+### Security and reliability
+
+- Structured aggregates are bound to the enclosing vault ID and reject unknown
+  versions, duplicate identities, dangling references, cross-vault ownership,
+  malformed field policies, and oversized plaintext before publication.
+- Flat updates preserve structured item identities and unrelated fields.
+  Explicit deletion removes only the target item's owned encrypted attachment
+  and history records, and ambiguous flat transitions fail closed.
+- The API/storage boundary remains zero-knowledge: the complete hierarchy,
+  names, notes, values, policies, and relationships stay inside the existing
+  client-encrypted vault envelope.
+
 ## 0.2.5 - 2026-08-29
 
 ### Added

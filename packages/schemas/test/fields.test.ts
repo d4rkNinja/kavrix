@@ -91,6 +91,13 @@ describe('dynamic field schemas', () => {
       false,
     );
     expect(
+      fieldDefinitionSchema.safeParse(field({ type: 'password', sensitive: false }))
+        .success,
+    ).toBe(false);
+    expect(fieldDefinitionSchema.safeParse(field({ type: 'password' })).success).toBe(
+      true,
+    );
+    expect(
       fieldDefinitionSchema.safeParse(field({ copyable: false, copyPolicy: 'allowed' }))
         .success,
     ).toBe(false);

@@ -41,6 +41,13 @@ kavrix db vault create --profile work
 # 3. Copy the returned opaque vault ID into the flat commands.
 kavrix put github/token --profile work --vault <vault-id>
 kavrix get github/token --reveal --profile work --vault <vault-id>
+
+# Or create an explicit project/service/item hierarchy.
+kavrix context create platform --environment production --profile work --vault <vault-id>
+kavrix service create github --context platform --profile work --vault <vault-id>
+kavrix item create deploy --context platform --service github --profile work --vault <vault-id>
+kavrix field set token --type api-key --context platform --service github \
+  --item deploy --profile work --vault <vault-id>
 ```
 
 Sensitive input is prompted for or read from stdin; it is never accepted as a
@@ -57,6 +64,7 @@ options in your installed version.
 | `db key create`                                                            | Create an exact-snapshot key for full local-file sharing.                             |
 | `db recovery ...`                                                          | Manage database-root recovery kits.                                                   |
 | `migrate database`                                                         | Copy one legacy version 2 vault into a database.                                      |
+| `context`, `service`, `item`, `field`                                      | Manage structured project credentials and schema-driven typed fields.                 |
 | `put`, `get`, `list`, `view`, `search`, `stats`, `has`, `rename`, `remove` | Store, read, and organize credentials.                                                |
 | `key status/verify/copy/replicate/assign/rewrap`                           | Manage protected key files.                                                           |
 | `recovery create/verify/status/revoke/use`                                 | Manage recovery kits.                                                                 |
@@ -68,8 +76,16 @@ options in your installed version.
 | `audit`                                                                    | Plaintext-free security audit trail.                                                  |
 | `agent run`, `agent exec`                                                  | Credential firewall that brokers AI coding agents.                                    |
 
-Plaintext output is always opt-in through `--reveal`; listing and dashboard
-commands never display credential values.
+Sensitive plaintext output is opt-in through `--reveal` or multiline-safe
+`--reveal-base64`; listing and dashboard commands never display field values.
+`field get` may return a non-sensitive value according to its schema.
+
+Database vaults organize private data as project context/environment →
+service/group → credential item → typed fields. The root flat commands remain
+a compatibility projection over the default context/service and never split a
+literal name such as `github/token` into hierarchy segments. Field definitions
+carry copy, reveal, reauthentication, and export policies; present values stay
+redacted until an allowed explicit reveal.
 
 ## Running tools without pasting secrets
 
@@ -107,6 +123,7 @@ authorization sidecar.
 | `--value-stdin`                     | Read a credential value from stdin.                                        |
 | `--secrets-stdin`                   | Read every unlock secret from exact stdin frames.                          |
 | `--reveal`                          | The explicit guard that prints plaintext.                                  |
+| `--reveal-base64`                   | Authorized multiline-safe field-value output.                              |
 | `--json`                            | Masked machine-readable output.                                            |
 | `--overwrite`                       | Opt in to replacing something that already exists.                         |
 | `--allow-insecure-transport`        | Explicit opt-in to unencrypted MongoDB transport (isolated networks only). |
@@ -132,8 +149,9 @@ must explicitly enable validated TLS.
 - Losing all valid owner keys and all database recovery kits makes the database
   permanently unrecoverable by design; there is no reset or escrow.
 - User identities, public enrollment, per-vault grants and roles, revocation
-  with rotation, ownership transfer, groups, structured items, and typed fields
-  are not yet implemented.
+  with rotation, and ownership transfer are not yet implemented. Structured
+  payloads model notes, attachment ownership, and history, but 0.2.6 does not
+  add attachment transfer or history-restore commands.
 - Windows command scripts (`.bat`, `.cmd`, `.com`) are refused for execution;
   invoke real executables.
 

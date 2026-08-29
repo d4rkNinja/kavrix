@@ -126,6 +126,10 @@ describe('dynamic field and keyboard behavior', () => {
       allowsNewlines: true,
     });
     expect(describeFieldEditor(tenantField).inputMode).toBe('single-line');
+    expect(fieldEditorRegistry.password).toMatchObject({
+      inputMode: 'masked',
+      valueKind: 'secret',
+    });
   });
 
   it('reveals only the selected secret and auto-hides it on the deterministic tick', () => {

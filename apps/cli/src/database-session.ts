@@ -63,12 +63,15 @@ import {
   databaseCatalogPayloadSchema,
   databaseIdSchema,
   databaseRevisionSchema,
+  databaseVaultPayloadSchema,
   databaseVaultDocumentSchema,
   encryptedDatabaseDocumentSchema,
   keySlotIdSchema,
   keyVersionSchema,
   localVaultPayloadSchema,
+  MAX_CIPHERTEXT_CHARS,
   sha256DigestSchema,
+  structuredVaultPayloadSchema,
   supportedCryptographicVersionSchema,
   supportedSchemaVersionSchema,
   timestampSchema,
@@ -80,10 +83,13 @@ import {
   type DatabaseRecoverySlot,
   type DatabaseRevision,
   type DatabaseVaultDocument,
+  type DatabaseVaultPayload,
   type EncryptedDatabaseDocument,
   type LocalVaultPayload,
   type AssociatedData,
   type Sha256Digest,
+  type StructuredVaultPayload,
+  type Timestamp,
   type VaultId,
 } from '@kavrix/schemas';
 import {
@@ -99,8 +105,19 @@ import {
 } from './datastore-profiles.js';
 import { LocalSecretInputError } from './local-secrets.js';
 import { CodedCliError } from './execution/exit-codes.js';
+import {
+  applyFlatVaultPayload,
+  createEmptyStructuredVaultPayload,
+  isStructuredVaultPayload,
+  projectFlatVaultPayload,
+  upgradeLegacyVaultPayload,
+} from './structured-vault-projection.js';
 
 const MAX_LABEL_BYTES = 1_024;
+// Match the already-published envelope limit exactly so no authenticated
+// legacy document becomes unreadable merely because its plaintext is near
+// the maximum representable ciphertext size.
+const MAX_DATABASE_VAULT_PAYLOAD_BYTES = Math.floor((MAX_CIPHERTEXT_CHARS * 3) / 4);
 const UTF8_ENCODER = new TextEncoder();
 const STRICT_UTF8_DECODER = new TextDecoder('utf-8', { fatal: true });
 let zeroizationObserver: ((cleared: true) => void) | undefined;
@@ -765,7 +782,7 @@ export class DatabaseSession {
     return (
       await this.#createVaultWithPayload(
         labelInput,
-        localVaultPayloadSchema.parse({ records: {} }),
+        (id, createdAt) => createEmptyStructuredVaultPayload(id, createdAt),
         false,
       )
     ).entry;
@@ -793,7 +810,7 @@ export class DatabaseSession {
     );
     const created = await this.#createVaultWithPayload(
       labelInput,
-      payload,
+      (id, createdAt) => upgradeLegacyVaultPayload(payload, id, createdAt),
       true,
       ownershipState?.anchorPublication,
     );
@@ -812,7 +829,9 @@ export class DatabaseSession {
 
   async #createVaultWithPayload(
     labelInput: string,
-    payload: LocalVaultPayload,
+    payloadInput:
+      | DatabaseVaultPayload
+      | ((id: VaultId, createdAt: Timestamp) => DatabaseVaultPayload),
     verifyBeforePublication: boolean,
     ownedAnchorPublication?: DatabaseRevisionAnchorPublication,
   ): Promise<
@@ -827,7 +846,10 @@ export class DatabaseSession {
       throw new DatabaseSessionError('duplicate');
     }
     const id = vaultIdSchema.parse(`vault_${randomUUID()}`);
-    const createdAt = now();
+    const createdAt = timestampSchema.parse(now());
+    const payload = databaseVaultPayloadSchema.parse(
+      typeof payloadInput === 'function' ? payloadInput(id, createdAt) : payloadInput,
+    );
     const nextCatalog = databaseCatalogPayloadSchema.parse({
       ...this.#catalog,
       vaults: [...this.#catalog.vaults, { id, label, createdAt }],
@@ -911,6 +933,46 @@ export class DatabaseSession {
       current: LocalVaultPayload,
     ) => LocalVaultPayload | Promise<LocalVaultPayload>,
   ): Promise<DatabaseVaultDocument> {
+    return this.#updateDatabaseVaultPayload(idInput, async (current) => {
+      const currentFlat = projectFlatVaultPayload(current);
+      const nextFlat = localVaultPayloadSchema.parse(
+        await update(structuredClone(currentFlat)),
+      );
+      if (!isStructuredVaultPayload(current)) return nextFlat;
+      return applyFlatVaultPayload(
+        current,
+        currentFlat,
+        nextFlat,
+        timestampSchema.parse(now()),
+      );
+    });
+  }
+
+  /** Updates the complete encrypted hierarchy, explicitly upgrading legacy payloads. */
+  public async updateStructuredVault(
+    idInput: VaultId,
+    update: (
+      current: StructuredVaultPayload,
+    ) => StructuredVaultPayload | Promise<StructuredVaultPayload>,
+  ): Promise<DatabaseVaultDocument> {
+    const requestedId = vaultIdSchema.parse(idInput);
+    return this.#updateDatabaseVaultPayload(requestedId, async (current) => {
+      const at = timestampSchema.parse(now());
+      const structured = isStructuredVaultPayload(current)
+        ? current
+        : upgradeLegacyVaultPayload(current, requestedId, at);
+      return structuredVaultPayloadSchema.parse(
+        await update(structuredClone(structured)),
+      );
+    });
+  }
+
+  async #updateDatabaseVaultPayload(
+    idInput: VaultId,
+    update: (
+      current: DatabaseVaultPayload,
+    ) => DatabaseVaultPayload | Promise<DatabaseVaultPayload>,
+  ): Promise<DatabaseVaultDocument> {
     this.#assertOpen();
     const requestedId = vaultIdSchema.parse(idInput);
     const current = await this.getVaultDocument(requestedId);
@@ -928,13 +990,20 @@ export class DatabaseSession {
         root,
         vaultPayloadContext(current, current.revision, current.payloadMetadataDigest),
       );
-      const currentPayload = localVaultPayloadSchema.parse(
+      assertDatabaseVaultPayloadSize(plaintext);
+      if (
+        vaultMetadataDigest(current, root, plaintext) !== current.payloadMetadataDigest
+      )
+        throw new DatabaseSessionError('authentication');
+      const currentPayload = databaseVaultPayloadSchema.parse(
         JSON.parse(decodeSecretUtf8(plaintext)) as unknown,
       );
-      const nextPayload = localVaultPayloadSchema.parse(
+      const nextPayload = databaseVaultPayloadSchema.parse(
         await update(structuredClone(currentPayload)),
       );
+      assertDatabaseVaultPayloadBinding(nextPayload, requestedId);
       nextPlaintext = UTF8_ENCODER.encode(canonicalJson(nextPayload));
+      assertDatabaseVaultPayloadSize(nextPlaintext);
       const updatedAt = now();
       const revision = vaultRevisionSchema.parse(current.revision + 1);
       const metadata = {
@@ -978,29 +1047,32 @@ export class DatabaseSession {
   ): Promise<DatabaseVaultDocument> {
     this.#assertOpen();
     const current = await this.getVaultDocument(vaultIdSchema.parse(idInput));
-    let root: VaultRootKey | undefined;
-    let plaintext: Uint8Array | undefined;
     try {
-      root = await unwrapVaultRootForDatabase(
-        current.wrappedVaultRoot,
-        this.#rootKey,
-        current.wrappedVaultRoot.aad,
-      );
-      plaintext = await decryptPayload(
-        current.encryptedPayload,
-        root,
-        vaultPayloadContext(current, current.revision, current.payloadMetadataDigest),
-      );
-      const payload = localVaultPayloadSchema.parse(
-        JSON.parse(decodeSecretUtf8(plaintext)) as unknown,
-      );
-      await inspect(structuredClone(payload));
+      const payload = await decryptAuthenticatedVaultPayload(current, this.#rootKey);
+      await inspect(structuredClone(projectFlatVaultPayload(payload)));
       return current;
     } catch (error) {
       throw mapError(error);
-    } finally {
-      zeroize(plaintext);
-      zeroize(root);
+    }
+  }
+
+  /** Locally decrypts the complete hierarchy, upgrading legacy payloads in memory only. */
+  public async inspectStructuredVault(
+    idInput: VaultId,
+    inspect: (payload: StructuredVaultPayload) => void | Promise<void>,
+  ): Promise<DatabaseVaultDocument> {
+    this.#assertOpen();
+    const requestedId = vaultIdSchema.parse(idInput);
+    const current = await this.getVaultDocument(requestedId);
+    try {
+      const payload = await decryptAuthenticatedVaultPayload(current, this.#rootKey);
+      const structured = isStructuredVaultPayload(payload)
+        ? payload
+        : upgradeLegacyVaultPayload(payload, requestedId, timestampSchema.parse(now()));
+      await inspect(structuredClone(structured));
+      return current;
+    } catch (error) {
+      throw mapError(error);
     }
   }
 
@@ -1652,7 +1724,7 @@ async function createVaultDocument(
   createdAt: string,
   root: VaultRootKey,
   databaseRoot: DatabaseRootKey,
-  payloadInput: LocalVaultPayload,
+  payloadInput: DatabaseVaultPayload,
 ): Promise<DatabaseVaultDocument> {
   const revision = vaultRevisionSchema.parse(0);
   const metadataBase = {
@@ -1668,9 +1740,11 @@ async function createVaultDocument(
   };
   let plaintext: Uint8Array | undefined;
   try {
+    assertDatabaseVaultPayloadBinding(payloadInput, id);
     plaintext = UTF8_ENCODER.encode(
-      canonicalJson(localVaultPayloadSchema.parse(payloadInput)),
+      canonicalJson(databaseVaultPayloadSchema.parse(payloadInput)),
     );
+    assertDatabaseVaultPayloadSize(plaintext);
     const payloadMetadataDigest = keyedDigest(
       'kavrix/database-vault-payload-digest/v1',
       root,
@@ -1762,7 +1836,7 @@ async function authenticateVault(
 async function decryptAuthenticatedVaultPayload(
   vault: DatabaseVaultDocument,
   databaseRootKey: DatabaseRootKey,
-): Promise<LocalVaultPayload> {
+): Promise<DatabaseVaultPayload> {
   let root: VaultRootKey | undefined;
   let plaintext: Uint8Array | undefined;
   try {
@@ -1776,15 +1850,32 @@ async function decryptAuthenticatedVaultPayload(
       root,
       vaultPayloadContext(vault, vault.revision, vault.payloadMetadataDigest),
     );
-    const payload = localVaultPayloadSchema.parse(
+    assertDatabaseVaultPayloadSize(plaintext);
+    const payload = databaseVaultPayloadSchema.parse(
       JSON.parse(decodeSecretUtf8(plaintext)) as unknown,
     );
+    assertDatabaseVaultPayloadBinding(payload, vault.id);
     if (vaultMetadataDigest(vault, root, plaintext) !== vault.payloadMetadataDigest)
       throw new DatabaseSessionError('authentication');
     return payload;
   } finally {
     zeroize(plaintext);
     zeroize(root);
+  }
+}
+
+function assertDatabaseVaultPayloadSize(plaintext: Uint8Array): void {
+  if (plaintext.byteLength > MAX_DATABASE_VAULT_PAYLOAD_BYTES) {
+    throw new DatabaseSessionError('invalid');
+  }
+}
+
+function assertDatabaseVaultPayloadBinding(
+  payload: DatabaseVaultPayload,
+  vaultId: VaultId,
+): void {
+  if (isStructuredVaultPayload(payload) && payload.vaultId !== vaultId) {
+    throw new DatabaseSessionError('authentication');
   }
 }
 
