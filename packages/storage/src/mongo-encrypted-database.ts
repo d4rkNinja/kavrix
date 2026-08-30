@@ -22,10 +22,29 @@ import {
   type EncryptedDatabaseStore,
   type UpdateVaultInput,
 } from './encrypted-database-store.js';
+import {
+  MongoCollaborativeVaultStore,
+  type CollaborativeVaultStore,
+  type CompactCollaborativeOperationOutcomeInput,
+  type DestroyCollaborativeVaultInput,
+  type MongoCollaborativeVaultCollectionNames,
+} from './collaborative-vault-store.js';
 import { assertMongoUriAllowed } from './mongo-local-vault.js';
 
 const DEFAULT_DATABASE_COLLECTION = 'kavrix_databases';
 const DEFAULT_VAULT_COLLECTION = 'kavrix_vaults';
+const DEFAULT_COLLABORATIVE_VAULT_COLLECTION = 'kavrix_collaborative_vaults';
+const DEFAULT_DATABASE_DEVICE_REGISTRY_COLLECTION =
+  'kavrix_collaboration_device_registries';
+const DEFAULT_OPERATION_OUTCOME_COLLECTION = 'kavrix_collaboration_operation_outcomes';
+const DEFAULT_OPERATION_TOMBSTONE_COLLECTION =
+  'kavrix_collaboration_operation_tombstones';
+const DEFAULT_VAULT_DESTRUCTION_TOMBSTONE_COLLECTION =
+  'kavrix_collaboration_vault_destruction_tombstones';
+const DEFAULT_FINALIZED_MUTATION_LINK_COLLECTION =
+  'kavrix_collaboration_finalized_mutation_links';
+const DEFAULT_AUTHORIZATION_CHECKPOINT_COLLECTION =
+  'kavrix_collaboration_authorization_checkpoints';
 const MONGO_NAME_PATTERN = /^[A-Za-z0-9_-]{1,64}$/u;
 const CONNECT_TIMEOUT_MS = 5_000;
 const SOCKET_TIMEOUT_MS = 10_000;
@@ -35,6 +54,20 @@ type StoredDocument = Readonly<{ _id: string }> & Record<string, unknown>;
 export type MongoEncryptedDatabaseStoreOptions = Readonly<{
   databaseCollectionName?: string;
   vaultCollectionName?: string;
+  /** Dedicated collection for versioned collaborative vault documents. */
+  collaborativeVaultCollectionName?: string;
+  /** Dedicated singleton collection for signed database device registries. */
+  databaseDeviceRegistryCollectionName?: string;
+  /** Dedicated collection for full operation outcomes. */
+  operationOutcomeCollectionName?: string;
+  /** Dedicated, non-TTL collection for compact operation tombstones. */
+  operationTombstoneCollectionName?: string;
+  /** Dedicated permanent, non-TTL collection fencing destroyed vault identities. */
+  vaultDestructionTombstoneCollectionName?: string;
+  /** Dedicated append-only collection for finalized mutation proof links. */
+  finalizedMutationLinkCollectionName?: string;
+  /** Dedicated append-only collection for owner-signed authorization checkpoints. */
+  authorizationCheckpointCollectionName?: string;
   /** Explicit operator opt-in to plaintext transport for non-local hosts. */
   allowInsecureTransport?: boolean;
 }>;
@@ -44,11 +77,14 @@ export type MongoEncryptedDatabaseStoreOptions = Readonly<{
  * documents. MongoDB only receives validated ciphertext envelopes and routing
  * metadata; it never receives any unlock material or plaintext credentials.
  */
-export class MongoEncryptedDatabaseStore implements EncryptedDatabaseStore {
+export class MongoEncryptedDatabaseStore
+  implements EncryptedDatabaseStore, CollaborativeVaultStore
+{
   readonly #client: MongoClient;
   readonly #database: Db;
   readonly #databases: Collection<StoredDocument>;
   readonly #vaults: Collection<StoredDocument>;
+  readonly #collaboration: MongoCollaborativeVaultStore;
   #closed = false;
 
   private constructor(
@@ -57,7 +93,8 @@ export class MongoEncryptedDatabaseStore implements EncryptedDatabaseStore {
     collectionNames: Readonly<{
       databaseCollectionName: string;
       vaultCollectionName: string;
-    }>,
+    }> &
+      MongoCollaborativeVaultCollectionNames,
   ) {
     this.#client = client;
     this.#database = database;
@@ -66,6 +103,12 @@ export class MongoEncryptedDatabaseStore implements EncryptedDatabaseStore {
     );
     this.#vaults = database.collection<StoredDocument>(
       collectionNames.vaultCollectionName,
+    );
+    this.#collaboration = new MongoCollaborativeVaultStore(
+      client,
+      database,
+      collectionNames,
+      this.#vaults,
     );
   }
 
@@ -81,6 +124,17 @@ export class MongoEncryptedDatabaseStore implements EncryptedDatabaseStore {
       {
         databaseCollectionName: options.databaseCollectionName,
         vaultCollectionName: options.vaultCollectionName,
+        collaborativeVaultCollectionName: options.collaborativeVaultCollectionName,
+        databaseDeviceRegistryCollectionName:
+          options.databaseDeviceRegistryCollectionName,
+        operationOutcomeCollectionName: options.operationOutcomeCollectionName,
+        operationTombstoneCollectionName: options.operationTombstoneCollectionName,
+        vaultDestructionTombstoneCollectionName:
+          options.vaultDestructionTombstoneCollectionName,
+        finalizedMutationLinkCollectionName:
+          options.finalizedMutationLinkCollectionName,
+        authorizationCheckpointCollectionName:
+          options.authorizationCheckpointCollectionName,
       },
       { allowInsecureTransport },
     );
@@ -91,6 +145,10 @@ export class MongoEncryptedDatabaseStore implements EncryptedDatabaseStore {
         serverSelectionTimeoutMS: CONNECT_TIMEOUT_MS,
         socketTimeoutMS: SOCKET_TIMEOUT_MS,
         timeoutMS: SOCKET_TIMEOUT_MS,
+        // Strict schemas model absent optionals as JSON omission. Without this,
+        // BSON turns an explicitly present `undefined` into `null`, making a
+        // value accepted before publication unparsable on readback or replay.
+        ignoreUndefined: true,
       });
       await client.connect();
       const store = new MongoEncryptedDatabaseStore(
@@ -131,6 +189,7 @@ export class MongoEncryptedDatabaseStore implements EncryptedDatabaseStore {
       { databaseId: 1, id: 1 },
       { name: 'database_vault_identity', unique: true },
     );
+    await this.#collaboration.initializeIndexes();
   }
 
   async ping(): Promise<void> {
@@ -291,6 +350,212 @@ export class MongoEncryptedDatabaseStore implements EncryptedDatabaseStore {
     });
   }
 
+  async getCollaborativeVault(
+    databaseId: Parameters<CollaborativeVaultStore['getCollaborativeVault']>[0],
+    vaultId: Parameters<CollaborativeVaultStore['getCollaborativeVault']>[1],
+  ): ReturnType<CollaborativeVaultStore['getCollaborativeVault']> {
+    this.#assertOpen();
+    return this.#collaboration.getCollaborativeVault(databaseId, vaultId);
+  }
+
+  async discoverCollaborativeMemberships(
+    databaseId: Parameters<
+      CollaborativeVaultStore['discoverCollaborativeMemberships']
+    >[0],
+    discoveryTags: Parameters<
+      CollaborativeVaultStore['discoverCollaborativeMemberships']
+    >[1],
+    limit?: Parameters<CollaborativeVaultStore['discoverCollaborativeMemberships']>[2],
+  ): ReturnType<CollaborativeVaultStore['discoverCollaborativeMemberships']> {
+    this.#assertOpen();
+    return this.#collaboration.discoverCollaborativeMemberships(
+      databaseId,
+      discoveryTags,
+      limit,
+    );
+  }
+
+  async getDatabaseDeviceRegistry(
+    databaseId: Parameters<CollaborativeVaultStore['getDatabaseDeviceRegistry']>[0],
+  ): ReturnType<CollaborativeVaultStore['getDatabaseDeviceRegistry']> {
+    this.#assertOpen();
+    return this.#collaboration.getDatabaseDeviceRegistry(databaseId);
+  }
+
+  async publishDatabaseDeviceRegistry(
+    candidate: Parameters<CollaborativeVaultStore['publishDatabaseDeviceRegistry']>[0],
+  ): ReturnType<CollaborativeVaultStore['publishDatabaseDeviceRegistry']> {
+    this.#assertOpen();
+    return this.#collaboration.publishDatabaseDeviceRegistry(candidate);
+  }
+
+  async publishCollaborativeVault(
+    input: Parameters<CollaborativeVaultStore['publishCollaborativeVault']>[0],
+  ): ReturnType<CollaborativeVaultStore['publishCollaborativeVault']> {
+    this.#assertOpen();
+    return this.#collaboration.publishCollaborativeVault(input);
+  }
+
+  async destroyCollaborativeVault(
+    input: DestroyCollaborativeVaultInput,
+  ): ReturnType<CollaborativeVaultStore['destroyCollaborativeVault']> {
+    this.#assertOpen();
+    return this.#collaboration.destroyCollaborativeVault(input);
+  }
+
+  async getCollaborativeVaultDestructionTombstone(
+    databaseId: Parameters<
+      CollaborativeVaultStore['getCollaborativeVaultDestructionTombstone']
+    >[0],
+    vaultId: Parameters<
+      CollaborativeVaultStore['getCollaborativeVaultDestructionTombstone']
+    >[1],
+  ): ReturnType<CollaborativeVaultStore['getCollaborativeVaultDestructionTombstone']> {
+    this.#assertOpen();
+    return this.#collaboration.getCollaborativeVaultDestructionTombstone(
+      databaseId,
+      vaultId,
+    );
+  }
+
+  async getCollaborativeFinalizedMutationLinkByHead(
+    databaseId: Parameters<
+      CollaborativeVaultStore['getCollaborativeFinalizedMutationLinkByHead']
+    >[0],
+    vaultId: Parameters<
+      CollaborativeVaultStore['getCollaborativeFinalizedMutationLinkByHead']
+    >[1],
+    resultingHeadDigest: Parameters<
+      CollaborativeVaultStore['getCollaborativeFinalizedMutationLinkByHead']
+    >[2],
+  ): ReturnType<
+    CollaborativeVaultStore['getCollaborativeFinalizedMutationLinkByHead']
+  > {
+    this.#assertOpen();
+    return this.#collaboration.getCollaborativeFinalizedMutationLinkByHead(
+      databaseId,
+      vaultId,
+      resultingHeadDigest,
+    );
+  }
+
+  async getCollaborativeFinalizedMutationLinkByOperation(
+    databaseId: Parameters<
+      CollaborativeVaultStore['getCollaborativeFinalizedMutationLinkByOperation']
+    >[0],
+    vaultId: Parameters<
+      CollaborativeVaultStore['getCollaborativeFinalizedMutationLinkByOperation']
+    >[1],
+    operationId: Parameters<
+      CollaborativeVaultStore['getCollaborativeFinalizedMutationLinkByOperation']
+    >[2],
+  ): ReturnType<
+    CollaborativeVaultStore['getCollaborativeFinalizedMutationLinkByOperation']
+  > {
+    this.#assertOpen();
+    return this.#collaboration.getCollaborativeFinalizedMutationLinkByOperation(
+      databaseId,
+      vaultId,
+      operationId,
+    );
+  }
+
+  async getCollaborativeMutationProofRange(
+    input: Parameters<CollaborativeVaultStore['getCollaborativeMutationProofRange']>[0],
+  ): ReturnType<CollaborativeVaultStore['getCollaborativeMutationProofRange']> {
+    this.#assertOpen();
+    return this.#collaboration.getCollaborativeMutationProofRange(input);
+  }
+
+  async getCollaborationAuthorizationWitness(
+    databaseId: Parameters<
+      CollaborativeVaultStore['getCollaborationAuthorizationWitness']
+    >[0],
+    vaultId: Parameters<
+      CollaborativeVaultStore['getCollaborationAuthorizationWitness']
+    >[1],
+    authorizationStateDigest: Parameters<
+      CollaborativeVaultStore['getCollaborationAuthorizationWitness']
+    >[2],
+    atOrBeforeDocumentRevision: Parameters<
+      CollaborativeVaultStore['getCollaborationAuthorizationWitness']
+    >[3],
+  ): ReturnType<CollaborativeVaultStore['getCollaborationAuthorizationWitness']> {
+    this.#assertOpen();
+    return this.#collaboration.getCollaborationAuthorizationWitness(
+      databaseId,
+      vaultId,
+      authorizationStateDigest,
+      atOrBeforeDocumentRevision,
+    );
+  }
+
+  async appendCollaborationAuthorizationCheckpoint(
+    checkpoint: Parameters<
+      CollaborativeVaultStore['appendCollaborationAuthorizationCheckpoint']
+    >[0],
+  ): ReturnType<CollaborativeVaultStore['appendCollaborationAuthorizationCheckpoint']> {
+    this.#assertOpen();
+    return this.#collaboration.appendCollaborationAuthorizationCheckpoint(checkpoint);
+  }
+
+  async getCollaborationAuthorizationCheckpoint(
+    databaseId: Parameters<
+      CollaborativeVaultStore['getCollaborationAuthorizationCheckpoint']
+    >[0],
+    vaultId: Parameters<
+      CollaborativeVaultStore['getCollaborationAuthorizationCheckpoint']
+    >[1],
+    checkpointDigest: Parameters<
+      CollaborativeVaultStore['getCollaborationAuthorizationCheckpoint']
+    >[2],
+  ): ReturnType<CollaborativeVaultStore['getCollaborationAuthorizationCheckpoint']> {
+    this.#assertOpen();
+    return this.#collaboration.getCollaborationAuthorizationCheckpoint(
+      databaseId,
+      vaultId,
+      checkpointDigest,
+    );
+  }
+
+  async beginCollaborativeMigration(
+    input: Parameters<CollaborativeVaultStore['beginCollaborativeMigration']>[0],
+  ): ReturnType<CollaborativeVaultStore['beginCollaborativeMigration']> {
+    this.#assertOpen();
+    return this.#collaboration.beginCollaborativeMigration(input);
+  }
+
+  async activateCollaborativeGenesis(
+    input: Parameters<CollaborativeVaultStore['activateCollaborativeGenesis']>[0],
+  ): ReturnType<CollaborativeVaultStore['activateCollaborativeGenesis']> {
+    this.#assertOpen();
+    return this.#collaboration.activateCollaborativeGenesis(input);
+  }
+
+  async getCollaborativeOperationOutcome(
+    databaseId: Parameters<
+      CollaborativeVaultStore['getCollaborativeOperationOutcome']
+    >[0],
+    vaultId: Parameters<CollaborativeVaultStore['getCollaborativeOperationOutcome']>[1],
+    operationId: Parameters<
+      CollaborativeVaultStore['getCollaborativeOperationOutcome']
+    >[2],
+  ): ReturnType<CollaborativeVaultStore['getCollaborativeOperationOutcome']> {
+    this.#assertOpen();
+    return this.#collaboration.getCollaborativeOperationOutcome(
+      databaseId,
+      vaultId,
+      operationId,
+    );
+  }
+
+  async compactCollaborativeOperationOutcome(
+    input: CompactCollaborativeOperationOutcomeInput,
+  ): ReturnType<CollaborativeVaultStore['compactCollaborativeOperationOutcome']> {
+    this.#assertOpen();
+    return this.#collaboration.compactCollaborativeOperationOutcome(input);
+  }
+
   async close(): Promise<void> {
     if (this.#closed) return;
     this.#closed = true;
@@ -326,7 +591,12 @@ function parseConfiguration(
   databaseName: unknown,
   options: unknown,
   transport: Readonly<{ allowInsecureTransport?: boolean }> = {},
-): Readonly<{ databaseCollectionName: string; vaultCollectionName: string }> {
+): Readonly<
+  {
+    databaseCollectionName: string;
+    vaultCollectionName: string;
+  } & MongoCollaborativeVaultCollectionNames
+> {
   if (typeof uri !== 'string') throw new EncryptedDatabaseStoreError('connection');
   try {
     assertMongoUriAllowed(uri, transport);
@@ -341,7 +611,16 @@ function parseConfiguration(
     options === null ||
     Array.isArray(options) ||
     !Object.keys(options).every(
-      (key) => key === 'databaseCollectionName' || key === 'vaultCollectionName',
+      (key) =>
+        key === 'databaseCollectionName' ||
+        key === 'vaultCollectionName' ||
+        key === 'collaborativeVaultCollectionName' ||
+        key === 'databaseDeviceRegistryCollectionName' ||
+        key === 'operationOutcomeCollectionName' ||
+        key === 'operationTombstoneCollectionName' ||
+        key === 'vaultDestructionTombstoneCollectionName' ||
+        key === 'finalizedMutationLinkCollectionName' ||
+        key === 'authorizationCheckpointCollectionName',
     )
   ) {
     throw new EncryptedDatabaseStoreError('invalid');
@@ -351,16 +630,72 @@ function parseConfiguration(
     optionValues['databaseCollectionName'] ?? DEFAULT_DATABASE_COLLECTION;
   const vaultCollectionName =
     optionValues['vaultCollectionName'] ?? DEFAULT_VAULT_COLLECTION;
+  const collaborativeVaultCollectionName =
+    optionValues['collaborativeVaultCollectionName'] ??
+    DEFAULT_COLLABORATIVE_VAULT_COLLECTION;
+  const databaseDeviceRegistryCollectionName =
+    optionValues['databaseDeviceRegistryCollectionName'] ??
+    DEFAULT_DATABASE_DEVICE_REGISTRY_COLLECTION;
+  const operationOutcomeCollectionName =
+    optionValues['operationOutcomeCollectionName'] ??
+    DEFAULT_OPERATION_OUTCOME_COLLECTION;
+  const operationTombstoneCollectionName =
+    optionValues['operationTombstoneCollectionName'] ??
+    DEFAULT_OPERATION_TOMBSTONE_COLLECTION;
+  const vaultDestructionTombstoneCollectionName =
+    optionValues['vaultDestructionTombstoneCollectionName'] ??
+    DEFAULT_VAULT_DESTRUCTION_TOMBSTONE_COLLECTION;
+  const finalizedMutationLinkCollectionName =
+    optionValues['finalizedMutationLinkCollectionName'] ??
+    DEFAULT_FINALIZED_MUTATION_LINK_COLLECTION;
+  const authorizationCheckpointCollectionName =
+    optionValues['authorizationCheckpointCollectionName'] ??
+    DEFAULT_AUTHORIZATION_CHECKPOINT_COLLECTION;
+  const collectionNames = [
+    databaseCollectionName,
+    vaultCollectionName,
+    collaborativeVaultCollectionName,
+    databaseDeviceRegistryCollectionName,
+    operationOutcomeCollectionName,
+    operationTombstoneCollectionName,
+    vaultDestructionTombstoneCollectionName,
+    finalizedMutationLinkCollectionName,
+    authorizationCheckpointCollectionName,
+  ];
   if (
     typeof databaseCollectionName !== 'string' ||
     typeof vaultCollectionName !== 'string' ||
+    typeof collaborativeVaultCollectionName !== 'string' ||
+    typeof databaseDeviceRegistryCollectionName !== 'string' ||
+    typeof operationOutcomeCollectionName !== 'string' ||
+    typeof operationTombstoneCollectionName !== 'string' ||
+    typeof vaultDestructionTombstoneCollectionName !== 'string' ||
+    typeof finalizedMutationLinkCollectionName !== 'string' ||
+    typeof authorizationCheckpointCollectionName !== 'string' ||
     !MONGO_NAME_PATTERN.test(databaseCollectionName) ||
     !MONGO_NAME_PATTERN.test(vaultCollectionName) ||
-    databaseCollectionName === vaultCollectionName
+    !MONGO_NAME_PATTERN.test(collaborativeVaultCollectionName) ||
+    !MONGO_NAME_PATTERN.test(databaseDeviceRegistryCollectionName) ||
+    !MONGO_NAME_PATTERN.test(operationOutcomeCollectionName) ||
+    !MONGO_NAME_PATTERN.test(operationTombstoneCollectionName) ||
+    !MONGO_NAME_PATTERN.test(vaultDestructionTombstoneCollectionName) ||
+    !MONGO_NAME_PATTERN.test(finalizedMutationLinkCollectionName) ||
+    !MONGO_NAME_PATTERN.test(authorizationCheckpointCollectionName) ||
+    new Set(collectionNames).size !== collectionNames.length
   ) {
     throw new EncryptedDatabaseStoreError('invalid');
   }
-  return { databaseCollectionName, vaultCollectionName };
+  return {
+    databaseCollectionName,
+    vaultCollectionName,
+    collaborativeVaultCollectionName,
+    databaseDeviceRegistryCollectionName,
+    operationOutcomeCollectionName,
+    operationTombstoneCollectionName,
+    vaultDestructionTombstoneCollectionName,
+    finalizedMutationLinkCollectionName,
+    authorizationCheckpointCollectionName,
+  };
 }
 
 function parseDatabaseId(value: unknown): DatabaseId {

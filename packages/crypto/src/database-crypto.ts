@@ -1,11 +1,13 @@
-import { hkdfSync, randomBytes } from 'node:crypto';
+import { createHmac, hkdfSync, randomBytes } from 'node:crypto';
 
 import {
   MAX_CIPHERTEXT_CHARS,
+  canonicalJson,
   databaseAeadEnvelopeSchema,
   databaseAssociatedDataSchema,
   databasePortableKeySlotSchema,
   databaseRecoverySlotSchema,
+  sha256DigestSchema,
   type DatabaseAeadEnvelope,
   type DatabaseAssociatedData,
   type DatabasePortableKeySlot,
@@ -14,6 +16,7 @@ import {
   type Sha256Digest,
   type Timestamp,
   type DatabaseId,
+  type DatabaseVaultDocument,
 } from '@kavrix/schemas';
 import sodium from 'libsodium-wrappers';
 
@@ -41,7 +44,21 @@ const MAX_CIPHERTEXT_BYTES = Math.floor((MAX_CIPHERTEXT_CHARS * 3) / 4);
 const DATABASE_AAD_DOMAIN = Buffer.from('kavrix/database-aad/v1', 'ascii');
 const DATABASE_ROOT_WRAP_DOMAIN = 'kavrix/database-root-wrap/v1';
 const DATABASE_RECOVERY_WRAP_DOMAIN = 'kavrix/database-recovery-wrap/v1';
+const DATABASE_VAULT_PAYLOAD_DIGEST_DOMAIN = 'kavrix/database-vault-payload-digest/v1';
 const ASCII_FIELD = /^[\x21-\x7E]+$/;
+
+export type DatabaseVaultPayloadDigestMetadata = Pick<
+  DatabaseVaultDocument,
+  | 'databaseId'
+  | 'id'
+  | 'schemaVersion'
+  | 'cryptographicVersion'
+  | 'currentKeyVersion'
+  | 'databaseRevision'
+  | 'revision'
+  | 'createdAt'
+  | 'updatedAt'
+>;
 
 export interface DatabaseSlotBinding {
   readonly databaseId: DatabaseId;
@@ -59,6 +76,54 @@ export interface DatabaseSlotIdentity extends DatabaseSlotBinding {
 export interface CreatedDatabaseRecoverySlot {
   readonly slot: DatabaseRecoverySlot;
   readonly recoveryKey: RecoveryKey;
+}
+
+/**
+ * Compute the released VRK-keyed digest that binds a database-vault payload to
+ * its exact legacy metadata projection. This deliberately remains separate
+ * from AEAD v1 encoding so historical envelopes retain byte compatibility.
+ */
+export function computeDatabaseVaultPayloadMetadataDigest(
+  metadata: DatabaseVaultPayloadDigestMetadata,
+  vaultRootKey: Uint8Array,
+  plaintext: Uint8Array,
+): Sha256Digest {
+  requireByteLength(vaultRootKey, KEY_BYTES, 'vault root key');
+  const digestKey = new Uint8Array(
+    hkdfSync(
+      'sha256',
+      vaultRootKey,
+      new Uint8Array(KEY_BYTES),
+      Buffer.from(`${DATABASE_VAULT_PAYLOAD_DIGEST_DOMAIN}/key`, 'ascii'),
+      KEY_BYTES,
+    ),
+  );
+  try {
+    return sha256DigestSchema.parse(
+      createHmac('sha256', digestKey)
+        .update(DATABASE_VAULT_PAYLOAD_DIGEST_DOMAIN, 'utf8')
+        .update('\0')
+        .update(
+          canonicalJson({
+            databaseId: metadata.databaseId,
+            id: metadata.id,
+            schemaVersion: metadata.schemaVersion,
+            cryptographicVersion: metadata.cryptographicVersion,
+            currentKeyVersion: metadata.currentKeyVersion,
+            databaseRevision: metadata.databaseRevision,
+            revision: metadata.revision,
+            createdAt: metadata.createdAt,
+            updatedAt: metadata.updatedAt,
+          }),
+          'utf8',
+        )
+        .update('\0')
+        .update(plaintext)
+        .digest('base64url'),
+    );
+  } finally {
+    zeroize(digestKey);
+  }
 }
 
 export function canonicalDatabaseAssociatedData(

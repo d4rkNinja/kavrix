@@ -3,11 +3,13 @@
 Kavrix release validation always covers the packed local-file path and covers
 direct MongoDB behavior when a disposable MongoDB prerequisite is available.
 
-The active release workspace is `apps/cli`, `packages/schemas`,
-`packages/crypto`, `packages/key-files`, `packages/storage`, and
-`packages/runner`, and `packages/tui`. The other package directories remain
+The active release workspace is `apps/cli`, `packages/core`, `packages/schemas`,
+`packages/crypto`, `packages/key-files`, `packages/storage`, `packages/runner`,
+and `packages/tui`. The other package directories remain
 source-present but parked/incubating: they are not workspace members, are not
-release artifacts, and are not counted by the root Vitest or coverage gate. See
+release artifacts, and are not counted by the coverage gate. Focused
+collaboration tests under the parked `packages/client` source do run in root
+Vitest as an incubation security gate, but do not make that package shipped. See
 [Active release boundary](active-release-boundary.md) for the complete boundary
 and command list.
 
@@ -110,6 +112,17 @@ random test database, verifies transactional database/vault operations, the
 automatic database `_id_` index, and the named unique
 `{databaseId: 1, id: 1}` vault discovery index in the live service, then drops
 only that generated database.
+
+The collaboration integration suite uses the same gate and cleanup boundary. It
+verifies exact collaboration index definitions, genesis activation, immutable
+operation replay, late-conflict transaction rollback, permanent destruction
+tombstones, ordinary-publication anti-resurrection, and absence of a generated
+plaintext/key canary from raw MongoDB documents. Run it explicitly with:
+
+```sh
+vitest run --config packages/storage/vitest.config.ts \
+  packages/storage/test/mongo-collaboration.integration.test.ts
+```
 
 The repository does not bootstrap MongoDB in CI: the workflow has no reviewed,
 immutable, transaction-capable service image or safe replica-set startup path.

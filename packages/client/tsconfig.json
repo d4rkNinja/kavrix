@@ -10,7 +10,9 @@
     { "path": "../core/tsconfig.build.json" },
     { "path": "../crypto/tsconfig.build.json" },
     { "path": "../import-export/tsconfig.build.json" },
+    { "path": "../key-files/tsconfig.build.json" },
     { "path": "../schemas/tsconfig.build.json" },
+    { "path": "../storage/tsconfig.build.json" },
     { "path": "../sync/tsconfig.build.json" }
   ]
 }

@@ -3,16 +3,22 @@ import { describe, expect, it } from 'vitest';
 import {
   databaseAssociatedDataSchema,
   databaseIdSchema,
+  databaseRevisionSchema,
+  keyVersionSchema,
   keySlotIdSchema,
   sha256DigestSchema,
+  supportedCryptographicVersionSchema,
+  supportedSchemaVersionSchema,
   timestampSchema,
   vaultIdSchema,
+  vaultRevisionSchema,
   type DatabaseAeadEnvelope,
   type DatabaseAssociatedData,
 } from '@kavrix/schemas';
 
 import {
   AuthenticationError,
+  computeDatabaseVaultPayloadMetadataDigest,
   createRecoveryKeySlot,
   createDatabaseKeySlot,
   createDatabaseRecoverySlot,
@@ -110,6 +116,52 @@ function mutateBase64Url(value: string): string {
 }
 
 describe('database-domain authenticated encryption', () => {
+  it('reproduces the released VRK-keyed database-vault payload digest vector', () => {
+    const vaultRootKey = Uint8Array.from(
+      { length: 32 },
+      (_, index) => index + 1,
+    ) as VaultRootKey;
+    const plaintext = Buffer.from(
+      JSON.stringify({
+        records: {
+          alpha: {
+            updatedAt: '2026-08-29T00:00:00.000Z',
+            value: 'canary',
+          },
+        },
+      }),
+      'utf8',
+    );
+    const keyBefore = Uint8Array.from(vaultRootKey);
+    const plaintextBefore = Uint8Array.from(plaintext);
+    try {
+      expect(
+        computeDatabaseVaultPayloadMetadataDigest(
+          {
+            databaseId,
+            id: vaultId,
+            schemaVersion: supportedSchemaVersionSchema.parse(1),
+            cryptographicVersion: supportedCryptographicVersionSchema.parse(1),
+            currentKeyVersion: keyVersionSchema.parse(1),
+            databaseRevision: databaseRevisionSchema.parse(9),
+            revision: vaultRevisionSchema.parse(4),
+            createdAt,
+            updatedAt: createdAt,
+          },
+          vaultRootKey,
+          plaintext,
+        ),
+      ).toBe('z5C9HrO8X4KSx16fNQS4gw9bHIf6ZCOJ8Z9zGG_6k_A');
+      expect(vaultRootKey).toEqual(keyBefore);
+      expect(plaintext).toEqual(Buffer.from(plaintextBefore));
+    } finally {
+      zeroize(vaultRootKey);
+      zeroize(plaintext);
+      zeroize(keyBefore);
+      zeroize(plaintextBefore);
+    }
+  });
+
   it('round-trips a database catalog without serializing plaintext', async () => {
     const databaseRootKey = Uint8Array.from(
       deterministicDatabaseRoot,

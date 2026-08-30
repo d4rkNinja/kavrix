@@ -3,6 +3,7 @@ export * from './audit.js';
 export * from './authorization.js';
 export * from './backup.js';
 export * from './cli-contract.js';
+export * from './collaboration.js';
 export * from './encrypted-records.js';
 export * from './content-hash.js';
 export * from './database-container.js';

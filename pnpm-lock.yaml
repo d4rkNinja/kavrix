@@ -45,6 +45,9 @@ importers:
       '@eslint/js':
         specifier: 10.0.1
         version: 10.0.1(eslint@10.0.1(supports-color@7.2.0))
+      '@kavrix/core':
+        specifier: workspace:*
+        version: link:packages/core
       '@kavrix/crypto':
         specifier: workspace:*
         version: link:packages/crypto
@@ -111,6 +114,12 @@ importers:
       mongodb:
         specifier: 7.5.0
         version: 7.5.0
+
+  packages/core:
+    dependencies:
+      '@kavrix/schemas':
+        specifier: workspace:*
+        version: link:../schemas
 
   packages/crypto:
     dependencies:

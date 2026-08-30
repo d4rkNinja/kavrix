@@ -27,7 +27,6 @@ export default tseslint.config(
       'packages/sync/**',
       'packages/local-store/**',
       'packages/keychain/**',
-      'packages/core/**',
       'packages/clipboard/**',
       'packages/import-export/**',
       'packages/storage/src/collections.ts',

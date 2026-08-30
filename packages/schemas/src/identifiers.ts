@@ -30,6 +30,17 @@ export const historyIdSchema = opaqueId.brand<'HistoryId'>();
 export const inviteIdSchema = opaqueId.brand<'InviteId'>();
 export const policyIdSchema = opaqueId.brand<'PolicyId'>();
 export const grantIdSchema = opaqueId.brand<'GrantId'>();
+/** Stable root identity for a collaborative vault participant. */
+export const principalIdSchema = opaqueId.brand<'PrincipalId'>();
+/** Persistent vault membership identifier; distinct from the principal ID. */
+export const membershipIdSchema = opaqueId.brand<'MembershipId'>();
+/** Operation identifier for the collaborative mutation protocol. */
+export const collaborationOperationIdSchema =
+  opaqueId.brand<'CollaborationOperationId'>();
+/** Identifier for one bounded administrative approval request. */
+export const approvalRequestIdSchema = opaqueId.brand<'ApprovalRequestId'>();
+/** Identifier for one two-party ownership-transfer intent. */
+export const transferIntentIdSchema = opaqueId.brand<'TransferIntentId'>();
 
 export type VaultId = z.infer<typeof vaultIdSchema>;
 export type DatabaseId = z.infer<typeof databaseIdSchema>;
@@ -50,3 +61,8 @@ export type HistoryId = z.infer<typeof historyIdSchema>;
 export type InviteId = z.infer<typeof inviteIdSchema>;
 export type PolicyId = z.infer<typeof policyIdSchema>;
 export type GrantId = z.infer<typeof grantIdSchema>;
+export type PrincipalId = z.infer<typeof principalIdSchema>;
+export type MembershipId = z.infer<typeof membershipIdSchema>;
+export type CollaborationOperationId = z.infer<typeof collaborationOperationIdSchema>;
+export type ApprovalRequestId = z.infer<typeof approvalRequestIdSchema>;
+export type TransferIntentId = z.infer<typeof transferIntentIdSchema>;

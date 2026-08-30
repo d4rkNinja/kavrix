@@ -33,7 +33,9 @@
     "@kavrix/core": "workspace:*",
     "@kavrix/crypto": "workspace:*",
     "@kavrix/import-export": "workspace:*",
+    "@kavrix/key-files": "workspace:*",
     "@kavrix/schemas": "workspace:*",
+    "@kavrix/storage": "workspace:*",
     "@kavrix/sync": "workspace:*",
     "zod": "catalog:"
   }

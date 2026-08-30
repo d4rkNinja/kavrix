@@ -1,5 +1,6 @@
 packages:
   - apps/cli
+  - packages/core
   - packages/schemas
   - packages/crypto
   - packages/key-files

@@ -5,6 +5,7 @@ import { ZodError } from 'zod';
 import {
   createDatabaseKeySlot,
   createDatabaseRecoverySlot,
+  computeDatabaseVaultPayloadMetadataDigest,
   decryptDatabaseCatalog,
   decryptPayload,
   deriveAuthorizationStateKey,
@@ -20,6 +21,7 @@ import {
   zeroize,
   type DatabaseRootKey,
   type DatabaseSlotBinding,
+  type DatabaseVaultPayloadDigestMetadata,
   type PortableKey,
   type RecoveryKey,
   type VaultRootKey,
@@ -1745,10 +1747,9 @@ async function createVaultDocument(
       canonicalJson(databaseVaultPayloadSchema.parse(payloadInput)),
     );
     assertDatabaseVaultPayloadSize(plaintext);
-    const payloadMetadataDigest = keyedDigest(
-      'kavrix/database-vault-payload-digest/v1',
-      root,
+    const payloadMetadataDigest = computeDatabaseVaultPayloadMetadataDigest(
       metadataBase,
+      root,
       plaintext,
     );
     const wrappedVaultRoot = await wrapVaultRootForDatabase(
@@ -2219,27 +2220,11 @@ function vaultPayloadContext(
 }
 
 function vaultMetadataDigest(
-  value: unknown,
+  value: DatabaseVaultPayloadDigestMetadata,
   rootKey: VaultRootKey,
   plaintext: Uint8Array,
 ): Sha256Digest {
-  const record = value as Partial<DatabaseVaultDocument>;
-  return keyedDigest(
-    'kavrix/database-vault-payload-digest/v1',
-    rootKey,
-    {
-      databaseId: record.databaseId,
-      id: record.id,
-      schemaVersion: record.schemaVersion,
-      cryptographicVersion: record.cryptographicVersion,
-      currentKeyVersion: record.currentKeyVersion,
-      databaseRevision: record.databaseRevision,
-      revision: record.revision,
-      createdAt: record.createdAt,
-      updatedAt: record.updatedAt,
-    },
-    plaintext,
-  );
+  return computeDatabaseVaultPayloadMetadataDigest(value, rootKey, plaintext);
 }
 
 function slotMetadataDigest(

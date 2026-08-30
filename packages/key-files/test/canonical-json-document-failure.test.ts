@@ -1,6 +1,6 @@
 import type * as FsPromises from 'node:fs/promises';
 
-import { readFile, realpath, rm } from 'node:fs/promises';
+import { readFile, realpath, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -15,7 +15,9 @@ type FaultPhase =
   | 'post-rename'
   | 'final-verification'
   | 'directory-sync'
-  | 'foreign-replacement';
+  | 'foreign-replacement'
+  | 'transient-pre-publication'
+  | 'transient-target-replacement';
 
 const fault = vi.hoisted(() => ({
   phase: 'none' as FaultPhase,
@@ -24,6 +26,14 @@ const fault = vi.hoisted(() => ({
   renamed: false,
   fired: false,
   foreignContents: '',
+  transientRenameFailures: 0,
+  transientRenameLimit: 0,
+}));
+
+vi.mock('../src/windows-acl.js', () => ({
+  setWindowsUserOnlyAcl: vi.fn(async () => undefined),
+  verifyWindowsDirectoryAcl: vi.fn(async () => undefined),
+  verifyWindowsUserOnlyAcl: vi.fn(async () => undefined),
 }));
 
 vi.mock('node:fs/promises', async (importOriginal) => {
@@ -35,11 +45,28 @@ vi.mock('node:fs/promises', async (importOriginal) => {
     error.code = 'EIO';
     return error;
   };
+  const transient = (): NodeJS.ErrnoException => {
+    const error = injected();
+    error.code = 'EPERM';
+    return error;
+  };
   return {
     ...actual,
     rename: async (oldPath: FsPromises.PathLike, newPath: FsPromises.PathLike) => {
       if (String(newPath) !== fault.target || fault.fired) {
         return actual.rename(oldPath, newPath);
+      }
+      if (
+        (fault.phase === 'transient-pre-publication' ||
+          fault.phase === 'transient-target-replacement') &&
+        fault.transientRenameFailures < fault.transientRenameLimit
+      ) {
+        fault.transientRenameFailures += 1;
+        if (fault.phase === 'transient-target-replacement') {
+          await actual.unlink(newPath);
+          await actual.writeFile(newPath, fault.foreignContents, { mode: 0o600 });
+        }
+        throw transient();
       }
       if (fault.phase === 'pre-publication') {
         fault.fired = true;
@@ -128,6 +155,8 @@ function resetFault(): void {
   fault.renamed = false;
   fault.fired = false;
   fault.foreignContents = '';
+  fault.transientRenameFailures = 0;
+  fault.transientRenameLimit = 0;
 }
 
 function armFault(
@@ -141,6 +170,24 @@ function armFault(
   fault.renamed = false;
   fault.fired = false;
   fault.foreignContents = foreignContents;
+}
+
+function armTransientRename(
+  target: string,
+  limit: number,
+  phase:
+    | 'transient-pre-publication'
+    | 'transient-target-replacement' = 'transient-pre-publication',
+  foreignContents = '',
+): void {
+  fault.phase = phase;
+  fault.target = target;
+  fault.directory = directory;
+  fault.renamed = false;
+  fault.fired = false;
+  fault.foreignContents = foreignContents;
+  fault.transientRenameFailures = 0;
+  fault.transientRenameLimit = limit;
 }
 
 describe(
@@ -192,6 +239,90 @@ describe(
       expect(transition).toMatchObject({ status: 'not-published' });
       expect(transition).not.toHaveProperty('publication');
       expect(await readFile(path, 'utf8')).toBe('{"value":"before","version":1}');
+    });
+
+    it('retries an observed burst of transient Windows replacement rename failures', async () => {
+      const path = join(directory, 'transient.json');
+      await writeProtectedJsonDocument(
+        path,
+        { version: 1, value: 'before' },
+        'create',
+        options,
+      );
+      armTransientRename(path, 8);
+
+      const transition = await transitionProtectedJsonDocumentWithPublicationStatus(
+        path,
+        options,
+        () => ({
+          document: { version: 1, value: 'after' },
+          result: 'updated',
+        }),
+      );
+
+      if (process.platform === 'win32') {
+        expect(transition).toMatchObject({ status: 'published', result: 'updated' });
+      } else {
+        expect(transition).toMatchObject({ status: 'not-published' });
+      }
+      expect(fault.transientRenameFailures).toBe(process.platform === 'win32' ? 8 : 1);
+      expect(await readFile(path, 'utf8')).toBe(
+        process.platform === 'win32'
+          ? '{"value":"after","version":1}'
+          : '{"value":"before","version":1}',
+      );
+      await expect(readdir(directory)).resolves.toEqual(['transient.json']);
+    });
+
+    it('fails closed after exhausting transient Windows replacement retries', async () => {
+      const path = join(directory, 'exhausted.json');
+      await writeProtectedJsonDocument(
+        path,
+        { version: 1, value: 'before' },
+        'create',
+        options,
+      );
+      armTransientRename(path, 16);
+
+      const transition = await transitionProtectedJsonDocumentWithPublicationStatus(
+        path,
+        options,
+        () => ({
+          document: { version: 1, value: 'after' },
+          result: 'updated',
+        }),
+      );
+
+      expect(transition).toMatchObject({ status: 'not-published' });
+      expect(fault.transientRenameFailures).toBe(process.platform === 'win32' ? 16 : 1);
+      expect(await readFile(path, 'utf8')).toBe('{"value":"before","version":1}');
+      await expect(readdir(directory)).resolves.toEqual(['exhausted.json']);
+    });
+
+    it('rejects a target identity substitution before retrying the replacement', async () => {
+      const path = join(directory, 'substituted.json');
+      const foreign = '{"value":"foreign","version":1}';
+      await writeProtectedJsonDocument(
+        path,
+        { version: 1, value: 'before' },
+        'create',
+        options,
+      );
+      armTransientRename(path, 1, 'transient-target-replacement', foreign);
+
+      const transition = await transitionProtectedJsonDocumentWithPublicationStatus(
+        path,
+        options,
+        () => ({
+          document: { version: 1, value: 'after' },
+          result: 'updated',
+        }),
+      );
+
+      expect(transition).toMatchObject({ status: 'publication-uncertain' });
+      expect(await readFile(path, 'utf8')).toBe(foreign);
+      expect(fault.transientRenameFailures).toBe(1);
+      await expect(readdir(directory)).resolves.toEqual(['substituted.json']);
     });
 
     it.each(['post-rename', 'final-verification', 'directory-sync'] as const)(

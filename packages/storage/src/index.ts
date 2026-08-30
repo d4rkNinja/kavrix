@@ -32,3 +32,15 @@ export {
   MongoEncryptedDatabaseStore,
   type MongoEncryptedDatabaseStoreOptions,
 } from './mongo-encrypted-database.js';
+export {
+  MongoCollaborativeVaultStore,
+  type ActivateCollaborativeGenesisInput,
+  type BeginCollaborativeMigrationInput,
+  type CollaborativeProofPosition,
+  type CollaborativeVaultStore,
+  type CompactCollaborativeOperationOutcomeInput,
+  type DestroyCollaborativeVaultInput,
+  type GetCollaborativeMutationProofRangeInput,
+  type MongoCollaborativeVaultCollectionNames,
+  type PublishCollaborativeVaultInput,
+} from './collaborative-vault-store.js';

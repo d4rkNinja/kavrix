@@ -26,6 +26,8 @@ export const MAX_SECURE_STREAM_FILE_BYTES = 128 * 1024 * 1024;
 export const MAX_SECURE_STREAM_CHUNK_BYTES = 32 * 1024 * 1024;
 const TEMP_FILE_BYTES = 12;
 const WINDOWS_RESERVED_BASENAME = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/iu;
+const WINDOWS_REPLACEMENT_RENAME_MAX_ATTEMPTS = 16;
+const WINDOWS_REPLACEMENT_RENAME_RETRY_DELAY_MS = 25;
 
 type FileIdentity = Readonly<{
   dev: bigint;
@@ -1442,14 +1444,42 @@ export async function replaceSecureFileWhileExclusive(
       lock.targetPath,
       lock.maximumBytes,
     );
-    await verifyPathStillNamesFile(lock.targetPath, expected);
-    await rename(temporaryFile, lock.targetPath);
+    await renameReplacementWithRetry(temporaryFile, lock.targetPath, expected);
     const published = await lstat(lock.targetPath, { bigint: true });
     await validateRegularFile(lock.targetPath, published, lock.maximumBytes);
     await syncDirectory(lock.directoryPath);
     temporaryFile = undefined;
   } finally {
     if (temporaryFile !== undefined) await removeIfPresent(temporaryFile);
+  }
+}
+
+async function renameReplacementWithRetry(
+  temporaryFile: string,
+  targetPath: string,
+  expected: FileIdentity,
+): Promise<void> {
+  for (
+    let attempt = 1;
+    attempt <= WINDOWS_REPLACEMENT_RENAME_MAX_ATTEMPTS;
+    attempt += 1
+  ) {
+    await verifyPathStillNamesFile(targetPath, expected);
+    try {
+      await rename(temporaryFile, targetPath);
+      return;
+    } catch (error) {
+      if (
+        process.platform !== 'win32' ||
+        fileErrorCode(error) !== 'EPERM' ||
+        attempt === WINDOWS_REPLACEMENT_RENAME_MAX_ATTEMPTS
+      ) {
+        throw error;
+      }
+      await new Promise<void>((resolve) =>
+        setTimeout(resolve, WINDOWS_REPLACEMENT_RENAME_RETRY_DELAY_MS * attempt),
+      );
+    }
   }
 }
 

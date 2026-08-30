@@ -16,6 +16,7 @@ selection, but the 0.2.3 no-argument TTY `init` path does not invoke it.
 
 Active release workspaces:
 
+- `@kavrix/core`: framework-free collaboration authorization and revision-transition policies.
 - `@kavrix/schemas`: canonical database-container, vault, legacy, structured-vault, envelope, policy, and authorization-state schemas.
 - `@kavrix/crypto`: DRK/VRK hierarchy, key derivation, wrapping, authenticated encryption, sealed state envelopes, and secure-byte helpers.
 - `@kavrix/key-files`: protected database-owner key, recovery-kit, legacy key, revision-anchor, and sealed authorization-state files.
@@ -175,12 +176,14 @@ remain schema-driven; plaintext field values never cross the storage boundary.
 
 ## Verification boundary
 
-The active release gate covers the seven workspaces listed above: `apps/cli`,
-`packages/schemas`, `packages/crypto`, `packages/key-files`, `packages/storage`,
-`packages/runner`, and `packages/tui`. Root Vitest includes the active CLI,
-schema, crypto, key-file, storage, runner, and TUI suites, including the
-portable-key and revision-anchor security tests; its coverage scope is
-restricted to those same seven source trees. Each Vitest worker runs against an
+The active release gate covers the eight workspaces listed above: `apps/cli`,
+`packages/core`, `packages/schemas`, `packages/crypto`, `packages/key-files`,
+`packages/storage`, `packages/runner`, and `packages/tui`. Root Vitest includes
+the active CLI, core, schema, crypto, key-file, storage, runner, and TUI suites,
+including the portable-key and revision-anchor security tests; its coverage
+scope is restricted to those same eight source trees. Focused collaboration
+tests under the parked client source also run as an incubation security gate,
+but do not make that package a release artifact. Each Vitest worker runs against an
 isolated fake home directory so machine-local Kavrix state, such as a real
 datastore-profile registry, cannot influence results. Parked package sources
 are not counted as active release coverage and are not represented as shipped
@@ -232,9 +235,24 @@ Execution-layer limits that are verified or documented rather than claimed away:
   gates every individual request, and secrets live in broker memory for the
   session lifetime subject to the same unlocked-host inspection limits.
 
-User identities, public enrollment, recipient discovery, vault grants, reader/
-editor/owner roles, revocation with VRK rotation, and ownership transfer are not
-implemented. Project contexts, groups/services, structured items, typed fields,
+Collaboration identities, enrollment receipts, recipient discovery, reader/
+editor/owner roles, revocation with VRK rotation, approval/ownership workflows,
+genesis migration, crash journals, journal-only restart with authenticated
+successor recovery, history compaction, terminal destruction, and anchored
+open/publication verification are implemented only as internal protocol modules
+and focused tests. Genesis authenticates the protected legacy database revision
+anchor, unwraps the legacy VRK from the DRK, and rechecks the exact source head
+under the revision-anchor transition lock before preparing the collaborative row.
+A distinct DRK-protected authority rollback anchor is initialized with genesis;
+owner-recovery opens, publications, and journal restarts accept only that protected
+freshness base or an authenticated proof chain from it, and advance it under its
+exclusive transition lock. The gated replica-set suite covers genesis, exact
+operation replay, late-conflict rollback, permanent tombstones,
+anti-resurrection, and raw MongoDB plaintext/key canaries. No collaboration
+command is registered, `@kavrix/client` remains parked, and the feature is not a
+supported release claim until the remaining mixed-client, concurrency, complete
+cross-layer security, package, and user-facing documentation gates pass.
+Project contexts, groups/services, structured items, typed fields,
 notes, expiry/rotation metadata, and encrypted attachment/history records are
 now modeled inside database-vault payloads; the root compatibility commands
 intentionally expose only the default context/service projection. The 0.2.6

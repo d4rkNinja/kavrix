@@ -2,6 +2,34 @@
 
 All notable user-facing and security changes to Kavrix are recorded here.
 
+## 0.2.7 - 2026-08-31
+
+### Security and reliability
+
+- Collaborative-vault protocol foundations now authenticate the protected
+  legacy revision head during genesis, derive the vault root key from the
+  database root key, and recheck the exact source head under the revision-anchor
+  transition lock before publication.
+- Owner recovery now uses a distinct database-root-key-protected authority
+  rollback anchor. Recovery open, publication, and journal restart paths accept
+  only that protected freshness base or an authenticated successor chain and
+  advance it under an exclusive transition lock.
+- Operation and migration journals bind exact canonical proof entries, mutation
+  links, witnesses, outcomes, and request/source digests. Terminal failure is
+  reserved for authenticated committed outcomes; unauthenticated conflicts
+  remain retryable.
+- Ownership-transfer validation now accepts every specified initiator
+  disposition, including a removed original owner represented by a retained
+  non-active membership, while requiring active membership for retained roles.
+- Secure file replacement retries transient Windows `EPERM` rename failures
+  while revalidating the original file identity before every attempt.
+
+### Release boundary
+
+- Collaboration remains an internal, incubation-only protocol surface. No
+  collaboration command is registered, `@kavrix/client` remains parked, and
+  this release does not claim a supported end-user collaboration feature.
+
 ## 0.2.6 - 2026-08-29
 
 ### Added
