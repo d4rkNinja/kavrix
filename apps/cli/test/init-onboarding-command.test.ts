@@ -68,6 +68,7 @@ beforeEach(() => {
   });
   secureDirectoryMocks.validateFile.mockReset();
   setTty(true);
+  vi.stubEnv('NO_COLOR', '1');
 });
 
 afterEach(() => {
@@ -256,7 +257,7 @@ describe('root init onboarding composition', () => {
     await buildLocalCli().parseAsync(['node', 'kavrix', 'init']);
 
     const output = stderr.mock.calls.flat().join('');
-    expect(output).toContain('Kavrix configuration');
+    expect(output).toContain('\u001b[1;36mKavrix configuration\u001b[0m');
     expectEveryInterfaceClosed();
   });
 
