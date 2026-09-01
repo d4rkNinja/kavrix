@@ -1,6 +1,6 @@
 import { Readable, Writable } from 'node:stream';
 
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { LocalSecretInput } from '../src/local-secrets.js';
 
@@ -38,6 +38,12 @@ class TestTerminalInput extends Readable {
 
 class TestTerminalOutput extends Writable {
   readonly #chunks: Buffer[] = [];
+  public readonly isTTY: boolean;
+
+  public constructor(isTTY = false) {
+    super();
+    this.isTTY = isTTY;
+  }
 
   public override _write(
     chunk: Buffer,
@@ -67,6 +73,10 @@ async function allowNextPrompt(): Promise<void> {
   await new Promise<void>((resolve) => setImmediate(resolve));
 }
 
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
+
 describe('local secret input policy', () => {
   it('rejects short passphrases before key derivation', async () => {
     await expect(secretInput('too-short\n').read(['passphrase'], true)).rejects.toThrow(
@@ -78,6 +88,21 @@ describe('local secret input policy', () => {
     await expect(
       secretInput('mongodb://localhost\n').read(['database-url'], true),
     ).resolves.toEqual(['mongodb://localhost']);
+  });
+
+  it('keeps successful stdin framing silent and ANSI-free even for TTY output', async () => {
+    vi.stubEnv('TERM', 'xterm-256color');
+    vi.stubEnv('NO_COLOR', undefined);
+    const output = new TestTerminalOutput(true);
+
+    await expect(
+      new LocalSecretInput(Readable.from(['private-label\n']), output).read(
+        ['label'],
+        true,
+      ),
+    ).resolves.toEqual(['private-label']);
+
+    expect(output.text()).toBe('');
   });
 
   it('accepts a sufficiently long passphrase', async () => {
@@ -258,9 +283,15 @@ describe('local secret input policy', () => {
     expect(input.rawModeChanges).toEqual([true, false, true, false, true, false]);
     expect(input.isRaw).toBe(false);
     expect(output.text()).toBe(
-      'Enter database URL (input hidden): \n' +
-        'Enter passphrase (input hidden): \n' +
-        'Enter passphrase (input hidden): \n',
+      '[i] Requirement: enter one non-empty line.\n' +
+        '? Enter database URL (input hidden): \n' +
+        '[OK] Input accepted.\n' +
+        `[i] Requirement: use at least 16 UTF-8 bytes in one line.\n` +
+        '? Enter passphrase (input hidden): \n' +
+        '[OK] Input accepted.\n' +
+        '[i] Re-enter the same passphrase to confirm it.\n' +
+        '? Confirm passphrase (input hidden): \n' +
+        '[OK] Input accepted.\n',
     );
     expect(output.text()).not.toContain('mongodb://localhost/kavrix');
     expect(output.text()).not.toContain('correct horse battery staple');
@@ -330,14 +361,45 @@ describe('local secret input policy', () => {
       'replacement passphrase value',
     ]);
     expect(output.text()).toBe(
-      'Enter private label (input hidden): \n' +
-        'Enter credential value (input hidden): \n' +
-        'Enter recovery-kit passphrase (input hidden): \n' +
-        'Enter new passphrase (input hidden): \n',
+      '[i] Requirement: use 1-256 characters after trimming whitespace.\n' +
+        '? Enter private label (input hidden): \n' +
+        '[OK] Input accepted.\n' +
+        '[i] Requirement: enter one non-empty line.\n' +
+        '? Enter credential value (input hidden): \n' +
+        '[OK] Input accepted.\n' +
+        '[i] Requirement: use at least 16 UTF-8 bytes in one line.\n' +
+        '? Enter recovery-kit passphrase (input hidden): \n' +
+        '[OK] Input accepted.\n' +
+        '[i] Requirement: use at least 16 UTF-8 bytes in one line.\n' +
+        '? Enter new passphrase (input hidden): \n' +
+        '[OK] Input accepted.\n',
     );
     expect(output.text()).not.toContain('credential-secret-value');
     expect(output.text()).not.toContain('recovery passphrase value');
     expect(output.text()).not.toContain('replacement passphrase value');
+  });
+
+  it('shows private-label requirements and retries only that invalid field', async () => {
+    const input = new TestTerminalInput();
+    const output = new TestTerminalOutput();
+    const reading = new LocalSecretInput(input, output).read(['label'], false);
+
+    input.enter('   \r');
+    await allowNextPrompt();
+    input.enter('  valid private label  \r');
+
+    await expect(reading).resolves.toEqual(['valid private label']);
+    const transcript = output.text();
+    expect(transcript).toContain(
+      '[i] Requirement: use 1-256 characters after trimming whitespace.',
+    );
+    expect(transcript.match(/Enter private label/gu)).toHaveLength(2);
+    expect(transcript).toContain(
+      '[X] Private labels must contain 1-256 characters after trimming whitespace. Re-enter this field.',
+    );
+    expect(transcript).not.toContain('valid private label');
+    expect(input.rawModeChanges).toEqual([true, false, true, false]);
+    expect(input.isRaw).toBe(false);
   });
 
   it('rejects oversized masked input and clears the consumed buffer', async () => {
@@ -347,11 +409,184 @@ describe('local secret input policy', () => {
     const oversized = Buffer.alloc(1_048_577, 0x61);
 
     input.enter(oversized);
+    await allowNextPrompt();
+    input.enter('bounded-secret-value\r');
 
-    await expect(reading).rejects.toThrow('Secret input exceeds the supported size.');
+    await expect(reading).resolves.toEqual(['bounded-secret-value']);
     expect([...oversized.subarray(0, 16)]).toEqual(new Array(16).fill(0));
     expect(output.text()).not.toContain('aaaaaaaa');
+    expect(output.text()).toContain(
+      '[X] Secret input exceeds the supported size. Re-enter this field.',
+    );
     expect(input.isRaw).toBe(false);
+  });
+
+  it('shows passphrase requirements and retries only the locally invalid field', async () => {
+    const input = new TestTerminalInput();
+    const output = new TestTerminalOutput();
+    const reading = new LocalSecretInput(input, output).read(
+      ['label', 'new-passphrase'],
+      false,
+    );
+
+    input.enter('private-label-canary\r');
+    await allowNextPrompt();
+    input.enter('too-short\r');
+    await allowNextPrompt();
+    input.enter('correct horse battery staple\r');
+
+    await expect(reading).resolves.toEqual([
+      'private-label-canary',
+      'correct horse battery staple',
+    ]);
+    const transcript = output.text();
+    expect(transcript.match(/Enter private label/gu)).toHaveLength(1);
+    expect(transcript.match(/Enter new passphrase/gu)).toHaveLength(2);
+    expect(transcript).toContain(
+      '[X] Passphrases must contain at least 16 bytes. Re-enter this field.',
+    );
+    expect(transcript).not.toContain('private-label-canary');
+    expect(transcript).not.toContain('too-short');
+    expect(transcript).not.toContain('correct horse battery staple');
+    expect(input.rawModeChanges).toEqual([true, false, true, false, true, false]);
+    expect(input.isRaw).toBe(false);
+  });
+
+  it('reads a confirmed passphrase pair and retries both fields after mismatch', async () => {
+    const input = new TestTerminalInput();
+    const output = new TestTerminalOutput();
+    const reading = new LocalSecretInput(input, output).readConfirmed('new-passphrase');
+
+    input.enter('first passphrase value\r');
+    await allowNextPrompt();
+    input.enter('different passphrase value\r');
+    await allowNextPrompt();
+    input.enter('matching passphrase value\r');
+    await allowNextPrompt();
+    input.enter('matching passphrase value\r');
+
+    await expect(reading).resolves.toEqual([
+      'matching passphrase value',
+      'matching passphrase value',
+    ]);
+    const transcript = output.text();
+    expect(transcript.match(/Enter new passphrase/gu)).toHaveLength(2);
+    expect(transcript.match(/Confirm new passphrase/gu)).toHaveLength(2);
+    expect(transcript).toContain('[X] New passphrases do not match; re-enter both.');
+    for (const secret of [
+      'first passphrase value',
+      'different passphrase value',
+      'matching passphrase value',
+    ]) {
+      expect(transcript).not.toContain(secret);
+    }
+    expect(input.rawModeChanges).toEqual([
+      true,
+      false,
+      true,
+      false,
+      true,
+      false,
+      true,
+      false,
+    ]);
+    expect(input.isRaw).toBe(false);
+  });
+
+  it('retries an adjacent passphrase pair through read before continuing later fields', async () => {
+    const input = new TestTerminalInput();
+    const output = new TestTerminalOutput();
+    const reading = new LocalSecretInput(input, output).read(
+      ['label', 'new-passphrase', 'new-passphrase', 'field-value'],
+      false,
+    );
+
+    const entries = [
+      'private-label-canary',
+      'first-passphrase-canary',
+      'different-passphrase-canary',
+      'matching-passphrase-canary',
+      'matching-passphrase-canary',
+      'credential-value-canary',
+    ];
+    for (const entry of entries) {
+      input.enter(`${entry}\r`);
+      await allowNextPrompt();
+    }
+
+    await expect(reading).resolves.toEqual([
+      'private-label-canary',
+      'matching-passphrase-canary',
+      'matching-passphrase-canary',
+      'credential-value-canary',
+    ]);
+    const transcript = output.text();
+    expect(transcript.match(/Enter private label/gu)).toHaveLength(1);
+    expect(transcript.match(/Enter new passphrase/gu)).toHaveLength(2);
+    expect(transcript.match(/Confirm new passphrase/gu)).toHaveLength(2);
+    expect(transcript.match(/Enter credential value/gu)).toHaveLength(1);
+    expect(transcript).toContain('[X] New passphrases do not match; re-enter both.');
+    for (const secret of entries) expect(transcript).not.toContain(secret);
+    expect(input.isRaw).toBe(false);
+  });
+
+  it('does not retry a confirmed pair after cancellation', async () => {
+    const input = new TestTerminalInput();
+    const output = new TestTerminalOutput();
+    const reading = new LocalSecretInput(input, output).readConfirmed('passphrase');
+
+    input.enter(Buffer.from([3]));
+
+    await expect(reading).rejects.toThrow('Secret entry was cancelled.');
+    expect(input.rawModeChanges).toEqual([true, false]);
+    expect(input.isRaw).toBe(false);
+    expect(output.text()).not.toContain('do not match');
+  });
+
+  it('uses ANSI color only for an eligible TTY while preserving text signals', async () => {
+    vi.stubEnv('TERM', 'xterm-256color');
+    vi.stubEnv('NO_COLOR', undefined);
+    const coloredInput = new TestTerminalInput();
+    const coloredOutput = new TestTerminalOutput(true);
+    const colored = new LocalSecretInput(coloredInput, coloredOutput).read(
+      ['passphrase'],
+      false,
+    );
+    coloredInput.enter('correct horse battery staple\r');
+    await colored;
+
+    expect(coloredOutput.text()).toMatch(/\u001b\[\d+(?:;\d+)?m/u);
+    expect(coloredOutput.text()).toContain('[i]');
+    expect(coloredOutput.text()).toContain('[OK]');
+
+    vi.stubEnv('NO_COLOR', '1');
+    const plainInput = new TestTerminalInput();
+    const plainOutput = new TestTerminalOutput(true);
+    const plain = new LocalSecretInput(plainInput, plainOutput).read(
+      ['passphrase'],
+      false,
+    );
+    plainInput.enter('correct horse battery staple\r');
+    await plain;
+
+    expect(plainOutput.text()).not.toContain('\u001b');
+    expect(plainOutput.text()).toContain('[i]');
+    expect(plainOutput.text()).toContain('[OK]');
+
+    vi.stubEnv('NO_COLOR', undefined);
+    vi.stubEnv('TERM', 'dumb');
+    const dumbInput = new TestTerminalInput();
+    const dumbOutput = new TestTerminalOutput(true);
+    const dumb = new LocalSecretInput(dumbInput, dumbOutput).read(
+      ['passphrase'],
+      false,
+    );
+    dumbInput.enter('correct horse battery staple\r');
+    await dumb;
+
+    expect(dumbOutput.text()).not.toContain('\u001b');
+    expect(dumbOutput.text()).toContain('[i]');
+    expect(dumbOutput.text()).toContain('[OK]');
   });
 
   it('accepts UTF-8 split across masked chunks and clears each consumed buffer', async () => {
@@ -398,7 +633,10 @@ describe('local secret input policy', () => {
     expect([...cancellation]).toEqual([0]);
     expect(input.rawModeChanges).toEqual([true, false]);
     expect(input.isRaw).toBe(false);
-    expect(output.text()).toBe('Enter passphrase (input hidden): \n');
+    expect(output.text()).toBe(
+      '[i] Requirement: use at least 16 UTF-8 bytes in one line.\n' +
+        '? Enter passphrase (input hidden): \n',
+    );
   });
 
   it('handles synchronous raw-mode errors and restores without exposing details', async () => {
@@ -461,7 +699,10 @@ describe('local secret input policy', () => {
     );
     expect(input.rawModeChanges).toEqual([true, false]);
     expect(input.isRaw).toBe(false);
-    expect(output.text()).toBe('Enter database URL (input hidden): \n');
+    expect(output.text()).toBe(
+      '[i] Requirement: enter one non-empty line.\n' +
+        '? Enter database URL (input hidden): \n',
+    );
   });
 
   it('fails closed when terminal state cannot be restored', async () => {

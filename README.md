@@ -37,14 +37,13 @@ kavrix --help
 
 ## Quick start
 
-The canonical first-run path is a non-secret datastore profile, followed by
-database initialization and vault creation. A bare `kavrix init` is retained
-only for legacy version 2 single-vault compatibility: on a first TTY run with
-no routing or secret flags it creates `~/.kavrix/config.toml`
-(`%USERPROFILE%\\.kavrix\\config.toml` on Windows) and does not initialize a
-vault. The protected file is a non-secret onboarding reference; current
-commands do not load it automatically. Copy the profile examples you need and
-use an explicit protected prompt or stdin flow for secrets.
+The canonical first-run path is a non-secret datastore profile, database
+initialization, vault creation, and default-vault selection. On a first TTY run
+with no routing or secret flags, a bare `kavrix init` creates only the protected,
+non-secret `~/.kavrix/config.toml` onboarding reference
+(`%USERPROFILE%\\.kavrix\\config.toml` on Windows); it does not create a database
+or vault, and current commands do not load the file automatically. Explicitly
+routed root `init` remains the legacy version 2 single-vault compatibility path.
 
 ```sh
 # 1. Register and select a non-secret route to your datastore.
@@ -56,13 +55,22 @@ kavrix db profile use work
 kavrix db init --profile work
 kavrix db vault create --profile work
 
-# 3. Copy the returned opaque vault ID into the flat commands.
-kavrix put github/token --profile work --vault <vault-id>
-kavrix list --profile work --vault <vault-id>
+# 3. Authenticate and select the returned opaque vault ID for this profile.
+kavrix db vault use <vault-id> --profile work
 
-# 4. Reveal plaintext only when you explicitly ask for it.
-kavrix get github/token --reveal --profile work --vault <vault-id>
+# 4. Vault-scoped commands now use that profile default.
+kavrix put github/token --profile work
+kavrix list --profile work
+
+# 5. Reveal plaintext only when you explicitly ask for it.
+kavrix get github/token --reveal --profile work
 ```
+
+Each datastore profile keeps its own opaque default vault ID in the protected
+non-secret profile registry. An explicit `--vault <id>` overrides that default
+for one invocation. If neither is available, Kavrix fails before requesting
+secret input. Profiles and the onboarding reference never store passphrases,
+connection credentials, labels, DRKs, VRKs, or credential values.
 
 The quick-start commands use the backward-compatible flat projection. In a
 structured database vault, `github/token` remains one literal item name and is
@@ -74,6 +82,13 @@ not reinterpret path separators as hierarchy.
 Sensitive input is always prompted for or read from stdin. Never place
 passwords, keys, recovery secrets, or database URIs in shell arguments or shell
 history.
+
+Interactive protected prompts show the applicable non-secret condition before
+entry and use textual `[i]`, `[OK]`, and `[X]` status markers. Invalid local
+input retries only that field; a passphrase-confirmation mismatch retries both
+passphrase entries. Color is supplemental, appears only on a capable TTY, and
+respects `NO_COLOR` and `TERM=dumb`. Protected stdin remains silent and
+ANSI-free.
 
 ## Credential model
 
@@ -106,7 +121,7 @@ structured access or migration.
 | `kavrix db profile ...`   | Add, select, inspect, or remove non-secret routes.        |
 | `kavrix db init`          | Create an encrypted database and protected owner key.     |
 | `kavrix db status`        | Authenticate and inspect the selected database.           |
-| `kavrix db vault ...`     | Create, list, inspect, or rename database vaults.         |
+| `kavrix db vault ...`     | Create, list, inspect, rename, or select database vaults. |
 | `kavrix db key create`    | Create an exact-snapshot key for full local-file sharing. |
 | `kavrix db recovery ...`  | Manage database-root recovery kits.                       |
 | `kavrix migrate database` | Copy one legacy version 2 vault into a database.          |
@@ -160,7 +175,7 @@ payloads or mutating the audit/state sidecar.
 
 ```sh
 kavrix agent run --agent bot --config kavrix.yaml \
-  --profile work --vault <vault-id> -- <agent-executable>
+  --profile work -- <agent-executable>
 ```
 
 An agent started this way holds no credential material. When it needs one, it
@@ -174,7 +189,7 @@ and `kavrix audit` records the events.
 | Flag                                | What it does                                                               |
 | ----------------------------------- | -------------------------------------------------------------------------- |
 | `--profile`, `--profile-config-dir` | Select a datastore profile without storing secrets.                        |
-| `--vault <id>`                      | Select one opaque vault explicitly.                                        |
+| `--vault <id>`                      | Override the selected profile's default vault for one command.             |
 | `--passphrase-stdin`                | Read the key passphrase from stdin.                                        |
 | `--database-url-stdin`              | Read the MongoDB URI from stdin.                                           |
 | `--value-stdin`                     | Read a credential value from stdin.                                        |
@@ -242,8 +257,8 @@ no one else ever held the required material.
 - Project contexts, groups/services, structured items, typed fields, notes,
   expiry/rotation metadata, and encrypted attachment/history records are
   modeled in database vaults. Root flat commands intentionally expose only the
-  default context/service projection; 0.2.6 does not claim attachment/history
-  transfer or mutation commands.
+  default context/service projection; the current CLI does not claim
+  attachment/history transfer or mutation commands.
 - Windows command scripts (`.bat`, `.cmd`, `.com`) are refused for execution
   because launching them requires shell argument re-parsing; invoke real
   executables.

@@ -13,6 +13,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   DatabaseFlatCommandError,
   readDatabaseFlatSecrets,
+  resolveDatabaseVaultId,
   usesDatabaseContainer,
   withDatabaseFlatVault,
 } from '../src/database-flat-commands.js';
@@ -21,6 +22,7 @@ import {
   DatastoreProfileRegistry,
   type DatastoreProfile,
 } from '../src/datastore-profiles.js';
+import { LocalSecretInput } from '../src/local-secrets.js';
 import { createSecureTestDirectory as mkdtemp } from '../../../packages/key-files/test/secure-temporary-directory.js';
 
 let directory = '';
@@ -70,7 +72,10 @@ describe('flat database command routing', () => {
     const originalKeyFile = join(directory, 'original.key');
     const overrideDataFile = join(directory, 'override.database');
     const overrideKeyFile = join(directory, 'override.key');
-    const profile = fileProfile(originalDataFile, originalKeyFile);
+    const profile = {
+      ...fileProfile(originalDataFile, originalKeyFile),
+      defaultVaultId: 'vault_default' as never,
+    };
     await addCurrentProfile(profile);
 
     const store = { close: vi.fn(async () => undefined) } as never;
@@ -80,6 +85,7 @@ describe('flat database command routing', () => {
       .mockResolvedValue(store);
     const openSession = vi.spyOn(DatabaseSession, 'open').mockResolvedValue(session);
     let selected: DatastoreProfile | undefined;
+    let selectedVaultId = '';
 
     await withDatabaseFlatVault(
       {
@@ -96,7 +102,8 @@ describe('flat database command routing', () => {
         },
       },
       { passphrase: 'correct horse battery staple', extras: [] },
-      async (_session, _vaultId, routedProfile) => {
+      async (_session, vaultId, routedProfile) => {
+        selectedVaultId = vaultId;
         selected = routedProfile;
       },
     );
@@ -114,6 +121,39 @@ describe('flat database command routing', () => {
       dataFile: overrideDataFile,
       keyFile: overrideKeyFile,
     });
+    expect(selectedVaultId).toBe('vault_project');
+  });
+
+  it('resolves an omitted profile default while an explicit vault always wins', () => {
+    const profile = {
+      ...fileProfile(
+        join(directory, 'default.database'),
+        join(directory, 'default.key'),
+      ),
+      defaultVaultId: 'vault_profile_default' as never,
+    };
+
+    expect(
+      resolveDatabaseVaultId(profile, {
+        vault: 'default',
+        vaultWasDefaulted: true,
+      }),
+    ).toBe('vault_profile_default');
+    expect(resolveDatabaseVaultId(profile, { vault: 'vault_explicit' })).toBe(
+      'vault_explicit',
+    );
+    expect(() =>
+      resolveDatabaseVaultId(fileProfile(profile.dataFile, profile.keyFile), {
+        vault: 'default',
+        vaultWasDefaulted: true,
+      }),
+    ).toThrow('kavrix db vault use');
+    expect(() =>
+      resolveDatabaseVaultId(
+        { ...profile, defaultVaultId: 'group_wrong_namespace' as never },
+        { vault: 'default', vaultWasDefaulted: true },
+      ),
+    ).toThrow('Vault ID is invalid.');
   });
 
   it('keeps a bound profile route when merged Commander defaults are present', async () => {
@@ -272,9 +312,36 @@ describe('flat database command routing', () => {
       join(directory, 'secrets.key'),
     );
     await addCurrentProfile(profile);
+    const read = vi.spyOn(LocalSecretInput.prototype, 'read');
     await expect(
-      readDatabaseFlatSecrets({ profileConfigDir: directory, vault: 'default' }, []),
-    ).rejects.toThrow('Select one database vault explicitly');
+      readDatabaseFlatSecrets(
+        {
+          profileConfigDir: directory,
+          vault: 'default',
+          vaultWasDefaulted: true,
+        },
+        [],
+      ),
+    ).rejects.toThrow('kavrix db vault use');
+    expect(read).not.toHaveBeenCalled();
+    read.mockRestore();
+    await withStdin('correct horse battery staple\n', async () => {
+      await expect(
+        readDatabaseFlatSecrets(
+          {
+            profileConfigDir: directory,
+            vault: 'default',
+            vaultWasDefaulted: true,
+            passphraseStdin: true,
+          },
+          [],
+          { requireVaultSelection: false },
+        ),
+      ).resolves.toEqual({
+        passphrase: 'correct horse battery staple',
+        extras: [],
+      });
+    });
     await expect(
       readDatabaseFlatSecrets(
         {

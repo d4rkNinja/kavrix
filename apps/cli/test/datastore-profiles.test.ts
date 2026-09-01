@@ -2,7 +2,12 @@ import { chmod, link, readFile, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { canonicalJson, databaseIdSchema, profileIdSchema } from '@kavrix/schemas';
+import {
+  canonicalJson,
+  databaseIdSchema,
+  profileIdSchema,
+  vaultIdSchema,
+} from '@kavrix/schemas';
 import { setWindowsUserOnlyAcl } from '@kavrix/key-files';
 import { MongoLocalVaultStore } from '@kavrix/storage';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -18,6 +23,11 @@ import { LocalSecretInput } from '../src/local-secrets.js';
 import { createSecureTestDirectory as mkdtemp } from '../../../packages/key-files/test/secure-temporary-directory.js';
 
 let directory = '';
+
+const PROFILE_ID = profileIdSchema.parse('work');
+const SECOND_PROFILE_ID = profileIdSchema.parse('local');
+const VAULT_ID = vaultIdSchema.parse('vault_01JPROFILEDEFAULT');
+const SECOND_VAULT_ID = vaultIdSchema.parse('vault_01JSECONDDEFAULT');
 
 beforeEach(async () => {
   directory = await mkdtemp(join(tmpdir(), 'kavrix-datastore-profiles-'));
@@ -51,6 +61,22 @@ function fileProfile(id = 'local') {
     dataFile: '/protected/local.kavrix-db',
     keyFile: '/protected/local.kavrix-db-key',
   };
+}
+
+async function writeCanonicalRegistry(document: unknown): Promise<string> {
+  const serialized = canonicalJson(document);
+  const path = resolveProfilePath(directory);
+  await writeFile(path, serialized, { mode: 0o600 });
+  if (process.platform === 'win32') await setWindowsUserOnlyAcl(path);
+  return serialized;
+}
+
+function versionOneDocument(
+  profiles: readonly ReturnType<typeof mongoProfile | typeof fileProfile>[] = [
+    mongoProfile(),
+  ],
+) {
+  return { current: null, profiles, version: 1 };
 }
 
 describe('datastore profiles', () => {
@@ -189,7 +215,7 @@ describe('datastore profiles', () => {
 
     const serialized = await readFile(resolveProfilePath(directory), 'utf8');
     expect(serialized).toBe(
-      '{"current":"work","profiles":[{"dataFile":"/protected/local.kavrix-db","databaseId":"db_local","datastore":"file","id":"local","keyFile":"/protected/local.kavrix-db-key"},{"database":"credentials","databaseCollection":"kavrix_databases","databaseId":"db_work","datastore":"mongodb","id":"work","keyFile":"/protected/work.kavrix-db-key","vaultCollection":"kavrix_vaults"}],"version":1}',
+      '{"current":"work","profiles":[{"dataFile":"/protected/local.kavrix-db","databaseId":"db_local","datastore":"file","id":"local","keyFile":"/protected/local.kavrix-db-key"},{"database":"credentials","databaseCollection":"kavrix_databases","databaseId":"db_work","datastore":"mongodb","id":"work","keyFile":"/protected/work.kavrix-db-key","vaultCollection":"kavrix_vaults"}],"version":2}',
     );
     expect(serialized).not.toContain('mongodb://');
     expect(serialized).not.toContain('password');
@@ -198,6 +224,201 @@ describe('datastore profiles', () => {
     await profiles.remove(profileIdSchema.parse('work'));
     expect(await profiles.current()).toBeNull();
     expect(await profiles.list()).toEqual([fileProfile()]);
+  });
+
+  it('reads a strict version-1 registry lazily without rewriting protected bytes', async () => {
+    const before = await writeCanonicalRegistry(versionOneDocument());
+
+    const profiles = await registry();
+    expect(await profiles.get(PROFILE_ID)).toEqual(mongoProfile());
+    expect((await profiles.get(PROFILE_ID)).defaultVaultId).toBeUndefined();
+    expect(await readFile(resolveProfilePath(directory), 'utf8')).toBe(before);
+  });
+
+  it('lazily promotes version 1 and writes one bound profile default canonically as version 2', async () => {
+    await writeCanonicalRegistry(versionOneDocument());
+    const profiles = await registry();
+
+    await expect(
+      profiles.setDefaultVaultId(PROFILE_ID, VAULT_ID, mongoProfile().databaseId),
+    ).resolves.toEqual({
+      ...mongoProfile(),
+      defaultVaultId: VAULT_ID,
+    });
+    expect(await readFile(resolveProfilePath(directory), 'utf8')).toBe(
+      canonicalJson({
+        current: null,
+        profiles: [{ ...mongoProfile(), defaultVaultId: VAULT_ID }],
+        version: 2,
+      }),
+    );
+  });
+
+  it('round-trips a version-2 default through a protected registry reopen', async () => {
+    const profiles = await registry();
+    await profiles.add(mongoProfile());
+    await profiles.setDefaultVaultId(PROFILE_ID, VAULT_ID, mongoProfile().databaseId);
+
+    const reopened = await registry();
+    expect(await reopened.get(PROFILE_ID)).toEqual({
+      ...mongoProfile(),
+      defaultVaultId: VAULT_ID,
+    });
+    expect(JSON.parse(await readFile(resolveProfilePath(directory), 'utf8'))).toEqual({
+      current: null,
+      profiles: [{ ...mongoProfile(), defaultVaultId: VAULT_ID }],
+      version: 2,
+    });
+  });
+
+  it('rejects a stale authenticated database binding without rewriting the profile', async () => {
+    const profiles = await registry();
+    await profiles.add(mongoProfile());
+    const before = await readFile(resolveProfilePath(directory), 'utf8');
+
+    await expect(
+      profiles.setDefaultVaultId(
+        PROFILE_ID,
+        VAULT_ID,
+        databaseIdSchema.parse('db_replacement'),
+      ),
+    ).rejects.toThrow('invalid');
+
+    expect(await readFile(resolveProfilePath(directory), 'utf8')).toBe(before);
+    expect(await profiles.get(PROFILE_ID)).not.toHaveProperty('defaultVaultId');
+  });
+
+  it('isolates default-vault mutations to the selected bound profile', async () => {
+    const profiles = await registry();
+    await profiles.add(mongoProfile());
+    await profiles.add(fileProfile());
+
+    await profiles.setDefaultVaultId(PROFILE_ID, VAULT_ID, mongoProfile().databaseId);
+    expect(await profiles.get(PROFILE_ID)).toEqual({
+      ...mongoProfile(),
+      defaultVaultId: VAULT_ID,
+    });
+    expect(await profiles.get(SECOND_PROFILE_ID)).toEqual(fileProfile());
+
+    await profiles.setDefaultVaultId(
+      SECOND_PROFILE_ID,
+      SECOND_VAULT_ID,
+      fileProfile().databaseId,
+    );
+    expect(await profiles.get(PROFILE_ID)).toEqual({
+      ...mongoProfile(),
+      defaultVaultId: VAULT_ID,
+    });
+    expect(await profiles.get(SECOND_PROFILE_ID)).toEqual({
+      ...fileProfile(),
+      defaultVaultId: SECOND_VAULT_ID,
+    });
+  });
+
+  it('rejects default-vault mutation for unbound and missing profiles without rewriting', async () => {
+    const { databaseId: _databaseId, ...unbound } = mongoProfile();
+    const before = await writeCanonicalRegistry(versionOneDocument([unbound]));
+    const profiles = await registry();
+
+    await expect(
+      profiles.setDefaultVaultId(PROFILE_ID, VAULT_ID, mongoProfile().databaseId),
+    ).rejects.toThrow('invalid');
+    await expect(
+      profiles.setDefaultVaultId(
+        profileIdSchema.parse('missing'),
+        VAULT_ID,
+        mongoProfile().databaseId,
+      ),
+    ).rejects.toThrow('invalid');
+    expect(await readFile(resolveProfilePath(directory), 'utf8')).toBe(before);
+  });
+
+  it('rejects an unbound default-vault profile through direct and protected inputs', async () => {
+    const { databaseId: _databaseId, ...unbound } = mongoProfile();
+    const profiles = await registry();
+
+    await expect(
+      profiles.add({ ...unbound, defaultVaultId: VAULT_ID }),
+    ).rejects.toThrow('invalid');
+
+    await writeCanonicalRegistry({
+      current: null,
+      profiles: [{ ...unbound, defaultVaultId: VAULT_ID }],
+      version: 2,
+    });
+    await expect(registry()).rejects.toThrow('invalid');
+  });
+
+  it('rejects legacy default, foreign namespaces, and malformed default-vault inputs without rewriting', async () => {
+    const before = await writeCanonicalRegistry(versionOneDocument());
+    const profiles = await registry();
+
+    for (const candidate of ['default', 'group_01JNOTAVAULT', 'vault with spaces']) {
+      await expect(
+        profiles.setDefaultVaultId(
+          PROFILE_ID,
+          candidate as never,
+          mongoProfile().databaseId,
+        ),
+      ).rejects.toThrow('invalid');
+    }
+    expect(await readFile(resolveProfilePath(directory), 'utf8')).toBe(before);
+  });
+
+  it.each([
+    ['unknown document version', { ...versionOneDocument(), version: 3 }],
+    [
+      'a version-1 default-vault field',
+      versionOneDocument([{ ...mongoProfile(), defaultVaultId: VAULT_ID }]),
+    ],
+    [
+      'an unknown version-2 document key',
+      { ...versionOneDocument(), label: 'work', version: 2 },
+    ],
+    [
+      'an unknown version-2 profile key',
+      {
+        ...versionOneDocument([{ ...mongoProfile(), label: 'work' }]),
+        version: 2,
+      },
+    ],
+    [
+      'the legacy default value in version 2',
+      {
+        ...versionOneDocument([{ ...mongoProfile(), defaultVaultId: 'default' }]),
+        version: 2,
+      },
+    ],
+    [
+      'a malformed default-vault value in version 2',
+      {
+        ...versionOneDocument([
+          { ...mongoProfile(), defaultVaultId: 'vault with spaces' },
+        ]),
+        version: 2,
+      },
+    ],
+  ])('rejects %s in a protected registry', async (_case, document) => {
+    await writeCanonicalRegistry(document);
+    await expect(registry()).rejects.toThrow('invalid');
+  });
+
+  it.each([
+    'databaseUri',
+    'ownerPassword',
+    'accessToken',
+    'clientSecret',
+    'credentialMaterial',
+  ])('rejects the sensitive-looking %s key in a version-2 profile', async (key) => {
+    await writeCanonicalRegistry({
+      current: null,
+      profiles: [
+        { ...mongoProfile(), defaultVaultId: VAULT_ID, [key]: 'forbidden-canary' },
+      ],
+      version: 2,
+    });
+
+    await expect(registry()).rejects.toThrow('invalid');
   });
 
   it('rejects duplicate, missing, and current-profile removal ambiguity', async () => {

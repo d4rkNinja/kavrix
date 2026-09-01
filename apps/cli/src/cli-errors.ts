@@ -60,13 +60,16 @@ export function classifyCliFailure(error: unknown): Readonly<{
     // Help (`--help`, `--version`) exits successfully after commander has
     // already written its output through the configured streams.
     if (
+      error.code === 'commander.help' ||
       error.code === 'commander.helpDisplayed' ||
       error.code === 'commander.version'
     ) {
       return { message: '', exitCode: 0 };
     }
-    // Every other parse failure is a usage error per the documented table.
-    return { message: error.message.split('\n')[0] ?? '', exitCode: 2 };
+    // Commander has already rendered the sanitized error and command-local
+    // usage through the configured output stream. Returning no second message
+    // prevents duplicate error lines while preserving the documented exit 2.
+    return { message: '', exitCode: 2 };
   }
   if (
     typeof error === 'object' &&

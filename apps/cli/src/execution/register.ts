@@ -24,6 +24,7 @@ import {
 } from './cli-options.js';
 import {
   CLI_EXIT_CODES,
+  CodedCliError,
   invalidConfiguration,
   isCodedCliError,
   toErrorEnvelope,
@@ -142,10 +143,12 @@ function registerPolicy(program: Command): void {
   const check = policy
     .command('check <id>')
     .description('Simulate one invocation without reading the credential.')
+    .usage('[options] <id> -- <executable> [args...]')
     .allowUnknownOption(true)
     .allowExcessArguments(true)
     .option('--json', 'Emit machine-readable output.');
   addExecutionRoutingOptions(check);
+  requireExecutablePassThrough(check);
   check.action(async (...args: unknown[]) => {
     const command = args.at(-1) as Command;
     const merged = extractMergedOptions(command);
@@ -168,10 +171,12 @@ function registerPolicy(program: Command): void {
   const explain = policy
     .command('explain <id>')
     .description('Explain the ordered rules for one simulated invocation.')
+    .usage('[options] <id> -- <executable> [args...]')
     .allowUnknownOption(true)
     .allowExcessArguments(true)
     .option('--json', 'Emit machine-readable output.');
   addExecutionRoutingOptions(explain);
+  requireExecutablePassThrough(explain);
   explain.action(async (...args: unknown[]) => {
     const command = args.at(-1) as Command;
     const merged = extractMergedOptions(command);
@@ -379,6 +384,7 @@ function registerGrant(program: Command): void {
   const create = grant
     .command('create <secret>')
     .description('Issue one temporary authorization for a credential.');
+  create.addHelpText('after', () => inheritedGrantCreationHelp(grant));
   create.action(async (...args: unknown[]) => {
     const command = args.at(-1) as Command;
     const merged = extractMergedOptions(command);
@@ -461,6 +467,72 @@ function registerGrant(program: Command): void {
       }),
     );
   });
+}
+
+function requireExecutablePassThrough(command: Command): void {
+  command.hook('preAction', (_hookCommand, actionCommand) => {
+    const rawArguments = invocationArguments(actionCommand);
+    const delimiter = rawArguments.indexOf('--');
+    if (delimiter < 0) {
+      throw policyUsageError(
+        actionCommand,
+        'A literal `--` separator is required before the executable.',
+      );
+    }
+    const executableAndArgs = rawArguments.slice(delimiter + 1);
+    const executable = executableAndArgs[0];
+    if (executable === undefined || executable.length === 0) {
+      throw policyUsageError(actionCommand, 'An executable is required after `--`.');
+    }
+    const parsedExecutableAndArgs = actionCommand.args.slice(1);
+    if (
+      executableAndArgs.length !== parsedExecutableAndArgs.length ||
+      executableAndArgs.some(
+        (argument, index) => argument !== parsedExecutableAndArgs[index],
+      )
+    ) {
+      throw policyUsageError(
+        actionCommand,
+        'The literal `--` separator must appear immediately before the executable.',
+      );
+    }
+  });
+}
+
+function policyUsageError(command: Command, message: string): CodedCliError {
+  return new CodedCliError(
+    'USAGE_ERROR',
+    `error: ${message}\n\n${command.helpInformation().trimEnd()}`,
+  );
+}
+
+function rootCommand(command: Command): Command {
+  let current = command;
+  while (current.parent !== null) current = current.parent;
+  return current;
+}
+
+function invocationArguments(command: Command): readonly string[] {
+  const root = rootCommand(command) as Command & { readonly rawArgs?: unknown };
+  const rawArguments = root.rawArgs;
+  return Array.isArray(rawArguments) &&
+    rawArguments.every((argument) => typeof argument === 'string')
+    ? rawArguments
+    : [];
+}
+
+function inheritedGrantCreationHelp(grant: Command): string {
+  const options = grant.options.filter((option) => option.long !== undefined);
+  const width = Math.max(...options.map((option) => option.flags.length));
+  return [
+    '',
+    'Effective creation options inherited from `kavrix grant`:',
+    'Place these options before or after `create <secret>`.',
+    '',
+    ...options.map(
+      (option) => `  ${option.flags.padEnd(width)}  ${option.description}`,
+    ),
+  ].join('\n');
 }
 
 // ---- audit -----------------------------------------------------------------

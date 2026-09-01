@@ -151,7 +151,8 @@ describe('kavrix agent firewall', () => {
       executeAgentRun({
         profile: 'exec',
         profileConfigDir: join(fixture.directory, 'profiles'),
-        vault: fixture.vaultId,
+        vault: 'default',
+        vaultWasDefaulted: true,
         databaseUrlStdin: false,
         passphraseStdin: true,
         agentName: 'bot',

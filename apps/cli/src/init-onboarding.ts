@@ -246,8 +246,9 @@ export function writeInitOnboardingComplete(
       style('NOTICE', '1;33') +
         ' A database-bound datastore profile is currently selected.',
       'Flat commands (`put`, `get`, `list`, `run`, ...) route through that',
-      'profile and require the matching `--vault <id>`. Pass explicit',
-      '`--datastore/--data-file` flags (as below) to bypass it, or select a',
+      'profile and use its stored default vault. If none is selected, run',
+      '`kavrix db vault use <id>`. Pass explicit `--datastore/--data-file`',
+      'flags (as below) to bypass it, or select a',
       'different profile with `kavrix db profile use <id>`.',
       '',
     );

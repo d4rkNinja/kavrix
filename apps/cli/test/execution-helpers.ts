@@ -82,20 +82,14 @@ export async function createExecutionFixture(
   };
   await registry.add(profile);
   await registry.use(profile.id);
+  await registry.setDefaultVaultId(profile.id, vaultId, initialized.databaseId);
 
   return {
     directory,
     dataFile,
     keyFile,
     vaultId,
-    routingArgs: [
-      '--profile',
-      'exec',
-      '--profile-config-dir',
-      profileConfigDir,
-      '--vault',
-      vaultId,
-    ],
+    routingArgs: ['--profile', 'exec', '--profile-config-dir', profileConfigDir],
   };
 }
 

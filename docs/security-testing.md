@@ -49,14 +49,30 @@ Every root Vitest worker runs against an isolated fake home directory created by
 machine-local datastore-profile registry under the user's home directory. Tests
 that exercise profile selection target an explicit protected config directory.
 
+The CLI contract suite invokes `--help` across 101 canonical command nodes and
+16 expanded alias routes. It verifies clean root help and version output,
+unknown-command usage exit `2`, hidden-command isolation, no protected input,
+and no ANSI, stack traces, Commander sentinels, or generic failure text in the
+non-TTY path. Focused prompt tests cover requirement/status markers,
+field-local retry, passphrase-pair retry, cancellation, malformed UTF-8,
+terminal preparation and cleanup failures, and TTY-only color with `NO_COLOR`
+and `TERM=dumb` suppression.
+
+Profile-registry tests cover tolerant version 1 reads, strict version 2
+publication, malformed/unknown-field rejection, per-profile default isolation,
+explicit-vault precedence, missing-default failure before secret input, and
+stale authenticated database-binding rejection during default publication.
+
 `acceptance:database-container` packs the actual public package, installs it into
 an isolated temporary prefix with a dedicated npm cache, and invokes only that
 installed executable. Runtime-random passphrases, private labels, and plaintext
 canaries travel through exact stdin frames, never argv or environment variables.
-The test covers profile selection, two vaults, isolated writes/reads, a second
-database and wrong-key rejection, switch-back integrity, legacy migration,
-concurrent conflict, rollback-anchor rejection, catalog tampering, default label
-redaction, package allowlisting, and scans of outputs and protected artifacts.
+The test covers profile selection, two vaults, authenticated default-vault
+selection, omitted routing, explicit one-command overrides, isolated
+writes/reads, a second database and wrong-key rejection, switch-back integrity,
+legacy migration, concurrent conflict, rollback-anchor rejection, catalog
+tampering, default label redaction, package allowlisting, and scans of outputs
+and protected artifacts.
 
 The runner handles `SIGINT` and `SIGTERM`, stops active children, attempts every
 cleanup target even after an earlier cleanup failure, restores the caller's npm

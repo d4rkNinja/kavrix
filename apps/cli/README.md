@@ -38,21 +38,35 @@ kavrix db profile use work
 kavrix db init --profile work
 kavrix db vault create --profile work
 
-# 3. Copy the returned opaque vault ID into the flat commands.
-kavrix put github/token --profile work --vault <vault-id>
-kavrix get github/token --reveal --profile work --vault <vault-id>
+# 3. Authenticate and select the returned opaque vault ID for this profile.
+kavrix db vault use <vault-id> --profile work
+
+# 4. Vault-scoped commands now use that profile default.
+kavrix put github/token --profile work
+kavrix get github/token --reveal --profile work
 
 # Or create an explicit project/service/item hierarchy.
-kavrix context create platform --environment production --profile work --vault <vault-id>
-kavrix service create github --context platform --profile work --vault <vault-id>
-kavrix item create deploy --context platform --service github --profile work --vault <vault-id>
+kavrix context create platform --environment production --profile work
+kavrix service create github --context platform --profile work
+kavrix item create deploy --context platform --service github --profile work
 kavrix field set token --type api-key --context platform --service github \
-  --item deploy --profile work --vault <vault-id>
+  --item deploy --profile work
 ```
 
 Sensitive input is prompted for or read from stdin; it is never accepted as a
 normal argument. Use `kavrix <command> --help` for the exact protected-input
 options in your installed version.
+
+Interactive protected prompts show each non-secret requirement before entry
+and keep `[i]`, `[OK]`, and `[X]` meaningful without color. Invalid local input
+retries only that field, while a confirmation mismatch retries both passphrase
+entries. ANSI color is TTY-only and respects `NO_COLOR` and `TERM=dumb`;
+protected stdin remains silent and ANSI-free.
+
+Each datastore profile keeps its own opaque default vault ID in the protected
+non-secret registry. An explicit `--vault <id>` overrides it for one invocation.
+Without either selection, Kavrix fails before requesting secret input. Profiles
+never store MongoDB credentials, passphrases, private labels, keys, or values.
 
 ## Command overview
 
@@ -60,7 +74,7 @@ options in your installed version.
 | -------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
 | `db profile ...`                                                           | Manage non-secret datastore routes.                                                   |
 | `db init`, `db status`                                                     | Initialize or authenticate a multi-vault database.                                    |
-| `db vault ...`                                                             | Create, list, inspect, or rename encrypted vaults.                                    |
+| `db vault ...`                                                             | Create, list, inspect, rename, or select encrypted vaults.                            |
 | `db key create`                                                            | Create an exact-snapshot key for full local-file sharing.                             |
 | `db recovery ...`                                                          | Manage database-root recovery kits.                                                   |
 | `migrate database`                                                         | Copy one legacy version 2 vault into a database.                                      |
@@ -117,7 +131,7 @@ authorization sidecar.
 | Flag                                | What it does                                                               |
 | ----------------------------------- | -------------------------------------------------------------------------- |
 | `--profile`, `--profile-config-dir` | Select a datastore profile without storing secrets.                        |
-| `--vault <id>`                      | Select one opaque vault explicitly.                                        |
+| `--vault <id>`                      | Override the selected profile's default vault for one command.             |
 | `--passphrase-stdin`                | Read the key passphrase from stdin.                                        |
 | `--database-url-stdin`              | Read the MongoDB URI from stdin.                                           |
 | `--value-stdin`                     | Read a credential value from stdin.                                        |
@@ -150,8 +164,8 @@ must explicitly enable validated TLS.
   permanently unrecoverable by design; there is no reset or escrow.
 - User identities, public enrollment, per-vault grants and roles, revocation
   with rotation, and ownership transfer are not yet implemented. Structured
-  payloads model notes, attachment ownership, and history, but 0.2.6 does not
-  add attachment transfer or history-restore commands.
+  payloads model notes, attachment ownership, and history, but the current CLI
+  does not add attachment transfer or history-restore commands.
 - Windows command scripts (`.bat`, `.cmd`, `.com`) are refused for execution;
   invoke real executables.
 

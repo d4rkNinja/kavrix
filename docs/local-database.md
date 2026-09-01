@@ -20,17 +20,32 @@ kavrix db profile status
 A file profile stores only its alias, datastore type, data path, key path, and—
 after initialization—the expected opaque database ID. A MongoDB profile stores
 the alias, type, database name, database/vault collection names, key path, and
-expected opaque database ID. It never stores a URI, username, password, token,
-passphrase, label, or decrypted key. The protected registry is still permission
-checked because redirecting a route is security-sensitive.
+expected opaque database ID. Either profile may also store one authenticated
+opaque default vault ID after `db vault use`; an explicit `--vault` takes
+precedence. It never stores a URI, username, password, token, passphrase, label,
+or decrypted key. The protected registry is still permission checked because
+redirecting a route is security-sensitive.
+
+Kavrix 0.2.8 reads the prior version 1 registry without rewriting it merely on
+read. The next protected profile mutation publishes strict version 2 data so it
+can represent the optional default vault. Kavrix 0.2.7 cannot read version 2;
+downgrading after a 0.2.8 profile mutation is therefore unsupported. Roll
+forward or restore a separately preserved version 1 registry; never hand-edit
+the protected registry.
 
 ## Local encrypted database
 
 ```sh
 kavrix db init --profile local-work
 kavrix db vault create --profile local-work
-kavrix put service/token --profile local-work --vault <vault-id>
+kavrix db vault use <vault-id> --profile local-work
+kavrix put service/token --profile local-work
 ```
+
+The selection command authenticates the profile's database and verifies that
+the vault exists before publishing the default. If no default is selected and
+`--vault` is omitted, Kavrix fails before reading a passphrase or credential
+value.
 
 The adapter stores a bounded database document and up to the schema's bounded
 number of opaque vault documents in one canonical file. It enforces owner-only
@@ -125,7 +140,9 @@ database session verifies the database ID in the protected owner key, observed
 database document, and bound profile before asking storage to decrypt. A key from
 another database therefore fails even when filenames, collection names, or vault
 IDs look similar. Explicit routing overrides cannot silently change the expected
-database ID.
+database ID. `kavrix db vault use <vault-id>` performs that authenticated open,
+verifies the vault belongs to the same database, and publishes the default only
+if the profile is still bound to that authenticated database.
 
 ## Migration
 

@@ -784,6 +784,7 @@ describe('structured vault command model', () => {
       id: string;
       datastore: 'file' | 'mongodb';
       databaseId: string;
+      defaultVaultId: string;
       dataFile?: string;
       database?: string;
       databaseCollection?: string;
@@ -793,6 +794,7 @@ describe('structured vault command model', () => {
       id: 'structured',
       datastore: 'file',
       databaseId: 'db_structured',
+      defaultVaultId: 'vault_structured',
       dataFile: 'structured.database',
       keyFile: 'structured.key',
     } as const;
@@ -845,8 +847,6 @@ describe('structured vault command model', () => {
       'structured',
       '--profile-config-dir',
       'ignored',
-      '--vault',
-      'vault_structured',
       '--datastore',
       'file',
       '--data-file',
@@ -1196,8 +1196,12 @@ describe('structured vault command model', () => {
       '--profile',
       'structured',
       '--vault',
-      'vault_structured',
+      'vault_explicit',
     ]);
+    expect(session.inspectStructuredVault).toHaveBeenLastCalledWith(
+      'vault_explicit',
+      expect.any(Function),
+    );
     expect(JSON.parse(output.join(''))).toMatchObject({
       contexts: [expect.objectContaining({ name: DEFAULT_PROJECT_CONTEXT_NAME })],
     });
@@ -1274,6 +1278,7 @@ describe('structured vault command model', () => {
       id: 'structured',
       datastore: 'mongodb',
       databaseId: 'db_structured',
+      defaultVaultId: 'vault_structured',
       database: 'credentials',
       databaseCollection: 'databases',
       vaultCollection: 'vaults',

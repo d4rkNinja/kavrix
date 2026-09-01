@@ -171,6 +171,32 @@ describe(
   'local vault CLI active coverage',
   { retry: process.platform === 'win32' ? 2 : 0 },
   () => {
+    it('renders bare root help as a successful command without an error line', async () => {
+      const originalExitCode = process.exitCode;
+      const stdout: string[] = [];
+      const stderr: string[] = [];
+      const writeOut = vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => {
+        stdout.push(String(chunk));
+        return true;
+      });
+      const writeErr = vi.spyOn(process.stderr, 'write').mockImplementation((chunk) => {
+        stderr.push(String(chunk));
+        return true;
+      });
+      try {
+        process.exitCode = undefined;
+        await runLocalCli(['node', 'kavrix']);
+        expect(process.exitCode).toBe(0);
+        expect(stdout.join('')).toBe('');
+        expect(stderr.join('')).toContain('Usage: kavrix [options] [command]');
+        expect(stderr.join('')).not.toContain('(outputHelp)');
+      } finally {
+        writeOut.mockRestore();
+        writeErr.mockRestore();
+        process.exitCode = originalExitCode;
+      }
+    });
+
     it('runs the local vault command lifecycle with safe machine-readable output', async () => {
       const value = await target();
       expect(await initVault(value)).toMatchObject({
@@ -1159,6 +1185,8 @@ describe(
 
     it('renders every dashboard shape and sanitizes structured JSON safely', () => {
       const stdoutTty = Object.getOwnPropertyDescriptor(process.stdout, 'isTTY');
+      vi.stubEnv('NO_COLOR', undefined);
+      vi.stubEnv('TERM', 'xterm-256color');
       Object.defineProperty(process.stdout, 'isTTY', {
         configurable: true,
         value: true,
@@ -1223,6 +1251,7 @@ describe(
           }),
         ).not.toContain('Results were limited');
       } finally {
+        vi.unstubAllEnvs();
         restoreProperty(process.stdout, 'isTTY', stdoutTty);
       }
 
@@ -1685,13 +1714,23 @@ describe(
             'local',
             '--profile-config-dir',
             boundConfig,
-            '--vault',
-            'default',
             '--passphrase-stdin',
           ],
           'correct horse battery staple\n',
         ),
-      ).toContain('Select one database vault explicitly');
+      ).toContain('kavrix db vault use');
+      expect(
+        await runReported([
+          'get',
+          'missing',
+          '--profile',
+          'local',
+          '--profile-config-dir',
+          boundConfig,
+          '--vault',
+          'default',
+        ]),
+      ).toContain('Vault ID is invalid.');
 
       vi.spyOn(FileEncryptedDatabaseStore, 'open').mockResolvedValueOnce({
         close: vi.fn(async () => undefined),

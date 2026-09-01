@@ -19,8 +19,6 @@ import {
 } from './datastore-profiles.js';
 import { LocalSecretInput, type LocalSecretKind } from './local-secrets.js';
 
-const LEGACY_DEFAULT_VAULT_ID = 'default';
-
 export class DatabaseFlatCommandError extends Error {
   public constructor(message: string) {
     super(message);
@@ -32,6 +30,7 @@ export type DatabaseFlatCommandOptions = Readonly<{
   profile?: string;
   profileConfigDir?: string;
   vault: string;
+  vaultWasDefaulted?: true;
   datastore?: string;
   dataFile?: string;
   database?: string;
@@ -69,13 +68,8 @@ export async function readDatabaseFlatSecrets(
   const profile = await selectedDatabaseProfile(options);
   if (profile === null)
     throw new DatabaseFlatCommandError('A database profile is required.');
-  if (
-    readOptions.requireVaultSelection !== false &&
-    (options.vault === LEGACY_DEFAULT_VAULT_ID || !options.vault.startsWith('vault_'))
-  ) {
-    throw new DatabaseFlatCommandError(
-      `Select one database vault explicitly with --vault before reading secrets (selected profile '${sanitizeProfileId(profile.id)}').`,
-    );
+  if (readOptions.requireVaultSelection !== false) {
+    resolveDatabaseVaultId(profile, options);
   }
   const kinds: LocalSecretKind[] = [
     ...(profile.datastore === 'mongodb' ? (['database-url'] as const) : []),
@@ -186,7 +180,7 @@ export async function openDatabaseFlatVault(
   if (profile?.databaseId === undefined) {
     throw new DatabaseFlatCommandError('A database profile is required.');
   }
-  const vaultId = vaultIdSchema.parse(options.vault);
+  const vaultId = resolveDatabaseVaultId(profile, options);
   const store =
     profile.datastore === 'file'
       ? await FileEncryptedDatabaseStore.open(profile.dataFile)
@@ -213,6 +207,29 @@ export async function openDatabaseFlatVault(
     if (session === undefined) await store.close().catch(() => undefined);
   }
   return Object.freeze({ session, vaultId, profile });
+}
+
+export function resolveDatabaseVaultId(
+  profile: DatastoreProfile,
+  options: DatabaseFlatCommandOptions,
+): VaultId {
+  const selectedVaultId =
+    options.vaultWasDefaulted === true ? profile.defaultVaultId : options.vault;
+  if (selectedVaultId === undefined) {
+    throw new DatabaseFlatCommandError(
+      "Select one database vault with --vault or 'kavrix db vault use'.",
+    );
+  }
+  let vaultId: VaultId;
+  try {
+    vaultId = vaultIdSchema.parse(selectedVaultId);
+  } catch {
+    throw new DatabaseFlatCommandError('Vault ID is invalid.');
+  }
+  if (!vaultId.startsWith('vault_')) {
+    throw new DatabaseFlatCommandError('Vault ID is invalid.');
+  }
+  return vaultId;
 }
 
 export async function closeDatabaseFlatVault(
@@ -301,15 +318,4 @@ function required(value: string | undefined): string {
     throw new DatabaseFlatCommandError('Secret input is incomplete.');
   }
   return value;
-}
-
-function sanitizeProfileId(value: string): string {
-  return Array.from(value)
-    .map((character) => {
-      const point = character.codePointAt(0) ?? 0;
-      return point < 32 || point === 127 || (point >= 128 && point <= 159)
-        ? '[CONTROL]'
-        : character;
-    })
-    .join('');
 }

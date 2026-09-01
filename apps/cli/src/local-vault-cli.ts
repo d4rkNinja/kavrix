@@ -115,6 +115,7 @@ import {
 import { enforceRevealPolicy } from './execution/reveal-policy.js';
 import { classifyCliFailure } from './cli-errors.js';
 import { LocalCliError } from './cli-error.js';
+import { terminalColorEnabled } from './terminal-presentation.js';
 
 const DEFAULT_KEY_FILE = './kavrix.key';
 const DEFAULT_DATA_FILE = './kavrix.vault';
@@ -165,6 +166,7 @@ export type LocalCliOptions = Readonly<{
   outputRecoveryFile?: string;
   collection: string;
   vault: string;
+  vaultWasDefaulted?: true;
   routingOverrides?: DatastoreProfileRoutingOverrides;
   overwrite?: boolean;
   acceptCurrent?: boolean;
@@ -188,15 +190,15 @@ export function buildLocalCli(): Command {
     .exitOverride()
     .configureOutput({
       writeOut: (text) =>
-        process.stdout.write(colorizeHelp(text, process.stdout.isTTY)),
+        process.stdout.write(colorizeHelp(text, terminalColorEnabled(process.stdout))),
       writeErr: (text) =>
-        process.stderr.write(colorizeHelp(text, process.stderr.isTTY)),
+        process.stderr.write(colorizeHelp(text, terminalColorEnabled(process.stderr))),
     });
 
   const init = program
     .command('init')
     .description(
-      'Create a vault and a protected portable key file (local encrypted file by default).',
+      'Create the onboarding reference; explicit routing creates a legacy vault and key file.',
     );
   // Root init deliberately defaults to the local encrypted-file datastore;
   // MongoDB requires an explicit `--datastore mongodb` choice outside the
@@ -236,16 +238,21 @@ export function buildLocalCli(): Command {
           '',
           style('Kavrix configuration', '1;36'),
           '',
-          `Created ${style(displayPath, '1')} with non-secret onboarding examples.`,
+          `${style('[OK]', '32')} Protected onboarding reference ready: ${style(displayPath, '1')}`,
           `Full path: ${configPath}`,
+          `${style('[!]', '33')} No encrypted database or vault was created yet.`,
           '',
           'This reference is not loaded automatically; copy the commands you need',
-          'and keep the datastore profile and opaque vault ID explicit.',
+          'and keep the datastore profile explicit.',
           'Secrets (passphrases, MongoDB URLs) are never stored there — they are',
           'read via masked prompts or --passphrase-stdin / --database-url-stdin.',
           '',
-          'Next: kavrix db profile add work --datastore file --data-file ./work.kavrix --key-file ./work.kavrix.key',
-          'Then: kavrix db profile use work && kavrix db init --profile work',
+          'Continue setup:',
+          '  1. kavrix db profile add work --datastore file --data-file ./work.kavrix --key-file ./work.kavrix.key',
+          '  2. kavrix db profile use work',
+          '  3. kavrix db init --profile work',
+          '  4. kavrix db vault create --profile work',
+          '  5. kavrix db vault use <vault-id> --profile work',
           '',
           'See `kavrix db profile --help` and `kavrix db init --help`.',
           '',
@@ -1084,7 +1091,10 @@ function colorizeHelp(text: string, enabled: boolean): string {
 }
 
 function colorizeError(message: string): string {
-  if (!process.stderr.isTTY) return message;
+  if (!terminalColorEnabled(process.stderr)) return message;
+  if (message.startsWith('error:')) {
+    return `${ANSI_RED}error:${ANSI_RESET}${message.slice('error:'.length)}`;
+  }
   return `${ANSI_RED}error:${ANSI_RESET} ${message}`;
 }
 
@@ -1162,6 +1172,9 @@ function getOptions(args: readonly unknown[]): LocalCliOptions {
         return source !== undefined && source !== 'default';
       });
     const options = merged as LocalCliOptions;
+    if (!sourceIsExplicit('vault')) {
+      merged['vaultWasDefaulted'] = true;
+    }
     merged['routingOverrides'] = {
       ...(sourceIsExplicit('datastore')
         ? { datastore: parseExplicitDatastore(options.datastore) }
@@ -1586,16 +1599,11 @@ async function finalizeSelection(
 }
 
 function showcaseColorEnabled(output: NodeJS.WriteStream): boolean {
-  if (!output.isTTY) return false;
-  return process.env['NO_COLOR'] === undefined && process.env['TERM'] !== 'dumb';
+  return terminalColorEnabled(output);
 }
 
 function initOnboardingColorEnabled(): boolean {
-  return (
-    process.stderr.isTTY &&
-    process.env['NO_COLOR'] === undefined &&
-    process.env['TERM'] !== 'dumb'
-  );
+  return terminalColorEnabled(process.stderr);
 }
 
 async function validateInitDestinations(options: LocalCliOptions): Promise<void> {
@@ -4295,7 +4303,11 @@ export function renderVaultStats(result: StatsResult): string {
   return lines.join('\n').concat('\n');
 }
 
-function paint(code: string, value: string, enabled = process.stdout.isTTY): string {
+function paint(
+  code: string,
+  value: string,
+  enabled = terminalColorEnabled(process.stdout),
+): string {
   return enabled ? `${code}${value}${ANSI_RESET}` : value;
 }
 

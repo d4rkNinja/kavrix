@@ -525,7 +525,9 @@ describe('legacy version 2 database migration', () => {
         ...route,
         '--passphrase-stdin',
       ]),
-    ).rejects.toThrow(/Select one database vault explicitly/u);
+    ).rejects.toThrow(
+      "Select one database vault with --vault or 'kavrix db vault use'.",
+    );
     expect(reads).toBe(readsBeforeAmbiguous);
     const flatRoute = [...route, '--vault', vaultId, '--passphrase-stdin'];
 

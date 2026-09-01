@@ -1,6 +1,14 @@
 import type { Readable, Writable } from 'node:stream';
 
 import { MIN_PASSPHRASE_BYTES } from '@kavrix/crypto';
+import { databaseCatalogPayloadSchema } from '@kavrix/schemas';
+
+import {
+  renderTerminalPrompt,
+  renderTerminalStatus,
+  terminalColorEnabled,
+  type TerminalStatusKind,
+} from './terminal-presentation.js';
 
 const MAX_SECRET_BYTES = 1_048_576;
 // MongoDB-source migration into a new local database is the widest supported
@@ -19,6 +27,9 @@ export type LocalSecretKind =
   | 'new-passphrase'
   | 'field-value'
   | 'field-value-base64';
+
+export type ConfirmableLocalSecretKind =
+  'passphrase' | 'recovery-passphrase' | 'new-passphrase';
 
 export class LocalSecretInput {
   readonly #input: Readable & {
@@ -53,10 +64,55 @@ export class LocalSecretInput {
     }
     if (fromStdin) return this.#readStdin(kinds, finalFrames);
     const values: string[] = [];
-    for (const kind of kinds) {
-      values.push(await this.#readMasked(kind, labelFor(kind)));
+    let index = 0;
+    while (index < kinds.length) {
+      const kind = kinds[index];
+      if (kind === undefined) break;
+      if (isConfirmableKind(kind) && kinds[index + 1] === kind) {
+        const confirmed = await this.readConfirmed(kind);
+        values.push(...confirmed);
+        index += 2;
+        continue;
+      }
+      values.push(await this.#readInteractiveField(kind, false));
+      index += 1;
     }
     return values;
+  }
+
+  /**
+   * Reads and compares one interactive passphrase pair. Local validation
+   * retries one field; a mismatch retries the pair without revealing details.
+   * Framed stdin intentionally remains available only through `read`.
+   */
+  public async readConfirmed(
+    kind: ConfirmableLocalSecretKind,
+  ): Promise<readonly [string, string]> {
+    if (!isConfirmableKind(kind)) {
+      throw new LocalSecretInputError('Secret input request is invalid.');
+    }
+    for (;;) {
+      const first = await this.#readInteractiveField(kind, false);
+      const confirmation = await this.#readInteractiveField(kind, true);
+      if (first === confirmation) return [first, confirmation];
+      this.#writeStatus('error', mismatchMessage(kind));
+    }
+  }
+
+  async #readInteractiveField(
+    kind: LocalSecretKind,
+    confirmation: boolean,
+  ): Promise<string> {
+    for (;;) {
+      try {
+        const value = await this.#readMasked(kind, promptFor(kind, confirmation));
+        this.#writeStatus('success', 'Input accepted.');
+        return value;
+      } catch (error) {
+        if (!(error instanceof LocalSecretInputError) || !error.retryable) throw error;
+        this.#writeStatus('error', `${error.message} Re-enter this field.`);
+      }
+    }
   }
 
   async #readStdin(
@@ -153,7 +209,7 @@ export class LocalSecretInput {
     zeroBytes(prior);
   }
 
-  #readMasked(kind: LocalSecretKind, label: string): Promise<string> {
+  #readMasked(kind: LocalSecretKind, prompt: SecretPrompt): Promise<string> {
     const input = this.#input;
     const rawModeSetter = input.setRawMode;
     if (input.isTTY !== true || rawModeSetter === undefined) {
@@ -194,7 +250,7 @@ export class LocalSecretInput {
             cleanupFailed = true;
           }
         }
-        if ((cleanupFailed || cleanupStreamFailed) && error === undefined) {
+        if (cleanupFailed || cleanupStreamFailed) {
           error = new LocalSecretInputError('Secret input terminal cleanup failed.');
         }
         let value: string | undefined;
@@ -255,7 +311,10 @@ export class LocalSecretInput {
             bytes.push(byte);
             if (bytes.length > MAX_SECRET_BYTES) {
               finish(
-                new LocalSecretInputError('Secret input exceeds the supported size.'),
+                new LocalSecretInputError(
+                  'Secret input exceeds the supported size.',
+                  true,
+                ),
               );
               return;
             }
@@ -272,7 +331,15 @@ export class LocalSecretInput {
         rawModeAttempted = true;
         setRawMode(true);
         if (!input.listeners('data').includes(onData)) return;
-        this.#output.write('Enter ' + label + ' (input hidden): ');
+        const color = terminalColorEnabled(this.#output);
+        this.#output.write(
+          renderTerminalStatus(
+            'info',
+            requirementFor(kind, prompt.confirmation),
+            color,
+          ),
+        );
+        this.#output.write(renderTerminalPrompt(prompt.label, color));
         promptWritten = true;
         preparing = false;
         input.resume();
@@ -281,13 +348,68 @@ export class LocalSecretInput {
       }
     });
   }
+
+  #writeStatus(kind: TerminalStatusKind, message: string): void {
+    try {
+      this.#output.write(
+        renderTerminalStatus(kind, message, terminalColorEnabled(this.#output)),
+      );
+    } catch {
+      throw new LocalSecretInputError('Secret input terminal output failed.');
+    }
+  }
 }
 
 export class LocalSecretInputError extends Error {
-  public constructor(message: string) {
+  public constructor(
+    message: string,
+    public readonly retryable = false,
+  ) {
     super(message);
     this.name = 'LocalSecretInputError';
   }
+}
+
+type SecretPrompt = Readonly<{ label: string; confirmation: boolean }>;
+
+function isConfirmableKind(kind: LocalSecretKind): kind is ConfirmableLocalSecretKind {
+  return (
+    kind === 'passphrase' || kind === 'new-passphrase' || kind === 'recovery-passphrase'
+  );
+}
+
+function promptFor(kind: LocalSecretKind, confirmation: boolean): SecretPrompt {
+  const label = labelFor(kind);
+  return {
+    label: `${confirmation ? 'Confirm' : 'Enter'} ${label}`,
+    confirmation,
+  };
+}
+
+function requirementFor(kind: LocalSecretKind, confirmation: boolean): string {
+  if (confirmation) {
+    return `Re-enter the same ${labelFor(kind)} to confirm it.`;
+  }
+  if (isConfirmableKind(kind)) {
+    return `Requirement: use at least ${String(MIN_PASSPHRASE_BYTES)} UTF-8 bytes in one line.`;
+  }
+  if (kind === 'field-value-base64') {
+    return 'Requirement: enter valid base64 that decodes to UTF-8 text.';
+  }
+  if (kind === 'label') {
+    return 'Requirement: use 1-256 characters after trimming whitespace.';
+  }
+  return 'Requirement: enter one non-empty line.';
+}
+
+function mismatchMessage(kind: ConfirmableLocalSecretKind): string {
+  if (kind === 'new-passphrase') {
+    return 'New passphrases do not match; re-enter both.';
+  }
+  if (kind === 'recovery-passphrase') {
+    return 'Recovery-kit passphrases do not match; re-enter both.';
+  }
+  return 'Passphrases do not match; re-enter both.';
 }
 
 function labelFor(kind: LocalSecretKind): string {
@@ -312,11 +434,14 @@ const BASE64_PATTERN =
 function decodeBase64Value(frame: string): string {
   const normalized = frame.trim();
   if (!BASE64_PATTERN.test(normalized)) {
-    throw new LocalSecretInputError('The base64 value frame is not valid base64.');
+    throw new LocalSecretInputError(
+      'The base64 value frame is not valid base64.',
+      true,
+    );
   }
   const decoded = Buffer.from(normalized, 'base64');
   if (decoded.byteLength > MAX_SECRET_BYTES) {
-    throw new LocalSecretInputError('Secret input exceeds the supported size.');
+    throw new LocalSecretInputError('Secret input exceeds the supported size.', true);
   }
   let value: string;
   try {
@@ -324,12 +449,13 @@ function decodeBase64Value(frame: string): string {
   } catch {
     throw new LocalSecretInputError(
       'The base64 value frame does not decode to UTF-8 text.',
+      true,
     );
   } finally {
     decoded.fill(0);
   }
   if (value.includes('\0')) {
-    throw new LocalSecretInputError('Secret input must not contain NUL bytes.');
+    throw new LocalSecretInputError('Secret input must not contain NUL bytes.', true);
   }
   return value;
 }
@@ -342,7 +468,20 @@ function validateSecret(value: string, kind?: LocalSecretKind): string {
     value.includes('\0') ||
     /[\r\n]/u.test(value)
   ) {
-    throw new LocalSecretInputError('Secret input must contain exactly one value.');
+    throw new LocalSecretInputError(
+      'Secret input must contain exactly one value.',
+      true,
+    );
+  }
+  if (kind === 'label') {
+    try {
+      return databaseCatalogPayloadSchema.shape.label.parse(value);
+    } catch {
+      throw new LocalSecretInputError(
+        'Private labels must contain 1-256 characters after trimming whitespace.',
+        true,
+      );
+    }
   }
   if (
     (kind === 'passphrase' ||
@@ -352,6 +491,7 @@ function validateSecret(value: string, kind?: LocalSecretKind): string {
   ) {
     throw new LocalSecretInputError(
       `Passphrases must contain at least ${String(MIN_PASSPHRASE_BYTES)} bytes.`,
+      true,
     );
   }
   return value;

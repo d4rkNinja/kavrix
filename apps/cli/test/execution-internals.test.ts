@@ -3,8 +3,9 @@ import { access as accessPath, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { connect as netConnect } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { PassThrough } from 'node:stream';
+import { PassThrough, Readable } from 'node:stream';
 
+import { Command } from 'commander';
 import { deriveAuthorizationStateKey } from '@kavrix/crypto';
 import {
   databaseIdSchema,
@@ -29,7 +30,12 @@ import {
   parsePolicyId,
 } from '../src/execution/authorization-state.js';
 import { withAuthorizationSnapshot } from '../src/execution/authorization-session.js';
-import { executionFlatOptions } from '../src/execution/cli-options.js';
+import {
+  addExecutionRoutingOptions,
+  executionFlatOptions,
+  extractMergedOptions,
+} from '../src/execution/cli-options.js';
+import { buildLocalCli, runLocalCli } from '../src/local-vault-cli.js';
 
 const directories: string[] = [];
 
@@ -188,6 +194,170 @@ describe('cli option extraction', () => {
     expect(nothing.databaseUrlStdin).toBe(false);
     expect(nothing.passphraseStdin).toBe(false);
   });
+
+  it('preserves omitted-versus-explicit vault source evidence across hierarchy', () => {
+    const parseRun = (args: readonly string[]): Command => {
+      const program = new Command().exitOverride();
+      addExecutionRoutingOptions(program);
+      const run = program.command('run');
+      program.parse(['node', 'kavrix', ...args]);
+      return run;
+    };
+
+    const omitted = executionFlatOptions(extractMergedOptions(parseRun(['run'])));
+    expect(omitted.vault).toBe('default');
+    expect(omitted.vaultWasDefaulted).toBe(true);
+
+    const explicit = executionFlatOptions(
+      extractMergedOptions(parseRun(['--vault', 'vault_explicit', 'run'])),
+    );
+    expect(explicit.vault).toBe('vault_explicit');
+    expect(explicit.vaultWasDefaulted).toBeUndefined();
+  });
+});
+
+async function runHelpContractCli(
+  args: readonly string[],
+  options: Readonly<{ rejectStdinRead?: boolean }> = {},
+): Promise<
+  Readonly<{ exitCode: number; stdout: string; stderr: string; reads: number }>
+> {
+  const stdout: string[] = [];
+  const stderr: string[] = [];
+  let reads = 0;
+  const originalExitCode = process.exitCode;
+  const originalStdin = process.stdin;
+  const guardedStdin = new Readable({
+    read() {
+      reads += 1;
+      this.destroy(new Error('Malformed policy syntax must not read stdin.'));
+    },
+  });
+  const writeOut = vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => {
+    stdout.push(String(chunk));
+    return true;
+  });
+  const writeErr = vi.spyOn(process.stderr, 'write').mockImplementation((chunk) => {
+    stderr.push(String(chunk));
+    return true;
+  });
+  if (options.rejectStdinRead === true) {
+    Object.defineProperty(process, 'stdin', {
+      configurable: true,
+      value: guardedStdin,
+    });
+  }
+  try {
+    process.exitCode = undefined;
+    await runLocalCli(['node', 'kavrix', ...args]);
+    return {
+      exitCode: process.exitCode ?? 0,
+      stdout: stdout.join(''),
+      stderr: stderr.join(''),
+      reads,
+    };
+  } finally {
+    writeOut.mockRestore();
+    writeErr.mockRestore();
+    process.exitCode = originalExitCode;
+    if (options.rejectStdinRead === true) {
+      Object.defineProperty(process, 'stdin', {
+        configurable: true,
+        value: originalStdin,
+      });
+    }
+  }
+}
+
+describe('execution command help contracts', () => {
+  it('shows every effective grant creation option from the parent command', async () => {
+    const program = buildLocalCli();
+    const grant = program.commands.find((command) => command.name() === 'grant');
+    expect(grant).toBeDefined();
+    const effectiveFlags = grant?.options
+      .map((option) => option.long)
+      .filter((flag): flag is string => flag !== undefined);
+
+    const result = await runHelpContractCli(['grant', 'create', '--help']);
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stderr).toBe('');
+    expect(result.stdout).toContain(
+      'Place these options before or after `create <secret>`.',
+    );
+    for (const flag of effectiveFlags ?? []) {
+      expect(result.stdout).toContain(flag);
+    }
+  });
+
+  it.each(['check', 'explain'] as const)(
+    'documents policy %s executable pass-through syntax',
+    async (command) => {
+      const result = await runHelpContractCli(['policy', command, '--help']);
+
+      expect(result.exitCode).toBe(0);
+      expect(result.stderr).toBe('');
+      expect(result.stdout).toContain(
+        `Usage: kavrix policy ${command} [options] <id> -- <executable> [args...]`,
+      );
+    },
+  );
+
+  it.each(['check', 'explain'] as const)(
+    'accepts the documented policy %s separator before entering the action',
+    async (commandName) => {
+      const program = buildLocalCli();
+      const policy = program.commands.find((command) => command.name() === 'policy');
+      const command = policy?.commands.find(
+        (candidate) => candidate.name() === commandName,
+      );
+      expect(command).toBeDefined();
+      const reachedActionBoundary = new Error('reached action boundary');
+      command?.hook('preAction', () => {
+        throw reachedActionBoundary;
+      });
+
+      await expect(
+        program.parseAsync([
+          'node',
+          'kavrix',
+          'policy',
+          commandName,
+          'deploy',
+          '--',
+          'terraform',
+          'plan',
+        ]),
+      ).rejects.toBe(reachedActionBoundary);
+    },
+  );
+
+  it.each([
+    ['check', ['terraform', 'plan']],
+    ['check', ['--']],
+    ['check', ['terraform', '--', 'plan']],
+    ['explain', ['terraform', 'plan']],
+    ['explain', ['--']],
+    ['explain', ['terraform', '--', 'plan']],
+  ] as const)(
+    'rejects malformed policy %s pass-through before reading secrets',
+    async (command, trailing) => {
+      const result = await runHelpContractCli(
+        ['policy', command, 'deploy', '--passphrase-stdin', ...trailing],
+        { rejectStdinRead: true },
+      );
+
+      expect(result.exitCode).toBe(2);
+      expect(result.stdout).toBe('');
+      expect(result.stderr).toContain('error:');
+      expect(result.stderr.match(/^error:/gmu)).toHaveLength(1);
+      expect(result.stderr).toContain(
+        `Usage: kavrix policy ${command} [options] <id> -- <executable> [args...]`,
+      );
+      expect(result.stderr).not.toContain('Kavrix command failed.');
+      expect(result.reads).toBe(0);
+    },
+  );
 });
 
 describe('authorization state wrappers', () => {

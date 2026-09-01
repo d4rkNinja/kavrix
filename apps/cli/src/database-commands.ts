@@ -220,6 +220,15 @@ export function addDatabaseVaultCommands(vault: Command): void {
   rename.action(async (vaultId: string, ...args: unknown[]) =>
     handleVaultRename(vaultId, optionsFrom(args)),
   );
+
+  const use = vault
+    .command('use <vaultId>')
+    .description('Select the default vault for one protected datastore profile.');
+  addRoutingOptions(use);
+  addSecretOption(use);
+  use.action(async (vaultId: string, ...args: unknown[]) =>
+    handleVaultUse(vaultId, optionsFrom(args)),
+  );
 }
 
 async function handleDatabaseInit(options: DatabaseCommandOptions): Promise<void> {
@@ -606,6 +615,25 @@ async function handleVaultRename(
   });
 }
 
+async function handleVaultUse(
+  vaultId: string,
+  options: DatabaseCommandOptions,
+): Promise<void> {
+  await withOwnerSession(options, [], async (session, _extras, route) => {
+    const id = parseVaultIdentifier(vaultId);
+    await session.getVault(id);
+    if (route.registry === null || route.profile === null) {
+      throw new DatabaseSessionError('binding');
+    }
+    const selected = await route.registry.setDefaultVaultId(
+      route.profile.id,
+      id,
+      session.databaseId,
+    );
+    writeOutput({ selected: true, profile: selected.id, vaultId: id });
+  });
+}
+
 /**
  * Validates one vault identifier with a reviewed message. Prototype-polluting
  * identifiers are refused explicitly and malformed shapes fail as input
@@ -628,6 +656,7 @@ async function withOwnerSession(
   operation: (
     session: DatabaseSession,
     extras: readonly string[],
+    route: ResolvedRoute,
   ) => Promise<void> | void,
 ): Promise<void> {
   const route = await resolveRoute(options);
@@ -661,7 +690,7 @@ async function withOwnerSession(
     if (route.profile !== null)
       verifyDatastoreProfileDatabaseId(route.profile, session.databaseId);
     const extraOffset = route.datastore === 'mongodb' ? 2 : 1;
-    await operation(session, values.slice(extraOffset));
+    await operation(session, values.slice(extraOffset), route);
   } finally {
     zeroize(passphrase);
     if (session !== undefined) await session.close();

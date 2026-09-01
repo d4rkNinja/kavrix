@@ -148,8 +148,14 @@ describe('root init onboarding composition', () => {
 
     await buildLocalCli().parseAsync(['node', 'kavrix', 'init']);
 
-    expect(stderr.mock.calls.join('')).toContain('Kavrix configuration');
-    expect(stderr.mock.calls.join('')).toContain('config.toml');
+    const output = stderr.mock.calls.flat().join('');
+    expect(output).toContain('Kavrix configuration');
+    expect(output).toContain('config.toml');
+    expect(output).toContain('[OK] Protected onboarding reference ready');
+    expect(output).toContain('[!] No encrypted database or vault was created yet');
+    expect(output).toContain('kavrix db init --profile work');
+    expect(output).toContain('kavrix db vault create --profile work');
+    expect(output).toContain('kavrix db vault use <vault-id> --profile work');
     expect(readlineMocks.createInterface).not.toHaveBeenCalled();
     expectEveryInterfaceClosed();
   });

@@ -17,6 +17,7 @@
     "src/index.ts",
     "src/init-onboarding.ts",
     "src/local-secrets.ts",
+    "src/terminal-presentation.ts",
     "src/execution/reveal-policy.ts",
     "src/execution/register.ts",
     "src/execution/cli-options.ts",

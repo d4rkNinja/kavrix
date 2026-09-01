@@ -1076,7 +1076,7 @@ function incrementRevision(value: number): number {
 
 function addDatabaseOptions(command: Command): Command {
   return command
-    .requiredOption('--vault <id>', 'Opaque database vault identifier.')
+    .option('--vault <id>', 'Opaque database vault identifier.', 'default')
     .option('--profile <id>', 'Database profile identifier.')
     .option('--profile-config-dir <path>', 'Protected profile configuration directory.')
     .option('--datastore <type>', 'Datastore routing override.')
@@ -1097,6 +1097,7 @@ function commandOptions(command: Command): DatabaseFlatCommandOptions {
   const vault = options['vault'];
   if (typeof vault !== 'string')
     throw new StructuredVaultCommandError('A vault is required.');
+  const vaultSource = command.getOptionValueSource('vault');
   const profile = stringOption(options, 'profile');
   const profileConfigDir = stringOption(options, 'profileConfigDir');
   const datastore = stringOption(options, 'datastore');
@@ -1106,6 +1107,9 @@ function commandOptions(command: Command): DatabaseFlatCommandOptions {
   const keyFile = stringOption(options, 'keyFile');
   return {
     vault,
+    ...(vaultSource === undefined || vaultSource === 'default'
+      ? { vaultWasDefaulted: true }
+      : {}),
     ...(profile === undefined ? {} : { profile }),
     ...(profileConfigDir === undefined ? {} : { profileConfigDir }),
     ...(datastore === undefined ? {} : { datastore }),

@@ -29,6 +29,14 @@ vault labels, ordering, and opaque ID mapping. Every vault receives an
 independent random VRK. The DRK wraps each VRK using a database-and-vault-bound
 authenticated envelope; a VRK cannot derive the DRK or another VRK.
 
+The protected non-secret profile registry may hold one optional opaque default
+vault ID per bound database profile. Selection authenticates the database,
+verifies that the vault exists in that database, and publishes only if the
+profile remains bound to the same authenticated database. Explicit `--vault`
+routing takes precedence, and a missing selection fails before protected input.
+Registry version 1 remains readable without a read-time rewrite; a protected
+mutation publishes strict version 2.
+
 The database owner key file contains a passphrase-protected portable key that
 unwraps the DRK slot. It is bound to the database ID, key slot, versions, and
 datastore type. It does not contain MongoDB credentials. Database recovery kits

@@ -7,13 +7,12 @@ commands remain at the root. `kavrix frames [command]` prints the exact stdin
 frame contract for every secret-reading command, and `kavrix status` shows the
 selected profile and active routing mode.
 
-The canonical first-run path is `db profile`, then `db init`, then `db vault
-create`. A bare root `kavrix init` is retained for legacy version 2
-single-vault compatibility. On a first TTY invocation with no routing or secret
-flags it creates the non-secret `~/.kavrix/config.toml` template and does not
-initialize a vault. The protected file is an onboarding reference and is not
-loaded automatically; copy the profile examples you need, then use explicit
-protected prompts or stdin flows for secrets.
+The canonical first-run path is `db profile`, then `db init`, `db vault
+create`, and `db vault use`. On a first TTY invocation with no routing or
+secret flags, a bare `kavrix init` creates only the protected, non-secret
+`~/.kavrix/config.toml` onboarding reference; it does not create a database or
+vault, and the file is not loaded automatically. Explicitly routed root
+`init` remains the legacy version 2 single-vault compatibility path.
 
 ## 1. Register a datastore profile
 
@@ -28,10 +27,18 @@ kavrix db profile list
 ```
 
 File profiles store the profile ID, datastore type, data-file path, key-file
-path, and the opaque database ID after initialization. MongoDB profiles store
-the profile ID, datastore type, database name, database/vault collection names,
-key path, and opaque database ID. They never store the MongoDB URI, username,
+path, and opaque database ID after initialization. MongoDB profiles store the
+profile ID, datastore type, database name, database/vault collection names, key
+path, and opaque database ID. Both profile types may additionally store one
+optional opaque default vault ID. They never store the MongoDB URI, username,
 password, passphrase, database label, vault label, DRK, or VRK.
+
+Version 1 profile registries remain strictly readable and read-only commands do
+not rewrite them. The next protected profile mutation publishes the version 2
+registry required for default-vault selection. Kavrix 0.2.7 cannot read that
+newer registry, so downgrading after a 0.2.8 profile mutation is unsupported;
+restore a separately preserved version 1 registry or roll forward to 0.2.8.
+Never hand-edit the protected registry.
 
 Use `--config-dir <path>` with `db profile` commands and
 `--profile-config-dir <path>` with database/credential commands when the
@@ -107,6 +114,7 @@ kavrix db vault create --profile work
 kavrix db vault list --profile work --json
 kavrix db vault status <vault-id> --profile work
 kavrix db vault rename <vault-id> --profile work
+kavrix db vault use <vault-id> --profile work
 ```
 
 Each vault gets an independent random vault root key (VRK), wrapped to the DRK
@@ -117,33 +125,39 @@ key passphrase followed by the private vault label; MongoDB mode prepends its UR
 
 New database vaults keep a versioned structured payload. The existing root
 commands remain a compatibility projection over the default project context,
-default service/group, and each item's canonical `value` password field. Pass
-the returned opaque vault ID explicitly to every credential command:
+default service/group, and each item's canonical `value` password field.
+`db vault use` authenticates the database and stores the selected opaque vault
+ID as that profile's default:
 
 ```sh
-kavrix put production/api-token --profile work --vault <vault-id>
-kavrix get production/api-token --profile work --vault <vault-id>
-kavrix list --profile work --vault <vault-id>
+kavrix db vault use <vault-id> --profile work
+kavrix put production/api-token --profile work
+kavrix get production/api-token --profile work
+kavrix list --profile work
 ```
 
-If a database contains more than one vault and `--vault` is omitted, the CLI
-fails before requesting the passphrase rather than guessing.
+Each profile keeps its own default. An explicit `--vault <id>` overrides it for
+one invocation. If neither a stored default nor an explicit override exists,
+the CLI fails before requesting secret input rather than guessing. The
+protected registry stores only opaque routing identifiers; it never stores
+passphrases, private labels, keys, database credentials, or credential values.
 
 ### Structured project credentials
 
-Structured commands require a database-container profile and an explicit vault.
-They resolve names exactly and fail on missing or ambiguous parents:
+Structured commands require a database-container profile and either its stored
+default vault or an explicit `--vault` override. They resolve names exactly and
+fail on missing or ambiguous parents:
 
 ```sh
 kavrix context create payments --environment production \
-  --profile work --vault <vault-id>
+  --profile work
 kavrix service create postgres --context payments \
-  --profile work --vault <vault-id>
+  --profile work
 kavrix item create primary --context payments --service postgres \
-  --profile work --vault <vault-id>
+  --profile work
 kavrix field set password --type password \
   --context payments --service postgres --item primary \
-  --profile work --vault <vault-id>
+  --profile work
 ```
 
 `context` is also available as `environment`, `service` as `group`, and `item`
@@ -436,6 +450,11 @@ returns the same result plus the ordered rule trace and is informational (exit
 that the named credential currently exists, reads its ciphertext, prompts for
 confirmation, consumes a grant, or appends an audit event.
 
+Both commands require the literal `--` separator and at least one executable:
+`policy <check|explain> <id> -- <executable> [args...]`. A missing separator or
+executable is a usage error (exit `2`) rendered with command-local help before
+any secret input is requested.
+
 `policy lint` reports shadowed allow rules, ineffective or impossible settings,
 heuristically broad policies, and retained expired grants. Errors exit `14` for
 CI; warnings alone exit `0`. A policy `--ttl` is a per-execution time cap, not a
@@ -473,6 +492,11 @@ kavrix grant show grant_<uuid>
 kavrix grant revoke grant_<uuid>
 kavrix run --grant production/database -- psql ...
 ```
+
+`grant create --help` lists every effective creation, routing, and protected
+input option inherited from the parent grant command. Creation options may be
+placed before or after `create <secret>`; the documented bare grant form remains
+supported.
 
 `run --grant <ref>` accepts either a grant id or its credential name. The
 referenced credential is resolved in-session and verified to exist **before**
@@ -528,6 +552,13 @@ shell re-parsing.
 - Secret input is accepted only through masked prompts or explicit bounded stdin
   frames. Secrets are not normal flags, positional arguments, profiles, or
   environment variables.
+- Interactive prompts display the applicable non-secret requirement before
+  entry, then textual `[i]`, `[OK]`, or `[X]` status markers. Invalid local
+  validation retries only that field; a passphrase-confirmation mismatch retries
+  both passphrase fields. Cancellation, malformed UTF-8, and terminal
+  preparation or cleanup failure remain non-retryable and fail closed. ANSI
+  color is enabled only on a capable TTY and is disabled by `NO_COLOR` or
+  `TERM=dumb`; protected stdin stays silent, one-pass, and ANSI-free.
 - Every stdin frame contract is machine-referenceable: `kavrix frames` lists
   the exact frames for every secret-reading command, and `kavrix frames <command>`
   prints one contract. Values that contain line breaks or are empty use the
@@ -553,8 +584,8 @@ The database container supports encrypted database/vault labels and structured
 project contexts, groups/services, credential items, and typed fields. Its root
 credential commands remain the default-context/service compatibility
 projection described above. Notes, expiry/rotation metadata, attachment
-ownership, and encrypted history records are modeled and preserved, but 0.2.6
-does not add attachment transfer or history-restore commands. Project-file
+ownership, and encrypted history records are modeled and preserved, but the
+current CLI does not add attachment transfer or history-restore commands. Project-file
 environments cover execution mappings only; they are not a second vault
 hierarchy. Structured commands, policies, grants, audit, run, and agent commands
 require a database-container profile. Legacy version 2 vaults keep their

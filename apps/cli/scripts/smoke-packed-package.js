@@ -51,7 +51,7 @@ function provePackageAllowlistRejectsExtras() {
   assert(rejected, 'Package allowlist accepted a private debug artifact');
 }
 
-function run(command, args, cwd) {
+function run(command, args, cwd, expectedStatus = 0) {
   const result = spawnSync(command, args, {
     cwd,
     encoding: 'utf8',
@@ -61,10 +61,10 @@ function run(command, args, cwd) {
   });
   if (result.error)
     fail(`${command} ${args.join(' ')} failed: ${result.error.message}`);
-  if (result.status !== 0) {
+  if (result.status !== expectedStatus) {
     const detail = [result.stdout, result.stderr].filter(Boolean).join('\n').trim();
     fail(
-      `${command} ${args.join(' ')} exited with ${result.status}${detail ? `\n${detail}` : ''}`,
+      `${command} ${args.join(' ')} exited with ${result.status}; expected ${expectedStatus}${detail ? `\n${detail}` : ''}`,
     );
   }
   return { stdout: result.stdout ?? '', stderr: result.stderr ?? '' };
@@ -284,6 +284,31 @@ async function main() {
       version.stdout.trim() === manifest.version,
       'Installed kavrix version does not match package.json',
     );
+    const bareRoot = run(process.execPath, [bin], installRoot);
+    const bareRootOutput = bareRoot.stdout + bareRoot.stderr;
+    assertSafeText(bareRootOutput, 'bare kavrix output');
+    assert(bareRoot.stdout.trim() === '', 'bare kavrix wrote help to stdout');
+    assert(
+      bareRoot.stderr.includes('Usage: kavrix [options] [command]'),
+      'bare kavrix did not print root usage',
+    );
+    assert(
+      bareRoot.stderr.includes('Local encrypted credential vault'),
+      'bare kavrix did not print the root description',
+    );
+    assert(
+      !bareRootOutput.includes('(outputHelp)'),
+      'bare kavrix leaked Commander outputHelp detail',
+    );
+    assert(
+      !bareRootOutput.includes('CommanderError') &&
+        !bareRootOutput.includes('Kavrix command failed.'),
+      'bare kavrix leaked internal failure detail',
+    );
+    assert(
+      !bareRootOutput.includes('\u001b') && !bareRootOutput.includes('\u009b'),
+      'bare kavrix emitted ANSI control bytes to non-TTY output',
+    );
     const rootHelp = run(process.execPath, [bin, '--help'], installRoot);
     assertSafeText(rootHelp.stdout + rootHelp.stderr, 'kavrix --help output');
     assert(rootHelp.stderr.trim() === '', 'kavrix --help wrote to stderr');
@@ -297,6 +322,10 @@ async function main() {
       [['db', 'profile', '--help'], 'datastore routing profiles'],
       [['db', 'init', '--help'], 'encrypted multi-vault database'],
       [['db', 'vault', '--help'], 'vaults in an encrypted database'],
+      [
+        ['db', 'vault', 'use', '--help'],
+        'Select the default vault for one protected datastore profile',
+      ],
       [['migrate', 'database', '--help'], 'legacy version 2 vault'],
       [['recovery', '--help'], 'Create protected recovery kits'],
       [['key', '--help'], 'Protected key-file lifecycle'],
@@ -307,6 +336,10 @@ async function main() {
       [['policy', 'lint', '--help'], 'shadowed, or expired authorization rules'],
       [['policy', 'diff', '--help'], 'Preview the semantic change'],
       [['policy', 'suggest', '--help'], 'least-privilege policy tightenings'],
+      [
+        ['grant', 'create', '--help'],
+        'Effective creation options inherited from `kavrix grant`',
+      ],
       [['grant', 'show', '--help'], 'Inspect one grant'],
     ]) {
       const result = run(process.execPath, [bin, ...args], installRoot);
@@ -316,6 +349,87 @@ async function main() {
         result.stdout.includes(marker),
         `kavrix ${args.join(' ')} did not expose the expected command`,
       );
+    }
+
+    for (const [args, markers] of [
+      [
+        ['db', 'vault', 'use', '--help'],
+        [
+          'Usage: kavrix db vault use [options] <vaultId>',
+          '--profile <id>',
+          '--secrets-stdin',
+        ],
+      ],
+      [
+        ['grant', 'create', '--help'],
+        [
+          'Usage: kavrix grant create [options] <secret>',
+          '--command <name>',
+          '--hash <pin>',
+          '--ttl <duration>',
+          '--max-uses <count>',
+          '--profile <id>',
+          '--passphrase-stdin',
+        ],
+      ],
+      [
+        ['policy', 'check', '--help'],
+        ['Usage: kavrix policy check [options] <id> -- <executable> [args...]'],
+      ],
+      [
+        ['policy', 'explain', '--help'],
+        ['Usage: kavrix policy explain [options] <id> -- <executable> [args...]'],
+      ],
+    ]) {
+      const result = run(process.execPath, [bin, ...args], installRoot);
+      const output = result.stdout + result.stderr;
+      assertSafeText(output, `kavrix ${args.join(' ')} output`);
+      assert(result.stderr.trim() === '', `kavrix ${args.join(' ')} wrote to stderr`);
+      for (const marker of markers) {
+        assert(
+          result.stdout.includes(marker),
+          `kavrix ${args.join(' ')} help is missing ${marker}`,
+        );
+      }
+      assert(
+        !output.includes('(outputHelp)') &&
+          !output.includes('\u001b') &&
+          !output.includes('\u009b'),
+        `kavrix ${args.join(' ')} help contains unsafe presentation detail`,
+      );
+    }
+
+    for (const [args, marker] of [
+      [
+        ['policy', 'check', 'smoke-policy', '--passphrase-stdin'],
+        'A literal `--` separator is required before the executable.',
+      ],
+      [
+        ['policy', 'explain', 'smoke-policy', '--passphrase-stdin', '--'],
+        'An executable is required after `--`.',
+      ],
+    ]) {
+      const result = run(process.execPath, [bin, ...args], installRoot, 2);
+      const output = result.stdout + result.stderr;
+      assertSafeText(output, `malformed kavrix ${args.join(' ')} output`);
+      assert(
+        result.stdout.trim() === '',
+        `malformed kavrix ${args.join(' ')} wrote to stdout`,
+      );
+      assert(
+        result.stderr.includes(marker) && result.stderr.includes('Usage: kavrix'),
+        `malformed kavrix ${args.join(' ')} did not return command-local usage`,
+      );
+      for (const secretReadMarker of [
+        'A masked prompt requires a terminal',
+        'Secret input contains the wrong number of values',
+        '(input hidden)',
+      ]) {
+        assert(
+          !output.includes(secretReadMarker),
+          `malformed kavrix ${args.join(' ')} reached protected input`,
+        );
+      }
     }
 
     verifiedVersion = manifest.version;

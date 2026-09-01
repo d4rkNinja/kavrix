@@ -11,8 +11,11 @@ import {
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { buildLocalCli } from '../src/local-vault-cli.js';
-import { DatastoreProfileRegistry } from '../src/datastore-profiles.js';
-import { DatabaseSession } from '../src/database-session.js';
+import {
+  DatastoreProfileError,
+  DatastoreProfileRegistry,
+} from '../src/datastore-profiles.js';
+import { DatabaseSession, DatabaseSessionError } from '../src/database-session.js';
 import { LocalSecretInput, type LocalSecretKind } from '../src/local-secrets.js';
 import { createSecureTestDirectory as mkdtemp } from '../../../packages/key-files/test/secure-temporary-directory.js';
 
@@ -63,7 +66,7 @@ describe('database owner command composition', () => {
         ?.commands.map((command) => command.name()),
     ).toEqual(expect.arrayContaining(['create', 'verify', 'status', 'revoke', 'use']));
     expect(databaseVault?.commands.map((command) => command.name())).toEqual(
-      expect.arrayContaining(['create', 'list', 'status', 'rename']),
+      expect.arrayContaining(['create', 'list', 'status', 'rename', 'use']),
     );
     expect(databaseVault?.commands.map((command) => command.name())).not.toContain(
       'delete',
@@ -285,6 +288,300 @@ describe('database owner command composition', () => {
     expect(read).toHaveBeenCalledWith(['database-url'], true, false);
     expect(connect).not.toHaveBeenCalled();
     expect(openWithSecret).not.toHaveBeenCalled();
+  });
+
+  it('authenticates and persists a default vault for the current profile', async () => {
+    const fixture = await fileProfileFixture('current', 'db_current', true);
+    const session = mockFileOwnerSession('db_current');
+    const setDefault = vi.spyOn(
+      DatastoreProfileRegistry.prototype,
+      'setDefaultVaultId',
+    );
+    const output = captureStdout();
+
+    await buildLocalCli().parseAsync([
+      'node',
+      'kavrix',
+      'db',
+      'vault',
+      'use',
+      'vault_current',
+      '--profile-config-dir',
+      fixture.directory,
+      '--secrets-stdin',
+    ]);
+
+    expect(session.getVault).toHaveBeenCalledWith('vault_current');
+    expect(setDefault).toHaveBeenCalledWith('current', 'vault_current', 'db_current');
+    expect(session.getVault.mock.invocationCallOrder[0]).toBeLessThan(
+      setDefault.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
+    );
+    expect(JSON.parse(output.join(''))).toEqual({
+      selected: true,
+      profile: 'current',
+      vaultId: 'vault_current',
+    });
+    expect(await fixture.registry.get('current' as never)).toMatchObject({
+      databaseId: 'db_current',
+      defaultVaultId: 'vault_current',
+    });
+    expect(output.join('')).not.toContain('owner-passphrase-secret-canary');
+  });
+
+  it('rejects selection when the authenticated profile is replaced before publication', async () => {
+    const fixture = await fileProfileFixture('raced', 'db_original', true);
+    const session = mockFileOwnerSession('db_original');
+    session.getVault.mockImplementation(async () => {
+      await fixture.registry.remove('raced' as never);
+      await addBoundFileProfile(
+        fixture.registry,
+        fixture.directory,
+        'raced',
+        'db_replacement',
+      );
+      return Object.freeze({});
+    });
+    const output = captureStdout();
+
+    await expect(
+      buildLocalCli().parseAsync([
+        'node',
+        'kavrix',
+        'db',
+        'vault',
+        'use',
+        'vault_raced',
+        '--profile',
+        'raced',
+        '--profile-config-dir',
+        fixture.directory,
+        '--secrets-stdin',
+      ]),
+    ).rejects.toMatchObject({ code: 'PROFILE_INVALID' });
+
+    expect(session.getVault).toHaveBeenCalledWith('vault_raced');
+    expect(await fixture.registry.get('raced' as never)).toMatchObject({
+      databaseId: 'db_replacement',
+    });
+    expect(await fixture.registry.get('raced' as never)).not.toHaveProperty(
+      'defaultVaultId',
+    );
+    expect(output).toEqual([]);
+  });
+
+  it('selects and persists a default only for an explicit non-current profile', async () => {
+    const directory = await testDirectory(join(tmpdir(), 'kavrix-vault-use-explicit-'));
+    const registry = await DatastoreProfileRegistry.open({
+      configDirectory: directory,
+    });
+    await addBoundFileProfile(registry, directory, 'first', 'db_first');
+    await addBoundFileProfile(registry, directory, 'second', 'db_second');
+    await registry.use('first' as never);
+    const session = mockFileOwnerSession('db_second');
+    const output = captureStdout();
+
+    await buildLocalCli().parseAsync([
+      'node',
+      'kavrix',
+      'db',
+      'vault',
+      'use',
+      'vault_second',
+      '--profile',
+      'second',
+      '--profile-config-dir',
+      directory,
+      '--secrets-stdin',
+    ]);
+
+    expect(session.getVault).toHaveBeenCalledWith('vault_second');
+    expect(JSON.parse(output.join(''))).toEqual({
+      selected: true,
+      profile: 'second',
+      vaultId: 'vault_second',
+    });
+    expect(await registry.get('first' as never)).not.toHaveProperty('defaultVaultId');
+    expect(await registry.get('second' as never)).toMatchObject({
+      defaultVaultId: 'vault_second',
+    });
+  });
+
+  it('rejects malformed and missing vaults without mutating the profile default', async () => {
+    const fixture = await fileProfileFixture('local', 'db_local', true);
+    const setDefault = vi.spyOn(
+      DatastoreProfileRegistry.prototype,
+      'setDefaultVaultId',
+    );
+    const malformedSession = mockFileOwnerSession('db_local');
+
+    await expect(
+      buildLocalCli().parseAsync([
+        'node',
+        'kavrix',
+        'db',
+        'vault',
+        'use',
+        '__proto__',
+        '--profile-config-dir',
+        fixture.directory,
+        '--secrets-stdin',
+      ]),
+    ).rejects.toMatchObject({ code: 'invalid' });
+    expect(malformedSession.getVault).not.toHaveBeenCalled();
+    expect(setDefault).not.toHaveBeenCalled();
+
+    vi.restoreAllMocks();
+    const missingSession = mockFileOwnerSession(
+      'db_local',
+      new DatabaseSessionError('not-found'),
+    );
+    const secondSetDefault = vi.spyOn(
+      DatastoreProfileRegistry.prototype,
+      'setDefaultVaultId',
+    );
+    await expect(
+      buildLocalCli().parseAsync([
+        'node',
+        'kavrix',
+        'db',
+        'vault',
+        'use',
+        'vault_foreign',
+        '--profile-config-dir',
+        fixture.directory,
+        '--secrets-stdin',
+      ]),
+    ).rejects.toMatchObject({ code: 'not-found' });
+    expect(missingSession.getVault).toHaveBeenCalledWith('vault_foreign');
+    expect(secondSetDefault).not.toHaveBeenCalled();
+    expect(await fixture.registry.get('local' as never)).not.toHaveProperty(
+      'defaultVaultId',
+    );
+  });
+
+  it('rejects unprofiled and unbound selections after vault verification', async () => {
+    const directory = await testDirectory(join(tmpdir(), 'kavrix-vault-use-unbound-'));
+    const registry = await DatastoreProfileRegistry.open({
+      configDirectory: directory,
+    });
+    await registry.add({
+      id: 'unbound',
+      datastore: 'file',
+      dataFile: join(directory, 'unbound.kavrix'),
+      keyFile: join(directory, 'unbound.kavrix-db-key'),
+    } as never);
+    await registry.use('unbound' as never);
+    const unprofiledSession = mockFileOwnerSession('db_unprofiled');
+    const setDefault = vi.spyOn(
+      DatastoreProfileRegistry.prototype,
+      'setDefaultVaultId',
+    );
+
+    await expect(
+      buildLocalCli().parseAsync([
+        'node',
+        'kavrix',
+        'db',
+        'vault',
+        'use',
+        'vault_unprofiled',
+        '--datastore',
+        'file',
+        '--data-file',
+        join(directory, 'direct.kavrix'),
+        '--key-file',
+        join(directory, 'direct.kavrix-db-key'),
+        '--secrets-stdin',
+      ]),
+    ).rejects.toMatchObject({ code: 'binding' });
+    expect(unprofiledSession.getVault).toHaveBeenCalledWith('vault_unprofiled');
+    expect(setDefault).not.toHaveBeenCalled();
+
+    vi.restoreAllMocks();
+    const unboundSession = mockFileOwnerSession('db_unbound');
+    await expect(
+      buildLocalCli().parseAsync([
+        'node',
+        'kavrix',
+        'db',
+        'vault',
+        'use',
+        'vault_unbound',
+        '--profile-config-dir',
+        directory,
+        '--secrets-stdin',
+      ]),
+    ).rejects.toMatchObject({ code: 'PROFILE_INVALID' });
+    expect(unboundSession.getVault).toHaveBeenCalledWith('vault_unbound');
+    expect(await registry.get('unbound' as never)).not.toHaveProperty('defaultVaultId');
+  });
+
+  it('surfaces registry publication failure without a success receipt or secret data', async () => {
+    const fixture = await fileProfileFixture('publish', 'db_publish', true);
+    const session = mockFileOwnerSession('db_publish');
+    vi.spyOn(DatastoreProfileRegistry.prototype, 'setDefaultVaultId').mockRejectedValue(
+      new DatastoreProfileError('PROFILE_OPERATION_FAILED'),
+    );
+    const output = captureStdout();
+    let thrown: unknown;
+
+    try {
+      await buildLocalCli().parseAsync([
+        'node',
+        'kavrix',
+        'db',
+        'vault',
+        'use',
+        'vault_publish',
+        '--profile-config-dir',
+        fixture.directory,
+        '--secrets-stdin',
+      ]);
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toMatchObject({ code: 'PROFILE_OPERATION_FAILED' });
+    expect(session.getVault).toHaveBeenCalledWith('vault_publish');
+    expect(output).toEqual([]);
+    expect(serializeThrown(thrown)).not.toContain('owner-passphrase-secret-canary');
+    expect(await fixture.registry.get('publish' as never)).not.toHaveProperty(
+      'defaultVaultId',
+    );
+  });
+
+  it('does not mutate the registry when owner authentication fails', async () => {
+    const fixture = await fileProfileFixture('auth', 'db_auth', true);
+    vi.spyOn(FileEncryptedDatabaseStore, 'validatePath').mockResolvedValue();
+    vi.spyOn(FileEncryptedDatabaseStore, 'open').mockResolvedValue({
+      close: vi.fn(async () => undefined),
+    } as never);
+    vi.spyOn(DatabaseSession, 'openWithSecret').mockRejectedValue(
+      new DatabaseSessionError('authentication'),
+    );
+    const setDefault = vi.spyOn(
+      DatastoreProfileRegistry.prototype,
+      'setDefaultVaultId',
+    );
+
+    await expect(
+      buildLocalCli().parseAsync([
+        'node',
+        'kavrix',
+        'db',
+        'vault',
+        'use',
+        'vault_auth',
+        '--profile-config-dir',
+        fixture.directory,
+        '--secrets-stdin',
+      ]),
+    ).rejects.toMatchObject({ code: 'authentication' });
+
+    expect(setDefault).not.toHaveBeenCalled();
+    expect(await fixture.registry.get('auth' as never)).not.toHaveProperty(
+      'defaultVaultId',
+    );
   });
 
   databaseCommandWorkflowTest(async () => {
@@ -895,4 +1192,70 @@ async function testDirectory(prefix: string): Promise<string> {
   const directory = await mkdtemp(prefix);
   testDirectories.add(directory);
   return directory;
+}
+
+async function fileProfileFixture(
+  profileId: string,
+  databaseId: string,
+  current: boolean,
+): Promise<Readonly<{ directory: string; registry: DatastoreProfileRegistry }>> {
+  const directory = await testDirectory(
+    join(tmpdir(), `kavrix-vault-use-${profileId}-`),
+  );
+  const registry = await DatastoreProfileRegistry.open({
+    configDirectory: directory,
+  });
+  await addBoundFileProfile(registry, directory, profileId, databaseId);
+  if (current) await registry.use(profileId as never);
+  return { directory, registry };
+}
+
+async function addBoundFileProfile(
+  registry: DatastoreProfileRegistry,
+  directory: string,
+  profileId: string,
+  databaseId: string,
+): Promise<void> {
+  await registry.add({
+    id: profileId,
+    datastore: 'file',
+    dataFile: join(directory, `${profileId}.kavrix`),
+    keyFile: join(directory, `${profileId}.kavrix-db-key`),
+  } as never);
+  await registry.bindDatabaseId(profileId as never, databaseId as never);
+}
+
+function mockFileOwnerSession(
+  databaseId: string,
+  vaultFailure?: DatabaseSessionError,
+): Readonly<{
+  getVault: ReturnType<typeof vi.fn>;
+  close: ReturnType<typeof vi.fn>;
+}> {
+  vi.spyOn(FileEncryptedDatabaseStore, 'validatePath').mockResolvedValue();
+  vi.spyOn(FileEncryptedDatabaseStore, 'open').mockResolvedValue({
+    close: vi.fn(async () => undefined),
+  } as never);
+  vi.spyOn(LocalSecretInput.prototype, 'read').mockResolvedValue([
+    'owner-passphrase-secret-canary',
+  ]);
+  const getVault = vi.fn(async () => {
+    if (vaultFailure !== undefined) throw vaultFailure;
+    return Object.freeze({});
+  });
+  const close = vi.fn(async () => undefined);
+  vi.spyOn(DatabaseSession, 'openWithSecret').mockImplementation(async (options) => {
+    await options.readPassphrase();
+    return { databaseId, getVault, close } as never;
+  });
+  return { getVault, close };
+}
+
+function captureStdout(): string[] {
+  const output: string[] = [];
+  vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => {
+    output.push(String(chunk));
+    return true;
+  });
+  return output;
 }

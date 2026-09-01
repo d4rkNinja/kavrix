@@ -7,12 +7,14 @@ authenticated encrypted database with multiple independently encrypted vaults
 in a hardened local container or two MongoDB collections. Version 2 single-vault
 documents remain supported through stable compatibility commands and explicit
 copy-first migration. No Kavrix API server or sync daemon is required or
-shipped; the legacy-compatible root `kavrix init` now generates a protected,
-non-secret `~/.kavrix/config.toml` onboarding reference instead of the previous
-guided wizard. Current commands do not load it automatically. The schema-driven
+shipped. A bare no-option TTY `kavrix init` generates only a protected,
+non-secret `~/.kavrix/config.toml` onboarding reference; it does not create a
+database or vault, and current commands do not load it automatically.
+Explicitly routed root `init` remains the legacy version 2 compatibility path.
+The schema-driven
 Ink showcase in `packages/tui`
 remains available as the presentation boundary for interactive storage
-selection, but the 0.2.3 no-argument TTY `init` path does not invoke it.
+selection, but the current no-argument TTY `init` path does not invoke it.
 
 Active release workspaces:
 
@@ -23,7 +25,11 @@ Active release workspaces:
 - `@kavrix/storage`: database-scoped local/MongoDB adapters and fail-closed URI/TLS policy.
 - `@kavrix/runner`: shell-free child execution with minimal environments and secret redaction in captured output.
 - `@kavrix/tui`: Ink components for the interactive storage-selection showcase (animated); presentational only, with static strings and no persistence or cryptography.
-- `kavrix`: CLI composition, protected `config.toml` onboarding-reference generation, masked input, sanitized rendering, credential execution, policy firewall, structured database-vault projection, and npm package.
+- `kavrix`: CLI composition, protected `config.toml` onboarding-reference
+  generation, masked input with field-local validation retries and confirmation-pair
+  recovery, TTY-gated status colors with textual markers, sanitized rendering,
+  credential execution, policy firewall, structured database-vault projection,
+  and npm package.
 
 The active-versus-parked source boundary and its verification commands are
 recorded in [Active release boundary](active-release-boundary.md). The source
@@ -32,14 +38,22 @@ are not workspace members, release artifacts, or evidence for the active release
 
 ## Implemented command surface
 
-- legacy-compatible `init` that generates `~/.kavrix/config.toml`
+- legacy-compatible root `init`, whose bare no-option TTY path generates
+  `~/.kavrix/config.toml`
   (`%USERPROFILE%\\.kavrix\\config.toml` on Windows) as a non-secret onboarding
-  reference for the canonical profile/database/vault commands; it is not
+  reference for the canonical profile/database/vault/default-selection
+  commands; it does not create a database or vault, is not
   loaded automatically, lives in the secure `~/.kavrix` directory (mode
   `0o600` / user-only ACL), and is never overwritten once created;
-- protected non-secret datastore profile add/list/use/status/remove;
+- protected non-secret datastore profile add/list/use/status/remove, with a
+  separately authenticated per-profile default-vault selection; strict version
+  1 registries remain readable without read-time rewrites, while the next
+  protected mutation publishes version 2 and makes downgrade to 0.2.7
+  unsupported without a preserved version 1 registry;
 - file/MongoDB database initialization, authenticated status, and MongoDB ping;
-- encrypted database vault create/list/status/rename;
+- encrypted database vault create/list/status/rename/use; vault-scoped commands
+  use the selected profile default when `--vault` is omitted, an explicit
+  `--vault` wins, and a missing selection fails before secret input;
 - database-owner key status, whole-local-database share-key creation, and database recovery create/verify/status/revoke/use;
 - explicit legacy version 2 migration into an existing or explicitly initialized local database;
 - encrypted put/get/list/view/search/stats operations;
@@ -83,7 +97,10 @@ create|list|show|remove|check|explain|lint|diff|suggest`) sealed
   bounds, while frame size/rate, pending relay storage, and active child-stdin
   buffering are bounded and abusive connections are torn down;
 - `kavrix frames [command]` stdin frame-contract reference and `kavrix status`
-  routing summary.
+  routing summary;
+- public root, canonical, and alias help routes that exit successfully without
+  invoking actions or reading secrets; malformed pass-through syntax fails with
+  command-local usage before protected input.
 
 Run `kavrix <command> --help` for exact options. Planned or retired commands must
 not be documented as available.
@@ -110,7 +127,7 @@ into the default structured context/service.
 
 The schemas and session/projection layer preserve notes, expiry/rotation,
 attachments, and history when structured payloads are read or updated. They are
-not represented as additional server-side records, and the 0.2.6 command
+not represented as additional server-side records, and the current command
 surface does not add attachment/history transfer or mutation claims to this
 status ledger. Field-level copy, reveal, reauthentication, and export policies
 remain schema-driven; plaintext field values never cross the storage boundary.
@@ -255,7 +272,7 @@ cross-layer security, package, and user-facing documentation gates pass.
 Project contexts, groups/services, structured items, typed fields,
 notes, expiry/rotation metadata, and encrypted attachment/history records are
 now modeled inside database-vault payloads; the root compatibility commands
-intentionally expose only the default context/service projection. The 0.2.6
+intentionally expose only the default context/service projection. The current
 command surface does not claim attachment/history transfer or mutation support.
 Project-file environment mappings remain an execution feature, not a second
 vault hierarchy. Legacy version 2 vaults support `get --reveal` semantics

@@ -270,6 +270,7 @@ describe('init onboarding', () => {
     const plain: string[] = [];
     const colored: string[] = [];
     writeInitOnboardingComplete({
+      profileHijackWarning: true,
       write: (text) => plain.push(text),
     });
     writeInitOnboardingComplete({
@@ -287,6 +288,8 @@ describe('init onboarding', () => {
     expect(plainOutput).toContain('kavrix recovery create');
     expect(plainOutput).toContain('kavrix put <name>');
     expect(plainOutput).toContain('kavrix list');
+    expect(plainOutput).toContain('use its stored default vault');
+    expect(plainOutput).toContain('kavrix db vault use <id>');
     expect(plainOutput).toContain('separate secure locations');
     expect(plainOutput).not.toContain('\u001b');
     expect(coloredOutput).toContain('\u001b[');

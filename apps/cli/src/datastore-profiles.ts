@@ -18,11 +18,14 @@ import {
 import {
   databaseIdSchema,
   profileIdSchema,
+  vaultIdSchema,
   type DatabaseId,
   type ProfileId,
+  type VaultId,
 } from '@kavrix/schemas';
 
-const REGISTRY_VERSION = 1;
+const LEGACY_REGISTRY_VERSION = 1;
+const REGISTRY_VERSION = 2;
 const MAX_PROFILES = 64;
 const MAX_REGISTRY_BYTES = 128 * 1024;
 const MAX_PATH_CHARS = 4_096;
@@ -36,6 +39,7 @@ export type MongoDatastoreProfile = Readonly<{
   id: ProfileId;
   datastore: 'mongodb';
   databaseId?: DatabaseId;
+  defaultVaultId?: VaultId;
   database: string;
   databaseCollection: string;
   vaultCollection: string;
@@ -46,6 +50,7 @@ export type FileDatastoreProfile = Readonly<{
   id: ProfileId;
   datastore: 'file';
   databaseId?: DatabaseId;
+  defaultVaultId?: VaultId;
   dataFile: string;
   keyFile: string;
 }>;
@@ -62,12 +67,18 @@ export type DatastoreProfileRoutingOverrides = Readonly<{
 }>;
 
 type DatastoreProfileRegistryDocument = Readonly<{
-  version: 1;
+  version: 2;
   current: ProfileId | null;
   profiles: readonly DatastoreProfile[];
 }>;
 
-const profileRegistryDocumentSchema: CanonicalJsonDocumentSchema<DatastoreProfileRegistryDocument> =
+type StoredDatastoreProfileRegistryDocument = Readonly<{
+  version: 1 | 2;
+  current: ProfileId | null;
+  profiles: readonly DatastoreProfile[];
+}>;
+
+const profileRegistryDocumentSchema: CanonicalJsonDocumentSchema<StoredDatastoreProfileRegistryDocument> =
   { parse: parseDocument };
 
 const profileRegistryDocumentOptions = {
@@ -185,12 +196,14 @@ export function resolveDatastoreProfileRouting(
 ): DatastoreProfile {
   const datastore = overrides.datastore ?? profile.datastore;
   const databaseId = profile.databaseId;
+  const defaultVaultId = profile.defaultVaultId;
   if (datastore === 'mongodb') {
     const mongo = profile.datastore === 'mongodb' ? profile : undefined;
     return parseProfile({
       id: profile.id,
       datastore,
       ...(databaseId === undefined ? {} : { databaseId }),
+      ...(defaultVaultId === undefined ? {} : { defaultVaultId }),
       database: overrides.database ?? mongo?.database,
       databaseCollection: overrides.databaseCollection ?? mongo?.databaseCollection,
       vaultCollection: overrides.vaultCollection ?? mongo?.vaultCollection,
@@ -202,6 +215,7 @@ export function resolveDatastoreProfileRouting(
     id: profile.id,
     datastore,
     ...(databaseId === undefined ? {} : { databaseId }),
+    ...(defaultVaultId === undefined ? {} : { defaultVaultId }),
     dataFile: overrides.dataFile ?? file?.dataFile,
     keyFile: overrides.keyFile ?? profile.keyFile,
   });
@@ -398,6 +412,41 @@ export class DatastoreProfileRegistry {
     });
   }
 
+  async setDefaultVaultId(
+    id: ProfileId,
+    vaultId: VaultId,
+    expectedDatabaseId: DatabaseId,
+  ): Promise<DatastoreProfile> {
+    const parsedId = parseProfileId(id);
+    const parsedVaultId = parseDatabaseDefaultVaultId(vaultId);
+    const parsedExpectedDatabaseId = parseOptionalDatabaseId(expectedDatabaseId);
+    if (parsedExpectedDatabaseId === undefined) {
+      throw new DatastoreProfileError('PROFILE_INVALID');
+    }
+    return this.#mutate((document) => {
+      const profile = document.profiles.find((candidate) => candidate.id === parsedId);
+      if (
+        profile?.databaseId === undefined ||
+        profile.databaseId !== parsedExpectedDatabaseId
+      ) {
+        throw new DatastoreProfileError('PROFILE_INVALID');
+      }
+      const selected = parseProfile({
+        ...profile,
+        defaultVaultId: parsedVaultId,
+      });
+      return {
+        document: {
+          ...document,
+          profiles: document.profiles.map((candidate) =>
+            candidate.id === parsedId ? selected : candidate,
+          ),
+        },
+        result: cloneProfile(selected),
+      };
+    });
+  }
+
   async current(): Promise<DatastoreProfile | null> {
     const document = await this.#readOrEmpty();
     if (document.current === null) return null;
@@ -427,9 +476,8 @@ export class DatastoreProfileRegistry {
   async #readOrEmpty(): Promise<DatastoreProfileRegistryDocument> {
     if (!(await registryExists(this.#path))) return emptyDocument();
     try {
-      return await readProtectedJsonDocument(
-        this.#path,
-        profileRegistryDocumentOptions,
+      return normalizeDocument(
+        await readProtectedJsonDocument(this.#path, profileRegistryDocumentOptions),
       );
     } catch (error) {
       throw profileFilesystemError(error);
@@ -466,7 +514,7 @@ export class DatastoreProfileRegistry {
           this.#path,
           profileRegistryDocumentOptions,
           (document) => {
-            const transition = mutate(document);
+            const transition = mutate(normalizeDocument(document));
             return transition;
           },
         );
@@ -507,7 +555,7 @@ export class DatastoreProfileRegistry {
       const publication = await transitionProtectedJsonDocumentWithPublicationStatus(
         this.#path,
         profileRegistryDocumentOptions,
-        mutate,
+        (document) => mutate(normalizeDocument(document)),
       );
       if (
         publication.status === 'not-published' &&
@@ -627,17 +675,31 @@ function emptyDocument(): DatastoreProfileRegistryDocument {
   return { version: REGISTRY_VERSION, current: null, profiles: [] };
 }
 
-function parseDocument(value: unknown): DatastoreProfileRegistryDocument {
+function parseDocument(value: unknown): StoredDatastoreProfileRegistryDocument {
   assertNoSensitiveKeys(value);
   const record = plainRecord(value);
+  if (record['version'] === LEGACY_REGISTRY_VERSION) {
+    return parseDocumentVersion(record, LEGACY_REGISTRY_VERSION, parseVersion1Profile);
+  }
+  if (record['version'] === REGISTRY_VERSION) {
+    return parseDocumentVersion(record, REGISTRY_VERSION, parseProfile);
+  }
+  throw new DatastoreProfileError('PROFILE_INVALID');
+}
+
+function parseDocumentVersion(
+  record: Readonly<Record<string, unknown>>,
+  version: 1 | 2,
+  parseStoredProfile: (value: unknown) => DatastoreProfile,
+): StoredDatastoreProfileRegistryDocument {
   assertExactKeys(record, ['current', 'profiles', 'version']);
-  if (record['version'] !== REGISTRY_VERSION || !Array.isArray(record['profiles'])) {
+  if (!Array.isArray(record['profiles'])) {
     throw new DatastoreProfileError('PROFILE_INVALID');
   }
   if (record['profiles'].length > MAX_PROFILES) {
     throw new DatastoreProfileError('PROFILE_LIMIT');
   }
-  const profiles = record['profiles'].map(parseProfile);
+  const profiles = record['profiles'].map(parseStoredProfile);
   const ids = new Set<string>();
   for (const profile of profiles) {
     if (ids.has(profile.id)) throw new DatastoreProfileError('PROFILE_INVALID');
@@ -649,14 +711,41 @@ function parseDocument(value: unknown): DatastoreProfileRegistryDocument {
   const current = record['current'] === null ? null : parseProfileId(record['current']);
   if (current !== null && !ids.has(current))
     throw new DatastoreProfileError('PROFILE_INVALID');
-  return { version: REGISTRY_VERSION, current, profiles: sorted };
+  return { version, current, profiles: sorted };
+}
+
+function normalizeDocument(
+  document: StoredDatastoreProfileRegistryDocument,
+): DatastoreProfileRegistryDocument {
+  return {
+    version: REGISTRY_VERSION,
+    current: document.current,
+    profiles: document.profiles,
+  };
 }
 
 function parseProfile(value: unknown): DatastoreProfile {
+  return parseProfileVersion(value, true);
+}
+
+function parseVersion1Profile(value: unknown): DatastoreProfile {
+  return parseProfileVersion(value, false);
+}
+
+function parseProfileVersion(
+  value: unknown,
+  supportsDefaultVaultId: boolean,
+): DatastoreProfile {
   assertNoSensitiveKeys(value);
   const record = plainRecord(value);
   const id = parseProfileId(record['id']);
   const databaseId = parseOptionalDatabaseId(record['databaseId']);
+  const defaultVaultId = supportsDefaultVaultId
+    ? parseOptionalDatabaseDefaultVaultId(record['defaultVaultId'])
+    : undefined;
+  if (defaultVaultId !== undefined && databaseId === undefined) {
+    throw new DatastoreProfileError('PROFILE_INVALID');
+  }
   if (record['datastore'] === 'mongodb') {
     assertExactKeys(
       record,
@@ -664,12 +753,18 @@ function parseProfile(value: unknown): DatastoreProfile {
         'database',
         'databaseCollection',
         'databaseId',
+        ...(supportsDefaultVaultId ? ['defaultVaultId'] : []),
         'datastore',
         'id',
         'keyFile',
         'vaultCollection',
       ],
-      databaseId === undefined ? ['databaseId'] : [],
+      [
+        ...(databaseId === undefined ? ['databaseId'] : []),
+        ...(supportsDefaultVaultId && defaultVaultId === undefined
+          ? ['defaultVaultId']
+          : []),
+      ],
     );
     const profile: MongoDatastoreProfile = {
       id,
@@ -682,14 +777,27 @@ function parseProfile(value: unknown): DatastoreProfile {
       vaultCollection: parseRoutingName(record['vaultCollection'], COLLECTION_NAME),
       keyFile: parsePath(record['keyFile']),
       ...(databaseId === undefined ? {} : { databaseId }),
+      ...(defaultVaultId === undefined ? {} : { defaultVaultId }),
     };
     return profile;
   }
   if (record['datastore'] === 'file') {
     assertExactKeys(
       record,
-      ['dataFile', 'databaseId', 'datastore', 'id', 'keyFile'],
-      databaseId === undefined ? ['databaseId'] : [],
+      [
+        'dataFile',
+        'databaseId',
+        ...(supportsDefaultVaultId ? ['defaultVaultId'] : []),
+        'datastore',
+        'id',
+        'keyFile',
+      ],
+      [
+        ...(databaseId === undefined ? ['databaseId'] : []),
+        ...(supportsDefaultVaultId && defaultVaultId === undefined
+          ? ['defaultVaultId']
+          : []),
+      ],
     );
     const profile: FileDatastoreProfile = {
       id,
@@ -697,10 +805,27 @@ function parseProfile(value: unknown): DatastoreProfile {
       dataFile: parsePath(record['dataFile']),
       keyFile: parsePath(record['keyFile']),
       ...(databaseId === undefined ? {} : { databaseId }),
+      ...(defaultVaultId === undefined ? {} : { defaultVaultId }),
     };
     return profile;
   }
   throw new DatastoreProfileError('PROFILE_INVALID');
+}
+
+function parseDatabaseDefaultVaultId(value: unknown): VaultId {
+  try {
+    const vaultId = vaultIdSchema.parse(value);
+    if (!vaultId.startsWith('vault_')) {
+      throw new DatastoreProfileError('PROFILE_INVALID');
+    }
+    return vaultId;
+  } catch {
+    throw new DatastoreProfileError('PROFILE_INVALID');
+  }
+}
+
+function parseOptionalDatabaseDefaultVaultId(value: unknown): VaultId | undefined {
+  return value === undefined ? undefined : parseDatabaseDefaultVaultId(value);
 }
 
 function parseProfileId(value: unknown): ProfileId {
@@ -815,6 +940,9 @@ function cloneProfile(profile: DatastoreProfile): DatastoreProfile {
         vaultCollection: profile.vaultCollection,
         keyFile: profile.keyFile,
         ...(profile.databaseId === undefined ? {} : { databaseId: profile.databaseId }),
+        ...(profile.defaultVaultId === undefined
+          ? {}
+          : { defaultVaultId: profile.defaultVaultId }),
       }
     : {
         id: profile.id,
@@ -822,6 +950,9 @@ function cloneProfile(profile: DatastoreProfile): DatastoreProfile {
         dataFile: profile.dataFile,
         keyFile: profile.keyFile,
         ...(profile.databaseId === undefined ? {} : { databaseId: profile.databaseId }),
+        ...(profile.defaultVaultId === undefined
+          ? {}
+          : { defaultVaultId: profile.defaultVaultId }),
       };
 }
 

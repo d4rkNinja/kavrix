@@ -10,12 +10,20 @@ presentational boundary only: its strings are static and it has no persistence,
 cryptographic, or secret-input authority. The CLI loads it lazily, and the
 non-TTY path retains the numbered storage-selection fallback.
 
-The 0.2.3 no-argument TTY `kavrix init` path now creates the non-secret
+The current no-argument TTY `kavrix init` path creates the non-secret
 `~/.kavrix/config.toml` onboarding reference and does not initialize a vault,
 invoke the showcase, or load edited settings automatically. The showcase
 remains part of the active build/test boundary for the
 interactive storage-selection path; it is not a replacement for the canonical
-profile → `db init` → `db vault create` setup.
+profile → `db init` → `db vault create` → `db vault use` setup. The final
+selection stores only an authenticated opaque default vault ID for that profile;
+an explicit `--vault` continues to override it.
+
+Masked interactive prompts render textual requirement, success, and error
+markers and retry a locally invalid field without discarding unrelated answers.
+A passphrase-confirmation mismatch retries the pair. Color is supplemental,
+appears only on a capable TTY, and is disabled by `NO_COLOR` or `TERM=dumb`;
+protected stdin remains silent and ANSI-free.
 
 Terminal-rendered content is treated as hostile. Control, ANSI, and OSC
 sequences are sanitized before display, and secret values are never rendered by

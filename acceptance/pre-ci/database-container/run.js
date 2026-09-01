@@ -281,15 +281,39 @@ async function createVault(run, paths, profile, passphrase, label, options = {})
   return created.id;
 }
 
+async function selectVault(run, paths, profile, vaultId, passphrase) {
+  const selected = parseJson(
+    await run(
+      [
+        'db',
+        'vault',
+        'use',
+        vaultId,
+        ...profileRoute(paths, profile),
+        '--secrets-stdin',
+      ],
+      [passphrase],
+    ),
+    `vault use ${profile}`,
+  );
+  assert(selected.selected === true, `profile ${profile} did not select a vault`);
+  assert(selected.profile === profile, `vault selection changed profile ${profile}`);
+  assert(selected.vaultId === vaultId, `profile ${profile} selected the wrong vault`);
+}
+
+function credentialRoute(paths, profile, vaultId) {
+  const route = profileRoute(paths, profile);
+  if (vaultId !== undefined) route.push('--vault', vaultId);
+  return route;
+}
+
 async function putCredential(run, paths, profile, vaultId, passphrase, name, value) {
   const result = parseJson(
     await run(
       [
         'put',
         name,
-        ...profileRoute(paths, profile),
-        '--vault',
-        vaultId,
+        ...credentialRoute(paths, profile, vaultId),
         '--passphrase-stdin',
         '--value-stdin',
       ],
@@ -301,12 +325,7 @@ async function putCredential(run, paths, profile, vaultId, passphrase, name, val
 }
 
 async function assertCredential(run, paths, profile, vaultId, passphrase, name) {
-  const route = [
-    ...profileRoute(paths, profile),
-    '--vault',
-    vaultId,
-    '--passphrase-stdin',
-  ];
+  const route = [...credentialRoute(paths, profile, vaultId), '--passphrase-stdin'];
   const exists = parseJson(
     await run(['has', name, ...route], [passphrase]),
     `has ${name}`,
@@ -317,6 +336,43 @@ async function assertCredential(run, paths, profile, vaultId, passphrase, name) 
     `get ${name}`,
   );
   assert(read.value === '[REDACTED]', `credential ${name} was revealed by default`);
+}
+
+async function assertCredentialMissing(run, paths, profile, vaultId, passphrase, name) {
+  const result = parseJson(
+    await run(
+      ['has', name, ...credentialRoute(paths, profile, vaultId), '--passphrase-stdin'],
+      [passphrase],
+    ),
+    `has ${name}`,
+  );
+  assert(result.exists === false, `credential ${name} escaped its selected vault`);
+}
+
+async function assertCredentialList(
+  run,
+  paths,
+  profile,
+  vaultId,
+  passphrase,
+  expectedName,
+  excludedName,
+) {
+  const result = parseJson(
+    await run(
+      ['list', ...credentialRoute(paths, profile, vaultId), '--passphrase-stdin'],
+      [passphrase],
+    ),
+    `list ${profile}`,
+  );
+  assert(
+    result.names?.includes(expectedName),
+    `credential list omitted ${expectedName}`,
+  );
+  assert(
+    !result.names?.includes(excludedName),
+    `credential list included ${excludedName} from another vault`,
+  );
 }
 
 async function assertCredentialExact(
@@ -332,9 +388,7 @@ async function assertCredentialExact(
     [
       'get',
       name,
-      ...profileRoute(paths, profile),
-      '--vault',
-      vaultId,
+      ...credentialRoute(paths, profile, vaultId),
       '--passphrase-stdin',
       '--reveal',
     ],
@@ -547,6 +601,8 @@ async function exerciseDatabaseContainer(run, paths) {
   );
   assert(firstVaultId !== secondVaultId, 'database vault IDs are not independent');
 
+  await selectVault(run, paths, 'primary', firstVaultId, primaryPassphrase);
+
   const listed = parseJson(
     await run(
       [
@@ -571,7 +627,7 @@ async function exerciseDatabaseContainer(run, paths) {
     run,
     paths,
     'primary',
-    firstVaultId,
+    undefined,
     primaryPassphrase,
     'service/first',
     canaryA,
@@ -589,9 +645,26 @@ async function exerciseDatabaseContainer(run, paths) {
     run,
     paths,
     'primary',
-    firstVaultId,
+    undefined,
     primaryPassphrase,
     'service/first',
+  );
+  await assertCredentialMissing(
+    run,
+    paths,
+    'primary',
+    undefined,
+    primaryPassphrase,
+    'service/second',
+  );
+  await assertCredentialList(
+    run,
+    paths,
+    'primary',
+    undefined,
+    primaryPassphrase,
+    'service/first',
+    'service/second',
   );
   await assertCredential(
     run,
@@ -620,6 +693,40 @@ async function exerciseDatabaseContainer(run, paths) {
     canaryB,
   );
   await exerciseReadOnlyPolicyTooling(run, paths, primaryPassphrase);
+  await selectVault(run, paths, 'primary', secondVaultId, primaryPassphrase);
+  await assertCredential(
+    run,
+    paths,
+    'primary',
+    undefined,
+    primaryPassphrase,
+    'service/second',
+  );
+  await assertCredentialMissing(
+    run,
+    paths,
+    'primary',
+    undefined,
+    primaryPassphrase,
+    'service/first',
+  );
+  await assertCredentialList(
+    run,
+    paths,
+    'primary',
+    undefined,
+    primaryPassphrase,
+    'service/second',
+    'service/first',
+  );
+  await assertCredential(
+    run,
+    paths,
+    'primary',
+    firstVaultId,
+    primaryPassphrase,
+    'service/first',
+  );
 
   await run(
     [

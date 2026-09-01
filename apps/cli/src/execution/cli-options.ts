@@ -27,6 +27,11 @@ export function extractMergedOptions(
       }
     }
   }
+  const vaultWasExplicit = hierarchy.some((entry) => {
+    const source = entry.getOptionValueSource('vault');
+    return source !== undefined && source !== 'default';
+  });
+  if (!vaultWasExplicit) merged['vaultWasDefaulted'] = true;
   return merged;
 }
 
@@ -40,6 +45,7 @@ export function executionFlatOptions(
       ? { profileConfigDir: merged['profileConfigDir'] }
       : {}),
     vault: typeof vault === 'string' && vault.length > 0 ? vault : 'default',
+    ...(merged['vaultWasDefaulted'] === true ? { vaultWasDefaulted: true } : {}),
     ...(typeof merged['datastore'] === 'string'
       ? { datastore: merged['datastore'] }
       : {}),

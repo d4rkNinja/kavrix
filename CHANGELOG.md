@@ -2,6 +2,50 @@
 
 All notable user-facing and security changes to Kavrix are recorded here.
 
+## 0.2.8 - 2026-09-01
+
+### Added
+
+- `kavrix db vault use <vault-id>` authenticates the selected datastore
+  profile, verifies the vault, and stores its opaque ID as that profile's
+  default. Vault-scoped commands use the default when `--vault` is omitted, an
+  explicit `--vault` overrides it for one invocation, and a missing selection
+  fails before secret input.
+
+### Improved
+
+- Interactive masked prompts now show non-secret requirements and textual
+  status markers, retry only the locally invalid field, and retry both entries
+  after a passphrase-confirmation mismatch. ANSI color is limited to eligible
+  TTYs and respects `NO_COLOR` and `TERM=dumb`; protected stdin remains silent
+  and ANSI-free.
+- `grant create --help` now lists every effective inherited creation option and
+  explains where those options may be placed. `policy check` and `policy
+explain` document and enforce the literal `-- <executable> [args...]`
+  boundary before reading secrets.
+
+### Fixed
+
+- Root and public command help routes now render safely and exit `0` without
+  invoking command actions or secret input. Unknown root commands emit one
+  sanitized usage error and retain exit `2`.
+
+### Security boundary
+
+- Profile registries store only non-secret routing data, including an optional
+  opaque default vault ID. They never store datastore credentials,
+  passphrases, private labels, database or vault root keys, or credential
+  values.
+
+### Compatibility
+
+- Existing version 1 profile registries remain readable and are not rewritten
+  by read-only commands. The next protected profile mutation writes the strict
+  version 2 registry needed for default-vault selection. Kavrix 0.2.7 cannot
+  read that newer registry, so downgrading after a 0.2.8 profile mutation is
+  unsupported; restore a separately preserved version 1 registry or roll
+  forward to 0.2.8.
+
 ## 0.2.7 - 2026-08-31
 
 ### Security and reliability
