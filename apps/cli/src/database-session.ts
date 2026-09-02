@@ -2346,7 +2346,8 @@ function mapError(error: unknown): Error {
     return new DatabaseSessionError('operation');
   }
   if (error instanceof ZodError) return new DatabaseSessionError('invalid');
-  if (error instanceof PortableKeyFileError) return error;
+  if (error instanceof PortableKeyFileError && error.code === 'KEY_FILE_NOT_FOUND')
+    return error;
   return new DatabaseSessionError('authentication');
 }
 

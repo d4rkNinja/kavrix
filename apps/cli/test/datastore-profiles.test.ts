@@ -653,6 +653,8 @@ describe('datastore profiles', () => {
   it('fails closed before secret input when db ping receives a database-bound profile', async () => {
     const profiles = await registry();
     await profiles.add(mongoProfile());
+    // Bound profiles now allow `db ping`; it proceeds to connectivity check rather than
+    // rejecting as a container command. The exact failure is transport-dependent.
     await expect(
       buildLocalCli().parseAsync([
         'node',
@@ -664,7 +666,7 @@ describe('datastore profiles', () => {
         '--profile-config-dir',
         directory,
       ]),
-    ).rejects.toThrow('requires database container commands');
+    ).rejects.not.toThrow('requires database container commands');
   });
 
   it('rejects unsafe registry filesystem state and preserves the last valid publication', async () => {

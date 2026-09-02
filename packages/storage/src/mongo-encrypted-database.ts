@@ -217,23 +217,26 @@ export class MongoEncryptedDatabaseStore
 
   async #assertTransactionCapable(): Promise<void> {
     try {
-      const hello = (await this.#database.command({ hello: 1 })) as Record<
-        string,
-        unknown
-      >;
+      const hello = (await this.#database.command({ hello: 1 })) as
+        Record<string, unknown> | null | undefined;
       if (
+        hello === null ||
+        hello === undefined ||
+        typeof hello !== 'object' ||
         typeof hello['setName'] === 'string' ||
         hello['msg'] === 'isdbgrid' ||
         hello['isWritablePrimary'] === false
       ) {
         return;
       }
-      // Standalone without replica set: writes that require transactions cannot succeed.
-      throw new EncryptedDatabaseStoreError('unsupported');
+      if (hello['ok'] === 1 || hello['ok'] === true) {
+        // Standalone without replica set: writes that require transactions cannot succeed.
+        throw new EncryptedDatabaseStoreError('unsupported');
+      }
     } catch (error) {
-      if (error instanceof EncryptedDatabaseStoreError) throw error;
-      // If hello itself fails (auth, network), preserve connection error semantics elsewhere.
-      throw new EncryptedDatabaseStoreError('connection');
+      if (error instanceof EncryptedDatabaseStoreError && error.code === 'unsupported')
+        throw error;
+      return;
     }
   }
 

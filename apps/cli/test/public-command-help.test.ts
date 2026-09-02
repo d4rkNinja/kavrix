@@ -151,7 +151,7 @@ describe('public command help contract', () => {
 
     // These counts make intentional public-surface changes explicit while the
     // tree-derived loop below automatically exercises the resulting routes.
-    expect(routes.canonical).toHaveLength(101);
+    expect(routes.canonical).toHaveLength(103);
     expect(routes.aliases).toHaveLength(16);
 
     for (const route of [...routes.canonical, ...routes.aliases]) {
@@ -181,7 +181,8 @@ describe('public command help contract', () => {
     expect(destroy).toBeDefined();
     expect(program.createHelp().visibleCommands(program)).not.toContain(destroy);
     expect(program.helpInformation()).not.toMatch(/(?:^|\n)\s+destroy\b/u);
-    expect(destroy?.createHelp().visibleOptions(destroy)).not.toEqual(
+    // `destroy --help` must still be usable even though the command itself is hidden.
+    expect(destroy?.createHelp().visibleOptions(destroy)).toEqual(
       expect.arrayContaining([expect.objectContaining({ long: '--help' })]),
     );
   });
