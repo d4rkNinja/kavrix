@@ -4,7 +4,7 @@ import { readFile, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { databaseIdSchema, profileIdSchema } from '@kavrix/schemas';
+import { databaseIdSchema, profileIdSchema, vaultIdSchema } from '@kavrix/schemas';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { validateDatastoreProfileBindingPublicationResult } from '../src/datastore-profiles.js';
@@ -13,6 +13,7 @@ import { createSecureTestDirectory as mkdtemp } from '../../../packages/key-file
 type FaultPhase =
   | 'none'
   | 'pre-publication'
+  | 'post-link'
   | 'post-rename'
   | 'final-verification'
   | 'directory-sync'
@@ -38,6 +39,21 @@ vi.mock('node:fs/promises', async (importOriginal) => {
   };
   return {
     ...actual,
+    link: async (existingPath: FsPromises.PathLike, newPath: FsPromises.PathLike) => {
+      if (String(newPath) !== fault.target || fault.fired) {
+        return actual.link(existingPath, newPath);
+      }
+      if (fault.phase === 'pre-publication') {
+        fault.fired = true;
+        throw injected();
+      }
+      await actual.link(existingPath, newPath);
+      fault.renamed = true;
+      if (fault.phase === 'post-link') {
+        fault.fired = true;
+        throw injected();
+      }
+    },
     rename: async (oldPath: FsPromises.PathLike, newPath: FsPromises.PathLike) => {
       if (String(newPath) !== fault.target || fault.fired) {
         return actual.rename(oldPath, newPath);
@@ -158,6 +174,73 @@ async function unboundRegistry(): Promise<DatastoreProfileRegistry> {
 }
 
 describe('datastore profile binding publication', () => {
+  it.each(['post-link', 'final-verification', 'directory-sync'] as const)(
+    'reports uncertain initial route publication after create-mode %s failure',
+    async (phase) => {
+      const profiles = await DatastoreProfileRegistry.open({
+        configDirectory: directory,
+      });
+      const expected = {
+        id: profileIdSchema.parse('guided'),
+        datastore: 'file' as const,
+        dataFile: '/protected/guided-database.kavrix',
+        keyFile: '/protected/guided-owner.key',
+      };
+      armFault(phase);
+
+      const publication = await profiles.addForInitialization(expected);
+
+      expect(publication).toMatchObject({
+        status: 'publication-uncertain',
+        error: { code: 'PROFILE_UNSAFE' },
+      });
+      expect(Object.isFrozen(publication)).toBe(true);
+      expect(await profiles.get(expected.id)).toEqual(expected);
+    },
+  );
+
+  it('reports uncertain initial route publication after existing-registry replacement', async () => {
+    const profiles = await unboundRegistry();
+    const expected = {
+      id: profileIdSchema.parse('guided'),
+      datastore: 'file' as const,
+      dataFile: '/protected/guided-database.kavrix',
+      keyFile: '/protected/guided-owner.key',
+    };
+    armFault('post-rename');
+
+    const publication = await profiles.addForInitialization(expected);
+
+    expect(publication).toMatchObject({
+      status: 'publication-uncertain',
+      error: { code: 'PROFILE_UNSAFE' },
+    });
+    expect(await profiles.get(expected.id)).toEqual(expected);
+  });
+
+  it('proves initial route non-publication before create-only publication', async () => {
+    const profiles = await DatastoreProfileRegistry.open({
+      configDirectory: directory,
+    });
+    const expected = {
+      id: profileIdSchema.parse('guided'),
+      datastore: 'file' as const,
+      dataFile: '/protected/guided-database.kavrix',
+      keyFile: '/protected/guided-owner.key',
+    };
+    armFault('pre-publication');
+
+    const publication = await profiles.addForInitialization(expected);
+
+    expect(publication).toMatchObject({
+      status: 'not-published',
+      error: { code: 'PROFILE_UNSAFE' },
+    });
+    await expect(profiles.get(expected.id)).rejects.toMatchObject({
+      code: 'PROFILE_NOT_FOUND',
+    });
+  });
+
   it('returns published with an opaque capability and preserves bindDatabaseId behavior', async () => {
     const profiles = await unboundRegistry();
     const databaseId = databaseIdSchema.parse('db_initialized');
@@ -300,5 +383,35 @@ describe('datastore profile binding publication', () => {
       error: { code: 'PROFILE_INVALID' },
     });
     expect(await readFile(resolveProfilePath(directory), 'utf8')).toBe(before);
+  });
+
+  it('fails closed when exact final selection publication is uncertain', async () => {
+    const profiles = await DatastoreProfileRegistry.open({
+      configDirectory: directory,
+    });
+    const prior = {
+      id: profileIdSchema.parse('prior'),
+      datastore: 'file' as const,
+      dataFile: '/protected/prior-database.kavrix',
+      keyFile: '/protected/prior-owner.key',
+    };
+    const expected = {
+      id: profileIdSchema.parse('guided'),
+      datastore: 'file' as const,
+      dataFile: '/protected/guided-database.kavrix',
+      keyFile: '/protected/guided-owner.key',
+      databaseId: databaseIdSchema.parse('db_guided'),
+      defaultVaultId: vaultIdSchema.parse('vault_guided'),
+    };
+    await profiles.add(prior);
+    await profiles.add(expected);
+    await profiles.use(prior.id);
+    armFault('post-rename');
+
+    await expect(profiles.useExpected(expected)).rejects.toMatchObject({
+      code: 'PROFILE_UNSAFE',
+    });
+
+    expect(await profiles.current()).toEqual(expected);
   });
 });

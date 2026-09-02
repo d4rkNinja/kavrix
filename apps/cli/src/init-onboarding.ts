@@ -13,6 +13,8 @@ const MAX_NON_SECRET_INPUT_LENGTH = 4_096;
 
 const DEFAULT_DATA_FILE = './kavrix.vault';
 const DEFAULT_KEY_FILE = './kavrix.key';
+const DEFAULT_RECOVERY_FILE = './kavrix.recovery';
+const DEFAULT_PROFILE_ID = 'default';
 const DEFAULT_COLLECTION = 'kavrix_vaults';
 
 export type InitOnboardingStorage = 'file' | 'mongodb';
@@ -40,6 +42,32 @@ export type InitOnboardingOptions = Readonly<{
   /** Write static onboarding text (normally to stderr). */
   write: (text: string) => void;
   /** ANSI styling is enabled only when explicitly requested. */
+  color?: boolean;
+}>;
+
+export type GuidedLocalOnboardingPatch = Readonly<{
+  profileId: string;
+  dataFile: string;
+  keyFile: string;
+  recoveryFile: string;
+}>;
+
+export type GuidedLocalOnboardingOptions = Readonly<{
+  /** Read one visible, non-secret line. */
+  question: (prompt: string) => Promise<string>;
+  /** Resolve defaults and preflight every destination before protected input. */
+  validateDestination?: (
+    patch: GuidedLocalOnboardingPatch,
+  ) => Promise<GuidedLocalOnboardingPatch>;
+  /** Write static onboarding text (normally to stderr). */
+  write: (text: string) => void;
+  /** ANSI styling is enabled only when explicitly requested. */
+  color?: boolean;
+}>;
+
+export type GuidedLocalOnboardingCompleteOptions = Readonly<{
+  write: (text: string) => void;
+  profileId: string;
   color?: boolean;
 }>;
 
@@ -73,6 +101,142 @@ export class InitOnboardingDestinationError extends Error {
     super('The selected destination is invalid.');
     this.name = 'InitOnboardingDestinationError';
   }
+}
+
+/**
+ * Collect the visible part of the database-container happy path. Secret
+ * labels and passphrases deliberately remain outside this API.
+ */
+export async function runGuidedLocalOnboarding(
+  options: GuidedLocalOnboardingOptions,
+): Promise<GuidedLocalOnboardingPatch> {
+  const style = createStyler(options.color === true);
+  welcome: for (;;) {
+    writeGuidedWelcome(options.write, style);
+    for (;;) {
+      const welcomeResult = await readControl(
+        options,
+        style('Press Enter to continue', '2'),
+      );
+      if (welcomeResult.kind === 'cancel') throw new InitOnboardingCancelledError();
+      if (welcomeResult.kind === 'value' && welcomeResult.value.trim().length === 0) {
+        break;
+      }
+      writeNotice(options.write, style, 'Press Enter to continue or Q to cancel.');
+    }
+
+    for (;;) {
+      writeGuidedDestinationIntro(options.write, style);
+      const fields = [
+        {
+          key: 'profileId',
+          prompt: 'Profile ID (Enter for default)',
+          fallback: DEFAULT_PROFILE_ID,
+        },
+        {
+          key: 'dataFile',
+          prompt: 'Encrypted database path (Enter for default)',
+          fallback: DEFAULT_DATA_FILE,
+        },
+        {
+          key: 'keyFile',
+          prompt: 'Owner key path (Enter for default)',
+          fallback: DEFAULT_KEY_FILE,
+        },
+        {
+          key: 'recoveryFile',
+          prompt: 'Recovery kit path (Enter for default)',
+          fallback: DEFAULT_RECOVERY_FILE,
+        },
+      ] as const;
+      const values: Partial<Record<(typeof fields)[number]['key'], string>> = {};
+      let index = 0;
+      let restart = false;
+      while (index < fields.length) {
+        const field = fields[index];
+        if (field === undefined) break;
+        const result = await readField(options, style, field.prompt, field.fallback);
+        if (result.kind === 'cancel') throw new InitOnboardingCancelledError();
+        if (result.kind === 'back') {
+          if (index === 0) {
+            restart = true;
+            break;
+          }
+          index -= 1;
+          continue;
+        }
+        values[field.key] = result.value;
+        index += 1;
+      }
+      if (restart) continue welcome;
+      const profileId = values.profileId;
+      const dataFile = values.dataFile;
+      const keyFile = values.keyFile;
+      const recoveryFile = values.recoveryFile;
+      if (
+        profileId === undefined ||
+        dataFile === undefined ||
+        keyFile === undefined ||
+        recoveryFile === undefined
+      ) {
+        throw new InitOnboardingDestinationError('invalid-destination');
+      }
+      const candidate = { profileId, dataFile, keyFile, recoveryFile };
+      let validated: GuidedLocalOnboardingPatch;
+      try {
+        validated =
+          options.validateDestination === undefined
+            ? candidate
+            : await options.validateDestination(candidate);
+      } catch (error) {
+        if (!(error instanceof InitOnboardingDestinationError)) throw error;
+        writeNotice(options.write, style, destinationValidationMessage(error));
+        continue;
+      }
+
+      writeGuidedProtect(options.write, style);
+      const protect = await readControl(
+        options,
+        style('Press Enter for masked secret prompts', '2'),
+      );
+      if (protect.kind === 'cancel') throw new InitOnboardingCancelledError();
+      if (protect.kind === 'back') continue;
+      if (protect.value.trim().length > 0) {
+        writeNotice(
+          options.write,
+          style,
+          'Press Enter to begin the masked secret prompts.',
+        );
+        continue;
+      }
+      return validated;
+    }
+  }
+}
+
+export function writeGuidedLocalOnboardingComplete(
+  options: GuidedLocalOnboardingCompleteOptions,
+): void {
+  const style = createStyler(options.color === true);
+  const profileId = sanitizeStaticIdentifier(options.profileId);
+  options.write(
+    [
+      '',
+      style('SETUP COMPLETE', '1;32'),
+      '',
+      `${style('[OK]', '32')} Local encrypted database initialized.`,
+      `${style('[OK]', '32')} Default vault created and selected.`,
+      `${style('[OK]', '32')} Recovery kit created and verified locally.`,
+      `${style('[OK]', '32')} Protected datastore profile selected: ${profileId}`,
+      '',
+      'Try:',
+      `  kavrix put <name> --profile ${profileId}`,
+      `  kavrix list --profile ${profileId}`,
+      '',
+      'Keep the owner key and recovery kit in separate secure locations.',
+      '',
+    ].join('\n'),
+  );
 }
 
 type InitOnboardingStep = 'welcome' | 'storage' | 'destination' | 'protect-key';
@@ -356,8 +520,13 @@ async function collectDestination(
   };
 }
 
+type OnboardingInteractionOptions = Readonly<{
+  question: (prompt: string) => Promise<string>;
+  write: (text: string) => void;
+}>;
+
 async function readField(
-  options: InitOnboardingOptions,
+  options: OnboardingInteractionOptions,
   style: (text: string, code: string) => string,
   prompt: string,
   fallback: string | undefined,
@@ -376,7 +545,7 @@ async function readField(
 }
 
 async function readChoice(
-  options: InitOnboardingOptions,
+  options: OnboardingInteractionOptions,
   prompt: string,
 ): Promise<ReadResult> {
   const result = await readControl(options, prompt);
@@ -385,7 +554,7 @@ async function readChoice(
 }
 
 async function readControl(
-  options: InitOnboardingOptions,
+  options: OnboardingInteractionOptions,
   prompt: string,
 ): Promise<ReadResult> {
   const raw = await options.question(`${prompt}: `);
@@ -503,6 +672,68 @@ function writeProtectKey(
       '',
     ].join('\n'),
   );
+}
+
+function writeGuidedWelcome(
+  write: (text: string) => void,
+  style: (text: string, code: string) => string,
+): void {
+  write(
+    [
+      '',
+      style('STEP 1 / LOCAL RECOVERABLE SETUP', '1;36'),
+      '',
+      'Kavrix will create one local encrypted database, one default vault,',
+      'and one recovery kit that is verified before the new profile is selected.',
+      'All credential data is encrypted on this device.',
+      '',
+    ].join('\n'),
+  );
+}
+
+function writeGuidedDestinationIntro(
+  write: (text: string) => void,
+  style: (text: string, code: string) => string,
+): void {
+  write(
+    [
+      '',
+      style('STEP 2 / PROTECTED DESTINATIONS', '1;36'),
+      '',
+      'Choose a public profile alias and separate destinations for the encrypted',
+      'database, protected owner key, and protected recovery kit.',
+      'Blank paths use Kavrix’s private user-data directory.',
+      '',
+    ].join('\n'),
+  );
+}
+
+function writeGuidedProtect(
+  write: (text: string) => void,
+  style: (text: string, code: string) => string,
+): void {
+  write(
+    [
+      '',
+      style('STEP 3 / PROTECT & VERIFY', '1;36'),
+      '',
+      'Masked prompts collect private database and vault labels, then separate',
+      'owner-key and recovery-kit passphrases with confirmation.',
+      'Nothing protected is stored in config, process arguments, or terminal output.',
+      '',
+    ].join('\n'),
+  );
+}
+
+function sanitizeStaticIdentifier(value: string): string {
+  return Array.from(value)
+    .map((character) => {
+      const point = character.codePointAt(0) ?? 0;
+      return point < 32 || point === 127 || (point >= 128 && point <= 159)
+        ? '[CONTROL]'
+        : character;
+    })
+    .join('');
 }
 
 function destinationValidationMessage(error: unknown): string {

@@ -22,6 +22,8 @@ const STRICT_UTF8_DECODER = new TextDecoder('utf-8', { fatal: true });
 export type LocalSecretKind =
   | 'database-url'
   | 'label'
+  | 'database-label'
+  | 'vault-label'
   | 'passphrase'
   | 'recovery-passphrase'
   | 'new-passphrase'
@@ -415,6 +417,8 @@ function mismatchMessage(kind: ConfirmableLocalSecretKind): string {
 function labelFor(kind: LocalSecretKind): string {
   if (kind === 'database-url') return 'database URL';
   if (kind === 'label') return 'private label';
+  if (kind === 'database-label') return 'private database label';
+  if (kind === 'vault-label') return 'private vault label';
   if (kind === 'field-value') return 'credential value';
   if (kind === 'field-value-base64') return 'credential value (base64)';
   if (kind === 'recovery-passphrase') return 'recovery-kit passphrase';
@@ -473,7 +477,7 @@ function validateSecret(value: string, kind?: LocalSecretKind): string {
       true,
     );
   }
-  if (kind === 'label') {
+  if (kind === 'label' || kind === 'database-label' || kind === 'vault-label') {
     try {
       return databaseCatalogPayloadSchema.shape.label.parse(value);
     } catch {

@@ -9,9 +9,10 @@ Database-container initialization (`kavrix db init`) creates a protected
 database-owner key file containing wrapped key material bound to the database.
 The legacy root `kavrix init` path creates a protected portable-key file bound to
 one version 2 vault when invoked with explicit routing and secret input. A bare
-no-argument TTY `kavrix init` only creates the non-secret `config.toml` template
-and does not create a key or vault. Current commands do not load the file
-automatically.
+no-argument TTY `kavrix init` instead creates a database-container owner key,
+local encrypted database, default vault, and a separately protected recovery
+kit that it verifies before profile selection. Its non-secret `config.toml`
+reference is not loaded automatically.
 
 ## Lifecycle
 

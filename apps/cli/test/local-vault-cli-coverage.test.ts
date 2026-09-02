@@ -1614,7 +1614,9 @@ describe(
         value: true,
       });
       try {
-        expect(await runReported(['init'], '', true)).toContain('Kavrix configuration');
+        const reported = await runReported(['init'], '', true);
+        expect(reported).toContain('STEP 1 / LOCAL RECOVERABLE SETUP');
+        expect(reported).toContain('Setup cancelled. No vault was created.');
       } finally {
         restoreProperty(process.stdin, 'isTTY', stdinTty);
         restoreProperty(process.stderr, 'isTTY', stderrTty);

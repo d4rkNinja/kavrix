@@ -7,12 +7,27 @@ commands remain at the root. `kavrix frames [command]` prints the exact stdin
 frame contract for every secret-reading command, and `kavrix status` shows the
 selected profile and active routing mode.
 
-The canonical first-run path is `db profile`, then `db init`, `db vault
-create`, and `db vault use`. On a first TTY invocation with no routing or
-secret flags, a bare `kavrix init` creates only the protected, non-secret
-`~/.kavrix/config.toml` onboarding reference; it does not create a database or
-vault, and the file is not loaded automatically. Explicitly routed root
-`init` remains the legacy version 2 single-vault compatibility path.
+The recommended local first-run path is a bare no-option `kavrix init` on a
+TTY. It preflights a profile and three distinct protected destinations, then
+uses masked prompts to create an encrypted local database, one default vault,
+and a separately protected recovery kit. Kavrix verifies the new recovery kit
+locally before selecting the profile. Blank destinations use the private
+`~/.kavrix` directory. The accompanying non-secret `config.toml` is a
+command reference and is not loaded automatically.
+
+```sh
+kavrix init
+```
+
+The explicit `db profile` → `db init` → `db vault create` →
+`db vault use` path remains available for MongoDB and advanced routing.
+Explicitly routed or non-TTY root `init` remains the legacy version 2
+single-vault compatibility path. If guided setup fails after publishing its
+route but before final selection, the new profile remains unselected and
+protected state is retained for bounded health inspection and recovery rather
+than destructively rolled back. An uncertain final-selection publication is
+reported as failure without a completion claim; inspect `db profile status`
+before retrying or changing selection.
 
 ## 1. Register a datastore profile
 

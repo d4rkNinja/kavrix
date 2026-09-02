@@ -126,6 +126,20 @@ export type DatastoreProfileBindingPublicationResult =
       error: DatastoreProfileError;
     }>;
 
+export type DatastoreProfileAddPublicationResult =
+  | Readonly<{
+      status: 'not-published';
+      error: DatastoreProfileError;
+    }>
+  | Readonly<{
+      status: 'published';
+      profile: DatastoreProfile;
+    }>
+  | Readonly<{
+      status: 'publication-uncertain';
+      error: DatastoreProfileError;
+    }>;
+
 export type ValidatedDatastoreProfileBindingPublicationResult =
   | Readonly<{
       status: 'not-published';
@@ -296,6 +310,58 @@ export class DatastoreProfileRegistry {
     });
   }
 
+  /**
+   * Adds an onboarding route without allowing an uncertain protected-file
+   * publication to continue into database creation. A read-back can prove the
+   * requested route is present, but it cannot prove which concurrent writer
+   * published it, so that outcome remains uncertain and fails closed.
+   */
+  async addForInitialization(
+    profile: DatastoreProfile,
+  ): Promise<DatastoreProfileAddPublicationResult> {
+    let parsed: DatastoreProfile;
+    try {
+      parsed = parseProfile(profile);
+    } catch (error) {
+      return Object.freeze({
+        status: 'not-published',
+        error: profileFilesystemError(error),
+      });
+    }
+    try {
+      return Object.freeze({
+        status: 'published',
+        profile: await this.add(parsed),
+      });
+    } catch (error) {
+      const publicationError = profileFilesystemError(error);
+      if (publicationError.code === 'PROFILE_DUPLICATE') {
+        return Object.freeze({
+          status: 'not-published',
+          error: publicationError,
+        });
+      }
+      try {
+        const observed = await this.get(parsed.id);
+        return Object.freeze({
+          status: 'publication-uncertain',
+          error: sameProfileValue(observed, parsed)
+            ? publicationError
+            : new DatastoreProfileError('PROFILE_INVALID'),
+        });
+      } catch (readError) {
+        const mappedReadError = profileFilesystemError(readError);
+        return Object.freeze({
+          status:
+            mappedReadError.code === 'PROFILE_NOT_FOUND'
+              ? 'not-published'
+              : 'publication-uncertain',
+          error: publicationError,
+        });
+      }
+    }
+  }
+
   async list(): Promise<readonly DatastoreProfile[]> {
     const document = await this.#readOrEmpty();
     return document.profiles.map(cloneProfile);
@@ -319,6 +385,29 @@ export class DatastoreProfileRegistry {
         result: cloneProfile(profile),
       };
     });
+  }
+
+  /**
+   * Selects a profile only when every public routing and binding field still
+   * matches the caller's authenticated expectation. Publication uncertainty
+   * fails closed even though the selection may have reached durable storage.
+   */
+  async useExpected(expected: DatastoreProfile): Promise<DatastoreProfile> {
+    const parsedExpected = parseProfile(expected);
+    const publication = await this.#mutateWithPublicationStatus((document) => {
+      const profile = document.profiles.find(
+        (candidate) => candidate.id === parsedExpected.id,
+      );
+      if (profile === undefined || !sameProfileValue(profile, parsedExpected)) {
+        throw new DatastoreProfileError('PROFILE_INVALID');
+      }
+      return {
+        document: { ...document, current: parsedExpected.id },
+        result: cloneProfile(profile),
+      };
+    });
+    if (publication.status === 'published') return publication.result;
+    throw profileFilesystemError(publication.error);
   }
 
   /** Binds an initialized database once; a profile cannot be rebound silently. */
@@ -358,12 +447,16 @@ export class DatastoreProfileRegistry {
   async bindDatabaseIdForInitialization(
     id: ProfileId,
     databaseId: DatabaseId,
+    expectedProfile?: DatastoreProfile,
   ): Promise<DatastoreProfileBindingPublicationResult> {
     let parsedId: ProfileId;
     let parsedDatabaseId: DatabaseId | undefined;
+    let parsedExpectedProfile: DatastoreProfile | undefined;
     try {
       parsedId = parseProfileId(id);
       parsedDatabaseId = parseOptionalDatabaseId(databaseId);
+      parsedExpectedProfile =
+        expectedProfile === undefined ? undefined : parseProfile(expectedProfile);
     } catch (error) {
       return newDatastoreProfileBindingPublicationResult({
         status: 'not-published',
@@ -378,7 +471,11 @@ export class DatastoreProfileRegistry {
     const publication = await this.#mutateWithPublicationStatus((document) => {
       const profile = document.profiles.find((candidate) => candidate.id === parsedId);
       if (profile === undefined) throw new DatastoreProfileError('PROFILE_NOT_FOUND');
-      if (profile.databaseId !== undefined) {
+      if (
+        profile.databaseId !== undefined ||
+        (parsedExpectedProfile !== undefined &&
+          !sameProfileValue(profile, parsedExpectedProfile))
+      ) {
         throw new DatastoreProfileError('PROFILE_INVALID');
       }
       const bound = parseProfile({ ...profile, databaseId: parsedDatabaseId });
@@ -416,6 +513,7 @@ export class DatastoreProfileRegistry {
     id: ProfileId,
     vaultId: VaultId,
     expectedDatabaseId: DatabaseId,
+    expectedProfile?: DatastoreProfile,
   ): Promise<DatastoreProfile> {
     const parsedId = parseProfileId(id);
     const parsedVaultId = parseDatabaseDefaultVaultId(vaultId);
@@ -423,11 +521,15 @@ export class DatastoreProfileRegistry {
     if (parsedExpectedDatabaseId === undefined) {
       throw new DatastoreProfileError('PROFILE_INVALID');
     }
+    const parsedExpectedProfile =
+      expectedProfile === undefined ? undefined : parseProfile(expectedProfile);
     return this.#mutate((document) => {
       const profile = document.profiles.find((candidate) => candidate.id === parsedId);
       if (
         profile?.databaseId === undefined ||
-        profile.databaseId !== parsedExpectedDatabaseId
+        profile.databaseId !== parsedExpectedDatabaseId ||
+        (parsedExpectedProfile !== undefined &&
+          !sameProfileValue(profile, parsedExpectedProfile))
       ) {
         throw new DatastoreProfileError('PROFILE_INVALID');
       }
@@ -928,6 +1030,29 @@ function sameProfiles(
     left.length === right.length &&
     left.every((profile, index) => profile === right[index])
   );
+}
+
+function sameProfileValue(left: DatastoreProfile, right: DatastoreProfile): boolean {
+  if (
+    left.id !== right.id ||
+    left.datastore !== right.datastore ||
+    left.databaseId !== right.databaseId ||
+    left.defaultVaultId !== right.defaultVaultId ||
+    left.keyFile !== right.keyFile
+  ) {
+    return false;
+  }
+  if (left.datastore === 'file' && right.datastore === 'file') {
+    return left.dataFile === right.dataFile;
+  }
+  if (left.datastore === 'mongodb' && right.datastore === 'mongodb') {
+    return (
+      left.database === right.database &&
+      left.databaseCollection === right.databaseCollection &&
+      left.vaultCollection === right.vaultCollection
+    );
+  }
+  return false;
 }
 
 function cloneProfile(profile: DatastoreProfile): DatastoreProfile {

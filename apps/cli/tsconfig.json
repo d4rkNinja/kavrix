@@ -16,6 +16,7 @@
     "src/structured-vault-projection.ts",
     "src/index.ts",
     "src/init-onboarding.ts",
+    "src/local-database-onboarding.ts",
     "src/local-secrets.ts",
     "src/terminal-presentation.ts",
     "src/execution/reveal-policy.ts",

@@ -2,6 +2,43 @@
 
 All notable user-facing and security changes to Kavrix are recorded here.
 
+## 0.2.9 - 2026-09-02
+
+### Added
+
+- A bare no-option TTY `kavrix init` now provides a local-file guided setup
+  that creates an encrypted database and owner key, creates and selects one
+  default vault, creates a separately protected recovery kit, verifies that kit
+  locally, and only then selects the new datastore profile.
+- Blank guided destinations use the private `~/.kavrix` directory for the
+  database, owner key, and recovery kit. The generated non-secret
+  `config.toml` remains a command reference and is not loaded automatically.
+
+### Security and reliability
+
+- Guided setup preflights every visible destination before protected input and
+  rechecks create-only artifact destinations immediately after publishing the
+  unselected route.
+- Canonical collision checks cover filesystem aliases, conservatively reject
+  case-only aliases across platforms,
+  database and protected-file locks, owner/recovery anchors, the datastore
+  profile registry, and the generated config reference.
+- Database binding, default-vault publication, and final profile selection now
+  require an atomic match against the exact expected public route and
+  authenticated database/vault bindings. Concurrent route replacement fails
+  closed.
+- Failures after route publication retain recovery-capable state and leave no
+  verified-completion claim. Final-selection publication uncertainty requires
+  explicit profile-status reconciliation. Owned passphrase byte copies are wiped on every
+  exit, and protected labels/passphrases remain absent from config, argv,
+  terminal output, and serialized artifacts.
+
+### Compatibility
+
+- Explicitly routed or non-TTY root `init` retains the version 2
+  single-vault compatibility behavior. MongoDB and advanced routing continue to
+  use the explicit `db profile`, `db init`, and `db vault` commands.
+
 ## 0.2.8 - 2026-09-01
 
 ### Added

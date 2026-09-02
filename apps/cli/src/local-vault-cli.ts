@@ -63,6 +63,7 @@ import {
   type Sha256Digest,
 } from '@kavrix/schemas';
 import {
+  EncryptedDatabaseStoreError,
   EncryptedVaultStoreError,
   FileLocalVaultStore,
   MongoLocalVaultStore,
@@ -93,9 +94,15 @@ import {
 import {
   InitOnboardingCancelledError,
   InitOnboardingDestinationError,
-  runInitOnboarding,
+  runGuidedLocalOnboarding,
+  writeGuidedLocalOnboardingComplete,
+  type GuidedLocalOnboardingPatch,
   type InitOnboardingPatch,
 } from './init-onboarding.js';
+import {
+  executeGuidedLocalOnboarding,
+  preflightGuidedLocalOnboarding,
+} from './local-database-onboarding.js';
 import {
   LocalSecretInput,
   LocalSecretInputError,
@@ -119,6 +126,7 @@ import { terminalColorEnabled } from './terminal-presentation.js';
 
 const DEFAULT_KEY_FILE = './kavrix.key';
 const DEFAULT_DATA_FILE = './kavrix.vault';
+const DEFAULT_RECOVERY_FILE = './kavrix.recovery';
 const DEFAULT_COLLECTION = 'kavrix_vaults';
 const DEFAULT_DATABASE_PROFILE_COLLECTION = 'kavrix_databases';
 const DEFAULT_VAULT_PROFILE_COLLECTION = 'kavrix_vaults';
@@ -198,7 +206,7 @@ export function buildLocalCli(): Command {
   const init = program
     .command('init')
     .description(
-      'Create the onboarding reference; explicit routing creates a legacy vault and key file.',
+      'Create a recoverable local database; explicit routing creates a legacy vault and key file.',
     );
   // Root init deliberately defaults to the local encrypted-file datastore;
   // MongoDB requires an explicit `--datastore mongodb` choice outside the
@@ -226,38 +234,58 @@ export function buildLocalCli(): Command {
     const options = getOptions(args);
     const guided = shouldRunInitOnboarding(options);
     if (guided) {
-      const { ensureKavrixConfig, getConfigPathForDisplay } =
+      const { ensureKavrixConfig, getKavrixConfigPath } =
         await import('./kavrix-config.js');
-      const configPath = await ensureKavrixConfig();
-      const displayPath = getConfigPathForDisplay();
-      const color = initOnboardingColorEnabled();
-      const style = (text: string, code: string): string =>
-        color ? `\u001b[${code}m${text}\u001b[0m` : text;
-      process.stderr.write(
+      await ensureKavrixConfig();
+      const reservedPaths = [getKavrixConfigPath()];
+      const destinations = await readGuidedLocalOnboardingDestinations(reservedPaths);
+      const values = await new LocalSecretInput(process.stdin, process.stderr).read(
         [
-          '',
-          style('Kavrix configuration', '1;36'),
-          '',
-          `${style('[OK]', '32')} Protected onboarding reference ready: ${style(displayPath, '1')}`,
-          `Full path: ${configPath}`,
-          `${style('[!]', '33')} No encrypted database or vault was created yet.`,
-          '',
-          'This reference is not loaded automatically; copy the commands you need',
-          'and keep the datastore profile explicit.',
-          'Secrets (passphrases, MongoDB URLs) are never stored there — they are',
-          'read via masked prompts or --passphrase-stdin / --database-url-stdin.',
-          '',
-          'Continue setup:',
-          '  1. kavrix db profile add work --datastore file --data-file ./work.kavrix --key-file ./work.kavrix.key',
-          '  2. kavrix db profile use work',
-          '  3. kavrix db init --profile work',
-          '  4. kavrix db vault create --profile work',
-          '  5. kavrix db vault use <vault-id> --profile work',
-          '',
-          'See `kavrix db profile --help` and `kavrix db init --help`.',
-          '',
-        ].join('\n'),
+          'database-label',
+          'new-passphrase',
+          'new-passphrase',
+          'vault-label',
+          'recovery-passphrase',
+          'recovery-passphrase',
+        ],
+        false,
       );
+      const databaseLabel = values[0];
+      const ownerPassphraseValue = values[1];
+      const ownerConfirmation = values[2];
+      const vaultLabel = values[3];
+      const recoveryPassphraseValue = values[4];
+      const recoveryConfirmation = values[5];
+      if (
+        databaseLabel === undefined ||
+        ownerPassphraseValue === undefined ||
+        ownerPassphraseValue !== ownerConfirmation ||
+        vaultLabel === undefined ||
+        recoveryPassphraseValue === undefined ||
+        recoveryPassphraseValue !== recoveryConfirmation
+      ) {
+        throw new DatabaseSessionError('invalid');
+      }
+      const ownerPassphrase = Buffer.from(ownerPassphraseValue, 'utf8');
+      const recoveryPassphrase = Buffer.from(recoveryPassphraseValue, 'utf8');
+      try {
+        const receipt = await executeGuidedLocalOnboarding({
+          ...destinations,
+          reservedPaths,
+          databaseLabel,
+          ownerPassphrase,
+          vaultLabel,
+          recoveryPassphrase,
+        });
+        writeGuidedLocalOnboardingComplete({
+          color: initOnboardingColorEnabled(),
+          profileId: receipt.profileId,
+          write: (text) => process.stderr.write(text),
+        });
+      } finally {
+        zeroize(ownerPassphrase);
+        zeroize(recoveryPassphrase);
+      }
       return;
     }
     await handleInit(options);
@@ -1258,7 +1286,9 @@ function shouldRunInitOnboarding(options: LocalCliOptions): boolean {
     options.profileConfigDir !== undefined ||
     options.databaseUrlStdin === true ||
     options.passphraseStdin === true ||
-    options.secretsStdin === true
+    options.secretsStdin === true ||
+    options.allowInsecureTransport === true ||
+    options.vaultWasDefaulted !== true
   ) {
     return false;
   }
@@ -1288,25 +1318,23 @@ async function selectedDatabaseBoundProfileExists(
   }
 }
 
-// eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept for backwards compatibility with tests and future guided flows
-async function readInitOnboardingOptions(
-  base: LocalCliOptions,
-): Promise<LocalCliOptions> {
-  const patch = await runInitOnboarding({
+async function readGuidedLocalOnboardingDestinations(
+  reservedPaths: readonly string[],
+): Promise<GuidedLocalOnboardingPatch> {
+  return runGuidedLocalOnboarding({
     color: initOnboardingColorEnabled(),
     question: readInitOnboardingQuestion,
-    selectStorage: readInitStorageSelection,
     validateDestination: async (candidate) => {
-      let resolved: InitOnboardingPatch;
+      let resolved: GuidedLocalOnboardingPatch;
       try {
-        resolved = await resolveGuidedInitDestinations(candidate);
+        resolved = await resolveGuidedLocalOnboardingDestinations(candidate);
       } catch (error) {
         const kind = classifyInitDestinationError(error, candidate);
         if (kind !== undefined) throw new InitOnboardingDestinationError(kind);
         throw error;
       }
       try {
-        await validateInitDestinations({ ...base, ...resolved });
+        await preflightGuidedLocalOnboarding({ ...resolved, reservedPaths });
         return resolved;
       } catch (error) {
         const kind = classifyInitDestinationError(error, candidate);
@@ -1318,18 +1346,18 @@ async function readInitOnboardingOptions(
       process.stderr.write(text);
     },
   });
-  return { ...base, ...patch };
 }
 
 export function classifyInitDestinationError(
   error: unknown,
-  candidate: InitOnboardingPatch,
+  candidate: InitOnboardingPatch | GuidedLocalOnboardingPatch,
 ): ConstructorParameters<typeof InitOnboardingDestinationError>[0] | undefined {
   if (error instanceof PortableKeyFileError) {
     if (error.code !== 'KEY_FILE_UNSAFE') return 'invalid-destination';
     const usesProtectedDefault =
       candidate.keyFile === DEFAULT_KEY_FILE ||
-      (candidate.datastore === 'file' && candidate.dataFile === DEFAULT_DATA_FILE);
+      ('dataFile' in candidate && candidate.dataFile === DEFAULT_DATA_FILE) ||
+      ('recoveryFile' in candidate && candidate.recoveryFile === DEFAULT_RECOVERY_FILE);
     return usesProtectedDefault ? 'unsafe-default-directory' : 'unsafe-key-file';
   }
   if (error instanceof Error) {
@@ -1340,33 +1368,38 @@ export function classifyInitDestinationError(
       return 'invalid-collection';
     }
   }
-  if (error instanceof EncryptedVaultStoreError || error instanceof LocalCliError) {
+  if (
+    error instanceof EncryptedDatabaseStoreError ||
+    error instanceof EncryptedVaultStoreError ||
+    error instanceof DatabaseSessionError ||
+    error instanceof DatastoreProfileError ||
+    error instanceof LocalCliError
+  ) {
     return 'invalid-destination';
   }
   return undefined;
 }
 
-async function resolveGuidedInitDestinations(
-  patch: InitOnboardingPatch,
-): Promise<InitOnboardingPatch> {
+async function resolveGuidedLocalOnboardingDestinations(
+  patch: GuidedLocalOnboardingPatch,
+): Promise<GuidedLocalOnboardingPatch> {
   const usesDefaultKeyFile = patch.keyFile === DEFAULT_KEY_FILE;
-  const usesDefaultDataFile =
-    patch.datastore === 'file' && patch.dataFile === DEFAULT_DATA_FILE;
-  if (!usesDefaultKeyFile && !usesDefaultDataFile) return patch;
+  const usesDefaultDataFile = patch.dataFile === DEFAULT_DATA_FILE;
+  const usesDefaultRecoveryFile = patch.recoveryFile === DEFAULT_RECOVERY_FILE;
+  if (!usesDefaultKeyFile && !usesDefaultDataFile && !usesDefaultRecoveryFile) {
+    return patch;
+  }
 
   const secureDirectory = await ensureSecureDirectory(join(homedir(), '.kavrix'));
-  if (patch.datastore === 'file') {
-    return {
-      ...patch,
-      dataFile: usesDefaultDataFile
-        ? join(secureDirectory, 'kavrix.vault')
-        : patch.dataFile,
-      keyFile: usesDefaultKeyFile ? join(secureDirectory, 'kavrix.key') : patch.keyFile,
-    };
-  }
   return {
     ...patch,
+    dataFile: usesDefaultDataFile
+      ? join(secureDirectory, 'kavrix.vault')
+      : patch.dataFile,
     keyFile: usesDefaultKeyFile ? join(secureDirectory, 'kavrix.key') : patch.keyFile,
+    recoveryFile: usesDefaultRecoveryFile
+      ? join(secureDirectory, 'kavrix.recovery')
+      : patch.recoveryFile,
   };
 }
 

@@ -3,7 +3,9 @@ import { describe, expect, it } from 'vitest';
 import {
   InitOnboardingCancelledError,
   InitOnboardingDestinationError,
+  runGuidedLocalOnboarding,
   runInitOnboarding,
+  writeGuidedLocalOnboardingComplete,
   writeInitOnboardingComplete,
 } from '../src/init-onboarding.js';
 
@@ -297,5 +299,72 @@ describe('init onboarding', () => {
       expect(plainOutput).not.toContain(enteredValue);
       expect(coloredOutput).not.toContain(enteredValue);
     }
+  });
+
+  it('collects the local database profile and recovery destinations before secrets', async () => {
+    const output: string[] = [];
+    const prompts: string[] = [];
+    const answers = ['', '', '', '', '', ''];
+    const result = await runGuidedLocalOnboarding({
+      question: async (prompt) => {
+        prompts.push(prompt);
+        return answers.shift() ?? '';
+      },
+      validateDestination: async (candidate) => ({
+        ...candidate,
+        dataFile: 'resolved/database',
+        keyFile: 'resolved/key',
+        recoveryFile: 'resolved/recovery',
+      }),
+      write: (text) => output.push(text),
+    });
+
+    expect(result).toEqual({
+      profileId: 'default',
+      dataFile: 'resolved/database',
+      keyFile: 'resolved/key',
+      recoveryFile: 'resolved/recovery',
+    });
+    expect(output.join('')).toContain('LOCAL RECOVERABLE SETUP');
+    expect(output.join('')).toContain('recovery kit');
+    expect(prompts.join('')).not.toContain('resolved/');
+    expect(output.join('')).not.toContain('resolved/');
+  });
+
+  it('retries only visible destinations after a failed guided preflight', async () => {
+    const output: string[] = [];
+    const answers = Array.from({ length: 10 }, () => '');
+    let attempts = 0;
+    const result = await runGuidedLocalOnboarding({
+      question: async () => answers.shift() ?? '',
+      validateDestination: async (candidate) => {
+        attempts += 1;
+        if (attempts === 1) {
+          throw new InitOnboardingDestinationError('invalid-destination');
+        }
+        return candidate;
+      },
+      write: (text) => output.push(text),
+    });
+
+    expect(result.profileId).toBe('default');
+    expect(attempts).toBe(2);
+    expect(output.join('').match(/STEP 1 \/ LOCAL RECOVERABLE SETUP/gu)).toHaveLength(
+      1,
+    );
+    expect(output.join('').match(/STEP 2 \/ PROTECTED DESTINATIONS/gu)).toHaveLength(2);
+  });
+
+  it('renders verified recovery completion without unsafe terminal control', () => {
+    const output: string[] = [];
+    writeGuidedLocalOnboardingComplete({
+      profileId: 'work\u001b[31m',
+      write: (text) => output.push(text),
+    });
+
+    const transcript = output.join('');
+    expect(transcript).toContain('Recovery kit created and verified locally');
+    expect(transcript).toContain('work[CONTROL][31m');
+    expect(transcript).not.toContain('\u001b[31m');
   });
 });

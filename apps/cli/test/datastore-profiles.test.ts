@@ -226,6 +226,57 @@ describe('datastore profiles', () => {
     expect(await profiles.list()).toEqual([fileProfile()]);
   });
 
+  it('selects only an exact expected profile and preserves the prior selection', async () => {
+    const profiles = await registry();
+    const expected = { ...mongoProfile(), defaultVaultId: VAULT_ID };
+    await profiles.add(expected);
+    await profiles.add(fileProfile());
+    await profiles.use(SECOND_PROFILE_ID);
+
+    await profiles.remove(PROFILE_ID);
+    await profiles.add({
+      ...expected,
+      database: 'replacement',
+      databaseId: databaseIdSchema.parse('db_replacement'),
+    });
+
+    await expect(profiles.useExpected(expected)).rejects.toThrow('invalid');
+    expect(await profiles.current()).toEqual(fileProfile());
+  });
+
+  it('does not bind or default a route that was replaced after observation', async () => {
+    const profiles = await registry();
+    const { databaseId, ...unbound } = fileProfile();
+    await profiles.add(unbound);
+    await profiles.remove(SECOND_PROFILE_ID);
+    const replacement = {
+      ...unbound,
+      dataFile: '/protected/replacement.kavrix-db',
+    };
+    await profiles.add(replacement);
+
+    const binding = await profiles.bindDatabaseIdForInitialization(
+      SECOND_PROFILE_ID,
+      databaseId,
+      unbound,
+    );
+    expect(binding.status).toBe('not-published');
+    expect(await profiles.get(SECOND_PROFILE_ID)).toEqual(replacement);
+
+    await profiles.remove(SECOND_PROFILE_ID);
+    const boundReplacement = { ...replacement, databaseId };
+    await profiles.add(boundReplacement);
+    await expect(
+      profiles.setDefaultVaultId(
+        SECOND_PROFILE_ID,
+        VAULT_ID,
+        databaseId,
+        fileProfile(),
+      ),
+    ).rejects.toThrow('invalid');
+    expect(await profiles.get(SECOND_PROFILE_ID)).toEqual(boundReplacement);
+  });
+
   it('reads a strict version-1 registry lazily without rewriting protected bytes', async () => {
     const before = await writeCanonicalRegistry(versionOneDocument());
 

@@ -6,10 +6,11 @@ or MongoDB database container. Legacy version 2 single-vault documents remain
 supported through their stable compatibility commands and explicit migration.
 Historical API, sync-daemon, and SQLite designs are not runtime paths. The
 active `packages/tui` workspace contains the presentational Ink storage-selection
-showcase; it has no persistence or cryptographic authority, and the 0.2.3
-no-argument TTY `init` path now creates a protected, non-secret `config.toml`
-onboarding reference instead of initializing a vault or launching that
-showcase. Current commands do not load the file automatically.
+showcase; it has no persistence or cryptographic authority. The current bare
+no-option TTY `init` path uses the plain terminal onboarding helper to create a
+local encrypted database, default vault, and verified recovery kit before
+selecting its profile. The generated protected, non-secret `config.toml` remains
+a command reference and is not loaded automatically.
 
 ## Start here
 

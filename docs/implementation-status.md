@@ -7,10 +7,13 @@ authenticated encrypted database with multiple independently encrypted vaults
 in a hardened local container or two MongoDB collections. Version 2 single-vault
 documents remain supported through stable compatibility commands and explicit
 copy-first migration. No Kavrix API server or sync daemon is required or
-shipped. A bare no-option TTY `kavrix init` generates only a protected,
-non-secret `~/.kavrix/config.toml` onboarding reference; it does not create a
-database or vault, and current commands do not load it automatically.
-Explicitly routed root `init` remains the legacy version 2 compatibility path.
+shipped. A bare no-option TTY `kavrix init` now runs a local-file-only
+guided flow that preflights destinations, creates an encrypted database and
+owner key, creates and selects one default vault, creates and locally verifies a
+separate recovery kit, then selects the new profile. The generated protected,
+non-secret `~/.kavrix/config.toml` remains a command reference and is not
+loaded automatically. Explicitly routed or non-TTY root `init` remains the
+legacy version 2 compatibility path.
 The schema-driven
 Ink showcase in `packages/tui`
 remains available as the presentation boundary for interactive storage
@@ -25,9 +28,10 @@ Active release workspaces:
 - `@kavrix/storage`: database-scoped local/MongoDB adapters and fail-closed URI/TLS policy.
 - `@kavrix/runner`: shell-free child execution with minimal environments and secret redaction in captured output.
 - `@kavrix/tui`: Ink components for the interactive storage-selection showcase (animated); presentational only, with static strings and no persistence or cryptography.
-- `kavrix`: CLI composition, protected `config.toml` onboarding-reference
-  generation, masked input with field-local validation retries and confirmation-pair
-  recovery, TTY-gated status colors with textual markers, sanitized rendering,
+- `kavrix`: CLI composition, recovery-verified local onboarding, protected
+  `config.toml` reference generation, masked input with field-local validation
+  retries and confirmation-pair recovery, TTY-gated status colors with textual
+  markers, sanitized rendering,
   credential execution, policy firewall, structured database-vault projection,
   and npm package.
 
@@ -38,12 +42,12 @@ are not workspace members, release artifacts, or evidence for the active release
 
 ## Implemented command surface
 
-- legacy-compatible root `init`, whose bare no-option TTY path generates
-  `~/.kavrix/config.toml`
-  (`%USERPROFILE%\\.kavrix\\config.toml` on Windows) as a non-secret onboarding
-  reference for the canonical profile/database/vault/default-selection
-  commands; it does not create a database or vault, is not
-  loaded automatically, lives in the secure `~/.kavrix` directory (mode
+- legacy-compatible root `init`, whose bare no-option TTY path now creates
+  one local encrypted database, protected owner key, default vault, and
+  recovery kit, verifies recovery, and only then selects the profile; its
+  non-secret `~/.kavrix/config.toml`
+  (`%USERPROFILE%\\.kavrix\\config.toml` on Windows) command reference is
+  not loaded automatically, lives in the secure `~/.kavrix` directory (mode
   `0o600` / user-only ACL), and is never overwritten once created;
 - protected non-secret datastore profile add/list/use/status/remove, with a
   separately authenticated per-profile default-vault selection; strict version

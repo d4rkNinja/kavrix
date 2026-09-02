@@ -37,13 +37,29 @@ kavrix --help
 
 ## Quick start
 
-The canonical first-run path is a non-secret datastore profile, database
-initialization, vault creation, and default-vault selection. On a first TTY run
-with no routing or secret flags, a bare `kavrix init` creates only the protected,
-non-secret `~/.kavrix/config.toml` onboarding reference
-(`%USERPROFILE%\\.kavrix\\config.toml` on Windows); it does not create a database
-or vault, and current commands do not load the file automatically. Explicitly
-routed root `init` remains the legacy version 2 single-vault compatibility path.
+For a new local setup, run a bare `kavrix init` in a terminal. The guided flow
+preflights the destinations before protected input, creates an encrypted local
+database and owner key, creates and selects one default vault, creates a separate
+recovery kit, verifies that kit locally, and only then selects the new profile.
+Blank destinations use `~/.kavrix/kavrix.vault`, `kavrix.key`, and
+`kavrix.recovery` (`%USERPROFILE%\\.kavrix` on Windows). It also keeps
+the protected, non-secret `config.toml` command reference; commands do not
+load that file automatically.
+
+`kavrix init` never accepts these protected labels or passphrases through
+arguments or environment variables. Before the final selection step, failures
+leave the new profile unselected and retain recoverable local state for
+inspection. If final selection reaches storage but its completion cannot be
+verified, Kavrix reports failure without a success claim; inspect
+`kavrix db profile status` before retrying or changing selection.
+Explicitly routed or non-TTY root `init` remains the legacy version 2
+single-vault compatibility path.
+
+```sh
+kavrix init
+```
+
+For MongoDB or an explicitly routed setup, use the database commands directly:
 
 ```sh
 # 1. Register and select a non-secret route to your datastore.
@@ -135,7 +151,7 @@ structured access or migration.
 | `kavrix recovery ...`  | Create, verify, inspect, revoke, or use recovery kits.      |
 | `kavrix doctor`        | Authenticate and validate a vault without revealing values. |
 | `kavrix doctor health` | Diagnose and safely repair bounded transient state.         |
-| `kavrix init`          | Legacy version 2 single-vault compatibility path.           |
+| `kavrix init`          | Guided local setup; explicit/non-TTY use remains legacy v2. |
 
 ## Running tools without pasting secrets
 

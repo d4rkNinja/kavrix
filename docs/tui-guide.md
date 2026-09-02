@@ -10,14 +10,14 @@ presentational boundary only: its strings are static and it has no persistence,
 cryptographic, or secret-input authority. The CLI loads it lazily, and the
 non-TTY path retains the numbered storage-selection fallback.
 
-The current no-argument TTY `kavrix init` path creates the non-secret
-`~/.kavrix/config.toml` onboarding reference and does not initialize a vault,
-invoke the showcase, or load edited settings automatically. The showcase
-remains part of the active build/test boundary for the
-interactive storage-selection path; it is not a replacement for the canonical
-profile → `db init` → `db vault create` → `db vault use` setup. The final
-selection stores only an authenticated opaque default vault ID for that profile;
-an explicit `--vault` continues to override it.
+The current no-argument TTY `kavrix init` path uses a plain terminal helper,
+not the Ink showcase. It creates a local encrypted database, default vault, and
+recovery kit, verifies recovery, and only then selects the profile. The
+non-secret `~/.kavrix/config.toml` reference is not loaded automatically.
+The showcase remains part of the active build/test boundary for explicit
+storage-selection presentation. The final selection stores only an
+authenticated opaque default vault ID for that profile; an explicit
+`--vault` continues to override it.
 
 Masked interactive prompts render textual requirement, success, and error
 markers and retry a locally invalid field without discarding unrelated answers.

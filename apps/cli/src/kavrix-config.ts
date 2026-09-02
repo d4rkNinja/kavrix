@@ -1,9 +1,9 @@
 /**
  * Declarative Kavrix configuration file.
  *
- * `kavrix init` now generates `~/.kavrix/config.toml` (or the platform's
- * secure Kavrix directory) instead of running the interactive wizard.
- * The file is an onboarding reference with non-secret command examples.
+ * A guided `kavrix init` generates `~/.kavrix/config.toml` (or the platform's
+ * secure Kavrix directory) alongside the encrypted local database setup.
+ * The file remains an onboarding reference with non-secret command examples.
  * Commands do not load it automatically, and secrets (passphrases, database
  * URLs) are never stored here.
  */
@@ -43,8 +43,9 @@ export function generateDefaultConfigToml(): string {
 #   Windows: %USERPROFILE%\\.kavrix\\config.toml
 #   macOS/Linux: ~/.kavrix/config.toml
 #
-# This file is created by a first interactive \`kavrix init\`. It is a
-# non-secret onboarding reference, not an automatically loaded settings file.
+# This file is created alongside a first guided \`kavrix init\`. The guided
+# flow creates and verifies the local database, default vault, and recovery kit;
+# this file is only a non-secret reference, not an automatically loaded setting.
 # Copy the examples you need into your terminal and keep profile selection
 # explicit. All protected paths must be inside a private directory.
 #
@@ -60,6 +61,8 @@ export function generateDefaultConfigToml(): string {
 #   kavrix db init --profile work
 #   kavrix db vault create --profile work
 #   kavrix db vault use <vault-id> --profile work
+#   kavrix db recovery create --profile work --recovery-file ./work.kavrix.recovery
+#   kavrix db recovery verify --profile work --recovery-file ./work.kavrix.recovery
 #
 # MongoDB is optional. Register its non-secret database and collection routing
 # with \`kavrix db profile add --datastore mongodb\`; provide the URI only via

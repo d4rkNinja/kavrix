@@ -740,6 +740,25 @@ async function exerciseDatabaseContainer(run, paths) {
     ],
     [primaryPassphrase, recoveryPassphrase, recoveryPassphrase],
   );
+  const recoveryVerification = parseJson(
+    await run(
+      [
+        'db',
+        'recovery',
+        'verify',
+        ...profileRoute(paths, 'primary'),
+        '--recovery-file',
+        paths.databaseRecoveryFile,
+        '--secrets-stdin',
+      ],
+      [primaryPassphrase, recoveryPassphrase],
+    ),
+    'database recovery verification',
+  );
+  assert(
+    recoveryVerification.valid === true,
+    'database recovery verification did not report valid',
+  );
 
   await exerciseConcurrentConflict(
     run,

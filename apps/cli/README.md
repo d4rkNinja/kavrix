@@ -28,6 +28,20 @@ kavrix --help
 
 ## Quick start
 
+For a new local-file setup, run:
+
+```sh
+kavrix init
+```
+
+The guided TTY flow preflights the profile and protected destinations, then uses
+masked prompts to create an encrypted database, one default vault, and a
+separate recovery kit. It verifies recovery before selecting the profile.
+Protected labels and passphrases never enter argv, environment variables, or
+the generated non-secret config reference.
+
+For MongoDB or explicitly routed setup, use the database commands directly:
+
 ```sh
 # 1. Register and select a non-secret route to your datastore.
 kavrix db profile add work --datastore file \
@@ -83,7 +97,7 @@ never store MongoDB credentials, passphrases, private labels, keys, or values.
 | `key status/verify/copy/replicate/assign/rewrap`                           | Manage protected key files.                                                           |
 | `recovery create/verify/status/revoke/use`                                 | Manage recovery kits.                                                                 |
 | `doctor`, `doctor health`                                                  | Validate a vault; repair bounded transient state safely.                              |
-| `init`, `vault`, `legacy v2 commands`                                      | Version 2 compatibility surface.                                                      |
+| `init`, `vault`, `legacy v2 commands`                                      | Guided local setup; explicit/non-TTY init remains version 2 compatible.               |
 | `run`                                                                      | Execute one command with selected credentials injected as environment variables only. |
 | `policy create/list/show/remove/check/explain/lint/diff/suggest`           | Stored rules plus read-only simulation, diagnostics, previews, and narrowing advice.  |
 | `grant create/list/show/revoke`                                            | Temporary consumable authorizations with live expiry, restrictions, and use caps.     |
