@@ -1,6 +1,6 @@
 import { access, readFile, rm, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -158,7 +158,10 @@ describe('guided local database onboarding', () => {
     await expect(
       preflightGuidedLocalOnboarding({
         ...target.destinations,
-        recoveryFile: target.keyFile.toUpperCase(),
+        recoveryFile: join(
+          dirname(target.keyFile),
+          basename(target.keyFile).toUpperCase(),
+        ),
       }),
     ).rejects.toMatchObject({ code: 'invalid' });
   });
