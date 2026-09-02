@@ -48,6 +48,7 @@ type DatabaseCommandOptions = Readonly<{
   profile?: string;
   profileConfigDir?: string;
   secretsStdin?: boolean;
+  passphraseStdin?: boolean;
   recoveryFile?: string;
   outputKeyFile?: string;
   anchorFile?: string;
@@ -146,6 +147,7 @@ export function addDatabaseOwnerCommands(db: Command): void {
     .description('Show database recovery slot counts.');
   addRoutingOptions(recoveryStatus);
   addSecretOption(recoveryStatus);
+  recoveryStatus.option('--json', 'Emit machine-readable output.');
   recoveryStatus.action(async (...args: unknown[]) =>
     handleRecoveryStatus(optionsFrom(args)),
   );
@@ -184,6 +186,7 @@ export function addDatabaseVaultCommands(vault: Command): void {
     .description('Create an independently encrypted vault.');
   addRoutingOptions(create);
   addSecretOption(create);
+  create.option('--json', 'Emit machine-readable output.');
   create.action(async (...args: unknown[]) => handleVaultCreate(optionsFrom(args)));
 
   const list = vault
@@ -228,6 +231,18 @@ export function addDatabaseVaultCommands(vault: Command): void {
   addSecretOption(use);
   use.action(async (vaultId: string, ...args: unknown[]) =>
     handleVaultUse(vaultId, optionsFrom(args)),
+  );
+
+  const remove = vault
+    .command('remove <vaultId>')
+    .description(
+      'Remove one vault from the encrypted catalog (requires confirmation).',
+    );
+  addRoutingOptions(remove);
+  addSecretOption(remove);
+  remove.option('--json', 'Emit machine-readable output.');
+  remove.action(async (vaultId: string, ...args: unknown[]) =>
+    handleVaultRemove(vaultId, optionsFrom(args)),
   );
 }
 
@@ -634,6 +649,19 @@ async function handleVaultUse(
   });
 }
 
+async function handleVaultRemove(
+  vaultId: string,
+  options: DatabaseCommandOptions,
+): Promise<void> {
+  await withOwnerSession(options, [], async (session) => {
+    const id = parseVaultIdentifier(vaultId);
+    const { createDatabaseVaultDeletionAuthorization } =
+      await import('./database-session.js');
+    await session.deleteVault(id, createDatabaseVaultDeletionAuthorization());
+    writeOutput({ removed: true, vaultId: id });
+  });
+}
+
 /**
  * Validates one vault identifier with a reviewed message. Prototype-polluting
  * identifiers are refused explicitly and malformed shapes fail as input
@@ -836,7 +864,8 @@ async function readCommandSecrets(
   reader = commandSecretReader(),
   finalFrames = true,
 ): Promise<readonly string[]> {
-  return await reader.read(kinds, options.secretsStdin === true, finalFrames);
+  const useStdin = options.secretsStdin === true || options.passphraseStdin === true;
+  return await reader.read(kinds, useStdin, finalFrames);
 }
 
 function commandSecretReader(): LocalSecretInput {
@@ -865,10 +894,12 @@ function addRoutingOptions(command: Command, includeKey = true): void {
 }
 
 function addSecretOption(command: Command): void {
-  command.option(
-    '--secrets-stdin',
-    'Read the exact documented secret frames from stdin.',
-  );
+  command
+    .option('--secrets-stdin', 'Read the exact documented secret frames from stdin.')
+    .option(
+      '--passphrase-stdin',
+      'Alias of --secrets-stdin for compatibility (reads the same frames).',
+    );
 }
 
 function optionsFrom(args: readonly unknown[]): DatabaseCommandOptions {

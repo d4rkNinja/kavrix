@@ -52,6 +52,7 @@ describe('local vault command surface', () => {
       'list',
       'use',
       'status',
+      'show',
       'remove',
     ]);
     const profileAdd = profile?.commands.find((command) => command.name() === 'add');
@@ -81,7 +82,8 @@ describe('local vault command surface', () => {
     expect(cli.helpInformation()).not.toContain('destroy');
     const destroy = cli.commands.find((command) => command.name() === 'destroy');
     expect(destroy).toBeDefined();
-    expect(destroy?.options.map((option) => option.long)).not.toContain('--help');
+    // `destroy` is hidden but must still respond to --help; helpOption is enabled.
+    expect(destroy?.helpInformation()).toContain('destroy');
   });
 
   it('renders a masked vault view without leaking credential values', () => {

@@ -215,8 +215,31 @@ export class MongoEncryptedDatabaseStore
     }
   }
 
+  async #assertTransactionCapable(): Promise<void> {
+    try {
+      const hello = (await this.#database.command({ hello: 1 })) as Record<
+        string,
+        unknown
+      >;
+      if (
+        typeof hello['setName'] === 'string' ||
+        hello['msg'] === 'isdbgrid' ||
+        hello['isWritablePrimary'] === false
+      ) {
+        return;
+      }
+      // Standalone without replica set: writes that require transactions cannot succeed.
+      throw new EncryptedDatabaseStoreError('unsupported');
+    } catch (error) {
+      if (error instanceof EncryptedDatabaseStoreError) throw error;
+      // If hello itself fails (auth, network), preserve connection error semantics elsewhere.
+      throw new EncryptedDatabaseStoreError('connection');
+    }
+  }
+
   async createDatabase(document: EncryptedDatabaseDocument): Promise<void> {
     this.#assertOpen();
+    await this.#assertTransactionCapable();
     const parsed = parseDatabaseDocument(document);
     try {
       await this.#databases.insertOne({ ...parsed, _id: parsed.id });
@@ -837,8 +860,21 @@ function isDuplicateKeyError(error: unknown): boolean {
   );
 }
 
+function isStandaloneTransactionError(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) return false;
+  const candidate = error as Record<string, unknown>;
+  const message = typeof candidate['message'] === 'string' ? candidate['message'] : '';
+  return (
+    message.includes('Transaction numbers are only allowed') ||
+    message.includes('not support multi-document transactions') ||
+    message.includes('Transactions are not supported on standalone')
+  );
+}
+
 function mapOperationError(error: unknown): EncryptedDatabaseStoreError {
   if (error instanceof EncryptedDatabaseStoreError) return error;
   if (isDuplicateKeyError(error)) return new EncryptedDatabaseStoreError('exists');
+  if (isStandaloneTransactionError(error))
+    return new EncryptedDatabaseStoreError('unsupported');
   return new EncryptedDatabaseStoreError('operation');
 }

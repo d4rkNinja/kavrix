@@ -24,6 +24,7 @@ import {
   deleteSecureFile,
   ensureSecureDirectory,
   PortableKeyFileError,
+  readDatabaseKeyFileBinding,
   readPortableKeyFile,
   readRecoveryKitFile,
   readRevisionAnchor,
@@ -294,7 +295,7 @@ export function buildLocalCli(): Command {
   const destroy = program
     .command('destroy', { hidden: true })
     .description('Permanently destroy one authenticated vault and its active files.')
-    .helpOption(false)
+    .helpOption('-h, --help')
     .showHelpAfterError(false);
   addDatabaseOptions(destroy);
   addKeyOptions(destroy);
@@ -518,6 +519,10 @@ export function buildLocalCli(): Command {
     .option(
       '--recovery-passphrase-stdin',
       'Read the recovery-kit passphrase from standard input.',
+    )
+    .option(
+      '--passphrase-stdin',
+      'Alias of --recovery-passphrase-stdin for compatibility.',
     )
     .option('--json', 'Emit machine-readable output.');
   recoveryVerify.action(async (...args: unknown[]) => {
@@ -791,6 +796,7 @@ function addDatastoreProfileCommands(db: Command): void {
     .command('list')
     .description('List registered datastore profiles.');
   addProfileConfigOption(list);
+  list.option('--json', 'Emit machine-readable output.');
   list.action(async (...args: unknown[]) => {
     await handleProfileList(profileCommandOptions(args));
   });
@@ -810,7 +816,24 @@ function addDatastoreProfileCommands(db: Command): void {
     .command('status')
     .description('Show the selected non-secret datastore profile.');
   addProfileConfigOption(status);
+  status.option('--json', 'Emit machine-readable output.');
   status.action(async (...args: unknown[]) => {
+    await handleProfileStatus(profileCommandOptions(args));
+  });
+
+  const show = profile
+    .command('show')
+    .description('Alias of `db profile status` for compatibility.')
+    .option(
+      '--config-dir <path>',
+      'Protected datastore-profile configuration directory.',
+    )
+    .option(
+      '--profile-config-dir <path>',
+      'Protected datastore-profile configuration directory.',
+    )
+    .option('--json', 'Emit machine-readable output.');
+  show.action(async (...args: unknown[]) => {
     await handleProfileStatus(profileCommandOptions(args));
   });
 
@@ -1047,11 +1070,6 @@ async function resolveProfileForPing(
     profile = await registry.get(parseCommandProfileId(options.profile));
   }
   if (profile === null) return { options, profile: null };
-  if (profile.databaseId !== undefined) {
-    throw new LocalCliError(
-      'A database-bound datastore profile requires database container commands.',
-    );
-  }
   const routing = resolveDatastoreProfileRouting(profile, {
     ...(overrides.datastore === undefined ? {} : { datastore: overrides.datastore }),
     ...(overrides.dataFile === undefined ? {} : { dataFile: overrides.dataFile }),
@@ -1142,7 +1160,8 @@ function addKeyOnlyOptions(command: Command): Command {
     .option(
       '--passphrase-stdin',
       'Read the key-file passphrase from standard input (never from an argument).',
-    );
+    )
+    .option('--json', 'Emit machine-readable output.');
 }
 
 function addKeyCopyOptions(command: Command): Command {
@@ -2133,10 +2152,14 @@ async function handleGet(name: string, options: LocalCliOptions): Promise<void> 
       if (found === undefined) throw credentialMissing();
       if (options.reveal === true) {
         await enforceRevealPolicy(session, profile, name);
-        const value = process.stdout.isTTY
-          ? sanitizeTerminalText(found.value)
-          : found.value;
-        process.stdout.write(value + '\n');
+        if (options.json === true) {
+          writeJson({ name, value: found.value, revision: document.revision });
+        } else {
+          const value = process.stdout.isTTY
+            ? sanitizeTerminalText(found.value)
+            : found.value;
+          process.stdout.write(value + '\n');
+        }
       } else writeJson({ name, value: REDACTED, revision: document.revision });
     });
     return;
@@ -2152,10 +2175,14 @@ async function handleGet(name: string, options: LocalCliOptions): Promise<void> 
       const record = payload.records[name];
       if (record === undefined) throw credentialMissing();
       if (options.reveal === true) {
-        const value = process.stdout.isTTY
-          ? sanitizeTerminalText(record.value)
-          : record.value;
-        process.stdout.write(value + '\n');
+        if (options.json === true) {
+          writeJson({ name, value: record.value, revision: document.revision });
+        } else {
+          const value = process.stdout.isTTY
+            ? sanitizeTerminalText(record.value)
+            : record.value;
+          process.stdout.write(value + '\n');
+        }
       } else {
         writeJson({ name, value: REDACTED, revision: document.revision });
       }
@@ -3348,6 +3375,15 @@ async function handleVaultStatus(options: LocalCliOptions): Promise<void> {
 
 async function handleKeyStatus(options: LocalCliOptions): Promise<void> {
   const keyFile = options.source ?? options.keyFile;
+  // Database-owner keys are managed through `kavrix db key` commands; guide the operator explicitly.
+  try {
+    await readDatabaseKeyFileBinding(keyFile);
+    throw new LocalCliError(
+      'This is a database-owner key. Use `kavrix db key status` or `kavrix db key create` for database keys; `kavrix key status` is for legacy vault keys.',
+    );
+  } catch (error) {
+    if (error instanceof LocalCliError) throw error;
+  }
   const values = await readSecrets(['passphrase'], options);
   const passphrase = requiredSecret(values, 0);
   const passphraseBytes = Buffer.from(passphrase, 'utf8');
@@ -3373,6 +3409,14 @@ async function handleKeyStatus(options: LocalCliOptions): Promise<void> {
 
 async function handleKeyCopy(options: LocalCliOptions): Promise<void> {
   const sourceKeyFile = options.source ?? options.keyFile;
+  try {
+    await readDatabaseKeyFileBinding(sourceKeyFile);
+    throw new LocalCliError(
+      'This is a database-owner key. Use `kavrix db key create` to share a database; `kavrix key copy` is for legacy vault keys.',
+    );
+  } catch (error) {
+    if (error instanceof LocalCliError) throw error;
+  }
   const outputKeyFile = requiredOption(
     options.outputKeyFile ?? options.destination,
     '--destination',
@@ -3465,6 +3509,14 @@ async function handleKeyCopy(options: LocalCliOptions): Promise<void> {
 
 async function handleKeyRewrap(options: LocalCliOptions): Promise<void> {
   const keyFile = options.source ?? options.keyFile;
+  try {
+    await readDatabaseKeyFileBinding(keyFile);
+    throw new LocalCliError(
+      'This is a database-owner key. Use `kavrix db key` lifecycle; `kavrix key rewrap` is for legacy vault keys.',
+    );
+  } catch (error) {
+    if (error instanceof LocalCliError) throw error;
+  }
   const values = await readSecrets(
     ['passphrase', 'new-passphrase', 'new-passphrase'],
     options,
@@ -4148,9 +4200,15 @@ async function readSecrets(
   );
   const flags = requestedKinds.map((kind) => {
     if (kind === 'database-url') return options.databaseUrlStdin === true;
-    if (kind === 'passphrase') return options.passphraseStdin === true;
+    if (kind === 'passphrase')
+      return options.passphraseStdin === true || options.secretsStdin === true;
     if (kind === 'new-passphrase') return options.newPassphraseStdin === true;
-    if (kind === 'recovery-passphrase') return options.recoveryPassphraseStdin === true;
+    if (kind === 'recovery-passphrase')
+      return (
+        options.recoveryPassphraseStdin === true ||
+        options.passphraseStdin === true ||
+        options.secretsStdin === true
+      );
     if (kind === 'field-value-base64') return options.valueStdinBase64 === true;
     return options.valueStdin === true;
   });

@@ -25,7 +25,8 @@ const ERROR_MESSAGES: Readonly<Record<EncryptedDatabaseStoreErrorCode, string>> 
   exists: 'A database record already exists.',
   invalid: 'The database operation is invalid.',
   operation: 'The database operation failed.',
-  unsupported: 'This database operation is unsupported.',
+  unsupported:
+    'MongoDB deployments without replica sets or sharding are not supported for database writes; initialize against a replica set or sharded cluster.',
 };
 
 /**

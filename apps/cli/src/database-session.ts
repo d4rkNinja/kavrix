@@ -126,9 +126,13 @@ let zeroizationObserver: ((cleared: true) => void) | undefined;
 const DATABASE_VAULT_DELETION_AUTHORIZATION = Symbol(
   'database-vault-deletion-authorization',
 );
-type DatabaseVaultDeletionAuthorization = Readonly<{
+export type DatabaseVaultDeletionAuthorization = Readonly<{
   token: typeof DATABASE_VAULT_DELETION_AUTHORIZATION;
 }>;
+export function createDatabaseVaultDeletionAuthorization(): DatabaseVaultDeletionAuthorization {
+  return { token: DATABASE_VAULT_DELETION_AUTHORIZATION };
+}
+
 declare const migrationInitializationOwnershipBrand: unique symbol;
 export type MigrationInitializationOwnership = Readonly<{
   readonly [migrationInitializationOwnershipBrand]: true;
@@ -2342,6 +2346,7 @@ function mapError(error: unknown): Error {
     return new DatabaseSessionError('operation');
   }
   if (error instanceof ZodError) return new DatabaseSessionError('invalid');
+  if (error instanceof PortableKeyFileError) return error;
   return new DatabaseSessionError('authentication');
 }
 
