@@ -8,6 +8,7 @@ export default tseslint.config(
       '**/dist/**',
       '**/node_modules/**',
       '**/*.d.ts',
+      'demo/**',
       'apps/cli/src/catalog.ts',
       'apps/cli/src/cli.ts',
       'apps/cli/src/contracts.ts',
