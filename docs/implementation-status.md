@@ -146,6 +146,10 @@ remain schema-driven; plaintext field values never cross the storage boundary.
   credentials, invalid input, or secret-frame mistakes as "Database
   authentication failed"; reviewed command-layer errors pass through and store
   codes map to truthful classes with documented exit codes (10/11/14/15/16).
+  Store `unsupported` (standalone without replica set/sharding) is preserved as
+  session `unsupported` with the replica-set sentence instead of collapsing to
+  "invalid" or "may have changed"; init treats it as proven-rejected so no
+  ambiguous-commit cleanup is claimed.
 - Usage errors exit `2`; wrong passphrases exit `10`; missing credentials exit
   `11` per the CLI reference table.
 - Local file locks record their owner PID; locks from provably dead processes

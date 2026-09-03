@@ -413,7 +413,11 @@ function mapMigrationError(error: unknown): DatabaseMigrationError {
     if (error.code === 'duplicate' || error.code === 'conflict') {
       return new DatabaseMigrationError('conflict');
     }
-    if (error.code === 'invalid' || error.code === 'binding') {
+    if (
+      error.code === 'invalid' ||
+      error.code === 'binding' ||
+      error.code === 'unsupported'
+    ) {
       return new DatabaseMigrationError('invalid');
     }
     if (error.code === 'ambiguous-commit') {

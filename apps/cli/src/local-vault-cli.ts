@@ -500,6 +500,10 @@ export function buildLocalCli(): Command {
     .option(
       '--recovery-passphrase-stdin',
       'Read the recovery-kit passphrase from standard input.',
+    )
+    .option(
+      '--secrets-stdin',
+      'Alias of --recovery-passphrase-stdin for compatibility (reads the same frames).',
     );
   recoveryCreate.action(async (...args: unknown[]) => {
     await handleRecoveryCreate(getOptions(args));

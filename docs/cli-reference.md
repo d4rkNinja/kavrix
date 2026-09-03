@@ -73,8 +73,15 @@ kavrix db ping --profile team-db
 The URI is requested through a masked prompt. Controlled automation may use the
 command's `--database-url-stdin` or `--secrets-stdin` option and an isolated pipe.
 Never place a credential-bearing URI in argv, an environment variable, a profile,
-or source control. Remote URIs require validated TLS. Database-container writes
-require a replica set or sharded MongoDB topology with transaction support.
+or source control. The URI is never stored: omitting it fails closed, and every
+MongoDB command needs its URI frame again. Remote URIs require validated TLS
+(`tlsCAFile` in the URI or platform trust; there is no `--tls-ca-file` flag, and
+TLS/hostname/replica-set/unreachable failures all report `The database
+connection failed.` without distinguishing the cause). Database-container writes
+require a replica set or sharded MongoDB topology with transaction support;
+standalone `db init` fails closed with `MongoDB deployments without replica sets
+or sharding are not supported for database writes; initialize against a replica
+set or sharded cluster.`
 
 ## 2. Initialize a database
 
@@ -137,6 +144,12 @@ with exact database/vault binding. Database and vault labels are stored only in
 the encrypted catalog. Ordinary list/status output returns opaque IDs and
 `[REDACTED]`, not labels. `db vault create --secrets-stdin` expects the database
 key passphrase followed by the private vault label; MongoDB mode prepends its URI.
+`db vault remove <vaultId> --secrets-stdin` expects only `[mongodb-url,]
+passphrase` (see `kavrix frames`). A failed removal never advances the revision
+anchor: the previously working key keeps working. `db recovery use` rotates the
+database owner key: the previous owner key stops working and the selected profile
+still names its old key path until it is updated, so re-run with `--key-file`
+pointing at the recovered key.
 
 New database vaults keep a versioned structured payload. The existing root
 commands remain a compatibility projection over the default project context,

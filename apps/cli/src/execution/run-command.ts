@@ -121,6 +121,14 @@ export async function executeRun(options: RunCliOptions): Promise<RunOutcome> {
   const targetRest = targetArguments.slice(1);
 
   if (!(await usesDatabaseContainer(options))) {
+    const { databaseProfileBindingState } =
+      await import('../database-flat-commands.js');
+    const state = await databaseProfileBindingState(options);
+    if (state === 'unbound') {
+      throw invalidConfiguration(
+        'The selected datastore profile is not bound to a database; run `kavrix db init` for that profile before `kavrix run`.',
+      );
+    }
     throw invalidConfiguration(
       'kavrix run requires a database profile; create one with `kavrix db profile add`.',
     );

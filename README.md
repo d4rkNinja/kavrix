@@ -99,6 +99,13 @@ Sensitive input is always prompted for or read from stdin. Never place
 passwords, keys, recovery secrets, or database URIs in shell arguments or shell
 history.
 
+**Root credential commands (`put`, `get`, `list`, `view`, `search`) default to
+`--datastore mongodb` unless a database profile is selected.** File quick-start
+users should always pass `--profile` (or `--datastore file` for legacy paths);
+without a profile the CLI falls into the MongoDB URI/TTY flow. Datastore
+profiles never store the MongoDB URI: re-pipe it via `--database-url-stdin` or
+`--secrets-stdin` on every MongoDB command.
+
 Interactive protected prompts show the applicable non-secret condition before
 entry and use textual `[i]`, `[OK]`, and `[X]` status markers. Invalid local
 input retries only that field; a passphrase-confirmation mismatch retries both

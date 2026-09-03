@@ -235,9 +235,7 @@ export function addDatabaseVaultCommands(vault: Command): void {
 
   const remove = vault
     .command('remove <vaultId>')
-    .description(
-      'Remove one vault from the encrypted catalog (requires confirmation).',
-    );
+    .description('Remove one vault from the encrypted catalog.');
   addRoutingOptions(remove);
   addSecretOption(remove);
   remove.option('--json', 'Emit machine-readable output.');
@@ -555,16 +553,23 @@ async function handleRecoveryUse(options: DatabaseCommandOptions): Promise<void>
     if (values[1] !== values[2]) throw new DatabaseSessionError('invalid');
     recoveryPassphrase = Buffer.from(values[0] ?? '', 'utf8');
     newPassphrase = Buffer.from(values[1] ?? '', 'utf8');
-    writeOutput(
-      await DatabaseSession.useRecovery({
-        store: opened.store,
-        recoveryFile: options.recoveryFile,
-        recoveryPassphrase,
-        outputKeyFile: options.outputKeyFile,
-        newPassphrase,
-        ...(options.anchorFile === undefined ? {} : { anchorFile: options.anchorFile }),
-        expectedBinding: binding,
-      }),
+    const recovered = await DatabaseSession.useRecovery({
+      store: opened.store,
+      recoveryFile: options.recoveryFile,
+      recoveryPassphrase,
+      outputKeyFile: options.outputKeyFile,
+      newPassphrase,
+      ...(options.anchorFile === undefined ? {} : { anchorFile: options.anchorFile }),
+      expectedBinding: binding,
+    });
+    writeOutput(recovered);
+    process.stderr.write(
+      [
+        '',
+        'Recovery rotated the database owner key. The previous owner key can no longer open this database.',
+        `The selected profile still points at its old key file; re-run with --key-file ${recovered.keyFile} or update the profile before the next command.`,
+        '',
+      ].join('\n'),
     );
   } finally {
     zeroize(newPassphrase);

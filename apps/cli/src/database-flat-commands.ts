@@ -60,6 +60,42 @@ export async function usesDatabaseContainer(
   return (await selectedDatabaseProfile(options)) !== null;
 }
 
+/**
+ * Distinguishes a missing profile selection from an existing but unbound one
+ * (created via `db profile add` but never bound via `db init`). Unbound
+ * profiles have no databaseId and cannot open a database container.
+ */
+export async function databaseProfileBindingState(
+  options: DatabaseFlatCommandOptions,
+): Promise<'bound' | 'unbound' | 'missing'> {
+  const registryOptions =
+    options.profileConfigDir === undefined
+      ? {}
+      : { configDirectory: options.profileConfigDir };
+  let registry: Awaited<ReturnType<typeof DatastoreProfileRegistry.openIfPresent>>;
+  try {
+    registry =
+      options.profile === undefined
+        ? hasExplicitStandaloneRouting(options)
+          ? null
+          : await DatastoreProfileRegistry.openIfPresent(registryOptions)
+        : await DatastoreProfileRegistry.open(registryOptions);
+  } catch {
+    return 'missing';
+  }
+  if (registry === null) return 'missing';
+  try {
+    const profile =
+      options.profile === undefined
+        ? await registry.current()
+        : await registry.get(profileIdSchema.parse(options.profile));
+    if (profile === null) return 'missing';
+    return profile.databaseId === undefined ? 'unbound' : 'bound';
+  } catch {
+    return 'missing';
+  }
+}
+
 export async function readDatabaseFlatSecrets(
   options: DatabaseFlatCommandOptions,
   extras: readonly LocalSecretKind[],

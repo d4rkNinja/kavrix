@@ -160,7 +160,8 @@ export type DatabaseSessionErrorCode =
   | 'invalid'
   | 'not-found'
   | 'operation'
-  | 'rollback';
+  | 'rollback'
+  | 'unsupported';
 
 /** Stable documented exit codes for each session failure class. */
 const SESSION_EXIT_CODES: Readonly<Record<DatabaseSessionErrorCode, number>> =
@@ -176,6 +177,7 @@ const SESSION_EXIT_CODES: Readonly<Record<DatabaseSessionErrorCode, number>> =
     'not-found': 11,
     operation: 15,
     rollback: 16,
+    unsupported: 15,
   });
 
 export class DatabaseSessionError extends Error {
@@ -367,7 +369,8 @@ export class DatabaseSession {
           error instanceof EncryptedDatabaseStoreError &&
           (error.code === 'exists' ||
             error.code === 'conflict' ||
-            error.code === 'invalid')
+            error.code === 'invalid' ||
+            error.code === 'unsupported')
         )
           databaseMayExist = false;
         throw error;
@@ -2341,8 +2344,8 @@ function mapError(error: unknown): Error {
     if (error.code === 'conflict' || error.code === 'exists')
       return new DatabaseSessionError('conflict');
     if (error.code === 'busy') return new DatabaseSessionError('busy');
-    if (error.code === 'invalid' || error.code === 'unsupported')
-      return new DatabaseSessionError('invalid');
+    if (error.code === 'unsupported') return new DatabaseSessionError('unsupported');
+    if (error.code === 'invalid') return new DatabaseSessionError('invalid');
     return new DatabaseSessionError('operation');
   }
   if (error instanceof ZodError) return new DatabaseSessionError('invalid');
@@ -2409,7 +2412,10 @@ function recoveryPublicationReleases(
 function isProvenRejectedMutation(error: unknown): boolean {
   return (
     error instanceof EncryptedDatabaseStoreError &&
-    (error.code === 'conflict' || error.code === 'exists' || error.code === 'invalid')
+    (error.code === 'conflict' ||
+      error.code === 'exists' ||
+      error.code === 'invalid' ||
+      error.code === 'unsupported')
   );
 }
 
@@ -2444,6 +2450,8 @@ function messageFor(code: DatabaseSessionErrorCode): string {
     'not-found': 'The requested vault was not found.',
     operation: 'The database operation failed.',
     rollback: 'The database snapshot was rejected as stale or forked.',
+    unsupported:
+      'MongoDB deployments without replica sets or sharding are not supported for database writes; initialize against a replica set or sharded cluster.',
   };
   return messages[code];
 }

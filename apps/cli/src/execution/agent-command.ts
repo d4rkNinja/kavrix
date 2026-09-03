@@ -144,6 +144,14 @@ export async function executeAgentRun(options: AgentRunOptions): Promise<unknown
     agentDefinition.permissions;
 
   if (!(await usesDatabaseContainer(options))) {
+    const { databaseProfileBindingState } =
+      await import('../database-flat-commands.js');
+    const state = await databaseProfileBindingState(options);
+    if (state === 'unbound') {
+      throw invalidConfiguration(
+        'The selected datastore profile is not bound to a database; run `kavrix db init` for that profile before `kavrix agent run`.',
+      );
+    }
     throw invalidConfiguration(
       'kavrix agent run requires a database profile; create one with `kavrix db profile add`.',
     );

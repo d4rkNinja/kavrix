@@ -1,6 +1,7 @@
 import { zeroize } from '@kavrix/crypto';
 
 import {
+  databaseProfileBindingState,
   openDatabaseAuthorizationStateAccess,
   readDatabaseFlatSecrets,
   usesDatabaseContainer,
@@ -22,6 +23,11 @@ export async function withAuthorizationState<T>(
   operation: (state: AuthorizationState) => Promise<T>,
 ): Promise<T> {
   if (!(await usesDatabaseContainer(options))) {
+    if ((await databaseProfileBindingState(options)) === 'unbound') {
+      throw invalidConfiguration(
+        'The selected datastore profile is not bound to a database; run `kavrix db init` for that profile first.',
+      );
+    }
     throw invalidConfiguration(
       'Authorization commands require a database profile; create one with `kavrix db profile add`.',
     );
@@ -56,6 +62,11 @@ export async function withAuthorizationSnapshot<T>(
   operation: (snapshot: AuthorizationStateSnapshot) => Promise<T> | T,
 ): Promise<T> {
   if (!(await usesDatabaseContainer(options))) {
+    if ((await databaseProfileBindingState(options)) === 'unbound') {
+      throw invalidConfiguration(
+        'The selected datastore profile is not bound to a database; run `kavrix db init` for that profile first.',
+      );
+    }
     throw invalidConfiguration(
       'Authorization commands require a database profile; create one with `kavrix db profile add`.',
     );

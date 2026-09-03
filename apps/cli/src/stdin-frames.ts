@@ -34,6 +34,8 @@ export const STDIN_FRAME_CONTRACTS: Readonly<Record<string, string>> = Object.fr
   'db vault list': '[mongodb-url,] passphrase',
   'db vault status': '[mongodb-url,] passphrase',
   'db vault rename': '[mongodb-url,] passphrase, label',
+  'db vault remove': '[mongodb-url,] passphrase',
+  'db vault use': '[mongodb-url,] passphrase',
   'db key create':
     '[mongodb-url,] passphrase, share-passphrase, share-passphrase-confirm',
   'db recovery create':
