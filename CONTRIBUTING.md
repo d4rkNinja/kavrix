@@ -16,6 +16,9 @@ Requirements:
   contributors stay on one baseline so gate results are comparable, and CI
   covers the rest of the range.
 - pnpm 11 through Corepack
+- From-source install into a user prefix: `cd apps/cli && pnpm pack` then
+  `npm install -g ./kavrix-*.tgz --prefix ~/.local` (do not use
+  `npm link --prefix <empty-dir>`).
 
 ```sh
 corepack enable
@@ -23,6 +26,9 @@ pnpm install --frozen-lockfile
 pnpm verify:all
 pnpm test:coverage
 ```
+
+After `pnpm build`, use `pnpm exec kavrix` to run the workspace CLI, not a global
+installation. If the workspace bin is missing, run `pnpm build` again to repair it.
 
 ## Pre-push checklist
 

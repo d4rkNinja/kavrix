@@ -452,7 +452,8 @@ function messageFor(code: DatabaseMigrationErrorCode): string {
   const messages: Record<DatabaseMigrationErrorCode, string> = {
     'ambiguous-commit':
       'Migration publication is ambiguous; recovery artifacts were retained.',
-    authentication: 'Legacy vault migration authentication failed.',
+    authentication:
+      'Legacy vault migration authentication failed. Confirm the source vault unlocks with the source profile key/passphrase and matching `.anchor` file (re-init a fresh legacy vault if recovery mutated it).',
     conflict: 'The migration destination changed or already exists.',
     invalid: 'The migration request is invalid.',
     verification: 'The migrated vault did not pass exact local verification.',

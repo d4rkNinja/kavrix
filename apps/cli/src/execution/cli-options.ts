@@ -39,11 +39,10 @@ export function executionFlatOptions(
   merged: Readonly<Record<string, unknown>>,
 ): ExecutionCommandOptions {
   const vault = merged['vault'];
+  const profileConfigDir = merged['profileConfigDir'] ?? merged['configDir'];
   return {
     ...(typeof merged['profile'] === 'string' ? { profile: merged['profile'] } : {}),
-    ...(typeof merged['profileConfigDir'] === 'string'
-      ? { profileConfigDir: merged['profileConfigDir'] }
-      : {}),
+    ...(typeof profileConfigDir === 'string' ? { profileConfigDir } : {}),
     vault: typeof vault === 'string' && vault.length > 0 ? vault : 'default',
     ...(merged['vaultWasDefaulted'] === true ? { vaultWasDefaulted: true } : {}),
     ...(typeof merged['datastore'] === 'string'
@@ -66,6 +65,7 @@ export function addExecutionRoutingOptions(command: Command): Command {
   return command
     .option('--profile <id>', 'Bound database profile.')
     .option('--profile-config-dir <path>', 'Protected profile configuration directory.')
+    .option('--config-dir <path>', 'Protected profile configuration directory.')
     .option('--datastore <type>', 'Explicit datastore type override.')
     .option('--data-file <path>', 'Local database file override.')
     .option('--database <name>', 'MongoDB database name override.')

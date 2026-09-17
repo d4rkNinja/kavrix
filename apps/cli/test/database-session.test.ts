@@ -52,6 +52,7 @@ import {
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  createDatabaseVaultDeletionAuthorization,
   DatabaseSession,
   setDatabaseSessionZeroizationObserverForTest,
 } from '../src/database-session.js';
@@ -863,6 +864,64 @@ describe('DatabaseSession', () => {
     expect(observed).toEqual([true]);
   });
 
+  it('authorized vault remove leaves list and status usable without ambiguous-commit', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'kavrix-session-remove-ok-'));
+    const store = new MemoryDatabaseStore();
+    const keyFile = join(directory, 'owner.kavrix-db-key');
+    await DatabaseSession.initialize({
+      store,
+      keyFile,
+      passphrase: PASSPHRASE,
+      label: 'database',
+    });
+    const session = await DatabaseSession.open({
+      store,
+      keyFile,
+      passphrase: PASSPHRASE,
+    });
+    try {
+      const kept = await session.createVault('kept');
+      const extra = await session.createVault('extra');
+      expect(session.listVaults()).toHaveLength(2);
+      expect(session.status().vaultCount).toBe(2);
+
+      await session.deleteVault(extra.id, createDatabaseVaultDeletionAuthorization());
+
+      expect(session.listVaults().map((entry) => entry.id)).toEqual([kept.id]);
+      expect(session.status().vaultCount).toBe(1);
+      await expect(session.getVault(kept.id)).resolves.toMatchObject({ id: kept.id });
+      await expect(session.getVault(extra.id)).rejects.toMatchObject({
+        code: 'not-found',
+      });
+      // Further catalog mutation must not surface exit-15 / "database may have changed".
+      const after = await session.createVault('after-remove');
+      expect(
+        session
+          .listVaults()
+          .map((entry) => entry.id)
+          .sort(),
+      ).toEqual([kept.id, after.id].sort());
+      expect(session.status().vaultCount).toBe(2);
+    } finally {
+      await session.close();
+    }
+
+    const reopened = await DatabaseSession.open({
+      store,
+      keyFile,
+      passphrase: PASSPHRASE,
+    });
+    try {
+      expect(reopened.listVaults()).toHaveLength(2);
+      expect(reopened.status().vaultCount).toBe(2);
+      expect(reopened.listVaults().some((entry) => entry.label === 'extra')).toBe(
+        false,
+      );
+    } finally {
+      await reopened.close();
+    }
+  });
+
   it('rejects invalid labels, missing vaults, unauthorized deletion, and closed operations', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'kavrix-session-validation-'));
     const store = new MemoryDatabaseStore();
@@ -1302,7 +1361,12 @@ describe('DatabaseSession', () => {
       }),
     ).toBe(second.slotId);
     await session.revokeRecovery(first.slotId);
-    expect(session.recoveryStatus()).toEqual({ active: 1, revoked: 1 });
+    expect(session.recoveryStatus()).toMatchObject({
+      active: 1,
+      revoked: 1,
+      slots: expect.any(Array),
+    });
+    expect(session.recoveryStatus().slots).toHaveLength(2);
     await expect(
       session.verifyRecovery({
         recoveryFile: firstRecovery,

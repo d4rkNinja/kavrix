@@ -349,13 +349,83 @@ describe('stdin frame reference and status', () => {
     expect(all.stdout).toContain('destroy');
     const single = await runCli(['frames', 'put'], '');
     expect(single.exitCode).toBe(0);
-    expect(single.stdout).toContain('passphrase, value');
+    expect(single.stdout).toContain('[mongodb-url,] passphrase, value');
     const help = await runCli(['db', 'vault', 'create', '--help'], '');
     expect(help.exitCode).toBe(0);
     expect(help.stdout).toContain('Stdin frames: [mongodb-url,]');
     expect(help.stdout).toContain('passphrase, label.');
+    const multiword = await runCli(['frames', 'db', 'init'], '');
+    const quoted = await runCli(['frames', 'db init'], '');
+    expect(multiword.exitCode).toBe(0);
+    expect(multiword.stdout).toBe(quoted.stdout);
+    expect(multiword.stdout).toContain(
+      '[mongodb-url,] label, passphrase, passphrase-confirm',
+    );
+    for (const parent of [['db'], ['db', 'vault']]) {
+      const hint = await runCli(['frames', ...parent], '');
+      expect(hint.exitCode).toBe(2);
+      expect(hint.stdout).toBe('');
+      expect(hint.stderr).toContain('db vault create');
+      expect(hint.stderr).toContain('db vault use');
+      if (parent.length === 1) expect(hint.stderr).toContain('db init');
+      else expect(hint.stderr).not.toContain('db init');
+    }
     const unknown = await runCli(['frames', 'teleport'], '');
     expect(unknown.exitCode).toBe(2);
+    expect(unknown.stderr).toContain('No stdin frame contract is documented');
+    expect(unknown.stderr).toContain('kavrix frames');
+    expect(unknown.stderr).toContain('quote the full command');
+    const migrateFrames = await runCli(
+      ['frames', 'migrate', 'database', '--secrets-stdin'],
+      '',
+    );
+    expect(migrateFrames.exitCode).toBe(0);
+    expect(migrateFrames.stdout).toContain(
+      '[mongodb-url,] source-passphrase, destination-passphrase, migrated-vault-label',
+    );
+    const migrateParent = await runCli(['frames', 'migrate', 'database'], '');
+    expect(migrateParent.exitCode).toBe(0);
+    expect(migrateParent.stdout).toContain(
+      '[mongodb-url,] source-passphrase, destination-passphrase, migrated-vault-label',
+    );
+  });
+
+  it.each([
+    ['db', 'init'],
+    ['migrate', 'database'],
+    ['context', 'list'],
+    ['policy', 'list'],
+  ])('advertises both config directory flags for %s %s', async (...command) => {
+    const help = await runCli([...command, '--help'], '');
+    expect(help.exitCode).toBe(0);
+    expect(help.stdout).toContain('--profile-config-dir <path>');
+    expect(help.stdout).toContain('--config-dir <path>');
+  });
+
+  it('creates vault JSON with a top-level vaultId using the config-dir alias', async () => {
+    const result = await runCli(
+      [
+        'db',
+        'vault',
+        'create',
+        ...ownerRoutingArgs().map((arg) =>
+          arg === '--profile-config-dir' ? '--config-dir' : arg,
+        ),
+        '--secrets-stdin',
+        '--json',
+      ],
+      `${passphraseFrame()}alias-test\n`,
+    );
+    expect(result.exitCode).toBe(0);
+    const parsed = JSON.parse(result.stdout) as {
+      vaultId: string;
+      created: { id: string; createdAt: string };
+    };
+    expect(parsed.created.id).toMatch(/^vault_/);
+    expect(parsed.vaultId).toBe(parsed.created.id);
+    expect(parsed.created.createdAt).toEqual(expect.any(String));
+    expect(result.stdout).not.toContain(EXEC_PASSPHRASE);
+    expect(result.stdout).not.toContain('alias-test');
   });
 
   it('reports routing mode and selected profile as JSON', async () => {
@@ -369,6 +439,12 @@ describe('stdin frame reference and status', () => {
     const parsed = JSON.parse(bare.stdout.trim()) as { routing: string };
     expect(parsed.routing).toBe('legacy-v2');
     expect(parsed.version).toBeTruthy();
+    const alias = await runCli(
+      ['status', '--json', '--config-dir', absentConfigDir],
+      '',
+    );
+    expect(alias.exitCode).toBe(0);
+    expect(alias.stdout).toBe(bare.stdout);
   });
 });
 

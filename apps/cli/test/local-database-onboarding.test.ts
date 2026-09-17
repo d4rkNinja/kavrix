@@ -85,7 +85,8 @@ describe('guided local database onboarding', () => {
           label: 'vault-label-canary',
         }),
       ]);
-      expect(session.recoveryStatus()).toEqual({ active: 1, revoked: 0 });
+      expect(session.recoveryStatus()).toMatchObject({ active: 1, revoked: 0 });
+      expect(session.recoveryStatus().slots).toHaveLength(1);
       await session.close();
       await store.close();
 

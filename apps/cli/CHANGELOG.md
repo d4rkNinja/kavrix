@@ -1,5 +1,9 @@
 # kavrix
 
+## 0.2.12
+
+- Fix CLI FAIL/SKIP issues from hand QA: allow `db vault remove` when the database revision advances (no longer poison the session with `ambiguous-commit`); allow `db key create` on MongoDB profiles with `--output-key-file`; improve `migrate database` auth errors and `frames migrate database` stdin contract (including Mongo URL-first frames); redirect legacy `vault list`/`vault status` on database-container profiles; add `agent run`/`agent exec --dry-run`; expose non-secret recovery `slots` on `db recovery status` for revoke flows; clear or auto-reselect profile default vault after remove; alias `--config-dir` to profile config routing.
+
 ## 0.2.11
 
 - Fix 12 FAILs from the 0.2.10 QA: standalone `db init` now surfaces the replica-set sentence (`unsupported`, exit 15) instead of `The database may have changed` by preserving the store `unsupported` code through `DatabaseSession` and treating it as proven-rejected during init; document `db vault remove`/`db vault use` stdin frames and remove the unimplemented confirmation claim; accept `--passphrase-stdin`/`--secrets-stdin` on legacy `recovery create`; distinguish unbound profiles (`run`/`agent run`/authorization now say the profile is not bound and to run `db init`); `db recovery use` prints a rotation notice that the old owner key is dead and the profile still names it.

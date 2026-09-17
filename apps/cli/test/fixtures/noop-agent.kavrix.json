@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "agents": {
+    "noop": {
+      "permissions": {
+        "ping": {
+          "secret": "github/token",
+          "commands": ["true"],
+          "env": "GITHUB_TOKEN"
+        }
+      }
+    }
+  }
+}

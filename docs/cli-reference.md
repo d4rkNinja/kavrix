@@ -55,9 +55,10 @@ newer registry, so downgrading after a 0.2.8 profile mutation is unsupported;
 restore a separately preserved version 1 registry or roll forward to 0.2.8.
 Never hand-edit the protected registry.
 
-Use `--config-dir <path>` with `db profile` commands and
-`--profile-config-dir <path>` with database/credential commands when the
-registry is not in its platform default location.
+Use `--profile-config-dir <path>` (alias `--config-dir <path>`) with
+`db profile`, database, and credential commands when the registry is not in its
+platform default location. Explicit `--profile-config-dir` takes precedence over
+`--config-dir` when both are set.
 
 ### MongoDB profile
 

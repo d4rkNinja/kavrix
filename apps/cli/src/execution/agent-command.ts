@@ -99,11 +99,13 @@ export interface AgentRunOptions extends DatabaseFlatCommandOptions {
   readonly agentName: string;
   readonly config?: string | undefined;
   readonly json?: boolean | undefined;
+  readonly dryRun?: boolean | undefined;
   readonly executableAndArgs: readonly string[];
 }
 
 export interface AgentExecOptions {
   readonly permission: string;
+  readonly dryRun?: boolean | undefined;
   readonly executableAndArgs: readonly string[];
 }
 
@@ -123,7 +125,8 @@ export interface AgentExecOptions {
  */
 export async function executeAgentRun(options: AgentRunOptions): Promise<unknown> {
   const argv = options.executableAndArgs;
-  if (argv.length === 0 || (argv[0] ?? '').length === 0) {
+  const dryRun = options.dryRun === true;
+  if (!dryRun && (argv.length === 0 || (argv[0] ?? '').length === 0)) {
     throw invalidConfiguration('An agent command is required after `--`.');
   }
 
@@ -155,6 +158,16 @@ export async function executeAgentRun(options: AgentRunOptions): Promise<unknown
     throw invalidConfiguration(
       'kavrix agent run requires a database profile; create one with `kavrix db profile add`.',
     );
+  }
+
+  if (dryRun) {
+    return {
+      dryRun: true,
+      ok: true,
+      agent: options.agentName,
+      permissionCount: Object.keys(permissions).length,
+      exitCode: 0,
+    };
   }
 
   const secretNames = new Set<string>();
@@ -258,6 +271,16 @@ export async function executeAgentRun(options: AgentRunOptions): Promise<unknown
 
 /** Client half executed inside the agent session for one authorized operation. */
 export async function executeAgentExec(options: AgentExecOptions): Promise<unknown> {
+  const permission = validatedPermission(options.permission);
+  if (options.dryRun === true) {
+    return {
+      dryRun: true,
+      ok: true,
+      permission,
+      note: 'Self-test only; no broker session required.',
+      exitCode: 0,
+    };
+  }
   const endpoint = process.env[AGENT_BROKER_ENV];
   const token = process.env[AGENT_TOKEN_ENV];
   if (

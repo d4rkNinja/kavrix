@@ -549,6 +549,44 @@ export class DatastoreProfileRegistry {
     });
   }
 
+  /** Clears the profile default vault after the selected vault is removed. */
+  async clearDefaultVaultId(
+    id: ProfileId,
+    expectedDatabaseId: DatabaseId,
+    expectedProfile?: DatastoreProfile,
+  ): Promise<DatastoreProfile> {
+    const parsedId = parseProfileId(id);
+    const parsedExpectedDatabaseId = parseOptionalDatabaseId(expectedDatabaseId);
+    if (parsedExpectedDatabaseId === undefined) {
+      throw new DatastoreProfileError('PROFILE_INVALID');
+    }
+    const parsedExpectedProfile =
+      expectedProfile === undefined ? undefined : parseProfile(expectedProfile);
+    return this.#mutate((document) => {
+      const profile = document.profiles.find((candidate) => candidate.id === parsedId);
+      if (
+        profile?.databaseId === undefined ||
+        profile.databaseId !== parsedExpectedDatabaseId ||
+        (parsedExpectedProfile !== undefined &&
+          !sameProfileValue(profile, parsedExpectedProfile))
+      ) {
+        throw new DatastoreProfileError('PROFILE_INVALID');
+      }
+      const { defaultVaultId: _removed, ...withoutDefault } = profile;
+      void _removed;
+      const cleared = parseProfile(withoutDefault);
+      return {
+        document: {
+          ...document,
+          profiles: document.profiles.map((candidate) =>
+            candidate.id === parsedId ? cleared : candidate,
+          ),
+        },
+        result: cloneProfile(cleared),
+      };
+    });
+  }
+
   async current(): Promise<DatastoreProfile | null> {
     const document = await this.#readOrEmpty();
     if (document.current === null) return null;

@@ -1,117 +1,124 @@
 # Kavrix
 
-Kavrix is a zero-knowledge credential vault and credential firewall for the
-terminal. It encrypts credentials and their labels on your machine and stores
-authenticated ciphertext in a hardened local database file or in your own
-MongoDB deployment. One database holds multiple independently encrypted vaults.
-Within a database vault, the private credential model is structured as project
-context/environment → group/service → credential item → typed fields, with
-notes, expiry/rotation metadata, and encrypted attachment/history records
-preserved by the vault schema. Tools consume credentials through tightly scoped
-execution instead of plaintext files:
-
-- `kavrix run` injects only the requested credentials into a child process
-  environment.
-- Permission policies and temporary grants decide which executables may use a
-  credential, for how long, and how many times.
-- `kavrix agent run` lets AI coding agents request credentials through a local
-  broker that enforces those policies on every request.
-
-Plaintext secrets never need to land in `.env` files, shell history, logs, or
-unrelated processes. Kavrix does not start an API server, sync daemon, or web
-service, and it never sends your unlock material anywhere.
+Kavrix keeps credentials encrypted on your machine, in a local file or your own
+MongoDB deployment. Store and retrieve secrets from the terminal, or let tools
+use only the credentials you allow. Your unlock material stays local.
 
 ## Requirements
 
 - Node.js `>=24.12.0 <25` or `>=25.1.0`
-- MongoDB only if you select that datastore; database writes require a
-  transaction-capable replica set or sharded topology
+- MongoDB only if you use that datastore (writes need a replica set)
 
 ## Installation
 
 ```sh
 npm install --global kavrix
 kavrix --version
-kavrix --help
 ```
 
-## Quick start
-
-For a new local setup, run a bare `kavrix init` in a terminal. The guided flow
-preflights the destinations before protected input, creates an encrypted local
-database and owner key, creates and selects one default vault, creates a separate
-recovery kit, verifies that kit locally, and only then selects the new profile.
-Blank destinations use `~/.kavrix/kavrix.vault`, `kavrix.key`, and
-`kavrix.recovery` (`%USERPROFILE%\\.kavrix` on Windows). It also keeps
-the protected, non-secret `config.toml` command reference; commands do not
-load that file automatically.
-
-`kavrix init` never accepts these protected labels or passphrases through
-arguments or environment variables. Before the final selection step, failures
-leave the new profile unselected and retain recoverable local state for
-inspection. If final selection reaches storage but its completion cannot be
-verified, Kavrix reports failure without a success claim; inspect
-`kavrix db profile status` before retrying or changing selection.
-Explicitly routed or non-TTY root `init` remains the legacy version 2
-single-vault compatibility path.
+If npm fails with `EACCES` (prefix often `/usr/local`):
 
 ```sh
-kavrix init
+npm config set prefix ~/.local
+export PATH="$HOME/.local/bin:$PATH"
+npm install --global kavrix
 ```
 
-For MongoDB or an explicitly routed setup, use the database commands directly:
+Published npm may lag git `main` (for example 0.2.10 on npm while main is
+0.2.11). For tip-of-main from a clone:
 
 ```sh
-# 1. Register and select a non-secret route to your datastore.
+pnpm install --frozen-lockfile && pnpm build
+pnpm exec kavrix --version
+```
+
+An older global `kavrix` on `PATH` can shadow the workspace binary — prefer
+`pnpm exec kavrix` or `node apps/cli/dist/bin.js` from a built checkout.
+
+Or pack and install into a user prefix (preferred over `npm link --prefix`):
+
+```sh
+cd apps/cli && pnpm pack
+npm install -g ./kavrix-*.tgz --prefix ~/.local
+```
+
+## Quick start (local file)
+
+Passphrases must be at least **16 bytes**. This non-interactive flow works
+without a TTY. Profile registry: `~/.config/kavrix/`. Vault files here use
+`~/.kavrix/`.
+
+```sh
+mkdir -p ~/.kavrix
 kavrix db profile add work --datastore file \
-  --data-file ./work.kavrix --key-file ./work.kavrix.key
+  --data-file ~/.kavrix/work.kavrix --key-file ~/.kavrix/work.kavrix.key
 kavrix db profile use work
 
-# 2. Initialize the database and create a vault. Labels stay encrypted.
-kavrix db init --profile work
-kavrix db vault create --profile work
+PASS='MyPassphrase16chars!'
 
-# 3. Authenticate and select the returned opaque vault ID for this profile.
-kavrix db vault use <vault-id> --profile work
+printf '%s\n' 'lab' "$PASS" "$PASS" \
+  | kavrix db init --profile work --passphrase-stdin
 
-# 4. Vault-scoped commands now use that profile default.
-kavrix put github/token --profile work
-kavrix list --profile work
+printf '%s\n' "$PASS" 'default-vault' \
+  | kavrix db vault create --profile work --passphrase-stdin
+# Response includes created.id — copy it:
+# VAULT_ID=vault_…
 
-# 5. Reveal plaintext only when you explicitly ask for it.
-kavrix get github/token --reveal --profile work
+printf '%s\n' "$PASS" \
+  | kavrix db vault use "$VAULT_ID" --profile work --passphrase-stdin
+
+printf '%s\n' "$PASS" 'secret-value' \
+  | kavrix put github/token --profile work --passphrase-stdin --value-stdin
+
+printf '%s\n' "$PASS" | kavrix list --profile work --passphrase-stdin
 ```
 
-Each datastore profile keeps its own opaque default vault ID in the protected
-non-secret profile registry. An explicit `--vault <id>` overrides that default
-for one invocation. If neither is available, Kavrix fails before requesting
-secret input. Profiles and the onboarding reference never store passphrases,
-connection credentials, labels, DRKs, VRKs, or credential values.
+Stdin frame order (`kavrix frames "<command>"`): `db init` → label,
+passphrase, confirm; `db vault create` → passphrase, label; `db vault use` →
+passphrase; `put` → passphrase, value (MongoDB adds an optional leading
+`mongodb-url` frame).
 
-The quick-start commands use the backward-compatible flat projection. In a
-structured database vault, `github/token` remains one literal item name and is
-represented in the default project context and default group/service with a
-schema-driven `value` password field. Structured entities outside that default
-projection remain private to the encrypted vault model; the flat commands do
-not reinterpret path separators as hierarchy.
+**Footgun:** without `--profile`, root `put` / `get` / `list` / … still default
+datastore to **mongodb** (`datastoreFrom` → `options.datastore ?? 'mongodb'`).
+Prefer `--profile` (or `--datastore file` for legacy paths) for local-file work.
 
-Sensitive input is always prompted for or read from stdin. Never place
-passwords, keys, recovery secrets, or database URIs in shell arguments or shell
-history.
+Guided TTY `kavrix init` (interactive) also works and stores under `~/.kavrix/`.
+Non-TTY `kavrix init --passphrase-stdin` is legacy v2 and writes `./kavrix.vault`
+in the current directory — prefer the profile flow above for scripts.
 
-**Root credential commands (`put`, `get`, `list`, `view`, `search`) default to
-`--datastore mongodb` unless a database profile is selected.** File quick-start
-users should always pass `--profile` (or `--datastore file` for legacy paths);
-without a profile the CLI falls into the MongoDB URI/TTY flow. Datastore
-profiles never store the MongoDB URI: re-pipe it via `--database-url-stdin` or
-`--secrets-stdin` on every MongoDB command.
+## Quick start (MongoDB)
 
-Interactive protected prompts show the applicable non-secret condition before
-entry and use textual `[i]`, `[OK]`, and `[X]` status markers. Invalid local
-input retries only that field; a passphrase-confirmation mismatch retries both
-passphrase entries. Color is supplemental, appears only on a capable TTY, and
-respects `NO_COLOR` and `TERM=dumb`. Protected stdin remains silent and
-ANSI-free.
+Needs a replica-set URI. Profiles do not store the connection string — supply it
+as the first stdin frame on each `db …` command. Root credential commands also
+take `--database-url-stdin`.
+
+```sh
+mkdir -p ~/.kavrix
+kavrix db profile add mongo --datastore mongodb --database kavrix_e2e \
+  --key-file ~/.kavrix/mongo.kavrix.key
+kavrix db profile use mongo
+
+URI='mongodb://127.0.0.1:27017/kavrix_e2e?replicaSet=rs0'
+PASS='MyPassphrase16chars!'
+
+printf '%s\n' "$URI" 'lab' "$PASS" "$PASS" \
+  | kavrix db init --profile mongo --passphrase-stdin
+
+printf '%s\n' "$URI" "$PASS" 'default-vault' \
+  | kavrix db vault create --profile mongo --passphrase-stdin
+# VAULT_ID from created.id / vaultId
+
+printf '%s\n' "$URI" "$PASS" \
+  | kavrix db vault use "$VAULT_ID" --profile mongo --passphrase-stdin
+
+printf '%s\n' "$URI" "$PASS" 'secret-value' \
+  | kavrix put github/token --profile mongo --passphrase-stdin --database-url-stdin --value-stdin
+
+printf '%s\n' "$URI" "$PASS" \
+  | kavrix list --profile mongo --passphrase-stdin --database-url-stdin
+```
+
+More detail: [Command guide](docs/cli-reference.md), [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Credential model
 
@@ -212,6 +219,7 @@ and `kavrix audit` records the events.
 | Flag                                | What it does                                                               |
 | ----------------------------------- | -------------------------------------------------------------------------- |
 | `--profile`, `--profile-config-dir` | Select a datastore profile without storing secrets.                        |
+| `--config-dir <path>`               | Alias of `--profile-config-dir` for profile registry routing.              |
 | `--vault <id>`                      | Override the selected profile's default vault for one command.             |
 | `--passphrase-stdin`                | Read the key passphrase from stdin.                                        |
 | `--database-url-stdin`              | Read the MongoDB URI from stdin.                                           |
@@ -221,6 +229,9 @@ and `kavrix audit` records the events.
 | `--json`                            | Masked machine-readable output.                                            |
 | `--overwrite`                       | Opt in to replacing something that already exists.                         |
 | `--allow-insecure-transport`        | Explicit opt-in to unencrypted MongoDB transport (isolated networks only). |
+
+Without `--profile`, root credential commands still default `--datastore` to
+**mongodb** (same `datastoreFrom` rule as above).
 
 `kavrix <command> --help` is authoritative for your installed version.
 

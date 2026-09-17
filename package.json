@@ -26,7 +26,7 @@
     "pnpm": ">=11.0.0"
   },
   "scripts": {
-    "build": "pnpm --filter @kavrix/tui --if-present build && pnpm -r --if-present build",
+    "build": "pnpm --filter @kavrix/tui --if-present build && pnpm -r --if-present build && node scripts/ensure-bin-shim.mjs",
     "clean": "pnpm -r --if-present clean",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
