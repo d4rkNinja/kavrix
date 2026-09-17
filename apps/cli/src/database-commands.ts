@@ -144,7 +144,7 @@ export function addDatabaseOwnerCommands(db: Command): void {
 
   const recoveryStatus = recovery
     .command('status')
-    .description('Show database recovery slot counts.');
+    .description('Show database recovery slot ids and counts (non-secret).');
   addRoutingOptions(recoveryStatus);
   addSecretOption(recoveryStatus);
   recoveryStatus.option('--json', 'Emit machine-readable output.');
@@ -154,7 +154,9 @@ export function addDatabaseOwnerCommands(db: Command): void {
 
   const revoke = recovery
     .command('revoke <slotId>')
-    .description('Revoke one non-final recovery slot.');
+    .description(
+      'Revoke one non-final recovery slot (at least one other active slot must remain). Slot ids come from create output or `db recovery status`.',
+    );
   addRoutingOptions(revoke);
   addSecretOption(revoke);
   revoke.action(async (slotId: string, ...args: unknown[]) =>
@@ -297,8 +299,9 @@ async function handleDatabaseStatus(options: DatabaseCommandOptions): Promise<vo
 
 async function handleDatabaseKeyCreate(options: DatabaseCommandOptions): Promise<void> {
   if (options.outputKeyFile === undefined) throw new DatabaseSessionError('invalid');
-  const route = await resolveRoute(options);
-  if (route.datastore !== 'file') throw new DatabaseSessionError('invalid');
+  // Share keys are local key files bound to the current authenticated snapshot;
+  // they work for both file and mongodb database containers.
+  await resolveRoute(options);
   const keyFile = options.outputKeyFile;
   await validateSecureFileDestination(keyFile);
   await withOwnerSession(
@@ -581,7 +584,10 @@ async function handleRecoveryUse(options: DatabaseCommandOptions): Promise<void>
 async function handleVaultCreate(options: DatabaseCommandOptions): Promise<void> {
   await withOwnerSession(options, ['label'], async (session, extras) => {
     const created = await session.createVault(extras[0] ?? '');
-    writeOutput({ created: { id: created.id, createdAt: created.createdAt } });
+    writeOutput({
+      vaultId: created.id,
+      created: { id: created.id, createdAt: created.createdAt },
+    });
   });
 }
 
@@ -658,12 +664,39 @@ async function handleVaultRemove(
   vaultId: string,
   options: DatabaseCommandOptions,
 ): Promise<void> {
-  await withOwnerSession(options, [], async (session) => {
+  await withOwnerSession(options, [], async (session, _extras, route) => {
     const id = parseVaultIdentifier(vaultId);
     const { createDatabaseVaultDeletionAuthorization } =
       await import('./database-session.js');
     await session.deleteVault(id, createDatabaseVaultDeletionAuthorization());
-    writeOutput({ removed: true, vaultId: id });
+    const remaining = session.listVaults();
+    let selection: Readonly<{
+      action: 'unchanged' | 'cleared' | 'reselected';
+      vaultId?: string | null;
+    }> = { action: 'unchanged' };
+    if (
+      route.registry !== null &&
+      route.profile !== null &&
+      route.profile.defaultVaultId === id
+    ) {
+      if (remaining.length === 1) {
+        const next = remaining[0];
+        if (next === undefined) throw new DatabaseSessionError('operation');
+        const selected = await route.registry.setDefaultVaultId(
+          route.profile.id,
+          next.id,
+          session.databaseId,
+        );
+        selection = {
+          action: 'reselected',
+          vaultId: selected.defaultVaultId ?? next.id,
+        };
+      } else {
+        await route.registry.clearDefaultVaultId(route.profile.id, session.databaseId);
+        selection = { action: 'cleared', vaultId: null };
+      }
+    }
+    writeOutput({ removed: true, vaultId: id, selection });
   });
 }
 
@@ -885,6 +918,7 @@ function addRoutingOptions(command: Command, includeKey = true): void {
   command
     .option('--profile <id>', 'Protected datastore profile alias.')
     .option('--profile-config-dir <path>', 'Protected profile configuration directory.')
+    .option('--config-dir <path>', 'Protected profile configuration directory.')
     .option('--datastore <type>', 'Encrypted datastore: file or mongodb.')
     .option('--data-file <path>', 'Encrypted local database path.')
     .option('--database <name>', 'MongoDB database routing name.')
@@ -915,7 +949,14 @@ function optionsFrom(args: readonly unknown[]): DatabaseCommandOptions {
     !('optsWithGlobals' in command)
   )
     throw new DatabaseSessionError('invalid');
-  return (command as Command).optsWithGlobals<DatabaseCommandOptions>();
+  const options = (command as Command).optsWithGlobals<
+    DatabaseCommandOptions & { configDir?: string }
+  >();
+  const profileConfigDir = options.profileConfigDir ?? options.configDir;
+  return {
+    ...options,
+    ...(profileConfigDir === undefined ? {} : { profileConfigDir }),
+  };
 }
 
 function parseDatastore(value: string): 'file' | 'mongodb' {

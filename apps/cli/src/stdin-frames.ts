@@ -7,17 +7,17 @@ import { Command } from 'commander';
  */
 export const STDIN_FRAME_CONTRACTS: Readonly<Record<string, string>> = Object.freeze({
   init: 'passphrase, passphrase-confirm',
-  put: 'passphrase, value',
-  get: 'passphrase',
-  list: 'passphrase',
-  view: 'passphrase',
-  search: 'passphrase',
-  stats: 'passphrase',
-  has: 'passphrase',
-  remove: 'passphrase',
-  rename: 'passphrase',
-  doctor: 'passphrase',
-  'doctor health': 'passphrase',
+  put: '[mongodb-url,] passphrase, value',
+  get: '[mongodb-url,] passphrase',
+  list: '[mongodb-url,] passphrase',
+  view: '[mongodb-url,] passphrase',
+  search: '[mongodb-url,] passphrase',
+  stats: '[mongodb-url,] passphrase',
+  has: '[mongodb-url,] passphrase',
+  remove: '[mongodb-url,] passphrase',
+  rename: '[mongodb-url,] passphrase',
+  doctor: '[mongodb-url,] passphrase',
+  'doctor health': '[mongodb-url,] passphrase',
   'recovery create': 'key-passphrase, recovery-passphrase',
   'recovery verify': 'recovery-passphrase',
   'recovery use': 'recovery-passphrase, new-key-passphrase, new-key-passphrase-confirm',
@@ -77,8 +77,8 @@ export const STDIN_FRAME_CONTRACTS: Readonly<Record<string, string>> = Object.fr
   'grant show': '[mongodb-url,] passphrase',
   'grant revoke': '[mongodb-url,] passphrase',
   audit: '[mongodb-url,] passphrase',
-  'migrate database --secrets-stdin':
-    'source-passphrase, destination-passphrase, migrated-vault-label',
+  'migrate database | migrate database --secrets-stdin':
+    '[mongodb-url,] source-passphrase, destination-passphrase, migrated-vault-label',
   'migrate database --initialize --secrets-stdin (file destination)':
     'source-passphrase, expected-source-label, destination-passphrase, destination-passphrase-confirm, database-label, vault-label',
   destroy:
@@ -129,16 +129,18 @@ function renderAll(): string {
 /** Registers the `kavrix frames [command]` stdin-contract reference. */
 export function registerFramesCommand(program: Command): void {
   const frames = program
-    .command('frames [command]')
+    .command('frames [command...]')
     .description('Show the exact stdin frame contract for secret-reading commands.');
+  // Contract keys may include flag tokens (e.g. `migrate database --secrets-stdin`).
+  frames.allowUnknownOption(true);
   frames.showHelpAfterError(false);
   frames.action((...args: unknown[]) => {
     const command = args.at(-1);
     const requested =
       command instanceof Command
-        ? command.args.find((value) => typeof value === 'string')
+        ? command.args.filter((value) => typeof value === 'string').join(' ')
         : undefined;
-    if (requested === undefined) {
+    if (requested === undefined || requested.length === 0) {
       process.stdout.write(renderAll());
       return;
     }
@@ -149,8 +151,17 @@ export function registerFramesCommand(program: Command): void {
     );
     const contract = key === undefined ? undefined : STDIN_FRAME_CONTRACTS[key];
     if (key === undefined || contract === undefined) {
+      const matches = Object.keys(STDIN_FRAME_CONTRACTS).filter((candidate) =>
+        candidate.startsWith(`${requested} `),
+      );
+      const safeRequested = Array.from(requested, (character) => {
+        const code = character.codePointAt(0) ?? 0;
+        return code < 32 || (code >= 127 && code <= 159) ? '[CONTROL]' : character;
+      }).join('');
       process.stderr.write(
-        `No stdin frame contract is documented for '${requested}'. Run \`kavrix frames\` for every command.\n`,
+        matches.length > 0
+          ? `Choose a full command: ${matches.map((candidate) => `\`${candidate}\``).join(', ')}. Run \`kavrix frames <command>\` for its frames.\n`
+          : `No stdin frame contract is documented for '${safeRequested}'. Try \`kavrix frames\` for every command or quote the full command.\n`,
       );
       process.exitCode = 2;
       return;

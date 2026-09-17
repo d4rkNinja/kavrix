@@ -352,7 +352,19 @@ export function verifyDatabaseRevisionAnchor(
   for (const id of priorIds) {
     const before = prior.vaultHeads[id as VaultId];
     const after = current.vaultHeads[id as VaultId];
-    if (before === undefined || after === undefined) throw invalid();
+    if (before === undefined) throw invalid();
+    if (after === undefined) {
+      // Vault deletion advances databaseRevision with a smaller vault set.
+      // Exact vault-set mode (stable reads) still rejects removals above via
+      // sameSet; without it, only a strictly newer revision may drop heads.
+      if (
+        options.requireExactVaultSet === true ||
+        current.databaseRevision <= prior.databaseRevision
+      ) {
+        throw invalid();
+      }
+      continue;
+    }
     if (after.revision < before.revision) throw invalid();
     if (
       after.revision === before.revision &&

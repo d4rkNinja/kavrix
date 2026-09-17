@@ -1268,13 +1268,20 @@ export class DatabaseSession {
     }
   }
 
-  public recoveryStatus(): Readonly<{ active: number; revoked: number }> {
+  public recoveryStatus(): Readonly<{
+    active: number;
+    revoked: number;
+    slots: readonly Readonly<{ id: string; state: 'active' | 'revoked' }>[];
+  }> {
     this.#assertOpen();
+    const slots = this.#database.recoverySlots.map((slot) => ({
+      id: slot.id,
+      state: slot.state,
+    }));
     return {
-      active: this.#database.recoverySlots.filter((slot) => slot.state === 'active')
-        .length,
-      revoked: this.#database.recoverySlots.filter((slot) => slot.state === 'revoked')
-        .length,
+      active: slots.filter((slot) => slot.state === 'active').length,
+      revoked: slots.filter((slot) => slot.state === 'revoked').length,
+      slots,
     };
   }
 

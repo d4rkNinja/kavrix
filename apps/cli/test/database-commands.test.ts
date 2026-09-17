@@ -81,8 +81,10 @@ describe('database owner command composition', () => {
     expect(program.helpInformation()).not.toMatch(/--(?:passphrase|database-url)\s+</u);
   });
 
-  it('rejects local-share key creation for MongoDB before requesting secrets', async () => {
-    const read = vi.spyOn(LocalSecretInput.prototype, 'read');
+  it('accepts MongoDB routing for local-share key creation and requests secrets', async () => {
+    const read = vi
+      .spyOn(LocalSecretInput.prototype, 'read')
+      .mockRejectedValue(new Error('stop-after-secret-request'));
     await expect(
       buildLocalCli().parseAsync([
         'node',
@@ -92,12 +94,16 @@ describe('database owner command composition', () => {
         'create',
         '--datastore',
         'mongodb',
+        '--database',
+        'kavrix_share_key',
+        '--key-file',
+        'owner.key',
         '--output-key-file',
         'unused.key',
         '--secrets-stdin',
       ]),
-    ).rejects.toMatchObject({ code: 'invalid' });
-    expect(read).not.toHaveBeenCalled();
+    ).rejects.toThrow(/stop-after-secret-request/);
+    expect(read).toHaveBeenCalled();
   });
 
   it('rejects an unsupported datastore before opening a store or requesting secrets', async () => {
@@ -326,6 +332,122 @@ describe('database owner command composition', () => {
       defaultVaultId: 'vault_current',
     });
     expect(output.join('')).not.toContain('owner-passphrase-secret-canary');
+  });
+
+  it('clears profile default when removing the selected vault with siblings remaining', async () => {
+    const fixture = await fileProfileFixture('remove-clear', 'db_remove_clear', true);
+    await fixture.registry.setDefaultVaultId(
+      'remove-clear' as never,
+      'vault_selected' as never,
+      'db_remove_clear' as never,
+    );
+    const session = {
+      databaseId: 'db_remove_clear',
+      deleteVault: vi.fn(async () => undefined),
+      listVaults: vi.fn(() => [
+        { id: 'vault_other', label: 'other', createdAt: '2026-01-01T00:00:00.000Z' },
+        { id: 'vault_third', label: 'third', createdAt: '2026-01-01T00:00:00.000Z' },
+      ]),
+      close: vi.fn(async () => undefined),
+    };
+    vi.spyOn(FileEncryptedDatabaseStore, 'validatePath').mockResolvedValue();
+    vi.spyOn(FileEncryptedDatabaseStore, 'open').mockResolvedValue({
+      close: vi.fn(async () => undefined),
+    } as never);
+    vi.spyOn(LocalSecretInput.prototype, 'read').mockResolvedValue([
+      'owner-passphrase-secret-canary',
+    ]);
+    vi.spyOn(DatabaseSession, 'openWithSecret').mockImplementation(async (options) => {
+      await options.readPassphrase();
+      return session as never;
+    });
+    const clearDefault = vi.spyOn(
+      DatastoreProfileRegistry.prototype,
+      'clearDefaultVaultId',
+    );
+    const output = captureStdout();
+
+    await buildLocalCli().parseAsync([
+      'node',
+      'kavrix',
+      'db',
+      'vault',
+      'remove',
+      'vault_selected',
+      '--profile-config-dir',
+      fixture.directory,
+      '--secrets-stdin',
+      '--json',
+    ]);
+
+    expect(session.deleteVault).toHaveBeenCalled();
+    expect(clearDefault).toHaveBeenCalledWith('remove-clear', 'db_remove_clear');
+    expect(JSON.parse(output.join(''))).toEqual({
+      removed: true,
+      vaultId: 'vault_selected',
+      selection: { action: 'cleared', vaultId: null },
+    });
+    expect(await fixture.registry.get('remove-clear' as never)).not.toHaveProperty(
+      'defaultVaultId',
+    );
+    expect(output.join('')).not.toContain('owner-passphrase-secret-canary');
+  });
+
+  it('reselects the remaining vault when removing the selected last-sibling vault', async () => {
+    const fixture = await fileProfileFixture(
+      'remove-reselect',
+      'db_remove_reselect',
+      true,
+    );
+    await fixture.registry.setDefaultVaultId(
+      'remove-reselect' as never,
+      'vault_selected' as never,
+      'db_remove_reselect' as never,
+    );
+    const session = {
+      databaseId: 'db_remove_reselect',
+      deleteVault: vi.fn(async () => undefined),
+      listVaults: vi.fn(() => [
+        { id: 'vault_kept', label: 'kept', createdAt: '2026-01-01T00:00:00.000Z' },
+      ]),
+      close: vi.fn(async () => undefined),
+    };
+    vi.spyOn(FileEncryptedDatabaseStore, 'validatePath').mockResolvedValue();
+    vi.spyOn(FileEncryptedDatabaseStore, 'open').mockResolvedValue({
+      close: vi.fn(async () => undefined),
+    } as never);
+    vi.spyOn(LocalSecretInput.prototype, 'read').mockResolvedValue([
+      'owner-passphrase-secret-canary',
+    ]);
+    vi.spyOn(DatabaseSession, 'openWithSecret').mockImplementation(async (options) => {
+      await options.readPassphrase();
+      return session as never;
+    });
+    const output = captureStdout();
+
+    await buildLocalCli().parseAsync([
+      'node',
+      'kavrix',
+      'db',
+      'vault',
+      'remove',
+      'vault_selected',
+      '--profile',
+      'remove-reselect',
+      '--profile-config-dir',
+      fixture.directory,
+      '--secrets-stdin',
+      '--json',
+    ]);
+
+    expect(JSON.parse(output.join(''))).toEqual({
+      removed: true,
+      vaultId: 'vault_selected',
+      selection: { action: 'reselected', vaultId: 'vault_kept' },
+    });
+    expect(await fixture.registry.get('remove-reselect' as never)).toMatchObject({
+      defaultVaultId: 'vault_kept',
+    });
   });
 
   it('rejects selection when the authenticated profile is replaced before publication', async () => {
@@ -842,9 +964,12 @@ describe('database owner command composition', () => {
       '--recovery-file',
       secondRecovery,
     );
-    expect(await execute([passphrase], 'db', 'recovery', 'status', ...route)).toEqual({
+    expect(
+      await execute([passphrase], 'db', 'recovery', 'status', ...route),
+    ).toMatchObject({
       active: 2,
       revoked: 0,
+      slots: expect.any(Array),
     });
     expect(
       await execute(

@@ -572,6 +572,10 @@ function registerAgent(program: Command): void {
     .allowExcessArguments(true)
     .requiredOption('--agent <name>', 'Agent entry in the project configuration file.')
     .option('--config <path>', 'Non-secret project configuration file.')
+    .option(
+      '--dry-run',
+      'Validate project agent config and datastore binding without starting an agent.',
+    )
     .option('--json', 'Emit a machine-readable envelope after the agent exits.');
   addExecutionRoutingOptions(agentRun);
   agentRun.action(async (...args: unknown[]) => {
@@ -585,6 +589,7 @@ function registerAgent(program: Command): void {
         ...(optString(merged['config']) === undefined
           ? {}
           : { config: optString(merged['config']) }),
+        dryRun: merged['dryRun'] === true,
         json: merged['json'] === true,
         executableAndArgs: [...command.args],
       });
@@ -603,13 +608,20 @@ function registerAgent(program: Command): void {
     )
     .allowUnknownOption(true)
     .allowExcessArguments(true)
-    .argument('<permission>', 'Permission key from the agent configuration.');
+    .argument('<permission>', 'Permission key from the agent configuration.')
+    .option(
+      '--dry-run',
+      'Validate the permission argument without contacting an agent broker.',
+    )
+    .option('--json', 'Emit a machine-readable envelope.');
   agentExec.action(async (...args: unknown[]) => {
     const command = args.at(-1) as Command;
+    const merged = extractMergedOptions(command);
     const permission = requirePositional(command.args[0], 'permission');
-    await guard(false, () =>
+    await guard(merged['json'] === true, () =>
       executeAgentExec({
         permission,
+        dryRun: merged['dryRun'] === true,
         executableAndArgs: command.args.slice(1),
       }),
     );

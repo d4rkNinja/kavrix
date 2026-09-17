@@ -1,4 +1,5 @@
 ﻿import { rm } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { writeFile } from 'node:fs/promises';
@@ -14,6 +15,10 @@ import {
 } from './execution-helpers.js';
 
 let fixture: ExecutionFixture;
+
+const NOOP_AGENT_CONFIG = fileURLToPath(
+  new URL('./fixtures/noop-agent.kavrix.json', import.meta.url),
+);
 
 afterEach(async () => {
   if (fixture !== undefined) await destroyFixture(fixture);
@@ -211,5 +216,63 @@ describe('policy option parsing guards', () => {
       await destroyFixture(fixture);
       fixture = undefined as unknown as ExecutionFixture;
     }
+  });
+});
+
+describe('agent dry-run self-tests', () => {
+  it('agent run --dry-run validates config and profile without starting an agent', async () => {
+    fixture = await createExecutionFixture({ 'github/token': 'unused-secret' });
+    try {
+      const result = await runCli(
+        [
+          'agent',
+          'run',
+          '--agent',
+          'noop',
+          '--config',
+          NOOP_AGENT_CONFIG,
+          ...fixture.routingArgs,
+          '--dry-run',
+          '--json',
+        ],
+        '',
+      );
+      expect(result.exitCode).toBe(0);
+      const parsed = JSON.parse(result.stdout) as {
+        dryRun: boolean;
+        ok: boolean;
+        agent: string;
+        permissionCount: number;
+        exitCode: number;
+      };
+      expect(parsed).toMatchObject({
+        dryRun: true,
+        ok: true,
+        agent: 'noop',
+        permissionCount: 1,
+        exitCode: 0,
+      });
+      expect(result.stdout).not.toContain('unused-secret');
+    } finally {
+      await destroyFixture(fixture);
+      fixture = undefined as unknown as ExecutionFixture;
+    }
+  });
+
+  it('agent exec --dry-run validates the permission without a broker session', async () => {
+    const result = await runCli(['agent', 'exec', 'ping', '--dry-run', '--json'], '');
+    expect(result.exitCode).toBe(0);
+    const parsed = JSON.parse(result.stdout) as {
+      dryRun: boolean;
+      ok: boolean;
+      permission: string;
+      exitCode: number;
+    };
+    expect(parsed).toMatchObject({
+      dryRun: true,
+      ok: true,
+      permission: 'ping',
+      exitCode: 0,
+    });
   });
 });

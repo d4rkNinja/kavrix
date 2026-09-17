@@ -330,12 +330,15 @@ export function buildLocalCli(): Command {
     .description('Explicit copy-first migrations.');
   const migrateDatabase = migrate
     .command('database')
-    .description('Copy one legacy version 2 vault into an existing database.');
+    .description(
+      'Copy one legacy version 2 vault into an existing database. Prepare a legacy source profile (no databaseId; `kavrix init --passphrase-stdin` vault+key) and a bound destination (`db init`). Then: `kavrix migrate database --source-profile <legacy> --destination-profile <db> --source-vault <id> --secrets-stdin` with frames from `kavrix frames migrate database`.',
+    );
   migrateDatabase
     .requiredOption('--source-profile <id>', 'Legacy version 2 datastore profile.')
     .requiredOption('--destination-profile <id>', 'Bound database profile.')
     .requiredOption('--source-vault <id>', 'Legacy source vault identifier.')
     .option('--profile-config-dir <path>', 'Protected profile configuration directory.')
+    .option('--config-dir <path>', 'Protected profile configuration directory.')
     .option(
       '--initialize',
       'Explicitly initialize an unbound file destination profile.',
@@ -587,6 +590,7 @@ export function buildLocalCli(): Command {
     .command('list')
     .description('List vault identifiers stored in the selected MongoDB collection.');
   addDatabaseOnlyOptions(vaultList);
+  addDatastoreProfileSelectionOptions(vaultList);
   vaultList.action(async (...args: unknown[]) => {
     await handleVaultList(getOptions(args));
   });
@@ -594,6 +598,7 @@ export function buildLocalCli(): Command {
     .command('status')
     .description('Show non-secret metadata for the selected vault.');
   addDatabaseOnlyOptions(vaultStatus);
+  addDatastoreProfileSelectionOptions(vaultStatus);
   addVaultOption(vaultStatus);
   vaultStatus.action(async (...args: unknown[]) => {
     await handleVaultStatus(getOptions(args));
@@ -1016,6 +1021,10 @@ function addDatastoreProfileSelectionOptions(command: Command): void {
   command
     .option('--profile <id>', 'Use one non-secret datastore profile for this command.')
     .option(
+      '--config-dir <path>',
+      'Protected datastore-profile configuration directory.',
+    )
+    .option(
       '--profile-config-dir <path>',
       'Protected datastore-profile configuration directory.',
     );
@@ -1217,6 +1226,8 @@ function getOptions(args: readonly unknown[]): LocalCliOptions {
         }
       }
     }
+    const profileConfigDir = merged['profileConfigDir'] ?? merged['configDir'];
+    if (profileConfigDir !== undefined) merged['profileConfigDir'] = profileConfigDir;
     const sourceIsExplicit = (key: string): boolean =>
       hierarchy.some((command) => {
         const source = command.getOptionValueSource(key);
@@ -3340,6 +3351,11 @@ async function handleRecoveryUse(options: LocalCliOptions): Promise<void> {
 }
 
 async function handleVaultList(options: LocalCliOptions): Promise<void> {
+  if (await usesDatabaseContainer(options)) {
+    throw new LocalCliError(
+      'This profile is a database container. Use `kavrix db vault list` (not legacy `vault list`).',
+    );
+  }
   const values = await readSecrets(['database-url'], options);
   const databaseUrl = requiredSecret(values, 0);
   await withStore(databaseUrl, options, async (store, target) => {
@@ -3349,6 +3365,11 @@ async function handleVaultList(options: LocalCliOptions): Promise<void> {
 }
 
 async function handleVaultStatus(options: LocalCliOptions): Promise<void> {
+  if (await usesDatabaseContainer(options)) {
+    throw new LocalCliError(
+      'This profile is a database container. Use `kavrix db vault status` (not legacy `vault status`).',
+    );
+  }
   const values = await readSecrets(['database-url'], options);
   const databaseUrl = requiredSecret(values, 0);
   await withStore(databaseUrl, options, async (store, target) => {

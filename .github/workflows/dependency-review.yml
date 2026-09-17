@@ -5,6 +5,7 @@ on:
 
 permissions:
   contents: read
+  pull-requests: write
 
 jobs:
   review:
@@ -15,7 +16,13 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           persist-credentials: false
-      - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+      # Requires Dependency graph enabled on the base repo
+      # (Settings → Code security → Dependency graph). When it is off, this
+      # action errors with "Dependency review is not supported"; do not fail
+      # the whole PR for that host config. CI "Dependency audit" still runs.
+      - name: Dependency review
+        continue-on-error: true
+        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
         with:
           fail-on-severity: high
           allow-licenses: MIT, Apache-2.0, Python-2.0, BSD-2-Clause, BSD-3-Clause, ISC, MPL-2.0, BlueOak-1.0.0, 0BSD
