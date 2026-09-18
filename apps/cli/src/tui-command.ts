@@ -64,7 +64,18 @@ export async function runInteractiveTui(
   });
 
   // Lazy-load Ink/React only for the interactive path (same pattern as showcase).
-  const tui = await import('@kavrix/tui');
+  const tui = (await import('@kavrix/tui')) as unknown as {
+    mountKavrixApp: (options: {
+      backend: ReturnType<typeof createCliTuiBackend>;
+      stdout: NodeJS.WriteStream;
+      stdin: NodeJS.ReadStream;
+      ascii?: boolean;
+      color?: boolean;
+    }) => {
+      waitUntilExit: () => Promise<void>;
+      unmount: () => void;
+    };
+  };
   const handle = tui.mountKavrixApp({
     backend,
     stdout: process.stdout,

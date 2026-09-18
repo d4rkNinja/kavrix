@@ -53,7 +53,19 @@ export async function runInitTuiOnboarding(
     ...(profileConfigDir === undefined ? {} : { profileConfigDir }),
   });
 
-  const tui = await import('@kavrix/tui');
+  // Lazy-load Ink/React; cast like storage showcase so lint works before dist.
+  const tui = (await import('@kavrix/tui')) as unknown as {
+    mountOnboardingApp: (options: {
+      backend: ReturnType<typeof createCliTuiBackend>;
+      stdout: NodeJS.WriteStream;
+      stdin: NodeJS.ReadStream;
+      ascii?: boolean;
+      color?: boolean;
+    }) => {
+      waitUntilExit: () => Promise<InitTuiOnboardingResult>;
+      unmount: () => void;
+    };
+  };
   const handle = tui.mountOnboardingApp({
     backend,
     stdout: process.stdout,
