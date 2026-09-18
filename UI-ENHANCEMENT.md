@@ -53,3 +53,9 @@ pnpm --filter @kavrix/tui test
 pnpm --filter @kavrix/tui build
 pnpm --filter kavrix build
 ```
+
+## Animated splash (2026-09-18)
+
+- `kavrix tui` / `kavrix ui` and Ink init onboarding show a centered dual-tone **KAV/RIX** splash with braille spinner (ASCII `|/-\\` when `--ascii` / win32), tagline, and CLI version.
+- Auto-dismiss: backend ready + ≥1.2s, or force at 1.8s. Skip with `--no-splash` or `KAVRIX_TUI_NO_SPLASH=1` (NO_COLOR/CI/non-TTY already skip mount).
+- Presentation only — no mocks. Tests in `packages/tui/test/splash.test.ts`.
