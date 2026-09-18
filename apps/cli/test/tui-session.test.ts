@@ -146,4 +146,110 @@ describe('CliTuiSession mutations (mocked spawn)', () => {
       expect.arrayContaining(['db', 'recovery', 'status', '--json']),
     );
   });
+
+  it('creates a file profile via documented CLI frames then unlocks', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'kavrix-tui-create-'));
+    dirs.push(dir);
+    const calls: Array<{ args: readonly string[]; frames: readonly string[] }> =
+      [];
+    let vaultCreated = false;
+
+    const backend = createCliTuiBackend({
+      profileConfigDir: dir,
+      ascii: true,
+      commandRunner: async (args, frames) => {
+        calls.push({ args: [...args], frames: [...frames] });
+        const joined = args.join(' ');
+        if (args.includes('add') && args.includes('profile')) {
+          const registry = await DatastoreProfileRegistry.open({
+            configDirectory: dir,
+          });
+          await registry.add({
+            id: profileIdSchema.parse('fresh'),
+            datastore: 'file',
+            dataFile: join(dir, 'db.kavrix'),
+            keyFile: join(dir, 'owner.key'),
+          });
+          return '';
+        }
+        if (args.includes('use') && args.includes('profile') && !args.includes('vault')) {
+          const registry = await DatastoreProfileRegistry.open({
+            configDirectory: dir,
+          });
+          await registry.use(profileIdSchema.parse('fresh'));
+          return '';
+        }
+        if (args[0] === 'db' && args[1] === 'init') {
+          expect(frames).toEqual([
+            'fresh-db',
+            'correct horse battery staple',
+            'correct horse battery staple',
+          ]);
+          expect(args).toContain('--passphrase-stdin');
+          expect(joined).not.toContain('correct horse');
+          return '';
+        }
+        if (args.includes('vault') && args.includes('create')) {
+          expect(frames).toEqual([
+            'correct horse battery staple',
+            'fresh-vault',
+          ]);
+          vaultCreated = true;
+          return JSON.stringify({ vaultId: 'vault_fresh' });
+        }
+        if (args.includes('vault') && args.includes('use')) {
+          expect(frames).toEqual(['correct horse battery staple']);
+          expect(args).toContain('vault_fresh');
+          return '';
+        }
+        if (args.includes('list')) {
+          return JSON.stringify({ names: [] });
+        }
+        return '{}';
+      },
+    });
+
+    const result = await backend.dispatch({
+      type: 'create-file-profile',
+      profileId: 'fresh',
+      dataFile: join(dir, 'db.kavrix'),
+      keyFile: join(dir, 'owner.key'),
+      passphrase: 'correct horse battery staple',
+    });
+
+    expect(vaultCreated).toBe(true);
+    expect(result.snapshot.noticeTone).toBe('success');
+    expect(result.snapshot.home.profileId).toBe('fresh');
+    expect(result.snapshot.home.vaultId).toBe('vault_fresh');
+    expect(result.snapshot.home.unlocked).toBe(true);
+
+    const addCall = calls.find(
+      (call) => call.args.includes('add') && call.args.includes('profile'),
+    );
+    expect(addCall?.frames).toEqual([]);
+    expect(addCall?.args).toEqual(
+      expect.arrayContaining([
+        'db',
+        'profile',
+        'add',
+        'fresh',
+        '--datastore',
+        'file',
+        '--data-file',
+      ]),
+    );
+    const initCall = calls.find(
+      (call) => call.args[0] === 'db' && call.args[1] === 'init',
+    );
+    expect(initCall?.frames).toHaveLength(3);
+    const createCall = calls.find(
+      (call) => call.args.includes('vault') && call.args.includes('create'),
+    );
+    expect(createCall?.args).toContain('--passphrase-stdin');
+    // Secrets never appear on argv across the whole create sequence.
+    for (const call of calls) {
+      expect(call.args.join(' ')).not.toContain('correct horse');
+    }
+  });
+
 });

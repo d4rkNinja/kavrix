@@ -23,9 +23,12 @@ import {
   renderActiveScreen,
   resolveAppPresentation,
   listScreenInventory,
+  defaultFileProfilePaths,
+  pathSeparator,
   type AppRouterState,
   type AppSnapshot,
 } from '../../src/index.js';
+import { join, sep } from 'node:path';
 
 function sampleSnapshot(): AppSnapshot {
   return {
@@ -204,6 +207,7 @@ describe('ASCII and NO_COLOR presentation', () => {
       noColor: false,
     });
     expect(win.ascii).toBe(true);
+    // Color may still be false when the process env has NO_COLOR/TERM=dumb.
     const dumb = resolveAppPresentation({
       platform: 'linux',
       term: 'dumb',
@@ -211,6 +215,44 @@ describe('ASCII and NO_COLOR presentation', () => {
     });
     expect(dumb.color).toBe(false);
     expect(dumb.ascii).toBe(true);
+  });
+
+  it('forces ascii when --ascii is set even on unix UTF terminals', () => {
+    const forced = resolveAppPresentation({
+      platform: 'linux',
+      term: 'xterm-256color',
+      ascii: true,
+      noColor: false,
+    });
+    expect(forced.ascii).toBe(true);
+  });
+
+  it('disables color when noColor is set (NO_COLOR path)', () => {
+    const noColor = resolveAppPresentation({
+      platform: 'linux',
+      term: 'xterm-256color',
+      noColor: true,
+      ascii: false,
+    });
+    expect(noColor.color).toBe(false);
+  });
+
+  it('uses node:path separators for default file profile paths', () => {
+    expect(pathSeparator()).toBe(sep);
+    const home = join('Users', 'demo');
+    const paths = defaultFileProfilePaths('demo', home);
+    expect(paths.dataFile).toBe(
+      join(home, '.local', 'share', 'kavrix', 'demo', 'db.kavrix'),
+    );
+    expect(paths.keyFile).toBe(
+      join(home, '.local', 'share', 'kavrix', 'demo', 'owner.key'),
+    );
+    // No bashisms: removing path.sep leaves no other directory separators.
+    for (const candidate of [paths.dataFile, paths.keyFile]) {
+      const withoutSep = candidate.split(sep).join('');
+      expect(withoutSep.includes('/')).toBe(false);
+      expect(withoutSep.includes('\\')).toBe(false);
+    }
   });
 
   it('snapshots home and credentials in ASCII and NO_COLOR modes', () => {
@@ -221,6 +263,9 @@ describe('ASCII and NO_COLOR presentation', () => {
     expect(asciiCreds).toContain('api-key');
     expect(asciiCreds).toContain('********');
     expect(asciiCreds).not.toContain('\u2022');
+    const asciiProfiles = frame(navigateToScreen(hydrate(true, false), 'profiles'));
+    expect(asciiProfiles).toContain('[ PROFILES ]');
+    expect(asciiProfiles).not.toContain('\u276f');
   });
 });
 
@@ -356,5 +401,155 @@ describe('static backend mutations', () => {
     result = await backend.dispatch({ type: 'recovery-status' });
     expect(result.snapshot.recovery.length).toBeGreaterThan(0);
     expect(result.snapshot.notice).toMatch(/Recovery status/i);
+  });
+});
+
+describe('create-file-profile overlays', () => {
+  it('dispatches create-file-profile after id/paths/passphrase overlays', () => {
+    let state = navigateToScreen(hydrate(), 'profiles');
+    state = transitionAppRouter(state, {
+      type: 'key',
+      key: { text: 'n' },
+      nowMs: 0,
+    }).state;
+    expect(state.overlay).toBe('input-profile-id');
+    for (const ch of 'work') {
+      state = transitionAppRouter(state, {
+        type: 'key',
+        key: { text: ch },
+        nowMs: 0,
+      }).state;
+    }
+    state = transitionAppRouter(state, {
+      type: 'key',
+      key: { name: 'return' },
+      nowMs: 0,
+    }).state;
+    expect(state.overlay).toBe('input-profile-data-file');
+    expect(state.pendingName).toBe('work');
+    expect(state.query.length).toBeGreaterThan(0);
+
+    // Accept default data file
+    state = transitionAppRouter(state, {
+      type: 'key',
+      key: { name: 'return' },
+      nowMs: 0,
+    }).state;
+    expect(state.overlay).toBe('input-profile-key-file');
+    expect(state.pendingDataFile).toBeTruthy();
+
+    state = transitionAppRouter(state, {
+      type: 'key',
+      key: { name: 'return' },
+      nowMs: 0,
+    }).state;
+    expect(state.overlay).toBe('input-profile-passphrase');
+    expect(state.pendingKeyFile).toBeTruthy();
+
+    for (const ch of 'passphrase-one') {
+      state = transitionAppRouter(state, {
+        type: 'key',
+        key: { text: ch },
+        nowMs: 0,
+      }).state;
+    }
+    state = transitionAppRouter(state, {
+      type: 'key',
+      key: { name: 'return' },
+      nowMs: 0,
+    }).state;
+    expect(state.overlay).toBe('input-profile-passphrase-confirm');
+    expect(state.pendingPassphrase).toBe('passphrase-one');
+
+    for (const ch of 'passphrase-one') {
+      state = transitionAppRouter(state, {
+        type: 'key',
+        key: { text: ch },
+        nowMs: 0,
+      }).state;
+    }
+    const created = transitionAppRouter(state, {
+      type: 'key',
+      key: { name: 'return' },
+      nowMs: 1,
+    });
+    expect(created.effect.kind).toBe('backend');
+    if (created.effect.kind !== 'backend') return;
+    expect(created.effect.action.type).toBe('create-file-profile');
+    if (created.effect.action.type !== 'create-file-profile') return;
+    expect(created.effect.action.profileId).toBe('work');
+    expect(created.effect.action.passphrase).toBe('passphrase-one');
+    expect(created.effect.action.dataFile).toContain('work');
+    expect(created.effect.action.keyFile).toContain('work');
+    expect(created.state.pendingPassphrase).toBeNull();
+  });
+
+  it('rejects mismatched passphrase confirm without dispatching', () => {
+    let state = navigateToScreen(hydrate(), 'profiles');
+    state = transitionAppRouter(state, {
+      type: 'key',
+      key: { text: 'n' },
+      nowMs: 0,
+    }).state;
+    for (const ch of 'x') {
+      state = transitionAppRouter(state, {
+        type: 'key',
+        key: { text: ch },
+        nowMs: 0,
+      }).state;
+    }
+    // id → data → key → passphrase
+    for (let i = 0; i < 3; i += 1) {
+      state = transitionAppRouter(state, {
+        type: 'key',
+        key: { name: 'return' },
+        nowMs: 0,
+      }).state;
+    }
+    for (const ch of 'aaa') {
+      state = transitionAppRouter(state, {
+        type: 'key',
+        key: { text: ch },
+        nowMs: 0,
+      }).state;
+    }
+    state = transitionAppRouter(state, {
+      type: 'key',
+      key: { name: 'return' },
+      nowMs: 0,
+    }).state;
+    for (const ch of 'bbb') {
+      state = transitionAppRouter(state, {
+        type: 'key',
+        key: { text: ch },
+        nowMs: 0,
+      }).state;
+    }
+    const mismatch = transitionAppRouter(state, {
+      type: 'key',
+      key: { name: 'return' },
+      nowMs: 1,
+    });
+    expect(mismatch.effect.kind).toBe('none');
+    expect(mismatch.state.overlay).toBe('input-profile-passphrase');
+    expect(mismatch.state.message).toMatch(/did not match/i);
+  });
+});
+
+describe('static backend create-file-profile', () => {
+  it('adds a selected file profile to the snapshot', async () => {
+    const backend = createStaticAppBackend(sampleSnapshot());
+    const result = await backend.dispatch({
+      type: 'create-file-profile',
+      profileId: 'fresh',
+      dataFile: join('tmp', 'fresh', 'db.kavrix'),
+      keyFile: join('tmp', 'fresh', 'owner.key'),
+      passphrase: 'secret',
+    });
+    expect(result.snapshot.noticeTone).toBe('success');
+    expect(result.snapshot.home.profileId).toBe('fresh');
+    expect(result.snapshot.profiles.some((p) => p.id === 'fresh' && p.selected)).toBe(
+      true,
+    );
   });
 });

@@ -26,3 +26,4 @@ export {
   HelpScreen,
   renderActiveScreen,
 } from './screens.js';
+export * from './paths.js';

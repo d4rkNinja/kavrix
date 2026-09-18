@@ -68,6 +68,14 @@ function Footer({ state }: Readonly<{ state: AppRouterState }>): ReactElement {
     overlayHint = ` Value: ${'*'.repeat(Math.min(state.query.length, 32))}_`;
   if (overlay === 'input-rename')
     overlayHint = ` Rename to: ${safe(state.query, ascii)}_`;
+  if (overlay === 'input-profile-id')
+    overlayHint = ` Profile id: ${safe(state.query, ascii)}_`;
+  if (overlay === 'input-profile-data-file')
+    overlayHint = ` Data file: ${safe(state.query, ascii)}_`;
+  if (overlay === 'input-profile-key-file')
+    overlayHint = ` Key file: ${safe(state.query, ascii)}_`;
+  if (overlay === 'input-profile-passphrase' || overlay === 'input-profile-passphrase-confirm')
+    overlayHint = ` Passphrase: ${'*'.repeat(Math.min(state.query.length, 32))}_`;
   return (
     <Box flexDirection="column">
       {notice === null ? null : (
@@ -134,18 +142,24 @@ function StatusBlock({
 }
 
 export function ProfilesScreen({ state }: Readonly<{ state: AppRouterState }>): ReactElement {
+  const { color, ascii } = state;
   return (
-    <ListScreen
-      state={state}
-      title="Profiles"
-      accent="blue"
-      empty="No datastore profiles found."
-      rows={state.snapshot.profiles.map((profile) => ({
-        id: profile.id,
-        primary: `${profile.id} (${profile.datastore})${profile.selected ? ' *' : ''}`,
-        secondary: profile.detail,
-      }))}
-    />
+    <Box flexDirection="column" gap={1}>
+      <ListScreen
+        state={state}
+        title="Profiles"
+        accent="blue"
+        empty="No datastore profiles found. Press n to create a file profile."
+        rows={state.snapshot.profiles.map((profile) => ({
+          id: profile.id,
+          primary: `${profile.id} (${profile.datastore})${profile.selected ? ' *' : ''}`,
+          secondary: profile.detail,
+        }))}
+      />
+      <Text {...tint(color, 'gray')}>
+        {safe('Enter = use profile · n = create file profile (db profile add → init → vault)', ascii)}
+      </Text>
+    </Box>
   );
 }
 
@@ -299,6 +313,7 @@ export function HelpScreen({ state }: Readonly<{ state: AppRouterState }>): Reac
     'Global: j/k or arrows move, Enter open, Esc back to Home, q quit',
     'Home: choose a destination from the colorful menu',
     'Credentials: / search, n put, m rename, x remove, r then y REVEAL (15s)',
+    'Profiles: Enter use profile, n create file profile (paths default under home)',
     'Session: u unlock, l lock (clears revealed state)',
     'Doctor: d refresh checks | Recovery: final-slot revoke is blocked here',
     'Run: p dry-preview credential injection (no argv secrets)',

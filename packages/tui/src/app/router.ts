@@ -1,6 +1,7 @@
 import { APP_MENU, type AppScreenId } from './ids.js';
 import type { AppSnapshot } from './backend.js';
 import { emptySnapshot } from './backend.js';
+import { defaultFileProfilePaths } from './paths.js';
 
 export interface AppKey {
   readonly name?:
@@ -27,7 +28,12 @@ export type AppOverlay =
   | 'input-passphrase'
   | 'input-put-name'
   | 'input-put-value'
-  | 'input-rename';
+  | 'input-rename'
+  | 'input-profile-id'
+  | 'input-profile-data-file'
+  | 'input-profile-key-file'
+  | 'input-profile-passphrase'
+  | 'input-profile-passphrase-confirm';
 
 export interface AppRouterState {
   readonly screen: AppScreenId;
@@ -43,6 +49,11 @@ export interface AppRouterState {
   readonly pendingRevealName: string | null;
   /** Shared pending credential name for put/rename/remove overlays. */
   readonly pendingName: string | null;
+  /** Pending paths while creating a file profile. */
+  readonly pendingDataFile: string | null;
+  readonly pendingKeyFile: string | null;
+  /** Ephemeral passphrase held only across create-profile confirm; never snapshotted. */
+  readonly pendingPassphrase: string | null;
   readonly revealedName: string | null;
   /** Ephemeral plaintext; never copied into AppSnapshot. */
   readonly revealedValue: string | null;
@@ -88,6 +99,9 @@ export function createInitialAppRouterState(
     snapshot: emptySnapshot(),
     pendingRevealName: null,
     pendingName: null,
+    pendingDataFile: null,
+    pendingKeyFile: null,
+    pendingPassphrase: null,
     revealedName: null,
     revealedValue: null,
     revealedUntilMs: 0,
@@ -211,6 +225,18 @@ function screenKey(
       overlay: 'confirm-reveal',
       pendingRevealName: name,
       message: `REVEAL confirmation required for '${name}'.`,
+    });
+  }
+  if (key.text?.toLowerCase() === 'n' && state.screen === 'profiles') {
+    return unchanged({
+      ...state,
+      overlay: 'input-profile-id',
+      query: '',
+      pendingName: null,
+      pendingDataFile: null,
+      pendingKeyFile: null,
+      pendingPassphrase: null,
+      message: 'New file profile id. Enter continues; Esc cancels.',
     });
   }
   if (key.text?.toLowerCase() === 'n' && state.screen === 'credentials') {
@@ -428,6 +454,156 @@ function overlayKey(
     }
     if (isPrintable(key.text)) {
       const limit = state.overlay === 'input-put-value' ? 4096 : 256;
+      return unchanged({
+        ...state,
+        query: `${state.query}${key.text}`.slice(0, limit),
+      });
+    }
+    return unchanged(state);
+  }
+  if (
+    state.overlay === 'input-profile-id' ||
+    state.overlay === 'input-profile-data-file' ||
+    state.overlay === 'input-profile-key-file' ||
+    state.overlay === 'input-profile-passphrase' ||
+    state.overlay === 'input-profile-passphrase-confirm'
+  ) {
+    if (key.name === 'escape') {
+      return unchanged({
+        ...state,
+        overlay: 'none',
+        query: '',
+        pendingName: null,
+        pendingDataFile: null,
+        pendingKeyFile: null,
+        pendingPassphrase: null,
+        message: 'Create file profile cancelled.',
+      });
+    }
+    if (key.name === 'backspace') {
+      return unchanged({ ...state, query: removeLast(state.query) });
+    }
+    if (key.name === 'return') {
+      if (state.overlay === 'input-profile-id') {
+        const profileId = state.query.trim();
+        if (profileId.length === 0) {
+          return unchanged({
+            ...state,
+            message: 'Profile id cannot be empty.',
+          });
+        }
+        const defaults = defaultFileProfilePaths(profileId);
+        return unchanged({
+          ...state,
+          overlay: 'input-profile-data-file',
+          pendingName: profileId,
+          query: defaults.dataFile,
+          message: `Data file for '${profileId}' (Enter accepts default).`,
+        });
+      }
+      if (state.overlay === 'input-profile-data-file') {
+        const profileId = state.pendingName;
+        if (profileId === null) {
+          return unchanged({ ...state, overlay: 'none', query: '' });
+        }
+        const dataFile = state.query.trim() || defaultFileProfilePaths(profileId).dataFile;
+        return unchanged({
+          ...state,
+          overlay: 'input-profile-key-file',
+          pendingDataFile: dataFile,
+          query: defaultFileProfilePaths(profileId).keyFile,
+          message: `Key file for '${profileId}' (Enter accepts default).`,
+        });
+      }
+      if (state.overlay === 'input-profile-key-file') {
+        const profileId = state.pendingName;
+        if (profileId === null || state.pendingDataFile === null) {
+          return unchanged({ ...state, overlay: 'none', query: '' });
+        }
+        const keyFile =
+          state.query.trim() || defaultFileProfilePaths(profileId).keyFile;
+        return unchanged({
+          ...state,
+          overlay: 'input-profile-passphrase',
+          pendingKeyFile: keyFile,
+          query: '',
+          message: 'Owner passphrase (masked). Enter continues; Esc cancels.',
+        });
+      }
+      if (state.overlay === 'input-profile-passphrase') {
+        if (state.query.length === 0) {
+          return unchanged({
+            ...state,
+            message: 'Passphrase cannot be empty.',
+          });
+        }
+        return unchanged({
+          ...state,
+          overlay: 'input-profile-passphrase-confirm',
+          pendingPassphrase: state.query,
+          query: '',
+          message: 'Confirm passphrase (masked). Enter creates the profile.',
+        });
+      }
+      const profileId = state.pendingName;
+      const dataFile = state.pendingDataFile;
+      const keyFile = state.pendingKeyFile;
+      const passphrase = state.pendingPassphrase;
+      const confirm = state.query;
+      if (
+        profileId === null ||
+        dataFile === null ||
+        keyFile === null ||
+        passphrase === null
+      ) {
+        return unchanged({
+          ...state,
+          overlay: 'none',
+          query: '',
+          pendingName: null,
+          pendingDataFile: null,
+          pendingKeyFile: null,
+          pendingPassphrase: null,
+          message: 'Create file profile cancelled.',
+        });
+      }
+      if (confirm !== passphrase) {
+        return unchanged({
+          ...state,
+          overlay: 'input-profile-passphrase',
+          pendingPassphrase: null,
+          query: '',
+          message: 'Passphrases did not match. Re-enter passphrase.',
+        });
+      }
+      return effect(
+        {
+          ...state,
+          overlay: 'none',
+          query: '',
+          pendingName: null,
+          pendingDataFile: null,
+          pendingKeyFile: null,
+          pendingPassphrase: null,
+          message: `Creating file profile '${profileId}'…`,
+        },
+        {
+          kind: 'backend',
+          action: {
+            type: 'create-file-profile',
+            profileId,
+            dataFile,
+            keyFile,
+            passphrase,
+          },
+        },
+      );
+    }
+    if (isPrintable(key.text)) {
+      const masked =
+        state.overlay === 'input-profile-passphrase' ||
+        state.overlay === 'input-profile-passphrase-confirm';
+      const limit = masked ? 1024 : 512;
       return unchanged({
         ...state,
         query: `${state.query}${key.text}`.slice(0, limit),

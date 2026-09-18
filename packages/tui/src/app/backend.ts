@@ -76,6 +76,15 @@ export interface AppSnapshot {
 export type AppBackendAction =
   | Readonly<{ type: 'refresh' }>
   | Readonly<{ type: 'use-profile'; profileId: string }>
+  | Readonly<{
+      type: 'create-file-profile';
+      profileId: string;
+      dataFile: string;
+      keyFile: string;
+      passphrase: string;
+      databaseLabel?: string;
+      vaultLabel?: string;
+    }>
   | Readonly<{ type: 'use-vault'; vaultId: string }>
   | Readonly<{ type: 'unlock'; passphrase: string }>
   | Readonly<{ type: 'lock' }>

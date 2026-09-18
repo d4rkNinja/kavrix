@@ -189,6 +189,51 @@ export function createStaticAppBackend(
           };
           return { snapshot };
         }
+        case 'create-file-profile': {
+          const profileId = action.profileId.trim();
+          if (profileId.length === 0 || action.passphrase.length === 0) {
+            snapshot = {
+              ...snapshot,
+              notice: 'create-file-profile requires profile id and passphrase.',
+              noticeTone: 'warning',
+            };
+            return { snapshot };
+          }
+          const profiles = [
+            ...snapshot.profiles.map((profile) => ({ ...profile, selected: false })),
+            {
+              id: profileId,
+              datastore: 'file' as const,
+              selected: true,
+              detail: `file ${action.dataFile}`,
+            },
+          ];
+          snapshot = {
+            ...snapshot,
+            profiles,
+            home: {
+              ...snapshot.home,
+              profileId,
+              vaultId: `${profileId}-vault`,
+              datastore: 'file',
+              unlocked: false,
+              credentialCount: 0,
+              message: `Created file profile ${profileId} (static).`,
+            },
+            vaults: [
+              {
+                id: `${profileId}-vault`,
+                selected: true,
+                credentialCount: 0,
+                detail: 'Created (static) — unlock to load credentials',
+              },
+            ],
+            credentials: [],
+            notice: `Created file profile ${profileId} (static).`,
+            noticeTone: 'success',
+          };
+          return { snapshot };
+        }
         case 'use-profile':
         case 'use-vault':
           snapshot = {

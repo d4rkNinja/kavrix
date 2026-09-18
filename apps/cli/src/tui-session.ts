@@ -73,6 +73,15 @@ export interface CliTuiSnapshot {
 export type CliTuiAction =
   | Readonly<{ type: 'refresh' }>
   | Readonly<{ type: 'use-profile'; profileId: string }>
+  | Readonly<{
+      type: 'create-file-profile';
+      profileId: string;
+      dataFile: string;
+      keyFile: string;
+      passphrase: string;
+      databaseLabel?: string;
+      vaultLabel?: string;
+    }>
   | Readonly<{ type: 'use-vault'; vaultId: string }>
   | Readonly<{ type: 'unlock'; passphrase: string }>
   | Readonly<{ type: 'lock' }>
@@ -151,6 +160,9 @@ class CliTuiSession {
           break;
         case 'use-profile':
           await this.#useProfile(action.profileId);
+          break;
+        case 'create-file-profile':
+          await this.#createFileProfile(action);
           break;
         case 'use-vault':
           this.#vaultId = action.vaultId;
@@ -331,6 +343,115 @@ class CliTuiSession {
     this.#recoverySlots = [];
     this.#notice = `Selected profile ${profileId}.`;
     this.#noticeTone = 'success';
+  }
+
+  /**
+   * Matches scripts/tui-vault-smoke.ts:
+   * db profile add → db profile use → db init → db vault create → db vault use.
+   * Secrets travel only as stdin frames (`--passphrase-stdin`).
+   */
+  async #createFileProfile(
+    action: Extract<CliTuiAction, { type: 'create-file-profile' }>,
+  ): Promise<void> {
+    const profileId = profileIdSchema.parse(action.profileId.trim());
+    const dataFile = action.dataFile.trim();
+    const keyFile = action.keyFile.trim();
+    if (dataFile.length === 0 || keyFile.length === 0) {
+      throw new Error('dataFile and keyFile paths are required.');
+    }
+    if (action.passphrase.length === 0) {
+      throw new Error('Passphrase is required to initialize the database.');
+    }
+    const databaseLabel =
+      action.databaseLabel?.trim() || `${profileId}-db`;
+    const vaultLabel = action.vaultLabel?.trim() || `${profileId}-vault`;
+    const configDirArgs = this.#configDirArgs('--config-dir');
+    const profileConfigDirArgs = this.#configDirArgs('--profile-config-dir');
+
+    await this.#runTextCommand(
+      [
+        'db',
+        'profile',
+        'add',
+        profileId,
+        '--datastore',
+        'file',
+        '--data-file',
+        dataFile,
+        '--key-file',
+        keyFile,
+        ...configDirArgs,
+      ],
+      [],
+    );
+
+    await this.#runTextCommand(
+      ['db', 'profile', 'use', profileId, ...configDirArgs],
+      [],
+    );
+
+    // Frames: `kavrix frames "db init"` → [mongodb-url,] label, passphrase, passphrase-confirm
+    await this.#runTextCommand(
+      [
+        'db',
+        'init',
+        '--profile',
+        profileId,
+        ...configDirArgs,
+        '--passphrase-stdin',
+      ],
+      [databaseLabel, action.passphrase, action.passphrase],
+    );
+
+    // Frames: `kavrix frames "db vault create"` → [mongodb-url,] passphrase, label
+    const created = await this.#runJsonCommand(
+      [
+        'db',
+        'vault',
+        'create',
+        '--profile',
+        profileId,
+        ...profileConfigDirArgs,
+        '--passphrase-stdin',
+        '--json',
+      ],
+      [action.passphrase, vaultLabel],
+    );
+    const vaultId =
+      typeof created === 'object' &&
+      created !== null &&
+      typeof (created as { vaultId?: unknown }).vaultId === 'string'
+        ? (created as { vaultId: string }).vaultId
+        : null;
+    if (vaultId === null) {
+      throw new Error('db vault create did not return a vaultId.');
+    }
+
+    // Frames: `kavrix frames "db vault use"` → [mongodb-url,] passphrase
+    await this.#runTextCommand(
+      [
+        'db',
+        'vault',
+        'use',
+        vaultId,
+        '--profile',
+        profileId,
+        ...profileConfigDirArgs,
+        '--passphrase-stdin',
+      ],
+      [action.passphrase],
+    );
+
+    this.#vaultId = vaultId;
+    this.#recoverySlots = [];
+    await this.#unlock(action.passphrase);
+    this.#notice = `Created and selected file profile ${profileId} (vault ${vaultId}).`;
+    this.#noticeTone = 'success';
+  }
+
+  #configDirArgs(flag: '--config-dir' | '--profile-config-dir'): string[] {
+    if (this.#options.profileConfigDir === undefined) return [];
+    return [flag, this.#options.profileConfigDir];
   }
 
   async #unlock(passphrase: string): Promise<void> {
