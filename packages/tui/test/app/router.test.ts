@@ -536,6 +536,152 @@ describe('create-file-profile overlays', () => {
   });
 });
 
+describe('create-mongodb-profile overlays', () => {
+  it('dispatches create-mongodb-profile after id/database/key/url/passphrase overlays', () => {
+    let state = navigateToScreen(hydrate(), 'profiles');
+    state = transitionAppRouter(state, {
+      type: 'key',
+      key: { text: 'm' },
+      nowMs: 0,
+    }).state;
+    expect(state.overlay).toBe('input-mongo-profile-id');
+    for (const ch of 'mongo') {
+      state = transitionAppRouter(state, {
+        type: 'key',
+        key: { text: ch },
+        nowMs: 0,
+      }).state;
+    }
+    state = transitionAppRouter(state, {
+      type: 'key',
+      key: { name: 'return' },
+      nowMs: 0,
+    }).state;
+    expect(state.overlay).toBe('input-mongo-database');
+    expect(state.pendingName).toBe('mongo');
+
+    state = transitionAppRouter(state, {
+      type: 'key',
+      key: { name: 'return' },
+      nowMs: 0,
+    }).state;
+    expect(state.overlay).toBe('input-mongo-key-file');
+    expect(state.pendingMongoDatabase).toBeTruthy();
+
+    state = transitionAppRouter(state, {
+      type: 'key',
+      key: { name: 'return' },
+      nowMs: 0,
+    }).state;
+    expect(state.overlay).toBe('input-mongo-url');
+
+    for (const ch of 'mongodb://127.0.0.1:27017') {
+      state = transitionAppRouter(state, {
+        type: 'key',
+        key: { text: ch },
+        nowMs: 0,
+      }).state;
+    }
+    state = transitionAppRouter(state, {
+      type: 'key',
+      key: { name: 'return' },
+      nowMs: 0,
+    }).state;
+    expect(state.overlay).toBe('input-mongo-passphrase');
+    expect(state.pendingMongoUrl).toContain('mongodb://');
+
+    for (const ch of 'passphrase-one') {
+      state = transitionAppRouter(state, {
+        type: 'key',
+        key: { text: ch },
+        nowMs: 0,
+      }).state;
+    }
+    state = transitionAppRouter(state, {
+      type: 'key',
+      key: { name: 'return' },
+      nowMs: 0,
+    }).state;
+    expect(state.overlay).toBe('input-mongo-passphrase-confirm');
+
+    for (const ch of 'passphrase-one') {
+      state = transitionAppRouter(state, {
+        type: 'key',
+        key: { text: ch },
+        nowMs: 0,
+      }).state;
+    }
+    const created = transitionAppRouter(state, {
+      type: 'key',
+      key: { name: 'return' },
+      nowMs: 1,
+    });
+    expect(created.effect.kind).toBe('backend');
+    if (created.effect.kind !== 'backend') return;
+    expect(created.effect.action.type).toBe('create-mongodb-profile');
+    if (created.effect.action.type !== 'create-mongodb-profile') return;
+    expect(created.effect.action.profileId).toBe('mongo');
+    expect(created.effect.action.databaseUrl).toContain('mongodb://');
+    expect(created.effect.action.passphrase).toBe('passphrase-one');
+    expect(created.state.pendingMongoUrl).toBeNull();
+    expect(created.state.pendingPassphrase).toBeNull();
+  });
+});
+
+describe('mongodb unlock overlay', () => {
+  it('collects URL before passphrase when datastore is mongodb', () => {
+    const base = createInitialAppRouterState({ width: 100, height: 30 });
+    let state = transitionAppRouter(base, {
+      type: 'hydrate',
+      snapshot: {
+        ...sampleSnapshot(),
+        home: {
+          ...sampleSnapshot().home,
+          datastore: 'mongodb',
+        },
+      },
+    }).state;
+    state = transitionAppRouter(state, {
+      type: 'key',
+      key: { text: 'u' },
+      nowMs: 0,
+    }).state;
+    expect(state.overlay).toBe('input-unlock-mongo-url');
+    for (const ch of 'mongodb://localhost') {
+      state = transitionAppRouter(state, {
+        type: 'key',
+        key: { text: ch },
+        nowMs: 0,
+      }).state;
+    }
+    state = transitionAppRouter(state, {
+      type: 'key',
+      key: { name: 'return' },
+      nowMs: 0,
+    }).state;
+    expect(state.overlay).toBe('input-passphrase');
+    expect(state.pendingMongoUrl).toBe('mongodb://localhost');
+    for (const ch of 'secret') {
+      state = transitionAppRouter(state, {
+        type: 'key',
+        key: { text: ch },
+        nowMs: 0,
+      }).state;
+    }
+    const unlocked = transitionAppRouter(state, {
+      type: 'key',
+      key: { name: 'return' },
+      nowMs: 1,
+    });
+    expect(unlocked.effect.kind).toBe('backend');
+    if (unlocked.effect.kind !== 'backend') return;
+    expect(unlocked.effect.action.type).toBe('unlock');
+    if (unlocked.effect.action.type !== 'unlock') return;
+    expect(unlocked.effect.action.databaseUrl).toBe('mongodb://localhost');
+    expect(unlocked.effect.action.passphrase).toBe('secret');
+  });
+});
+
 describe('static backend create-file-profile', () => {
   it('adds a selected file profile to the snapshot', async () => {
     const backend = createStaticAppBackend(sampleSnapshot());

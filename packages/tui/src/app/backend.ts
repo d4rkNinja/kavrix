@@ -85,8 +85,25 @@ export type AppBackendAction =
       databaseLabel?: string;
       vaultLabel?: string;
     }>
+  | Readonly<{
+      type: 'create-mongodb-profile';
+      profileId: string;
+      database: string;
+      keyFile: string;
+      databaseUrl: string;
+      passphrase: string;
+      databaseLabel?: string;
+      vaultLabel?: string;
+      databaseCollection?: string;
+      vaultCollection?: string;
+    }>
   | Readonly<{ type: 'use-vault'; vaultId: string }>
-  | Readonly<{ type: 'unlock'; passphrase: string }>
+  | Readonly<{
+      type: 'unlock';
+      passphrase: string;
+      /** Required for mongodb profiles; travels only as a stdin frame. */
+      databaseUrl?: string;
+    }>
   | Readonly<{ type: 'lock' }>
   | Readonly<{ type: 'reveal-credential'; name: string }>
   | Readonly<{ type: 'put-credential'; name: string; value: string }>
@@ -161,7 +178,7 @@ export function emptySnapshot(notice: string | null = null): AppSnapshot {
     policies: [],
     browse: [],
     runPreview: 'Select credentials on the Run screen for a dry preview.',
-    agentStatus: 'Agent broker idle (dry-run only from TUI).',
+    agentStatus: '',
     notice,
     noticeTone: notice === null ? 'muted' : 'info',
   };

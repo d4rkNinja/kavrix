@@ -28,12 +28,29 @@ export function createStaticAppBackend(
         case 'refresh':
         case 'run-doctor':
         case 'refresh-policy':
-        case 'refresh-browse':
         case 'agent-dry-run':
         case 'lock':
           snapshot = {
             ...snapshot,
             notice: `Handled ${action.type}.`,
+            noticeTone: 'info',
+          };
+          return { snapshot };
+        case 'refresh-browse':
+          snapshot = {
+            ...snapshot,
+            browse:
+              snapshot.browse.length > 0
+                ? snapshot.browse
+                : [
+                    {
+                      id: 'static-context',
+                      kind: 'context' as const,
+                      label: 'static',
+                      detail: 'Static browse placeholder (CLI backend loads real lists).',
+                    },
+                  ],
+            notice: 'Browse refreshed (static).',
             noticeTone: 'info',
           };
           return { snapshot };
@@ -328,6 +345,56 @@ export function createStaticAppBackend(
             ],
             credentials: [],
             notice: `Created file profile ${profileId} (static).`,
+            noticeTone: 'success',
+          };
+          return { snapshot };
+        }
+        case 'create-mongodb-profile': {
+          const profileId = action.profileId.trim();
+          if (
+            profileId.length === 0 ||
+            action.passphrase.length === 0 ||
+            action.databaseUrl.trim().length === 0
+          ) {
+            snapshot = {
+              ...snapshot,
+              notice:
+                'create-mongodb-profile requires profile id, database URL, and passphrase.',
+              noticeTone: 'warning',
+            };
+            return { snapshot };
+          }
+          const profiles = [
+            ...snapshot.profiles.map((profile) => ({ ...profile, selected: false })),
+            {
+              id: profileId,
+              datastore: 'mongodb' as const,
+              selected: true,
+              detail: `mongodb ${action.database}`,
+            },
+          ];
+          snapshot = {
+            ...snapshot,
+            profiles,
+            home: {
+              ...snapshot.home,
+              profileId,
+              vaultId: `${profileId}-vault`,
+              datastore: 'mongodb',
+              unlocked: false,
+              credentialCount: 0,
+              message: `Created mongodb profile ${profileId} (static).`,
+            },
+            vaults: [
+              {
+                id: `${profileId}-vault`,
+                selected: true,
+                credentialCount: 0,
+                detail: 'Created (static) — unlock to load credentials',
+              },
+            ],
+            credentials: [],
+            notice: `Created mongodb profile ${profileId} (static).`,
             noticeTone: 'success',
           };
           return { snapshot };

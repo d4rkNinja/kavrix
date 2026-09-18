@@ -266,7 +266,14 @@ describe('CliTuiSession mutations (mocked spawn)', () => {
       ascii: true,
       commandRunner: async (args, frames) => {
         calls.push({ args: [...args], frames: [...frames] });
-        if (args.includes('list') && args[0] !== 'policy' && args[0] !== 'grant') {
+        if (
+          args.includes('list') &&
+          args[0] !== 'policy' &&
+          args[0] !== 'grant' &&
+          args[0] !== 'context' &&
+          args[0] !== 'service' &&
+          args[0] !== 'item'
+        ) {
           return JSON.stringify({ names: ['alpha'] });
         }
         if (args[0] === 'doctor' || (args[0] === 'db' && args[1] === 'doctor')) {
@@ -338,6 +345,23 @@ describe('CliTuiSession mutations (mocked spawn)', () => {
         }
         if (args[0] === 'run' && args.includes('--help')) {
           return 'Usage: kavrix run [options]';
+        }
+        if (args[0] === 'has') {
+          const name = args[1];
+          return JSON.stringify({ exists: name === 'alpha', name, revision: 1 });
+        }
+        if (args[0] === 'context' && args[1] === 'list') {
+          return JSON.stringify({ contexts: [{ name: 'default' }] });
+        }
+        if (args[0] === 'service' && args[1] === 'list') {
+          return JSON.stringify({ context: 'default', services: ['api'] });
+        }
+        if (args[0] === 'item' && args[1] === 'list') {
+          return JSON.stringify({
+            context: 'default',
+            service: 'api',
+            items: ['token'],
+          });
         }
         if (args[0] === 'agent' && args.includes('--dry-run')) {
           return JSON.stringify({ dryRun: true, ok: true, agent: 'noop' });
@@ -446,6 +470,136 @@ describe('CliTuiSession mutations (mocked spawn)', () => {
     expect(agentCall?.args).toEqual(
       expect.arrayContaining(['agent', 'run', '--dry-run', '--json', '--agent', 'noop']),
     );
+    expect(result.snapshot.agentStatus.length).toBeGreaterThan(0);
+
+    result = await backend.dispatch({ type: 'refresh-browse' });
+    expect(result.snapshot.noticeTone).toBe('success');
+    expect(result.snapshot.browse.some((node) => node.kind === 'context')).toBe(
+      true,
+    );
+    expect(result.snapshot.browse.some((node) => node.kind === 'service')).toBe(
+      true,
+    );
+    expect(result.snapshot.browse.some((node) => node.kind === 'item')).toBe(true);
+    const hasCall = calls.find((call) => call.args[0] === 'has');
+    expect(hasCall?.frames).toEqual(['correct horse battery staple']);
+    expect(hasCall?.args.join(' ')).not.toContain('correct horse');
+  });
+
+  it('creates mongodb profile via db profile add/init frames with URL on stdin only', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'kavrix-tui-mongo-'));
+    dirs.push(dir);
+    const calls: Array<{ args: readonly string[]; frames: readonly string[] }> =
+      [];
+    let vaultCreated = false;
+    const mongoUrl = 'mongodb://127.0.0.1:27017/?replicaSet=rs0';
+    const passphrase = 'correct horse battery staple';
+
+    const backend = createCliTuiBackend({
+      profileConfigDir: dir,
+      ascii: true,
+      commandRunner: async (args, frames) => {
+        calls.push({ args: [...args], frames: [...frames] });
+        const joined = args.join(' ');
+        if (args[0] === 'db' && args[1] === 'profile' && args[2] === 'add') {
+          expect(args).toEqual(
+            expect.arrayContaining([
+              'db',
+              'profile',
+              'add',
+              'mongo',
+              '--datastore',
+              'mongodb',
+              '--database',
+              'credentials',
+              '--key-file',
+            ]),
+          );
+          expect(frames).toEqual([]);
+          expect(joined).not.toContain(mongoUrl);
+          const registry = await DatastoreProfileRegistry.open({
+            configDirectory: dir,
+          });
+          await registry.add({
+            id: profileIdSchema.parse('mongo'),
+            datastore: 'mongodb',
+            database: 'credentials',
+            databaseCollection: 'kavrix_databases',
+            vaultCollection: 'kavrix_vaults',
+            keyFile: join(dir, 'owner.key'),
+          });
+          return '';
+        }
+        if (args[0] === 'db' && args[1] === 'profile' && args[2] === 'use') {
+          const registry = await DatastoreProfileRegistry.open({
+            configDirectory: dir,
+          });
+          await registry.use(profileIdSchema.parse('mongo'));
+          return '';
+        }
+        if (args[0] === 'db' && args[1] === 'init') {
+          expect(frames).toEqual([
+            mongoUrl,
+            'mongo-db',
+            passphrase,
+            passphrase,
+          ]);
+          expect(args).toContain('--passphrase-stdin');
+          expect(joined).not.toContain(mongoUrl);
+          expect(joined).not.toContain(passphrase);
+          const registry = await DatastoreProfileRegistry.open({
+            configDirectory: dir,
+          });
+          await registry.bindDatabaseIdForInitialization(
+            profileIdSchema.parse('mongo'),
+            databaseIdSchema.parse('db_mongo'),
+          );
+          return '';
+        }
+        if (args.includes('vault') && args.includes('create')) {
+          expect(frames).toEqual([mongoUrl, passphrase, 'mongo-vault']);
+          vaultCreated = true;
+          return JSON.stringify({ vaultId: 'vault_mongo' });
+        }
+        if (args.includes('vault') && args.includes('use')) {
+          expect(frames).toEqual([mongoUrl, passphrase]);
+          expect(args).toContain('vault_mongo');
+          return '';
+        }
+        if (args.includes('list') && args[0] !== 'policy' && args[0] !== 'grant') {
+          expect(frames[0]).toBe(mongoUrl);
+          expect(frames[1]).toBe(passphrase);
+          expect(args).toContain('--database-url-stdin');
+          expect(joined).not.toContain(mongoUrl);
+          return JSON.stringify({ names: [] });
+        }
+        return '{}';
+      },
+    });
+
+    const result = await backend.dispatch({
+      type: 'create-mongodb-profile',
+      profileId: 'mongo',
+      database: 'credentials',
+      keyFile: join(dir, 'owner.key'),
+      databaseUrl: mongoUrl,
+      passphrase,
+      databaseLabel: 'mongo-db',
+      vaultLabel: 'mongo-vault',
+    });
+
+    expect(vaultCreated).toBe(true);
+    expect(result.snapshot.noticeTone).toBe('success');
+    expect(result.snapshot.home.profileId).toBe('mongo');
+    expect(result.snapshot.home.datastore).toBe('mongodb');
+    expect(result.snapshot.home.vaultId).toBe('vault_mongo');
+    expect(result.snapshot.home.unlocked).toBe(true);
+    expect(result.snapshot.agentStatus).toBe('');
+
+    for (const call of calls) {
+      expect(call.args.join(' ')).not.toContain(mongoUrl);
+      expect(call.args.join(' ')).not.toContain(passphrase);
+    }
   });
 
 });

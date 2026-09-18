@@ -82,8 +82,24 @@ export type CliTuiAction =
       databaseLabel?: string;
       vaultLabel?: string;
     }>
+  | Readonly<{
+      type: 'create-mongodb-profile';
+      profileId: string;
+      database: string;
+      keyFile: string;
+      databaseUrl: string;
+      passphrase: string;
+      databaseLabel?: string;
+      vaultLabel?: string;
+      databaseCollection?: string;
+      vaultCollection?: string;
+    }>
   | Readonly<{ type: 'use-vault'; vaultId: string }>
-  | Readonly<{ type: 'unlock'; passphrase: string }>
+  | Readonly<{
+      type: 'unlock';
+      passphrase: string;
+      databaseUrl?: string;
+    }>
   | Readonly<{ type: 'lock' }>
   | Readonly<{ type: 'reveal-credential'; name: string }>
   | Readonly<{ type: 'put-credential'; name: string; value: string }>
@@ -167,6 +183,8 @@ class CliTuiSession {
   #policyRows: CliTuiSnapshot['policies'] = [];
   #runPreview: string | null = null;
   #agentStatus: string | null = null;
+  #browseNodes: CliTuiSnapshot['browse'] = [];
+  #databaseUrl: Buffer | null = null;
   #notice: string | null = 'Loaded profile registry.';
   #noticeTone: CliTuiSnapshot['noticeTone'] = 'info';
 
@@ -196,13 +214,16 @@ class CliTuiSession {
         case 'create-file-profile':
           await this.#createFileProfile(action);
           break;
+        case 'create-mongodb-profile':
+          await this.#createMongodbProfile(action);
+          break;
         case 'use-vault':
           this.#vaultId = action.vaultId;
           this.#notice = `Selected vault ${action.vaultId}.`;
           this.#noticeTone = 'success';
           break;
         case 'unlock':
-          await this.#unlock(action.passphrase);
+          await this.#unlock(action.passphrase, action.databaseUrl);
           break;
         case 'lock':
           this.#lock();
@@ -269,8 +290,7 @@ class CliTuiSession {
           await this.#grantRevoke(action.grantId);
           break;
         case 'refresh-browse':
-          this.#notice = 'Structured browse refreshed from session metadata.';
-          this.#noticeTone = 'info';
+          await this.#refreshBrowse();
           break;
       }
       return { snapshot: await this.#buildSnapshot() };
@@ -369,21 +389,26 @@ class CliTuiSession {
                 summary: 'Press Enter to load policy/grant/audit via CLI.',
               },
             ],
-      browse: [
-        {
-          id: 'root',
-          kind: 'context',
-          label: current?.id ?? '(none)',
-          detail: 'Structured context/service/item browse uses vault projection.',
-        },
-      ],
+      browse:
+        this.#browseNodes.length > 0
+          ? this.#browseNodes
+          : [
+              {
+                id: 'root',
+                kind: 'context' as const,
+                label: current?.id ?? '(none)',
+                detail:
+                  this.#passphrase === null
+                    ? 'Unlock to load kavrix context / service / item lists.'
+                    : 'Press Enter to refresh browse from CLI.',
+              },
+            ],
       runPreview:
         this.#runPreview ??
         (this.#credentialNames.length === 0
           ? 'Unlock and press p to validate a run preview via CLI.'
           : `Available: ${this.#credentialNames.slice(0, 8).join(', ')}`),
-      agentStatus:
-        this.#agentStatus ?? 'Press g to run kavrix agent run --dry-run.',
+      agentStatus: this.#agentStatus ?? '',
       notice: this.#notice,
       noticeTone: this.#noticeTone,
     };
@@ -402,6 +427,8 @@ class CliTuiSession {
     this.#policyRows = [];
     this.#runPreview = null;
     this.#agentStatus = null;
+    this.#browseNodes = [];
+    this.#clearDatabaseUrl();
     this.#notice = `Selected profile ${profileId}.`;
     this.#noticeTone = 'success';
   }
@@ -509,8 +536,142 @@ class CliTuiSession {
     this.#policyRows = [];
     this.#runPreview = null;
     this.#agentStatus = null;
+    this.#browseNodes = [];
+    this.#clearDatabaseUrl();
     await this.#unlock(action.passphrase);
     this.#notice = `Created and selected file profile ${profileId} (vault ${vaultId}).`;
+    this.#noticeTone = 'success';
+  }
+
+
+  /**
+   * Matches db profile add mongodb → use → init → vault create → vault use.
+   * Mongo URL + passphrase travel only as stdin frames (`--passphrase-stdin`
+   * on db owner commands; `--database-url-stdin` on flat commands).
+   */
+  async #createMongodbProfile(
+    action: Extract<CliTuiAction, { type: 'create-mongodb-profile' }>,
+  ): Promise<void> {
+    const profileId = profileIdSchema.parse(action.profileId.trim());
+    const database = action.database.trim();
+    const keyFile = action.keyFile.trim();
+    const databaseUrl = action.databaseUrl.trim();
+    if (database.length === 0 || keyFile.length === 0) {
+      throw new Error('database name and keyFile path are required.');
+    }
+    if (databaseUrl.length === 0) {
+      throw new Error('MongoDB URL is required (stdin frames only).');
+    }
+    if (action.passphrase.length === 0) {
+      throw new Error('Passphrase is required to initialize the database.');
+    }
+    const databaseLabel =
+      action.databaseLabel?.trim() || `${profileId}-db`;
+    const vaultLabel = action.vaultLabel?.trim() || `${profileId}-vault`;
+    const configDirArgs = this.#configDirArgs('--config-dir');
+    const profileConfigDirArgs = this.#configDirArgs('--profile-config-dir');
+    const collectionArgs: string[] = [];
+    if (action.databaseCollection?.trim()) {
+      collectionArgs.push(
+        '--database-collection',
+        action.databaseCollection.trim(),
+      );
+    }
+    if (action.vaultCollection?.trim()) {
+      collectionArgs.push('--vault-collection', action.vaultCollection.trim());
+    }
+    const transport = needsInsecureTransport(databaseUrl)
+      ? (['--allow-insecure-transport'] as const)
+      : [];
+
+    await this.#runTextCommand(
+      [
+        'db',
+        'profile',
+        'add',
+        profileId,
+        '--datastore',
+        'mongodb',
+        '--database',
+        database,
+        '--key-file',
+        keyFile,
+        ...collectionArgs,
+        ...configDirArgs,
+      ],
+      [],
+    );
+
+    await this.#runTextCommand(
+      ['db', 'profile', 'use', profileId, ...configDirArgs],
+      [],
+    );
+
+    this.#setDatabaseUrl(databaseUrl);
+
+    // Frames: db init → [mongodb-url,] label, passphrase, passphrase-confirm
+    await this.#runTextCommand(
+      [
+        'db',
+        'init',
+        '--profile',
+        profileId,
+        ...configDirArgs,
+        ...transport,
+        '--passphrase-stdin',
+      ],
+      [databaseUrl, databaseLabel, action.passphrase, action.passphrase],
+    );
+
+    // Frames: db vault create → [mongodb-url,] passphrase, label
+    const created = await this.#runJsonCommand(
+      [
+        'db',
+        'vault',
+        'create',
+        '--profile',
+        profileId,
+        ...profileConfigDirArgs,
+        ...transport,
+        '--passphrase-stdin',
+        '--json',
+      ],
+      [databaseUrl, action.passphrase, vaultLabel],
+    );
+    const vaultId =
+      typeof created === 'object' &&
+      created !== null &&
+      typeof (created as { vaultId?: unknown }).vaultId === 'string'
+        ? (created as { vaultId: string }).vaultId
+        : null;
+    if (vaultId === null) {
+      throw new Error('db vault create did not return a vaultId.');
+    }
+
+    await this.#runTextCommand(
+      [
+        'db',
+        'vault',
+        'use',
+        vaultId,
+        '--profile',
+        profileId,
+        ...profileConfigDirArgs,
+        ...transport,
+        '--passphrase-stdin',
+      ],
+      [databaseUrl, action.passphrase],
+    );
+
+    this.#vaultId = vaultId;
+    this.#recoverySlots = [];
+    this.#doctorRows = [];
+    this.#policyRows = [];
+    this.#runPreview = null;
+    this.#agentStatus = null;
+    this.#browseNodes = [];
+    await this.#unlock(action.passphrase, databaseUrl);
+    this.#notice = `Created and selected mongodb profile ${profileId} (vault ${vaultId}).`;
     this.#noticeTone = 'success';
   }
 
@@ -519,17 +680,27 @@ class CliTuiSession {
     return [flag, this.#options.profileConfigDir];
   }
 
-  async #unlock(passphrase: string): Promise<void> {
+  async #unlock(passphrase: string, databaseUrl?: string): Promise<void> {
     if (passphrase.length === 0) {
       this.#notice = 'Passphrase required.';
       this.#noticeTone = 'warning';
       return;
     }
+    if (databaseUrl !== undefined && databaseUrl.trim().length > 0) {
+      this.#setDatabaseUrl(databaseUrl.trim());
+    }
     const bytes = Buffer.from(passphrase, 'utf8');
     try {
+      const auth = await this.#flatAuth([passphrase]);
       const names = await this.#runJsonCommand(
-        ['list', ...(await this.#profileArgs()), '--json', '--passphrase-stdin'],
-        [passphrase],
+        [
+          'list',
+          ...(await this.#profileArgs()),
+          ...auth.args,
+          '--json',
+          '--passphrase-stdin',
+        ],
+        auth.frames,
       );
       const parsed = names as { names?: unknown };
       if (!Array.isArray(parsed.names)) {
@@ -552,9 +723,17 @@ class CliTuiSession {
       throw new Error('Unlock the vault before revealing.');
     }
     const passphrase = this.#passphrase.toString('utf8');
+    const auth = await this.#flatAuth([passphrase]);
     const output = await this.#runTextCommand(
-      ['get', name, ...(await this.#profileArgs()), '--reveal', '--passphrase-stdin'],
-      [passphrase],
+      [
+        'get',
+        name,
+        ...(await this.#profileArgs()),
+        ...auth.args,
+        '--reveal',
+        '--passphrase-stdin',
+      ],
+      auth.frames,
     );
     this.#notice = `REVEAL active for ${name} (15s UI timer).`;
     this.#noticeTone = 'warning';
@@ -571,17 +750,19 @@ class CliTuiSession {
     }
     const passphrase = this.#passphrase.toString('utf8');
     // Frames contract: `kavrix frames put` → [mongodb-url,] passphrase, value
+    const auth = await this.#flatAuth([passphrase, value]);
     await this.#runTextCommand(
       [
         'put',
         trimmed,
         ...(await this.#profileArgs()),
+        ...auth.args,
         '--passphrase-stdin',
         '--value-stdin',
         '--overwrite',
         '--json',
       ],
-      [passphrase, value],
+      auth.frames,
     );
     await this.#refreshCredentialList();
     this.#notice = `Stored credential ${trimmed}.`;
@@ -599,16 +780,18 @@ class CliTuiSession {
     }
     const passphrase = this.#passphrase.toString('utf8');
     // Frames: `kavrix frames rename` → [mongodb-url,] passphrase
+    const auth = await this.#flatAuth([passphrase]);
     await this.#runTextCommand(
       [
         'rename',
         source,
         target,
         ...(await this.#profileArgs()),
+        ...auth.args,
         '--passphrase-stdin',
         '--json',
       ],
-      [passphrase],
+      auth.frames,
     );
     await this.#refreshCredentialList();
     this.#notice = `Renamed ${source} → ${target}.`;
@@ -625,15 +808,17 @@ class CliTuiSession {
     }
     const passphrase = this.#passphrase.toString('utf8');
     // Frames: `kavrix frames remove` → [mongodb-url,] passphrase
+    const auth = await this.#flatAuth([passphrase]);
     await this.#runTextCommand(
       [
         'remove',
         trimmed,
         ...(await this.#profileArgs()),
+        ...auth.args,
         '--passphrase-stdin',
         '--json',
       ],
-      [passphrase],
+      auth.frames,
     );
     await this.#refreshCredentialList();
     this.#notice = `Removed credential ${trimmed}.`;
@@ -643,9 +828,16 @@ class CliTuiSession {
   async #refreshCredentialList(): Promise<void> {
     if (this.#passphrase === null) return;
     const passphrase = this.#passphrase.toString('utf8');
+    const auth = await this.#flatAuth([passphrase]);
     const names = await this.#runJsonCommand(
-      ['list', ...(await this.#profileArgs()), '--json', '--passphrase-stdin'],
-      [passphrase],
+      [
+        'list',
+        ...(await this.#profileArgs()),
+        ...auth.args,
+        '--json',
+        '--passphrase-stdin',
+      ],
+      auth.frames,
     );
     const parsed = names as { names?: unknown };
     if (!Array.isArray(parsed.names)) {
@@ -667,21 +859,31 @@ class CliTuiSession {
     const profileArgs = await this.#profileArgs();
     let raw: unknown;
     if (current?.databaseId !== undefined) {
+      const frames = await this.#ownerAuthFrames([passphrase]);
+      const transport = await this.#ownerTransportArgs();
       raw = await this.#runJsonCommand(
         [
           'db',
           'doctor',
           'health',
           ...profileArgs,
+          ...transport,
           '--json',
           '--passphrase-stdin',
         ],
-        [passphrase],
+        frames,
       );
     } else {
+      const auth = await this.#flatAuth([passphrase]);
       raw = await this.#runJsonCommand(
-        ['doctor', ...profileArgs, '--json', '--passphrase-stdin'],
-        [passphrase],
+        [
+          'doctor',
+          ...profileArgs,
+          ...auth.args,
+          '--json',
+          '--passphrase-stdin',
+        ],
+        auth.frames,
       );
     }
     this.#doctorRows = parseDoctorRows(raw);
@@ -694,30 +896,83 @@ class CliTuiSession {
   }
 
   async #previewRun(credentialNames: readonly string[]): Promise<void> {
-    const names = credentialNames.map((name) => name.trim()).filter((name) => name.length > 0);
+    const names = credentialNames
+      .map((name) => name.trim())
+      .filter((name) => name.length > 0);
     if (this.#passphrase === null) {
       throw new Error('Unlock before preview-run.');
     }
-    const missing = names.filter((name) => !this.#credentialNames.includes(name));
-    // Real CLI validation: kavrix run has no --dry-run; exercise --help.
-    const help = await this.#runTextCommand(['run', '--help'], []);
+    const passphrase = this.#passphrase.toString('utf8');
+    const missingLocal = names.filter(
+      (name) => !this.#credentialNames.includes(name),
+    );
+    // Real CLI validation: kavrix run has no --dry-run; exercise --help + has.
+    let help = '';
+    try {
+      help = await this.#runTextCommand(['run', '--help'], []);
+    } catch (error) {
+      const detail =
+        error instanceof Error ? error.message : 'kavrix run --help failed';
+      this.#runPreview = detail;
+      this.#notice = `preview-run: ${detail}`;
+      this.#noticeTone = 'error';
+      return;
+    }
     const usage =
       help
         .split('\n')
         .map((line) => line.trim())
         .find((line) => line.length > 0) ?? 'kavrix run --help';
-    if (missing.length > 0) {
-      this.#runPreview = `Missing credentials: ${missing.join(', ')}. ${usage}`;
-      this.#notice = `preview-run: ${String(missing.length)} credential(s) not in vault.`;
+    if (missingLocal.length > 0) {
+      this.#runPreview = `Missing credentials: ${missingLocal.join(', ')}. ${usage}`;
+      this.#notice = `preview-run: ${String(missingLocal.length)} credential(s) not in vault.`;
+      this.#noticeTone = 'error';
+      return;
+    }
+    const profileArgs = await this.#profileArgs();
+    const absent: string[] = [];
+    const present: string[] = [];
+    for (const name of names) {
+      try {
+        const auth = await this.#flatAuth([passphrase]);
+        const raw = await this.#runJsonCommand(
+          [
+            'has',
+            name,
+            ...profileArgs,
+            ...auth.args,
+            '--json',
+            '--passphrase-stdin',
+          ],
+          auth.frames,
+        );
+        const exists =
+          typeof raw === 'object' &&
+          raw !== null &&
+          (raw as { exists?: unknown }).exists === true;
+        if (exists) present.push(name);
+        else absent.push(name);
+      } catch (error) {
+        const detail =
+          error instanceof Error ? error.message : `has ${name} failed`;
+        this.#runPreview = `CLI has failed for ${name}: ${detail}. ${usage}`;
+        this.#notice = `preview-run: ${detail}`;
+        this.#noticeTone = 'error';
+        return;
+      }
+    }
+    if (absent.length > 0) {
+      this.#runPreview = `has absent: ${absent.join(', ')}. ${usage}`;
+      this.#notice = `preview-run: ${String(absent.length)} credential(s) absent via kavrix has.`;
       this.#noticeTone = 'error';
       return;
     }
     const listed =
       names.length === 0
-        ? '(none selected — names validated against unlocked list when provided)'
-        : names.join(', ');
-    this.#runPreview = `Validated ${String(names.length)} credential name(s): ${listed}. No --dry-run on kavrix run; ${usage}`;
-    this.#notice = 'preview-run: credential names validated; run --help OK.';
+        ? '(none selected — unlock list + run --help checked)'
+        : present.join(', ');
+    this.#runPreview = `Validated ${String(names.length)} credential(s) via list+has: ${listed}. No --dry-run on kavrix run; ${usage}`;
+    this.#notice = 'preview-run: list+has OK; run --help OK (no secret inject).';
     this.#noticeTone = 'success';
   }
 
@@ -735,11 +990,12 @@ class CliTuiSession {
       args.push('--agent', 'noop');
     }
     args.push(...(await this.#profileArgs()));
+    let frames: string[] = [];
     if (this.#passphrase !== null) {
-      args.push('--passphrase-stdin');
+      const auth = await this.#flatAuth([this.#passphrase.toString('utf8')]);
+      args.push(...auth.args, '--passphrase-stdin');
+      frames = auth.frames;
     }
-    const frames =
-      this.#passphrase !== null ? [this.#passphrase.toString('utf8')] : [];
     try {
       const raw = await this.#runJsonCommand(args, frames);
       this.#agentStatus = `agent dry-run OK: ${JSON.stringify(raw)}`;
@@ -760,13 +1016,28 @@ class CliTuiSession {
     }
     const passphrase = this.#passphrase.toString('utf8');
     const profileArgs = await this.#profileArgs();
+    const auth = await this.#flatAuth([passphrase]);
     const policyRaw = await this.#runJsonCommand(
-      ['policy', 'list', ...profileArgs, '--json', '--passphrase-stdin'],
-      [passphrase],
+      [
+        'policy',
+        'list',
+        ...profileArgs,
+        ...auth.args,
+        '--json',
+        '--passphrase-stdin',
+      ],
+      auth.frames,
     );
     const grantRaw = await this.#runJsonCommand(
-      ['grant', 'list', ...profileArgs, '--json', '--passphrase-stdin'],
-      [passphrase],
+      [
+        'grant',
+        'list',
+        ...profileArgs,
+        ...auth.args,
+        '--json',
+        '--passphrase-stdin',
+      ],
+      auth.frames,
     );
     let auditRaw: unknown = { events: [] };
     try {
@@ -776,10 +1047,11 @@ class CliTuiSession {
           '--limit',
           '10',
           ...profileArgs,
+          ...auth.args,
           '--json',
           '--passphrase-stdin',
         ],
-        [passphrase],
+        auth.frames,
       );
     } catch {
       // Audit is best-effort when the sidecar is empty or unavailable.
@@ -802,6 +1074,7 @@ class CliTuiSession {
       throw new Error('policy-create requires id, secret, and command.');
     }
     const passphrase = this.#passphrase.toString('utf8');
+    const auth = await this.#flatAuth([passphrase]);
     const args = [
       'policy',
       'create',
@@ -811,13 +1084,14 @@ class CliTuiSession {
       '--command',
       command,
       ...(await this.#profileArgs()),
+      ...auth.args,
       '--passphrase-stdin',
       '--json',
     ];
     if (action.env !== undefined && action.env.trim().length > 0) {
       args.push('--env', action.env.trim());
     }
-    await this.#runJsonCommand(args, [passphrase]);
+    await this.#runJsonCommand(args, auth.frames);
     await this.#refreshPolicy();
     this.#notice = `Created policy ${id}.`;
     this.#noticeTone = 'success';
@@ -832,16 +1106,18 @@ class CliTuiSession {
       throw new Error('policy-remove requires an id.');
     }
     const passphrase = this.#passphrase.toString('utf8');
+    const auth = await this.#flatAuth([passphrase]);
     await this.#runJsonCommand(
       [
         'policy',
         'remove',
         trimmed,
         ...(await this.#profileArgs()),
+        ...auth.args,
         '--passphrase-stdin',
         '--json',
       ],
-      [passphrase],
+      auth.frames,
     );
     await this.#refreshPolicy();
     this.#notice = `Removed policy ${trimmed}.`;
@@ -861,6 +1137,7 @@ class CliTuiSession {
       throw new Error('grant-create requires secret and command.');
     }
     const passphrase = this.#passphrase.toString('utf8');
+    const auth = await this.#flatAuth([passphrase]);
     const args = [
       'grant',
       'create',
@@ -870,6 +1147,7 @@ class CliTuiSession {
       '--ttl',
       ttl,
       ...(await this.#profileArgs()),
+      ...auth.args,
       '--passphrase-stdin',
       '--json',
     ];
@@ -879,7 +1157,7 @@ class CliTuiSession {
     if (action.maxUses !== undefined) {
       args.push('--max-uses', String(action.maxUses));
     }
-    await this.#runJsonCommand(args, [passphrase]);
+    await this.#runJsonCommand(args, auth.frames);
     await this.#refreshPolicy();
     this.#notice = `Created grant for ${secret}.`;
     this.#noticeTone = 'success';
@@ -894,16 +1172,18 @@ class CliTuiSession {
       throw new Error('grant-revoke requires a grant id.');
     }
     const passphrase = this.#passphrase.toString('utf8');
+    const auth = await this.#flatAuth([passphrase]);
     await this.#runJsonCommand(
       [
         'grant',
         'revoke',
         trimmed,
         ...(await this.#profileArgs()),
+        ...auth.args,
         '--passphrase-stdin',
         '--json',
       ],
-      [passphrase],
+      auth.frames,
     );
     await this.#refreshPolicy();
     this.#notice = `Revoked grant ${trimmed}.`;
@@ -927,6 +1207,12 @@ class CliTuiSession {
         throw new Error('Unlock before db recovery create.');
       }
       const passphrase = this.#passphrase.toString('utf8');
+      const frames = await this.#ownerAuthFrames([
+        passphrase,
+        recoveryPassphrase,
+        recoveryPassphrase,
+      ]);
+      const transport = await this.#ownerTransportArgs();
       await this.#runTextCommand(
         [
           'db',
@@ -935,9 +1221,10 @@ class CliTuiSession {
           '--recovery-file',
           file,
           ...(await this.#profileArgs()),
+          ...transport,
           '--passphrase-stdin',
         ],
-        [passphrase, recoveryPassphrase, recoveryPassphrase],
+        frames,
       );
     } else if (current.datastore === 'file') {
       if (this.#passphrase === null) {
@@ -987,6 +1274,11 @@ class CliTuiSession {
         throw new Error('Unlock before db recovery verify.');
       }
       const passphrase = this.#passphrase.toString('utf8');
+      const frames = await this.#ownerAuthFrames([
+        passphrase,
+        recoveryPassphrase,
+      ]);
+      const transport = await this.#ownerTransportArgs();
       await this.#runTextCommand(
         [
           'db',
@@ -995,9 +1287,10 @@ class CliTuiSession {
           '--recovery-file',
           file,
           ...(await this.#profileArgs()),
+          ...transport,
           '--passphrase-stdin',
         ],
-        [passphrase, recoveryPassphrase],
+        frames,
       );
     } else if (current.datastore === 'file') {
       await this.#runTextCommand(
@@ -1042,6 +1335,8 @@ class CliTuiSession {
         throw new Error('Unlock before db recovery revoke.');
       }
       const passphrase = this.#passphrase.toString('utf8');
+      const frames = await this.#ownerAuthFrames([passphrase]);
+      const transport = await this.#ownerTransportArgs();
       await this.#runTextCommand(
         [
           'db',
@@ -1049,9 +1344,10 @@ class CliTuiSession {
           'revoke',
           trimmed,
           ...(await this.#profileArgs()),
+          ...transport,
           '--passphrase-stdin',
         ],
-        [passphrase],
+        frames,
       );
     } else if (current.datastore === 'file') {
       if (this.#passphrase === null) {
@@ -1097,16 +1393,19 @@ class CliTuiSession {
         return;
       }
       const passphrase = this.#passphrase.toString('utf8');
+      const frames = await this.#ownerAuthFrames([passphrase]);
+      const transport = await this.#ownerTransportArgs();
       const raw = await this.#runJsonCommand(
         [
           'db',
           'recovery',
           'status',
           ...(await this.#profileArgs()),
+          ...transport,
           '--json',
           '--passphrase-stdin',
         ],
-        [passphrase],
+        frames,
       );
       this.#recoverySlots = parseRecoverySlots(raw, 'db');
       this.#notice = `Recovery status: ${String(this.#recoverySlots.length)} slot(s).`;
@@ -1140,6 +1439,180 @@ class CliTuiSession {
     this.#noticeTone = 'info';
   }
 
+  async #refreshBrowse(): Promise<void> {
+    if (this.#passphrase === null) {
+      this.#browseNodes = [
+        {
+          id: 'locked',
+          kind: 'context',
+          label: '(locked)',
+          detail: 'Unlock to load kavrix context / service / item lists.',
+        },
+      ];
+      this.#notice = 'Browse locked — unlock first.';
+      this.#noticeTone = 'warning';
+      return;
+    }
+    const passphrase = this.#passphrase.toString('utf8');
+    const profileArgs = await this.#profileArgs();
+    const vaultArgs = await this.#vaultFlagArgs();
+    const auth = await this.#flatAuth([passphrase]);
+    const nodes: Array<{
+      id: string;
+      kind: 'context' | 'service' | 'item' | 'field';
+      label: string;
+      detail: string;
+    }> = [];
+    try {
+      const contextRaw = await this.#runJsonCommand(
+        [
+          'context',
+          'list',
+          ...profileArgs,
+          ...vaultArgs,
+          ...auth.args,
+          '--json',
+          '--passphrase-stdin',
+        ],
+        auth.frames,
+      );
+      const contexts =
+        typeof contextRaw === 'object' &&
+        contextRaw !== null &&
+        Array.isArray((contextRaw as { contexts?: unknown }).contexts)
+          ? (
+              (contextRaw as { contexts: unknown[] }).contexts
+            ).flatMap((entry) => {
+              if (typeof entry === 'string') return [entry];
+              if (
+                typeof entry === 'object' &&
+                entry !== null &&
+                typeof (entry as { name?: unknown }).name === 'string'
+              ) {
+                return [(entry as { name: string }).name];
+              }
+              return [];
+            })
+          : [];
+      if (contexts.length === 0) {
+        nodes.push({
+          id: 'contexts-empty',
+          kind: 'context',
+          label: '(none)',
+          detail: 'kavrix context list returned no project contexts.',
+        });
+      }
+      for (const contextName of contexts.slice(0, 20)) {
+        nodes.push({
+          id: `context:${contextName}`,
+          kind: 'context',
+          label: contextName,
+          detail: 'project context',
+        });
+        try {
+          const serviceRaw = await this.#runJsonCommand(
+            [
+              'service',
+              'list',
+              '--context',
+              contextName,
+              ...profileArgs,
+              ...vaultArgs,
+              ...auth.args,
+              '--json',
+              '--passphrase-stdin',
+            ],
+            auth.frames,
+          );
+          const services =
+            typeof serviceRaw === 'object' &&
+            serviceRaw !== null &&
+            Array.isArray((serviceRaw as { services?: unknown }).services)
+              ? (serviceRaw as { services: unknown[] }).services.filter(
+                  (entry): entry is string => typeof entry === 'string',
+                )
+              : [];
+          for (const serviceName of services.slice(0, 20)) {
+            nodes.push({
+              id: `service:${contextName}/${serviceName}`,
+              kind: 'service',
+              label: serviceName,
+              detail: `context ${contextName}`,
+            });
+            try {
+              const itemRaw = await this.#runJsonCommand(
+                [
+                  'item',
+                  'list',
+                  '--context',
+                  contextName,
+                  '--service',
+                  serviceName,
+                  ...profileArgs,
+                  ...vaultArgs,
+                  ...auth.args,
+                  '--json',
+                  '--passphrase-stdin',
+                ],
+                auth.frames,
+              );
+              const items =
+                typeof itemRaw === 'object' &&
+                itemRaw !== null &&
+                Array.isArray((itemRaw as { items?: unknown }).items)
+                  ? (itemRaw as { items: unknown[] }).items.filter(
+                      (entry): entry is string => typeof entry === 'string',
+                    )
+                  : [];
+              for (const itemTitle of items.slice(0, 30)) {
+                nodes.push({
+                  id: `item:${contextName}/${serviceName}/${itemTitle}`,
+                  kind: 'item',
+                  label: itemTitle,
+                  detail: `service ${serviceName}`,
+                });
+              }
+            } catch (error) {
+              const detail =
+                error instanceof Error ? error.message : 'item list failed';
+              nodes.push({
+                id: `item-error:${contextName}/${serviceName}`,
+                kind: 'item',
+                label: '(error)',
+                detail,
+              });
+            }
+          }
+        } catch (error) {
+          const detail =
+            error instanceof Error ? error.message : 'service list failed';
+          nodes.push({
+            id: `service-error:${contextName}`,
+            kind: 'service',
+            label: '(error)',
+            detail,
+          });
+        }
+      }
+      this.#browseNodes = nodes;
+      this.#notice = `Browse: ${String(nodes.length)} node(s) from context/service/item list.`;
+      this.#noticeTone = 'success';
+    } catch (error) {
+      const detail =
+        error instanceof Error ? error.message : 'context list failed';
+      this.#browseNodes = [
+        {
+          id: 'error',
+          kind: 'context',
+          label: '(error)',
+          detail,
+        },
+      ];
+      this.#notice = `Browse: ${detail}`;
+      this.#noticeTone = 'error';
+    }
+  }
+
   async #currentProfile(): Promise<DatastoreProfile | null> {
     const registry = await DatastoreProfileRegistry.openIfPresent({
       ...(this.#options.profileConfigDir === undefined
@@ -1156,6 +1629,69 @@ class CliTuiSession {
       this.#passphrase = null;
     }
     this.#credentialNames = [];
+    this.#clearDatabaseUrl();
+  }
+
+  #setDatabaseUrl(url: string): void {
+    this.#clearDatabaseUrl();
+    if (url.length > 0) {
+      this.#databaseUrl = Buffer.from(url, 'utf8');
+    }
+  }
+
+  #clearDatabaseUrl(): void {
+    if (this.#databaseUrl !== null) {
+      zeroize(this.#databaseUrl);
+      this.#databaseUrl = null;
+    }
+  }
+
+  #requireDatabaseUrl(): string {
+    if (this.#databaseUrl === null) {
+      throw new Error(
+        'MongoDB URL required. Unlock again and provide the connection string (stdin frames only).',
+      );
+    }
+    return this.#databaseUrl.toString('utf8');
+  }
+
+  async #ownerAuthFrames(rest: readonly string[]): Promise<string[]> {
+    const current = await this.#currentProfile();
+    if (current?.datastore === 'mongodb') {
+      return [this.#requireDatabaseUrl(), ...rest];
+    }
+    return [...rest];
+  }
+
+  async #ownerTransportArgs(): Promise<string[]> {
+    const current = await this.#currentProfile();
+    if (current?.datastore !== 'mongodb' || this.#databaseUrl === null) {
+      return [];
+    }
+    return needsInsecureTransport(this.#databaseUrl.toString('utf8'))
+      ? ['--allow-insecure-transport']
+      : [];
+  }
+
+  async #flatAuth(
+    rest: readonly string[],
+  ): Promise<{ args: string[]; frames: string[] }> {
+    const current = await this.#currentProfile();
+    if (current?.datastore === 'mongodb') {
+      const url = this.#requireDatabaseUrl();
+      const insecure = needsInsecureTransport(url)
+        ? (['--allow-insecure-transport'] as const)
+        : [];
+      return {
+        args: ['--database-url-stdin', ...insecure],
+        frames: [url, ...rest],
+      };
+    }
+    return { args: [], frames: [...rest] };
+  }
+
+  async #vaultFlagArgs(): Promise<string[]> {
+    return this.#vaultId === null ? [] : ['--vault', this.#vaultId];
   }
 
   async #profileArgs(): Promise<string[]> {
@@ -1223,6 +1759,16 @@ class CliTuiSession {
       throw new Error(detail.split('\n')[0] ?? 'CLI failed.');
     }
     return Buffer.concat(stdout).toString('utf8');
+  }
+}
+
+function needsInsecureTransport(databaseUrl: string): boolean {
+  try {
+    const parsed = new URL(databaseUrl);
+    const host = parsed.hostname.replace(/^\[|\]$/gu, '').toLowerCase();
+    return host !== 'localhost' && host !== '127.0.0.1' && host !== '::1';
+  } catch {
+    return true;
   }
 }
 

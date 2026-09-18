@@ -1,7 +1,7 @@
 import { APP_MENU, type AppScreenId } from './ids.js';
 import type { AppSnapshot } from './backend.js';
 import { emptySnapshot } from './backend.js';
-import { defaultFileProfilePaths } from './paths.js';
+import { defaultFileProfilePaths, defaultMongoProfilePaths } from './paths.js';
 
 export interface AppKey {
   readonly name?:
@@ -37,6 +37,13 @@ export type AppOverlay =
   | 'input-profile-key-file'
   | 'input-profile-passphrase'
   | 'input-profile-passphrase-confirm'
+  | 'input-mongo-profile-id'
+  | 'input-mongo-database'
+  | 'input-mongo-key-file'
+  | 'input-mongo-url'
+  | 'input-mongo-passphrase'
+  | 'input-mongo-passphrase-confirm'
+  | 'input-unlock-mongo-url'
   | 'input-recovery-file'
   | 'input-recovery-passphrase'
   | 'input-recovery-passphrase-confirm'
@@ -68,6 +75,9 @@ export interface AppRouterState {
   readonly pendingKeyFile: string | null;
   /** Ephemeral passphrase held only across create-profile confirm; never snapshotted. */
   readonly pendingPassphrase: string | null;
+  /** Ephemeral MongoDB URL for create/unlock overlays; never snapshotted. */
+  readonly pendingMongoUrl: string | null;
+  readonly pendingMongoDatabase: string | null;
   /** Recovery / policy / grant wizard ephemeral fields (never snapshotted). */
   readonly pendingRecoveryFile: string | null;
   readonly pendingRecoveryPassphrase: string | null;
@@ -125,6 +135,8 @@ export function createInitialAppRouterState(
     pendingDataFile: null,
     pendingKeyFile: null,
     pendingPassphrase: null,
+    pendingMongoUrl: null,
+    pendingMongoDatabase: null,
     pendingRecoveryFile: null,
     pendingRecoveryPassphrase: null,
     pendingPolicyId: null,
@@ -203,6 +215,28 @@ function keyTransition(state: AppRouterState, key: AppKey, nowMs: number): AppRo
     return unchanged({ ...state, screen: 'home', listIndex: 0, message: null });
   }
 
+  if (key.text?.toLowerCase() === 'u') {
+    if (state.snapshot.home.datastore === 'mongodb') {
+      return unchanged({
+        ...state,
+        overlay: 'input-unlock-mongo-url',
+        query: '',
+        pendingMongoUrl: null,
+        message: 'MongoDB URL (masked). Enter continues; Esc cancels.',
+      });
+    }
+    return unchanged({
+      ...state,
+      overlay: 'input-passphrase',
+      query: '',
+      pendingMongoUrl: null,
+      message: 'Enter passphrase (masked). Enter unlocks; Esc cancels.',
+    });
+  }
+  if (key.text?.toLowerCase() === 'l') {
+    return unchanged({ ...state, overlay: 'confirm-lock' });
+  }
+
   if (state.screen === 'home') return homeKey(state, key);
   return screenKey(state, key, nowMs);
 }
@@ -267,7 +301,23 @@ function screenKey(
       pendingDataFile: null,
       pendingKeyFile: null,
       pendingPassphrase: null,
+      pendingMongoUrl: null,
+      pendingMongoDatabase: null,
       message: 'New file profile id. Enter continues; Esc cancels.',
+    });
+  }
+  if (key.text?.toLowerCase() === 'm' && state.screen === 'profiles') {
+    return unchanged({
+      ...state,
+      overlay: 'input-mongo-profile-id',
+      query: '',
+      pendingName: null,
+      pendingDataFile: null,
+      pendingKeyFile: null,
+      pendingPassphrase: null,
+      pendingMongoUrl: null,
+      pendingMongoDatabase: null,
+      message: 'New mongodb profile id. Enter continues; Esc cancels.',
     });
   }
   if (key.text?.toLowerCase() === 'n' && state.screen === 'credentials') {
@@ -301,10 +351,20 @@ function screenKey(
     });
   }
   if (key.text?.toLowerCase() === 'u') {
+    if (state.snapshot.home.datastore === 'mongodb') {
+      return unchanged({
+        ...state,
+        overlay: 'input-unlock-mongo-url',
+        query: '',
+        pendingMongoUrl: null,
+        message: 'MongoDB URL (masked). Enter continues; Esc cancels.',
+      });
+    }
     return unchanged({
       ...state,
       overlay: 'input-passphrase',
       query: '',
+      pendingMongoUrl: null,
       message: 'Enter passphrase (masked). Enter unlocks; Esc cancels.',
     });
   }
@@ -459,12 +519,47 @@ function overlayKey(
     }
     return unchanged(state);
   }
+  if (state.overlay === 'input-unlock-mongo-url') {
+    if (key.name === 'escape') {
+      return unchanged({
+        ...state,
+        overlay: 'none',
+        query: '',
+        pendingMongoUrl: null,
+        message: 'Unlock cancelled.',
+      });
+    }
+    if (key.name === 'backspace') {
+      return unchanged({ ...state, query: removeLast(state.query) });
+    }
+    if (key.name === 'return') {
+      const url = state.query.trim();
+      if (url.length === 0) {
+        return unchanged({ ...state, message: 'MongoDB URL cannot be empty.' });
+      }
+      return unchanged({
+        ...state,
+        overlay: 'input-passphrase',
+        pendingMongoUrl: url,
+        query: '',
+        message: 'Enter passphrase (masked). Enter unlocks; Esc cancels.',
+      });
+    }
+    if (isPrintable(key.text)) {
+      return unchanged({
+        ...state,
+        query: `${state.query}${key.text}`.slice(0, 2048),
+      });
+    }
+    return unchanged(state);
+  }
   if (state.overlay === 'input-passphrase') {
     if (key.name === 'escape') {
       return unchanged({
         ...state,
         overlay: 'none',
         query: '',
+        pendingMongoUrl: null,
         message: 'Unlock cancelled.',
       });
     }
@@ -473,9 +568,17 @@ function overlayKey(
     }
     if (key.name === 'return') {
       const passphrase = state.query;
+      const databaseUrl = state.pendingMongoUrl ?? undefined;
       return effect(
-        { ...state, overlay: 'none', query: '' },
-        { kind: 'backend', action: { type: 'unlock', passphrase } },
+        { ...state, overlay: 'none', query: '', pendingMongoUrl: null },
+        {
+          kind: 'backend',
+          action: {
+            type: 'unlock',
+            passphrase,
+            ...(databaseUrl === undefined ? {} : { databaseUrl }),
+          },
+        },
       );
     }
     if (isPrintable(key.text)) {
@@ -718,6 +821,173 @@ function overlayKey(
         state.overlay === 'input-profile-passphrase' ||
         state.overlay === 'input-profile-passphrase-confirm';
       const limit = masked ? 1024 : 512;
+      return unchanged({
+        ...state,
+        query: `${state.query}${key.text}`.slice(0, limit),
+      });
+    }
+    return unchanged(state);
+  }
+
+  if (
+    state.overlay === 'input-mongo-profile-id' ||
+    state.overlay === 'input-mongo-database' ||
+    state.overlay === 'input-mongo-key-file' ||
+    state.overlay === 'input-mongo-url' ||
+    state.overlay === 'input-mongo-passphrase' ||
+    state.overlay === 'input-mongo-passphrase-confirm'
+  ) {
+    if (key.name === 'escape') {
+      return unchanged({
+        ...state,
+        overlay: 'none',
+        query: '',
+        pendingName: null,
+        pendingKeyFile: null,
+        pendingPassphrase: null,
+        pendingMongoUrl: null,
+        pendingMongoDatabase: null,
+        message: 'Create mongodb profile cancelled.',
+      });
+    }
+    if (key.name === 'backspace') {
+      return unchanged({ ...state, query: removeLast(state.query) });
+    }
+    if (key.name === 'return') {
+      if (state.overlay === 'input-mongo-profile-id') {
+        const profileId = state.query.trim();
+        if (profileId.length === 0) {
+          return unchanged({ ...state, message: 'Profile id cannot be empty.' });
+        }
+        return unchanged({
+          ...state,
+          overlay: 'input-mongo-database',
+          pendingName: profileId,
+          query: profileId.replace(/[^a-zA-Z0-9_-]/gu, '').slice(0, 48) || 'kavrix',
+          message: 'MongoDB database routing name. Enter continues.',
+        });
+      }
+      if (state.overlay === 'input-mongo-database') {
+        const database = state.query.trim();
+        if (database.length === 0) {
+          return unchanged({ ...state, message: 'Database name cannot be empty.' });
+        }
+        const profileId = state.pendingName;
+        if (profileId === null) {
+          return unchanged({ ...state, overlay: 'none', query: '' });
+        }
+        const defaults = defaultMongoProfilePaths(profileId);
+        return unchanged({
+          ...state,
+          overlay: 'input-mongo-key-file',
+          pendingMongoDatabase: database,
+          query: defaults.keyFile,
+          message: 'Owner key file path. Enter accepts default.',
+        });
+      }
+      if (state.overlay === 'input-mongo-key-file') {
+        const keyFile = state.query.trim();
+        if (keyFile.length === 0 || state.pendingName === null) {
+          return unchanged({ ...state, overlay: 'none', query: '' });
+        }
+        return unchanged({
+          ...state,
+          overlay: 'input-mongo-url',
+          pendingKeyFile: keyFile,
+          query: '',
+          message: 'MongoDB URL (masked, stdin frames only). Enter continues.',
+        });
+      }
+      if (state.overlay === 'input-mongo-url') {
+        const url = state.query.trim();
+        if (url.length === 0) {
+          return unchanged({ ...state, message: 'MongoDB URL cannot be empty.' });
+        }
+        return unchanged({
+          ...state,
+          overlay: 'input-mongo-passphrase',
+          pendingMongoUrl: url,
+          query: '',
+          message: 'Passphrase (masked). Enter continues.',
+        });
+      }
+      if (state.overlay === 'input-mongo-passphrase') {
+        if (state.query.length === 0) {
+          return unchanged({ ...state, message: 'Passphrase cannot be empty.' });
+        }
+        return unchanged({
+          ...state,
+          overlay: 'input-mongo-passphrase-confirm',
+          pendingPassphrase: state.query,
+          query: '',
+          message: 'Confirm passphrase (masked). Enter creates the profile.',
+        });
+      }
+      const profileId = state.pendingName;
+      const database = state.pendingMongoDatabase;
+      const keyFile = state.pendingKeyFile;
+      const databaseUrl = state.pendingMongoUrl;
+      const passphrase = state.pendingPassphrase;
+      const confirm = state.query;
+      if (
+        profileId === null ||
+        database === null ||
+        keyFile === null ||
+        databaseUrl === null ||
+        passphrase === null
+      ) {
+        return unchanged({
+          ...state,
+          overlay: 'none',
+          query: '',
+          pendingName: null,
+          pendingKeyFile: null,
+          pendingPassphrase: null,
+          pendingMongoUrl: null,
+          pendingMongoDatabase: null,
+          message: 'Create mongodb profile cancelled.',
+        });
+      }
+      if (confirm !== passphrase) {
+        return unchanged({
+          ...state,
+          overlay: 'input-mongo-passphrase',
+          pendingPassphrase: null,
+          query: '',
+          message: 'Passphrases did not match. Re-enter passphrase.',
+        });
+      }
+      return effect(
+        {
+          ...state,
+          overlay: 'none',
+          query: '',
+          pendingName: null,
+          pendingKeyFile: null,
+          pendingPassphrase: null,
+          pendingMongoUrl: null,
+          pendingMongoDatabase: null,
+          message: `Creating mongodb profile '${profileId}'…`,
+        },
+        {
+          kind: 'backend',
+          action: {
+            type: 'create-mongodb-profile',
+            profileId,
+            database,
+            keyFile,
+            databaseUrl,
+            passphrase,
+          },
+        },
+      );
+    }
+    if (isPrintable(key.text)) {
+      const masked =
+        state.overlay === 'input-mongo-url' ||
+        state.overlay === 'input-mongo-passphrase' ||
+        state.overlay === 'input-mongo-passphrase-confirm';
+      const limit = masked ? 2048 : 512;
       return unchanged({
         ...state,
         query: `${state.query}${key.text}`.slice(0, limit),

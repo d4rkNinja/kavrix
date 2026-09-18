@@ -441,6 +441,39 @@ async function main(): Promise<void> {
     }
     pass('session agent-dry-run');
 
+    snap = await backend.dispatch({ type: 'refresh-browse' });
+    if (snap.snapshot.noticeTone === 'error') {
+      fail(`refresh-browse: ${snap.snapshot.notice}`);
+      return;
+    }
+    pass(`session refresh-browse (${String(snap.snapshot.browse.length)} nodes)`);
+
+    const mongoUrl = process.env.MONGO_URL?.trim() || process.env.KAVRIX_MONGODB_URI?.trim();
+    if (!mongoUrl) {
+      console.log('SKIP: create-mongodb-profile (set MONGO_URL for live mongo smoke)');
+    } else {
+      const mongoKey = join(home, 'mongo-owner.key');
+      snap = await backend.dispatch({
+        type: 'create-mongodb-profile',
+        profileId: 'smoke-mongo',
+        database: 'kavrix_smoke',
+        keyFile: mongoKey,
+        databaseUrl: mongoUrl,
+        passphrase: PASSPHRASE,
+        databaseLabel: 'smoke-mongo-db',
+        vaultLabel: 'smoke-mongo-vault',
+      });
+      if (snap.snapshot.noticeTone === 'error') {
+        fail(`create-mongodb-profile: ${snap.snapshot.notice}`);
+        return;
+      }
+      if (snap.snapshot.home.datastore !== 'mongodb') {
+        fail(`create-mongodb-profile datastore: ${snap.snapshot.home.datastore}`);
+        return;
+      }
+      pass('session create-mongodb-profile');
+    }
+
     await writeFile(join(home, 'tui-vault-smoke.ok'), 'ok\n', 'utf8');
     console.log('tui-vault-smoke: ALL PASS');
   } finally {

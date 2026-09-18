@@ -76,6 +76,16 @@ function Footer({ state }: Readonly<{ state: AppRouterState }>): ReactElement {
     overlayHint = ` Key file: ${safe(state.query, ascii)}_`;
   if (overlay === 'input-profile-passphrase' || overlay === 'input-profile-passphrase-confirm')
     overlayHint = ` Passphrase: ${'*'.repeat(Math.min(state.query.length, 32))}_`;
+  if (overlay === 'input-mongo-profile-id')
+    overlayHint = ` Mongo profile id: ${safe(state.query, ascii)}_`;
+  if (overlay === 'input-mongo-database')
+    overlayHint = ` Mongo database: ${safe(state.query, ascii)}_`;
+  if (overlay === 'input-mongo-key-file')
+    overlayHint = ` Mongo key file: ${safe(state.query, ascii)}_`;
+  if (overlay === 'input-mongo-url' || overlay === 'input-unlock-mongo-url')
+    overlayHint = ` Mongo URL: ${'*'.repeat(Math.min(state.query.length, 32))}_`;
+  if (overlay === 'input-mongo-passphrase' || overlay === 'input-mongo-passphrase-confirm')
+    overlayHint = ` Passphrase: ${'*'.repeat(Math.min(state.query.length, 32))}_`;
   if (overlay === 'input-recovery-file' || overlay === 'input-recovery-verify-file')
     overlayHint = ` Recovery file: ${safe(state.query, ascii)}_`;
   if (
@@ -168,7 +178,7 @@ export function ProfilesScreen({ state }: Readonly<{ state: AppRouterState }>): 
         state={state}
         title="Profiles"
         accent="blue"
-        empty="No datastore profiles found. Press n to create a file profile."
+        empty="No datastore profiles found. Press n (file) or m (mongodb)."
         rows={state.snapshot.profiles.map((profile) => ({
           id: profile.id,
           primary: `${profile.id} (${profile.datastore})${profile.selected ? ' *' : ''}`,
@@ -176,7 +186,10 @@ export function ProfilesScreen({ state }: Readonly<{ state: AppRouterState }>): 
         }))}
       />
       <Text {...tint(color, 'gray')}>
-        {safe('Enter = use profile · n = create file profile (db profile add → init → vault)', ascii)}
+        {safe(
+          'Enter = use · n = file profile · m = mongodb profile (URL+passphrase on stdin frames)',
+          ascii,
+        )}
       </Text>
     </Box>
   );
@@ -316,7 +329,7 @@ export function BrowseScreen({ state }: Readonly<{ state: AppRouterState }>): Re
       state={state}
       title="Context / Service / Item"
       accent="green"
-      empty="No structured vault projection loaded."
+      empty="No browse rows. Unlock and press Enter to load context/service/item lists."
       rows={state.snapshot.browse.map((node) => ({
         id: node.id,
         primary: `${node.kind}: ${node.label}`,
@@ -332,14 +345,14 @@ export function HelpScreen({ state }: Readonly<{ state: AppRouterState }>): Reac
     'Global: j/k or arrows move, Enter open, Esc back to Home, q quit',
     'Home: choose a destination from the colorful menu',
     'Credentials: / search, n put, m rename, x remove, r then y REVEAL (15s)',
-    'Profiles: Enter use profile, n create file profile (paths default under home)',
+    'Profiles: Enter use, n file profile, m mongodb profile (URL stdin frames only)',
     'Session: u unlock, l lock (clears revealed state)',
     'Doctor: d runs real kavrix doctor / db doctor health',
     'Recovery: n create · v verify · Enter/x revoke (last active slot blocked)',
-    'Run: p validates credential names + kavrix run --help (no secret inject)',
+    'Run: p validates via list+has + kavrix run --help (no secret inject)',
     'Agent: g runs kavrix agent run --dry-run (surfaces real CLI errors)',
     'Policy: Enter refresh · n create · x remove · g grant · r revoke grant',
-    'Browse: Enter refreshes rows',
+    'Browse: Enter refreshes from kavrix context/service/item list when unlocked',
     'Display: a toggles ASCII; NO_COLOR / TERM=dumb disable color',
     'Windows: ASCII borders default on win32; paths use node:path joins',
   ];
