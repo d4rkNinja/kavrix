@@ -83,7 +83,7 @@ describe('SplashScreen', () => {
       }),
       { columns: 100 },
     );
-    expect(frame).toContain('zero-knowledge credential vault');
+    expect(frame).toContain('local-first secrets firewall');
     expect(frame).toContain('v0.2.13');
     expect(frame).toMatch(/██/);
   });
@@ -140,7 +140,7 @@ describe('SplashScreen', () => {
     instance.unmount();
     await instance.waitUntilExit();
     expect(stripAnsi(Buffer.concat(chunks).toString('utf8'))).toContain(
-      'zero-knowledge credential vault',
+      'local-first secrets firewall',
     );
   });
 });

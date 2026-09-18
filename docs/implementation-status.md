@@ -2,9 +2,10 @@
 
 ## Supported product
 
-The supported product is the `kavrix` CLI in `apps/cli`. It persists one
-authenticated encrypted database with multiple independently encrypted vaults
-in a hardened local container or two MongoDB collections. Version 2 single-vault
+The supported product is the `kavrix` CLI in `apps/cli`: a local-first secrets
+firewall with scoped execution, policies, grants, agent brokers, and audit. It
+persists one authenticated encrypted database with multiple independently
+encrypted vaults in a hardened local container or two MongoDB collections. Version 2 single-vault
 documents remain supported through stable compatibility commands and explicit
 copy-first migration. No Kavrix API server or sync daemon is required or
 shipped. A bare no-option TTY `kavrix init` defaults to Ink TUI onboarding

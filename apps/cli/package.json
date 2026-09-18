@@ -1,7 +1,7 @@
 {
   "name": "kavrix",
   "version": "0.2.13",
-  "description": "Zero-knowledge credential vault command-line interface",
+  "description": "Local-first secrets firewall for developers, applications, and AI agents",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -13,11 +13,21 @@
     "url": "https://github.com/d4rkNinja/kavrix/issues"
   },
   "keywords": [
+    "secrets",
     "credentials",
-    "password-manager",
+    "secrets-manager",
+    "credential-manager",
+    "developer-tools",
     "security",
-    "terminal",
-    "zero-knowledge"
+    "cli",
+    "ai-agents",
+    "agent-security",
+    "secret-injection",
+    "environment-variables",
+    "zero-knowledge",
+    "local-first",
+    "devsecops",
+    "least-privilege"
   ],
   "private": false,
   "publishConfig": {

@@ -2,7 +2,7 @@
   "name": "kavrix-workspace",
   "version": "0.0.0",
   "private": true,
-  "description": "Zero-knowledge credentials vault monorepo",
+  "description": "Local-first secrets firewall and credential authorization runtime",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -13,11 +13,21 @@
     "url": "https://github.com/d4rkNinja/kavrix/issues"
   },
   "keywords": [
+    "secrets",
     "credentials",
-    "password-manager",
+    "secrets-manager",
+    "credential-manager",
+    "developer-tools",
     "security",
-    "terminal",
-    "zero-knowledge"
+    "cli",
+    "ai-agents",
+    "agent-security",
+    "secret-injection",
+    "environment-variables",
+    "zero-knowledge",
+    "local-first",
+    "devsecops",
+    "least-privilege"
   ],
   "type": "module",
   "packageManager": "pnpm@11.21.0",

@@ -1,11 +1,13 @@
 ﻿# Kavrix command guide
 
-This guide follows the current public executable. `kavrix --help` and
-`kavrix <command> --help` are authoritative for the installed version.
-Database-container commands use `kavrix db ...`; stable version 2 compatibility
-commands remain at the root. `kavrix frames [command]` prints the exact stdin
-frame contract for every secret-reading command, and `kavrix status` shows the
-selected profile and active routing mode.
+Kavrix is a local-first secrets firewall. This guide follows the current public
+executable. `kavrix --help` and `kavrix <command> --help` are authoritative for
+the installed version. Lead with `kavrix run`, policies, grants, audit, and
+`kavrix agent run` for authorization; database-container commands use
+`kavrix db ...`; stable version 2 compatibility commands remain at the root.
+`kavrix frames [command]` prints the exact stdin frame contract for every
+secret-reading command, and `kavrix status` shows the selected profile and
+active routing mode.
 
 The recommended local first-run path is a bare no-option `kavrix init` on a
 TTY. Interactive sessions open Ink TUI onboarding by default; pass `--no-tui`
