@@ -602,4 +602,24 @@ describe('CliTuiSession mutations (mocked spawn)', () => {
     }
   });
 
+  it('rejects agent dry-run without agent name and does not invent noop', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'kavrix-tui-agent-'));
+    dirs.push(dir);
+    const calls: Array<{ args: readonly string[]; frames: readonly string[] }> =
+      [];
+    const backend = createCliTuiBackend({
+      profileConfigDir: dir,
+      ascii: true,
+      commandRunner: async (args, frames) => {
+        calls.push({ args: [...args], frames: [...frames] });
+        return '{}';
+      },
+    });
+    const result = await backend.dispatch({ type: 'agent-dry-run' });
+    expect(result.snapshot.noticeTone).toBe('error');
+    expect(result.snapshot.agentStatus.toLowerCase()).toContain('requires an agent name');
+    expect(result.snapshot.agentStatus.toLowerCase()).not.toContain('noop');
+    expect(calls.some((call) => call.args[0] === 'agent')).toBe(false);
+  });
+
 });

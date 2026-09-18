@@ -206,6 +206,20 @@ function overlayCopy(
         body: `Grant TTL: ${q}_`,
         accent: 'blue',
       };
+    case 'input-agent-name':
+      return {
+        title: 'Agent dry-run',
+        body: `Agent name: ${q}_`,
+        accent: 'magenta',
+        hint: 'Must match an agent entry in the project config',
+      };
+    case 'input-agent-config':
+      return {
+        title: 'Agent config (optional)',
+        body: `Config path: ${q}_`,
+        accent: 'magenta',
+        hint: 'Empty Enter uses default kavrix.yaml discovery',
+      };
   }
 }
 
@@ -644,8 +658,73 @@ export function AgentScreen({ state }: Readonly<{ state: AppRouterState }>): Rea
   const { color, ascii, snapshot } = state;
   return (
     <Panel title="Agent" accent="magenta" ascii={ascii} color={color} paddingX={1}>
-      <Text {...tint(color, 'gray')}>Press g for an agent config dry-run.</Text>
-      <Text>{safe(snapshot.agentStatus, ascii)}</Text>
+      <Text {...tint(color, 'gray')}>
+        {safe(
+          'Press g to run kavrix agent run --dry-run. You will be asked for a real agent name (and optional --config). No default agent is invented.',
+          ascii,
+        )}
+      </Text>
+      <Text>{safe(snapshot.agentStatus || '(no dry-run yet)', ascii)}</Text>
+    </Panel>
+  );
+}
+
+export function StorageDocsScreen({ state }: Readonly<{ state: AppRouterState }>): ReactElement {
+  const { color, ascii, snapshot } = state;
+  const home = snapshot.home;
+  const doctor = snapshot.doctor;
+  return (
+    <Panel
+      title="Storage docs (read-only)"
+      accent="yellow"
+      ascii={ascii}
+      color={color}
+      paddingX={1}
+    >
+      <Text bold {...tint(color, 'yellow')}>
+        {safe('DOCS ONLY — no vault create/unlock/mutate from this screen.', ascii)}
+      </Text>
+      <Text {...tint(color, 'gray')}>
+        {safe(
+          'Interactive storage picker lives in kavrix init. This TUI screen only summarizes the active profile.',
+          ascii,
+        )}
+      </Text>
+      <Text>
+        {safe(
+          `Active profile: ${home.profileId ?? '(none)'} · datastore: ${home.datastore ?? '(none)'} · vault: ${home.vaultId ?? '(none)'} · ${home.unlocked ? 'unlocked' : 'locked'}`,
+          ascii,
+        )}
+      </Text>
+      <Text {...tint(color, 'gray')}>{safe(home.message, ascii)}</Text>
+      <Text bold {...(color ? { color: 'cyan' as const } : {})}>
+        {safe('Storage choices (from init docs)', ascii)}
+      </Text>
+      <Text>
+        {safe('• Local encrypted file — ciphertext stays on this device.', ascii)}
+      </Text>
+      <Text>
+        {safe('• MongoDB — sync opaque ciphertext through your own deployment.', ascii)}
+      </Text>
+      <Text {...tint(color, 'gray')}>
+        {safe('Both keep client-side encryption; the datastore never receives a vault key.', ascii)}
+      </Text>
+      {doctor.length > 0 ? (
+        <Box flexDirection="column" marginTop={1}>
+          <Text bold {...(color ? { color: 'cyan' as const } : {})}>
+            {safe('Doctor (last run)', ascii)}
+          </Text>
+          {doctor.slice(0, 8).map((check) => (
+            <Text key={check.name}>
+              {safe(`${check.status.toUpperCase()} ${check.name}: ${check.detail}`, ascii)}
+            </Text>
+          ))}
+        </Box>
+      ) : (
+        <Text {...tint(color, 'gray')}>
+          {safe('No doctor results yet — open Doctor and press d to run real checks.', ascii)}
+        </Text>
+      )}
     </Panel>
   );
 }
@@ -686,7 +765,7 @@ export function HelpScreen({ state }: Readonly<{ state: AppRouterState }>): Reac
     'Profiles: Enter use · n file · m mongodb (URL+passphrase on stdin frames)',
     'Session: u unlock · l lock (clears revealed state)',
     'Doctor: d · Recovery: n/c create · v verify · Enter/x revoke',
-    'Run: p · Agent: g dry-run · Policy: n/x/g/r · Browse: Enter refresh',
+    'Run: p · Agent: g dry-run (prompts for agent name) · Policy: n/x/g/r · Browse: Enter refresh',
     'Display: a ASCII · NO_COLOR / TERM=dumb disable color · win32 ASCII default',
   ];
   return (
@@ -761,19 +840,7 @@ export function renderActiveScreen(state: AppRouterState): ReactElement {
     case 'help':
       return <HelpScreen state={state} />;
     case 'showcase':
-      return (
-        <Panel
-          title="Storage showcase"
-          accent="yellow"
-          ascii={state.ascii}
-          color={state.color}
-          paddingX={1}
-        >
-          <Text {...tint(state.color, 'gray')}>
-            Presentational init helper remains available via kavrix init flows.
-          </Text>
-        </Panel>
-      );
+      return <StorageDocsScreen state={state} />;
   }
 }
 

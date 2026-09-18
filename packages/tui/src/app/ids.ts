@@ -53,8 +53,8 @@ export const APP_MENU: readonly AppMenuEntry[] = [
   { id: 'help', label: 'Help', hint: 'Keymap', accent: 'white' },
   {
     id: 'showcase',
-    label: 'Storage showcase',
-    hint: 'Init presentation',
+    label: 'Storage docs',
+    hint: 'Docs only (no vault ops)',
     accent: 'yellow',
   },
 ];

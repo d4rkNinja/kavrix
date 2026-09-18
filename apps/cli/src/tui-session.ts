@@ -220,9 +220,7 @@ class CliTuiSession {
           await this.#createMongodbProfile(action);
           break;
         case 'use-vault':
-          this.#vaultId = action.vaultId;
-          this.#notice = `Selected vault ${action.vaultId}.`;
-          this.#noticeTone = 'success';
+          await this.#useVault(action.vaultId);
           break;
         case 'unlock':
           await this.#unlock(action.passphrase, action.databaseUrl);
@@ -427,6 +425,9 @@ class CliTuiSession {
     });
     await registry.use(profileIdSchema.parse(profileId));
     this.#lock();
+    // Drop any vault override from the previous profile — browse/recovery must
+    // not keep sending --vault <foreign-id> after a profile switch.
+    this.#vaultId = null;
     this.#recoverySlots = [];
     this.#doctorRows = [];
     this.#policyRows = [];
@@ -439,6 +440,39 @@ class CliTuiSession {
   }
 
   /**
+   * Select a vault via real `kavrix db vault use` (passphrase on stdin frames).
+   * Updates the session override only after the CLI succeeds.
+   */
+  async #useVault(vaultId: string): Promise<void> {
+    const id = vaultId.trim();
+    if (id.length === 0) {
+      throw new Error('Vault id required.');
+    }
+    if (this.#passphrase === null) {
+      throw new Error('Unlock before selecting a vault.');
+    }
+    const passphrase = this.#passphrase.toString('utf8');
+    const frames = await this.#ownerAuthFrames([passphrase]);
+    const transport = await this.#ownerTransportArgs();
+    await this.#runTextCommand(
+      [
+        'db',
+        'vault',
+        'use',
+        id,
+        ...(await this.#profileArgs()),
+        ...transport,
+        '--passphrase-stdin',
+      ],
+      frames,
+    );
+    this.#vaultId = id;
+    this.#browseNodes = [];
+    this.#notice = `Selected vault ${id}.`;
+    this.#noticeTone = 'success';
+  }
+
+    /**
    * Matches scripts/tui-vault-smoke.ts:
    * db profile add → db profile use → db init → db vault create → db vault use.
    * Secrets travel only as stdin frames (`--passphrase-stdin`).
@@ -1001,14 +1035,18 @@ class CliTuiSession {
     configPath: string | undefined,
     agentName: string | undefined,
   ): Promise<void> {
-    const args = ['agent', 'run', '--dry-run', '--json'];
+    const name = agentName?.trim() ?? '';
+    if (name.length === 0) {
+      const detail =
+        'Agent dry-run requires an agent name from the project config (kavrix agent run --agent <name> --dry-run). No default agent is invented.';
+      this.#agentStatus = detail;
+      this.#notice = detail;
+      this.#noticeTone = 'error';
+      return;
+    }
+    const args = ['agent', 'run', '--dry-run', '--json', '--agent', name];
     if (configPath !== undefined && configPath.trim().length > 0) {
       args.push('--config', configPath.trim());
-    }
-    if (agentName !== undefined && agentName.trim().length > 0) {
-      args.push('--agent', agentName.trim());
-    } else {
-      args.push('--agent', 'noop');
     }
     args.push(...(await this.#profileArgs()));
     let frames: string[] = [];

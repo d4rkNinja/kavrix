@@ -196,7 +196,7 @@ describe('screen renders', () => {
   it('renders showcase destination via active screen helper', () => {
     const state = navigateToScreen(hydrate(), 'showcase');
     const output = renderToString(renderActiveScreen(state), { columns: 100 });
-    expect(output).toContain('Storage showcase');
+    expect(output).toContain('DOCS ONLY');
   });
 });
 
@@ -748,6 +748,49 @@ describe('paste into overlays', () => {
     }).state;
     expect(state.overlay).toBe('input-unlock-mongo-url');
     expect(state.query).toBe(url);
+  });
+});
+
+describe('agent dry-run overlays', () => {
+  it('prompts for agent name then optional config before dispatch', () => {
+    let state = navigateToScreen(hydrate(), 'agent');
+    let next = transitionAppRouter(state, { type: 'key', key: { text: 'g' } });
+    expect(next.effect.kind).toBe('none');
+    state = next.state;
+    expect(state.overlay).toBe('input-agent-name');
+    next = transitionAppRouter(state, {
+      type: 'key',
+      key: { text: 'ci-bot' },
+    });
+    state = next.state;
+    next = transitionAppRouter(state, { type: 'key', key: { name: 'return' } });
+    state = next.state;
+    expect(state.overlay).toBe('input-agent-config');
+    expect(state.pendingAgentName).toBe('ci-bot');
+    next = transitionAppRouter(state, {
+      type: 'key',
+      key: { text: '/tmp/kavrix.yaml' },
+    });
+    state = next.state;
+    next = transitionAppRouter(state, { type: 'key', key: { name: 'return' } });
+    expect(next.effect).toEqual({
+      kind: 'backend',
+      action: {
+        type: 'agent-dry-run',
+        agentName: 'ci-bot',
+        configPath: '/tmp/kavrix.yaml',
+      },
+    });
+  });
+
+  it('rejects empty agent name without inventing noop', () => {
+    let state = navigateToScreen(hydrate(), 'agent');
+    let next = transitionAppRouter(state, { type: 'key', key: { text: 'g' } });
+    state = next.state;
+    next = transitionAppRouter(state, { type: 'key', key: { name: 'return' } });
+    expect(next.effect.kind).toBe('none');
+    expect(next.state.overlay).toBe('input-agent-name');
+    expect(next.state.message.toLowerCase()).toContain('agent name required');
   });
 });
 

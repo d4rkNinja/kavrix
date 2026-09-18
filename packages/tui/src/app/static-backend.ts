@@ -8,9 +8,9 @@ import {
 } from './backend.js';
 
 /**
- * Read-only host backend that serves a fixed snapshot. Useful for CI inventory
- * smoke and presentational mounts that do not unlock vault material.
- * Credential put/rename/remove mutate the in-memory snapshot only.
+ * Unit-test / inventory-smoke backend that serves a fixed snapshot.
+ * NEVER mount from `kavrix tui` / `createCliTuiBackend` — product path uses the
+ * real CLI session only. Credential put/rename/remove mutate memory only.
  */
 export function createStaticAppBackend(
   initial: AppSnapshot = emptySnapshot('Static TUI snapshot.'),

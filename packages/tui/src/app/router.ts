@@ -54,7 +54,9 @@ export type AppOverlay =
   | 'input-policy-command'
   | 'input-grant-secret'
   | 'input-grant-command'
-  | 'input-grant-ttl';
+  | 'input-grant-ttl'
+  | 'input-agent-name'
+  | 'input-agent-config';
 
 export interface AppRouterState {
   readonly screen: AppScreenId;
@@ -87,6 +89,8 @@ export interface AppRouterState {
   readonly pendingGrantCommand: string | null;
   readonly pendingSlotId: string | null;
   readonly pendingGrantId: string | null;
+  /** Ephemeral agent name while collecting dry-run overlays (never snapshotted). */
+  readonly pendingAgentName: string | null;
   readonly revealedName: string | null;
   /** Ephemeral plaintext; never copied into AppSnapshot. */
   readonly revealedValue: string | null;
@@ -145,6 +149,7 @@ export function createInitialAppRouterState(
     pendingGrantCommand: null,
     pendingSlotId: null,
     pendingGrantId: null,
+    pendingAgentName: null,
     revealedName: null,
     revealedValue: null,
     revealedUntilMs: 0,
@@ -393,7 +398,14 @@ function screenKey(
     return unchanged({ ...state, overlay: 'input-run', query: '' });
   }
   if (key.text?.toLowerCase() === 'g' && state.screen === 'agent') {
-    return effect(state, { kind: 'backend', action: { type: 'agent-dry-run' } });
+    return unchanged({
+      ...state,
+      overlay: 'input-agent-name',
+      query: '',
+      pendingAgentName: null,
+      message:
+        'Agent name from project config (required). Then optional --config path. Esc cancels.',
+    });
   }
   if (state.screen === 'recovery') {
     if (key.text?.toLowerCase() === 'n' || key.text?.toLowerCase() === 'c') {
@@ -981,6 +993,71 @@ function overlayKey(
         : 512;
     return appendOverlayText(state, key.text, mongoLimit);
   }
+  if (
+    state.overlay === 'input-agent-name' ||
+    state.overlay === 'input-agent-config'
+  ) {
+    if (key.name === 'escape') {
+      return unchanged({
+        ...state,
+        overlay: 'none',
+        query: '',
+        pendingAgentName: null,
+        message: 'Agent dry-run cancelled.',
+      });
+    }
+    if (key.name === 'backspace') {
+      return unchanged({ ...state, query: removeLast(state.query) });
+    }
+    if (key.name === 'return') {
+      if (state.overlay === 'input-agent-name') {
+        const agentName = state.query.trim();
+        if (agentName.length === 0) {
+          return unchanged({
+            ...state,
+            message: 'Agent name required (kavrix agent run --agent <name>).',
+          });
+        }
+        return unchanged({
+          ...state,
+          overlay: 'input-agent-config',
+          pendingAgentName: agentName,
+          query: '',
+          message:
+            'Optional project config path (--config). Enter empty to use default discovery.',
+        });
+      }
+      const agentName = state.pendingAgentName;
+      if (agentName === null || agentName.trim().length === 0) {
+        return unchanged({
+          ...state,
+          overlay: 'none',
+          query: '',
+          pendingAgentName: null,
+          message: 'Agent dry-run cancelled: missing agent name.',
+        });
+      }
+      const configPath = state.query.trim();
+      return effect(
+        {
+          ...state,
+          overlay: 'none',
+          query: '',
+          pendingAgentName: null,
+        },
+        {
+          kind: 'backend',
+          action: {
+            type: 'agent-dry-run',
+            agentName,
+            ...(configPath.length > 0 ? { configPath } : {}),
+          },
+        },
+      );
+    }
+    return appendOverlayText(state, key.text, 512);
+  }
+
   if (state.overlay === 'input-search' || state.overlay === 'input-run') {
     if (key.name === 'escape') {
       return unchanged({ ...state, overlay: 'none', query: '' });

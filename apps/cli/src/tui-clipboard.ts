@@ -101,9 +101,11 @@ async function trySystemClipboard(value: string): Promise<void> {
       lastError = error;
     }
   }
-  throw lastError instanceof Error
-    ? lastError
-    : new Error('No system clipboard backend available.');
+  const detail =
+    lastError instanceof Error ? lastError.message : 'no clipboard CLI responded';
+  throw new Error(
+    `No clipboard backend available (TTY OSC 52 unavailable; tried wl-copy/xclip/xsel). ${detail}`,
+  );
 }
 
 /**

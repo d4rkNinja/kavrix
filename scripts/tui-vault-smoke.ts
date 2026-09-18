@@ -3,7 +3,7 @@
  * Uses a temp HOME, inits a file database vault via CLI, then exercises
  * CliTuiSession unlock/list/reveal/put/rename/remove without Ink.
  */
-import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -59,6 +59,16 @@ async function main(): Promise<void> {
   process.env.HOME = home;
   process.env.USERPROFILE = home;
   await chmod(home, 0o700);
+  const shimDir = join(home, 'bin');
+  await mkdir(shimDir, { recursive: true });
+  // Consume stdin and exit 0 — lets headless copy exercise real secret fetch.
+  const shim = `#!/usr/bin/env node\nlet d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>process.exit(0));\n`;
+  for (const name of ['xsel', 'xclip', 'wl-copy'] as const) {
+    const target = join(shimDir, name);
+    await writeFile(target, shim, 'utf8');
+    await chmod(target, 0o755);
+  }
+  process.env.PATH = `${shimDir}${process.platform === 'win32' ? ';' : ':'}${process.env.PATH ?? ''}`;
 
   try {
     let result = await runCli(
@@ -195,6 +205,18 @@ async function main(): Promise<void> {
     }
     pass('session unlock + list');
 
+    if (snap.snapshot.profiles.length < 1) {
+      fail('profiles list empty after unlock');
+      return;
+    }
+    pass(`session profiles list (${String(snap.snapshot.profiles.length)})`);
+
+    if (snap.snapshot.vaults.length < 1) {
+      fail('vaults list empty after unlock');
+      return;
+    }
+    pass(`session vaults list (${String(snap.snapshot.vaults.length)})`);
+
     snap = await backend.dispatch({
       type: 'reveal-credential',
       name: 'seed',
@@ -241,6 +263,38 @@ async function main(): Promise<void> {
     }
     pass('session remove-credential');
 
+    snap = await backend.dispatch({
+      type: 'copy-credential',
+      name: 'seed',
+    });
+    if (snap.snapshot.noticeTone === 'error') {
+      fail(`copy-credential: ${snap.snapshot.notice}`);
+      return;
+    }
+    const copyNotice = (snap.snapshot.notice ?? '').toLowerCase();
+    if (!copyNotice.includes('copy') && !copyNotice.includes('clipboard') && !copyNotice.includes('osc')) {
+      // Still accept success tone; clipboard backends vary in headless CI.
+      console.log(`NOTE: copy notice=${JSON.stringify(snap.snapshot.notice)}`);
+    }
+    pass('session copy-credential');
+
+    snap = await backend.dispatch({ type: 'lock' });
+    if (snap.snapshot.home.unlocked) {
+      fail(`lock left vault unlocked: ${snap.snapshot.notice}`);
+      return;
+    }
+    pass('session lock');
+
+    snap = await backend.dispatch({
+      type: 'unlock',
+      passphrase: PASSPHRASE,
+    });
+    if (!snap.snapshot.home.unlocked) {
+      fail(`re-unlock after lock: ${snap.snapshot.notice}`);
+      return;
+    }
+    pass('session unlock after lock');
+
     snap = await backend.dispatch({ type: 'recovery-status' });
     if (snap.snapshot.noticeTone === 'error') {
       fail(`recovery-status: ${snap.snapshot.notice}`);
@@ -252,38 +306,44 @@ async function main(): Promise<void> {
     }
     pass('session recovery-status');
 
-    const recoveryFile = join(home, 'recovery.kit');
     const recoveryPass = 'recovery-pass-phrase-ok';
-    snap = await backend.dispatch({
-      type: 'recovery-create',
-      recoveryFile,
-      recoveryPassphrase: recoveryPass,
-    });
-    if (snap.snapshot.noticeTone === 'error') {
-      fail(`recovery-create: ${snap.snapshot.notice}`);
-      return;
+    const recoveryFileA = join(home, 'recovery-a.kit');
+    const recoveryFileB = join(home, 'recovery-b.kit');
+    for (const [label, recoveryFile] of [
+      ['A', recoveryFileA],
+      ['B', recoveryFileB],
+    ] as const) {
+      snap = await backend.dispatch({
+        type: 'recovery-create',
+        recoveryFile,
+        recoveryPassphrase: recoveryPass,
+      });
+      if (snap.snapshot.noticeTone === 'error') {
+        fail(`recovery-create ${label}: ${snap.snapshot.notice}`);
+        return;
+      }
+      pass(`session recovery-create ${label}`);
     }
-    const activeAfterCreate = snap.snapshot.recovery.filter(
-      (slot) => slot.status === 'active' && !slot.slotId.startsWith('('),
-    );
-    if (activeAfterCreate.length < 1) {
-      fail(
-        `recovery-create missing active slot: ${JSON.stringify(snap.snapshot.recovery)}`,
-      );
-      return;
-    }
-    pass(`session recovery-create (${activeAfterCreate[0]?.slotId})`);
 
     snap = await backend.dispatch({ type: 'recovery-status' });
     if (snap.snapshot.noticeTone === 'error') {
       fail(`recovery-status after create: ${snap.snapshot.notice}`);
       return;
     }
-    pass('session recovery-status after create');
+    const activeAfterCreate = snap.snapshot.recovery.filter(
+      (slot) => slot.status === 'active' && !slot.slotId.startsWith('('),
+    );
+    if (activeAfterCreate.length < 2) {
+      fail(
+        `expected >=2 active recovery slots, got ${JSON.stringify(snap.snapshot.recovery)}`,
+      );
+      return;
+    }
+    pass(`session recovery-status after create (${String(activeAfterCreate.length)} active)`);
 
     snap = await backend.dispatch({
       type: 'recovery-verify',
-      recoveryFile,
+      recoveryFile: recoveryFileA,
       recoveryPassphrase: recoveryPass,
     });
     if (snap.snapshot.noticeTone === 'error') {
@@ -291,6 +351,31 @@ async function main(): Promise<void> {
       return;
     }
     pass('session recovery-verify');
+
+    const revokeTarget = activeAfterCreate[activeAfterCreate.length - 1]!;
+    snap = await backend.dispatch({
+      type: 'recovery-revoke',
+      slotId: revokeTarget.slotId,
+    });
+    if (snap.snapshot.noticeTone === 'error') {
+      fail(`recovery-revoke: ${snap.snapshot.notice}`);
+      return;
+    }
+    const stillActive = snap.snapshot.recovery.some(
+      (slot) => slot.slotId === revokeTarget.slotId && slot.status === 'active',
+    );
+    if (stillActive) {
+      fail(`recovery-revoke left slot active: ${revokeTarget.slotId}`);
+      return;
+    }
+    const remainingActive = snap.snapshot.recovery.filter(
+      (slot) => slot.status === 'active' && !slot.slotId.startsWith('('),
+    );
+    if (remainingActive.length < 1) {
+      fail('recovery-revoke accidentally cleared all active slots');
+      return;
+    }
+    pass(`session recovery-revoke (${revokeTarget.slotId}; ${String(remainingActive.length)} remain)`);
 
     snap = await backend.dispatch({ type: 'run-doctor' });
     if (snap.snapshot.noticeTone === 'error') {
@@ -407,6 +492,13 @@ async function main(): Promise<void> {
     }
     pass('session preview-run');
 
+    snap = await backend.dispatch({ type: 'refresh-browse' });
+    if (snap.snapshot.noticeTone === 'error') {
+      fail(`refresh-browse (pre-profile-switch): ${snap.snapshot.notice}`);
+      return;
+    }
+    pass(`session refresh-browse early (${String(snap.snapshot.browse.length)} nodes)`);
+
     const agentConfig = join(home, 'agent.kavrix.json');
     await writeFile(
       agentConfig,
@@ -440,6 +532,72 @@ async function main(): Promise<void> {
       return;
     }
     pass('session agent-dry-run');
+
+    snap = await backend.dispatch({ type: 'agent-dry-run' });
+    if (snap.snapshot.noticeTone !== 'error') {
+      fail('agent-dry-run without name should error (no noop invent)');
+      return;
+    }
+    if (!snap.snapshot.agentStatus.toLowerCase().includes('agent name')) {
+      fail(`agent-dry-run missing-name message unexpected: ${snap.snapshot.agentStatus}`);
+      return;
+    }
+    pass('session agent-dry-run rejects missing name (no noop)');
+
+    const extraData = join(home, 'extra.kavrix');
+    const extraKey = join(home, 'extra.key');
+    snap = await backend.dispatch({
+      type: 'create-file-profile',
+      profileId: 'smoke-file-2',
+      dataFile: extraData,
+      keyFile: extraKey,
+      passphrase: PASSPHRASE,
+      databaseLabel: 'extra-db',
+      vaultLabel: 'extra-vault',
+    });
+    if (snap.snapshot.noticeTone === 'error') {
+      fail(`create-file-profile: ${snap.snapshot.notice}`);
+      return;
+    }
+    if (!snap.snapshot.profiles.some((p) => p.id === 'smoke-file-2')) {
+      fail(`create-file-profile missing profile: ${JSON.stringify(snap.snapshot.profiles)}`);
+      return;
+    }
+    pass('session create-file-profile');
+
+    snap = await backend.dispatch({ type: 'lock' });
+    if (snap.snapshot.noticeTone === 'error' && snap.snapshot.home.unlocked) {
+      fail(`lock before use-profile: ${snap.snapshot.notice}`);
+      return;
+    }
+
+    snap = await backend.dispatch({ type: 'use-profile', profileId: 'smoke' });
+    if (snap.snapshot.noticeTone === 'error') {
+      fail(`use-profile smoke: ${snap.snapshot.notice}`);
+      return;
+    }
+    pass('session use-profile');
+
+    snap = await backend.dispatch({
+      type: 'unlock',
+      passphrase: PASSPHRASE,
+    });
+    if (!snap.snapshot.home.unlocked) {
+      fail(`unlock after use-profile: ${snap.snapshot.notice}`);
+      return;
+    }
+    const smokeVault =
+      snap.snapshot.vaults.find((v) => v.selected)?.id ?? snap.snapshot.home.vaultId;
+    if (smokeVault === null || smokeVault === undefined) {
+      fail(`no smoke vault after unlock: ${JSON.stringify(snap.snapshot.vaults)}`);
+      return;
+    }
+    snap = await backend.dispatch({ type: 'use-vault', vaultId: smokeVault });
+    if (snap.snapshot.noticeTone === 'error') {
+      fail(`use-vault: ${snap.snapshot.notice}`);
+      return;
+    }
+    pass(`session use-vault (${smokeVault})`);
 
     snap = await backend.dispatch({ type: 'refresh-browse' });
     if (snap.snapshot.noticeTone === 'error') {
