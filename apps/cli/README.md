@@ -12,6 +12,26 @@ policies and temporary grants bound what each executable may do, and
 `kavrix agent run` brokers every request from AI coding agents against those
 policies.
 
+![Kavrix interactive TUI — unlocked home](media/demo-frame-home-unlocked.png)
+
+## Interactive TUI
+
+On Linux, macOS, and Windows with Node.js `>=24.12.0`, Kavrix ships a real Ink
+terminal UI (no mocks — every action runs the same CLI):
+
+```sh
+kavrix init   # TUI onboarding on an interactive TTY (default)
+kavrix tui    # full app: profiles, vaults, credentials, doctor, recovery, …
+```
+
+Use `kavrix init --no-tui` for classic line prompts, or stdin/explicit routing
+for scripts.
+
+![Kavrix TUI demo](media/kavrix-tui-demo.gif)
+
+Full video on GitHub:
+[kavrix-tui-demo.mp4](https://github.com/d4rkNinja/kavrix/blob/main/docs/assets/kavrix-tui-demo.mp4).
+
 ## Requirements
 
 - Node.js `>=24.12.0 <25` or `>=25.1.0`
@@ -34,9 +54,10 @@ For a new local-file setup, run:
 kavrix init
 ```
 
-The guided TTY flow preflights the profile and protected destinations, then uses
-masked prompts to create an encrypted database, one default vault, and a
-separate recovery kit. It verifies recovery before selecting the profile.
+On an interactive TTY, `kavrix init` opens Ink onboarding by default (pass
+`--no-tui` for classic masked line prompts). It preflights the profile and
+protected destinations, then creates an encrypted database, one default vault,
+and a separate recovery kit. It verifies recovery before selecting the profile.
 Protected labels and passphrases never enter argv, environment variables, or
 the generated non-secret config reference.
 
@@ -97,7 +118,8 @@ never store MongoDB credentials, passphrases, private labels, keys, or values.
 | `key status/verify/copy/replicate/assign/rewrap`                           | Manage protected key files.                                                           |
 | `recovery create/verify/status/revoke/use`                                 | Manage recovery kits.                                                                 |
 | `doctor`, `doctor health`                                                  | Validate a vault; repair bounded transient state safely.                              |
-| `init`, `vault`, `legacy v2 commands`                                      | Guided local setup; explicit/non-TTY init remains version 2 compatible.               |
+| `tui` / `ui`                                                               | Full interactive Ink app against the real CLI (TTY required).                         |
+| `init`, `vault`, `legacy v2 commands`                                      | Ink TUI onboarding on TTY (`--no-tui` classic); explicit/non-TTY init stays v2.       |
 | `run`                                                                      | Execute one command with selected credentials injected as environment variables only. |
 | `policy create/list/show/remove/check/explain/lint/diff/suggest`           | Stored rules plus read-only simulation, diagnostics, previews, and narrowing advice.  |
 | `grant create/list/show/revoke`                                            | Temporary consumable authorizations with live expiry, restrictions, and use caps.     |

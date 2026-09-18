@@ -20,6 +20,8 @@ const expectedPackageFiles = Object.freeze([
   'dist/index.d.ts',
   'dist/index.js',
   'dist/kavrix.cdx.json',
+  'media/demo-frame-home-unlocked.png',
+  'media/kavrix-tui-demo.gif',
   'package.json',
 ]);
 
@@ -215,6 +217,7 @@ async function main() {
       );
     }
     for (const file of files) {
+      if (/\.(png|gif|jpe?g|webp|mp4|webm)$/iu.test(file)) continue;
       assertSafeText(await readFile(join(packageRoot, file), 'utf8'), file);
     }
     assert(

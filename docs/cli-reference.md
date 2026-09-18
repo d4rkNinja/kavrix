@@ -8,15 +8,19 @@ frame contract for every secret-reading command, and `kavrix status` shows the
 selected profile and active routing mode.
 
 The recommended local first-run path is a bare no-option `kavrix init` on a
-TTY. It preflights a profile and three distinct protected destinations, then
-uses masked prompts to create an encrypted local database, one default vault,
-and a separately protected recovery kit. Kavrix verifies the new recovery kit
+TTY. Interactive sessions open Ink TUI onboarding by default; pass `--no-tui`
+for classic masked line prompts (useful in scripts that still want guided TTY
+input). Onboarding preflights a profile and three distinct protected
+destinations, then creates an encrypted local database, one default vault, and
+a separately protected recovery kit. Kavrix verifies the new recovery kit
 locally before selecting the profile. Blank destinations use the private
 `~/.kavrix` directory. The accompanying non-secret `config.toml` is a
 command reference and is not loaded automatically.
 
 ```sh
 kavrix init
+kavrix init --no-tui   # classic guided prompts
+kavrix tui             # full interactive app after setup
 ```
 
 The explicit `db profile` → `db init` → `db vault create` →

@@ -1,5 +1,9 @@
 # kavrix
 
+## 0.2.13
+
+- Ship the full interactive Ink TUI: `kavrix tui` / `kavrix ui` drives real CLI commands (no product mocks). Bare TTY `kavrix init` defaults to Ink onboarding; use `--no-tui` for classic line prompts or scripts. Demo screenshot/GIF ship in the npm package for the README; GitHub README links the terminal demo video.
+
 ## 0.2.12
 
 - Fix CLI FAIL/SKIP issues from hand QA: allow `db vault remove` when the database revision advances (no longer poison the session with `ambiguous-commit`); allow `db key create` on MongoDB profiles with `--output-key-file`; improve `migrate database` auth errors and `frames migrate database` stdin contract (including Mongo URL-first frames); redirect legacy `vault list`/`vault status` on database-container profiles; add `agent run`/`agent exec --dry-run`; expose non-secret recovery `slots` on `db recovery status` for revoke flows; clear or auto-reselect profile default vault after remove; alias `--config-dir` to profile config routing.

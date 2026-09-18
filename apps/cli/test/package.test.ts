@@ -34,6 +34,7 @@ describe('npm package contract', () => {
       'dist/**/*.js',
       'dist/**/*.d.ts',
       'dist/*.cdx.json',
+      'media/**',
       'README.md',
       'LICENSE',
     ]);
@@ -63,6 +64,10 @@ describe('npm package contract', () => {
     }
     expect(existsSync(join(cliRoot, 'README.md'))).toBe(true);
     expect(existsSync(join(cliRoot, 'LICENSE'))).toBe(true);
+    expect(existsSync(join(cliRoot, 'media', 'demo-frame-home-unlocked.png'))).toBe(
+      true,
+    );
+    expect(existsSync(join(cliRoot, 'media', 'kavrix-tui-demo.gif'))).toBe(true);
     expect(readFileSync(join(distRoot, 'index.js'), 'utf8')).toBe(
       `export const CLI_VERSION = ${JSON.stringify(packageManifest.version)};\n`,
     );

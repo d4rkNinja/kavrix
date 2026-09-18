@@ -5,11 +5,20 @@ terminal rendering. Values are masked by default; plaintext display requires an
 explicit guard such as `get --reveal` or a TUI **REVEAL** confirmation.
 Non-interactive output is ANSI-free.
 
+## Interactive onboarding (`kavrix init`)
+
+Bare interactive `kavrix init` mounts Ink onboarding by default when stdin,
+stdout, and stderr are TTYs. It creates a local-file database, default vault,
+and recovery kit through the same real CLI backend as `kavrix tui`. Pass
+`--no-tui` for classic masked line prompts. Explicit routing or stdin flags
+keep the non-interactive / legacy paths.
+
 ## Interactive app (`kavrix tui` / `kavrix ui`)
 
 `kavrix tui` (alias `ui`) mounts the colorful Ink app from `@kavrix/tui` when
 both stdin and stdout are TTYs. Non-TTY sessions print a clear error and exit
-non-zero so automation keeps using numbered CLI commands.
+non-zero so automation keeps using numbered CLI commands. Every screen action
+runs the published CLI (no product mocks).
 
 Screens: Home, Profiles, Vaults, Credentials (masked / REVEAL), Doctor,
 Recovery, Run (dry preview), Policy/Grant/Audit, Agent, Context/Service/Item
@@ -32,11 +41,11 @@ Flags: `--ascii`, `--color`, `--no-color`, `--profile-config-dir` /
 
 ## Storage showcase
 
-The active `@kavrix/tui` workspace still provides the Ink 7.1.1 / React 19.2.8
-storage-selection showcase used by interactive onboarding helpers. It is a
-presentational boundary only: its strings are static and it has no persistence,
-cryptographic, or secret-input authority. The CLI loads it lazily, and the
-non-TTY path retains the numbered storage-selection fallback.
+The active `@kavrix/tui` workspace also keeps a read-only storage docs /
+showcase screen inside the full app. Presentational strings there have no
+persistence, cryptographic, or secret-input authority. Primary onboarding is
+`mountOnboardingApp` from bare TTY `kavrix init`; `--no-tui` and non-TTY paths
+retain classic guided or legacy flows.
 
 Masked interactive prompts render textual requirement, success, and error
 markers and retry a locally invalid field without discarding unrelated answers.

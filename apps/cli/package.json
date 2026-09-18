@@ -1,6 +1,6 @@
 {
   "name": "kavrix",
-  "version": "0.2.12",
+  "version": "0.2.13",
   "description": "Zero-knowledge credential vault command-line interface",
   "license": "MIT",
   "repository": {
@@ -40,6 +40,7 @@
     "dist/**/*.js",
     "dist/**/*.d.ts",
     "dist/*.cdx.json",
+    "media/**",
     "README.md",
     "LICENSE"
   ],
