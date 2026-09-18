@@ -2,7 +2,7 @@
 
 - `kavrix-tui-demo.mp4` — terminal-window demo (~60s): unlock, profiles, vaults, credentials (copy/reveal), doctor, recovery, run, policy, agent, browse, help, showcase.
 - `kavrix-tui-demo.gif` — same walkthrough for README embeds.
-- `demo-frame-home-unlocked.png` — unlocked Home screen (GitHub/npm hero).
+- `demo-frame-home-unlocked.png` / `demo-hero.png` — unlocked Home screen (GitHub/npm hero).
 - `demo-frame-profiles.png` — Profiles screen still.
 - `demo-frame-mid.png` — mid-walkthrough still.
 

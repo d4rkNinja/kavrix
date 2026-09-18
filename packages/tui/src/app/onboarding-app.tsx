@@ -2,6 +2,7 @@ import { Box, Text, render, useApp, useInput, usePaste, useStdout } from 'ink';
 import { useCallback, useEffect, useRef, useState, type ReactElement } from 'react';
 
 import { BrandBanner } from '../showcase.js';
+import { SplashGate } from '../splash-gate.js';
 import { sanitizeTerminalText } from '../terminal-text.js';
 import type { InteractiveAppBackend, AppBackendAction } from './backend.js';
 import {
@@ -18,6 +19,8 @@ export interface KavrixOnboardingAppProps {
   readonly backend: InteractiveAppBackend;
   readonly ascii?: boolean;
   readonly color?: boolean;
+  readonly version?: string;
+  readonly noSplash?: boolean;
   readonly onComplete?: (result: OnboardingAppResult) => void;
 }
 
@@ -36,6 +39,8 @@ export interface MountOnboardingAppOptions {
   readonly stdin?: NodeJS.ReadStream;
   readonly ascii?: boolean;
   readonly color?: boolean;
+  readonly version?: string;
+  readonly noSplash?: boolean;
 }
 
 export interface OnboardingAppHandle {
@@ -58,6 +63,8 @@ export function KavrixOnboardingApp({
   backend,
   ascii,
   color,
+  version,
+  noSplash,
   onComplete,
 }: KavrixOnboardingAppProps): ReactElement {
   const { stdout } = useStdout();
@@ -66,6 +73,8 @@ export function KavrixOnboardingApp({
     ...(ascii === undefined ? {} : { ascii }),
     ...(color === undefined ? {} : { color }),
   });
+  // Onboarding has no backend hydrate gate; treat first paint as ready.
+  const [splashReady] = useState(true);
   const [state, setState] = useState(() =>
     createInitialOnboardingState({
       width: stdout.columns,
@@ -181,7 +190,19 @@ export function KavrixOnboardingApp({
     dispatchKey({ text: cleaned });
   });
 
-  return <OnboardingChrome state={state} />;
+  return (
+    <SplashGate
+      color={presentation.color}
+      ascii={presentation.ascii}
+      {...(version === undefined ? {} : { version })}
+      {...(noSplash === undefined ? {} : { noSplash })}
+      width={state.width}
+      height={state.height}
+      ready={splashReady}
+    >
+      <OnboardingChrome state={state} />
+    </SplashGate>
+  );
 }
 
 function sanitizePasteTextLocal(raw: string): string {
@@ -458,6 +479,8 @@ export function mountOnboardingApp(
       backend={options.backend}
       ascii={presentation.ascii}
       color={presentation.color}
+      {...(options.version === undefined ? {} : { version: options.version })}
+      {...(options.noSplash === undefined ? {} : { noSplash: options.noSplash })}
       onComplete={(result) => {
         settle?.(result);
       }}

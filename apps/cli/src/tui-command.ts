@@ -3,6 +3,7 @@ import type { Command } from 'commander';
 import { LocalCliError } from './cli-error.js';
 import { createCliTuiBackend } from './tui-session.js';
 import { terminalColorEnabled } from './terminal-presentation.js';
+import { CLI_VERSION } from './version.js';
 
 /**
  * Registers `kavrix tui` / `kavrix ui`. Requires a real TTY on stdin and stdout;
@@ -18,6 +19,7 @@ export function registerTuiCommand(program: Command): void {
     .option('--ascii', 'Force printable ASCII borders and glyphs.')
     .option('--color', 'Force color when the terminal supports it.')
     .option('--no-color', 'Disable ANSI color (also honors NO_COLOR).')
+    .option('--no-splash', 'Skip the animated startup splash screen.')
     .option('--profile-config-dir <path>', 'Protected profile configuration directory.')
     .option('--config-dir <path>', 'Protected profile configuration directory.')
     .action(async (...args: unknown[]) => {
@@ -31,6 +33,7 @@ export async function runInteractiveTui(
   options: Readonly<{
     ascii?: boolean;
     color?: boolean;
+    splash?: boolean;
     profileConfigDir?: string;
     configDir?: string;
   }>,
@@ -56,6 +59,10 @@ export async function runInteractiveTui(
     process.platform === 'win32' ||
     process.env['TERM'] === 'dumb' ||
     process.env['TERM'] === undefined;
+  const noSplash =
+    options.splash === false ||
+    process.env['KAVRIX_TUI_NO_SPLASH'] === '1' ||
+    process.env['KAVRIX_TUI_NO_SPLASH'] === 'true';
 
   const profileConfigDir = options.profileConfigDir ?? options.configDir;
   const backend = createCliTuiBackend({
@@ -71,6 +78,8 @@ export async function runInteractiveTui(
       stdin: NodeJS.ReadStream;
       ascii?: boolean;
       color?: boolean;
+      version?: string;
+      noSplash?: boolean;
     }) => {
       waitUntilExit: () => Promise<void>;
       unmount: () => void;
@@ -82,6 +91,8 @@ export async function runInteractiveTui(
     stdin: process.stdin,
     ascii,
     color,
+    version: CLI_VERSION,
+    ...(noSplash ? { noSplash: true } : {}),
   });
   try {
     await handle.waitUntilExit();

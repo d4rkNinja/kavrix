@@ -2,7 +2,7 @@
 
 ## 0.2.13
 
-- Ship the full interactive Ink TUI: `kavrix tui` / `kavrix ui` drives real CLI commands (no product mocks). Bare TTY `kavrix init` defaults to Ink onboarding; use `--no-tui` for classic line prompts or scripts. Demo screenshot/GIF ship in the npm package for the README; GitHub README links the terminal demo video.
+- Ship the full interactive Ink TUI (animated startup splash; `--no-splash` / `KAVRIX_TUI_NO_SPLASH`): `kavrix tui` / `kavrix ui` drives real CLI commands (no product mocks). Bare TTY `kavrix init` defaults to Ink onboarding; use `--no-tui` for classic line prompts or scripts. Demo screenshot/GIF ship in the npm package for the README; GitHub README links the terminal demo video.
 
 ## 0.2.12
 

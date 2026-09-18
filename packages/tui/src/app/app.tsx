@@ -12,11 +12,14 @@ import {
 } from './router.js';
 import { AppChrome, renderActiveScreen } from './screens.js';
 import { resolveAppPresentation } from './theme.js';
+import { SplashGate } from '../splash-gate.js';
 
 export interface KavrixAppProps {
   readonly backend: InteractiveAppBackend;
   readonly ascii?: boolean;
   readonly color?: boolean;
+  readonly version?: string;
+  readonly noSplash?: boolean;
   readonly now?: () => number;
   readonly onQuit?: () => void;
 }
@@ -25,6 +28,8 @@ export function KavrixApp({
   backend,
   ascii,
   color,
+  version,
+  noSplash,
   now = Date.now,
   onQuit,
 }: KavrixAppProps): ReactElement {
@@ -34,6 +39,7 @@ export function KavrixApp({
     ...(ascii === undefined ? {} : { ascii }),
     ...(color === undefined ? {} : { color }),
   });
+  const [backendReady, setBackendReady] = useState(false);
   const [state, setState] = useState(() =>
     createInitialAppRouterState({
       width: stdout.columns,
@@ -94,6 +100,7 @@ export function KavrixApp({
   useEffect(() => {
     void backendRef.current.load().then((snapshot) => {
       dispatch({ type: 'hydrate', snapshot });
+      setBackendReady(true);
     });
   }, [dispatch]);
 
@@ -136,7 +143,20 @@ export function KavrixApp({
     dispatch({ type: 'key', key: { text: cleaned }, nowMs: now() });
   });
 
-  return <AppChrome state={state}>{renderActiveScreen(state)}</AppChrome>;
+  return (
+    <SplashGate
+      color={presentation.color}
+      ascii={presentation.ascii}
+      {...(version === undefined ? {} : { version })}
+      {...(noSplash === undefined ? {} : { noSplash })}
+      width={state.width}
+      height={state.height}
+      ready={backendReady}
+      now={now}
+    >
+      <AppChrome state={state}>{renderActiveScreen(state)}</AppChrome>
+    </SplashGate>
+  );
 }
 
 export interface MountKavrixAppOptions {
@@ -145,6 +165,8 @@ export interface MountKavrixAppOptions {
   readonly stdin?: NodeJS.ReadStream;
   readonly ascii?: boolean;
   readonly color?: boolean;
+  readonly version?: string;
+  readonly noSplash?: boolean;
 }
 
 export interface KavrixAppHandle {
@@ -163,6 +185,8 @@ export function mountKavrixApp(options: MountKavrixAppOptions): KavrixAppHandle 
       backend={options.backend}
       ascii={presentation.ascii}
       color={presentation.color}
+      {...(options.version === undefined ? {} : { version: options.version })}
+      {...(options.noSplash === undefined ? {} : { noSplash: options.noSplash })}
     />,
     {
       stdout: options.stdout ?? process.stdout,

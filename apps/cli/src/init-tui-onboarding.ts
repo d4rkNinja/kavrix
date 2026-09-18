@@ -1,6 +1,7 @@
 import { LocalCliError } from './cli-error.js';
 import { terminalColorEnabled } from './terminal-presentation.js';
 import { createCliTuiBackend } from './tui-session.js';
+import { CLI_VERSION } from './version.js';
 
 export type InitTuiOnboardingOptions = Readonly<{
   ascii?: boolean;
@@ -46,6 +47,9 @@ export async function runInitTuiOnboarding(
     process.platform === 'win32' ||
     process.env['TERM'] === 'dumb' ||
     process.env['TERM'] === undefined;
+  const noSplash =
+    process.env['KAVRIX_TUI_NO_SPLASH'] === '1' ||
+    process.env['KAVRIX_TUI_NO_SPLASH'] === 'true';
 
   const profileConfigDir = options.profileConfigDir ?? options.configDir;
   const backend = createCliTuiBackend({
@@ -61,6 +65,8 @@ export async function runInitTuiOnboarding(
       stdin: NodeJS.ReadStream;
       ascii?: boolean;
       color?: boolean;
+      version?: string;
+      noSplash?: boolean;
     }) => {
       waitUntilExit: () => Promise<InitTuiOnboardingResult>;
       unmount: () => void;
@@ -72,6 +78,8 @@ export async function runInitTuiOnboarding(
     stdin: process.stdin,
     ascii,
     color,
+    version: CLI_VERSION,
+    ...(noSplash ? { noSplash: true } : {}),
   });
   try {
     return await handle.waitUntilExit();
