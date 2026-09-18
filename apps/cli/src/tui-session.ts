@@ -588,6 +588,7 @@ class CliTuiSession {
         profileAdded && !detail.includes('already exists')
           ? `${detail} (partial profile cleaned up when possible).`
           : detail,
+        { cause: error },
       );
     }
   }
@@ -735,6 +736,7 @@ class CliTuiSession {
         profileAdded && !detail.includes('already exists')
           ? `${detail} (partial profile cleaned up when possible).`
           : detail,
+        { cause: error },
       );
     }
   }
