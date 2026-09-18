@@ -82,6 +82,10 @@ describe('database owner command composition', () => {
   });
 
   it('accepts MongoDB routing for local-share key creation and requests secrets', async () => {
+    // Relative paths under the suite CWD fail Windows destination ACL checks
+    // before secrets are requested; use a hardened temp directory like the
+    // workflow cases so this composition test reaches LocalSecretInput.read.
+    const directory = await testDirectory(join(tmpdir(), 'kavrix-db-key-create-'));
     const read = vi
       .spyOn(LocalSecretInput.prototype, 'read')
       .mockRejectedValue(new Error('stop-after-secret-request'));
@@ -97,9 +101,9 @@ describe('database owner command composition', () => {
         '--database',
         'kavrix_share_key',
         '--key-file',
-        'owner.key',
+        join(directory, 'owner.key'),
         '--output-key-file',
-        'unused.key',
+        join(directory, 'unused.key'),
         '--secrets-stdin',
       ]),
     ).rejects.toThrow(/stop-after-secret-request/);
