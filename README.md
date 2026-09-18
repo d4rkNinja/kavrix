@@ -4,6 +4,25 @@ Kavrix keeps credentials encrypted on your machine, in a local file or your own
 MongoDB deployment. Store and retrieve secrets from the terminal, or let tools
 use only the credentials you allow. Your unlock material stays local.
 
+![Kavrix interactive TUI — unlocked home](docs/assets/demo-frame-home-unlocked.png)
+
+## Interactive TUI
+
+On Linux, macOS, and Windows with Node.js `>=24.12.0`, Kavrix ships a real Ink
+terminal UI (no mocks — every action runs the same CLI):
+
+```sh
+kavrix init   # TUI onboarding on an interactive TTY (default)
+kavrix tui    # full app: profiles, vaults, credentials, doctor, recovery, …
+```
+
+Use `kavrix init --no-tui` for classic line prompts, or stdin/explicit routing
+for scripts. Demo walkthrough:
+
+[![Kavrix TUI demo](docs/assets/kavrix-tui-demo.gif)](docs/assets/kavrix-tui-demo.mp4)
+
+Video: [`docs/assets/kavrix-tui-demo.mp4`](docs/assets/kavrix-tui-demo.mp4).
+
 ## Requirements
 
 - Node.js `>=24.12.0 <25` or `>=25.1.0`
@@ -82,9 +101,10 @@ passphrase; `put` → passphrase, value (MongoDB adds an optional leading
 datastore to **mongodb** (`datastoreFrom` → `options.datastore ?? 'mongodb'`).
 Prefer `--profile` (or `--datastore file` for legacy paths) for local-file work.
 
-Guided TTY `kavrix init` (interactive) also works and stores under `~/.kavrix/`.
-Non-TTY `kavrix init --passphrase-stdin` is legacy v2 and writes `./kavrix.vault`
-in the current directory — prefer the profile flow above for scripts.
+Interactive TTY `kavrix init` opens Ink onboarding by default and stores under
+`~/.kavrix/`. Pass `--no-tui` for classic masked prompts. Non-TTY
+`kavrix init --passphrase-stdin` is legacy v2 and writes `./kavrix.vault` in the
+current directory — prefer the profile flow above for scripts.
 
 ## Quick start (MongoDB)
 
@@ -159,13 +179,14 @@ structured access or migration.
 
 ### Keys, recovery, and health
 
-| Command                | Purpose                                                     |
-| ---------------------- | ----------------------------------------------------------- |
-| `kavrix key ...`       | Verify, copy, replicate, assign, or rewrap key files.       |
-| `kavrix recovery ...`  | Create, verify, inspect, revoke, or use recovery kits.      |
-| `kavrix doctor`        | Authenticate and validate a vault without revealing values. |
-| `kavrix doctor health` | Diagnose and safely repair bounded transient state.         |
-| `kavrix init`          | Guided local setup; explicit/non-TTY use remains legacy v2. |
+| Command                | Purpose                                                                        |
+| ---------------------- | ------------------------------------------------------------------------------ |
+| `kavrix key ...`       | Verify, copy, replicate, assign, or rewrap key files.                          |
+| `kavrix recovery ...`  | Create, verify, inspect, revoke, or use recovery kits.                         |
+| `kavrix doctor`        | Authenticate and validate a vault without revealing values.                    |
+| `kavrix doctor health` | Diagnose and safely repair bounded transient state.                            |
+| `kavrix tui` / `ui`    | Full interactive Ink app against the real CLI.                                 |
+| `kavrix init`          | Ink TUI onboarding on TTY (`--no-tui` for classic); non-TTY remains legacy v2. |
 
 ## Running tools without pasting secrets
 

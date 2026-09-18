@@ -11,6 +11,7 @@ The `kavrix` archive may contain only:
 - `dist/**/*.js`
 - `dist/**/*.d.ts`
 - `dist/*.cdx.json`
+- `media/**` (README demo screenshot and GIF only)
 - `README.md`
 - `LICENSE`
 - npm-generated `package.json`

@@ -23,6 +23,7 @@
     "src/cli-errors.ts",
     "src/index.ts",
     "src/init-onboarding.ts",
+    "src/init-tui-onboarding.ts",
     "src/local-database-onboarding.ts",
     "src/local-secrets.ts",
     "src/terminal-presentation.ts",
@@ -46,6 +47,9 @@
     "src/execution/broker-protocol.ts",
     "src/execution/authorization-state.ts",
     "src/local-vault-cli.ts",
+    "src/tui-command.ts",
+    "src/tui-session.ts",
+    "src/tui-clipboard.ts",
     "src/kavrix-config.ts",
     "src/version.ts"
   ],

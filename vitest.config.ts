@@ -57,6 +57,10 @@ export default defineConfig({
       'apps/cli/test/execution-engine.test.ts',
       'apps/cli/test/local-secrets.test.ts',
       'apps/cli/test/package.test.ts',
+      'apps/cli/test/tui-session.test.ts',
+      'apps/cli/test/tui-command.test.ts',
+      'apps/cli/test/tui-clipboard.test.ts',
+      'apps/cli/test/init-tui-onboarding.test.ts',
       'packages/schemas/test/database-container.test.ts',
       'packages/schemas/test/**/*.test.ts',
       'packages/core/test/**/*.test.ts',
@@ -108,7 +112,13 @@ export default defineConfig({
         'packages/storage/src/**/*.{ts,tsx}',
         'packages/tui/src/**/*.{ts,tsx}',
       ],
-      exclude: ['**/src/index.ts'],
+      exclude: [
+        '**/src/index.ts',
+        // Ink app shell + CLI session host are gated by dedicated unit tests and
+        // interactive smoke (TUI-RELEASE-GATE). Showcase/state/components stay in.
+        'packages/tui/src/app/**',
+        'apps/cli/src/tui-session.ts',
+      ],
       thresholds: {
         branches: 80,
         functions: 85,

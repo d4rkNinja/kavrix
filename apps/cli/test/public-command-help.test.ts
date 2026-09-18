@@ -151,8 +151,8 @@ describe('public command help contract', () => {
 
     // These counts make intentional public-surface changes explicit while the
     // tree-derived loop below automatically exercises the resulting routes.
-    expect(routes.canonical).toHaveLength(103);
-    expect(routes.aliases).toHaveLength(16);
+    expect(routes.canonical).toHaveLength(104);
+    expect(routes.aliases).toHaveLength(17);
 
     for (const route of [...routes.canonical, ...routes.aliases]) {
       const label =

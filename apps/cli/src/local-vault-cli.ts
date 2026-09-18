@@ -112,6 +112,11 @@ import {
 import { CLI_VERSION } from './version.js';
 import { applyStdinFrameHelp, registerFramesCommand } from './stdin-frames.js';
 import { registerExecutionCommands } from './execution/register.js';
+import { registerTuiCommand } from './tui-command.js';
+import {
+  runInitTuiOnboarding,
+  writeInitTuiOnboardingComplete,
+} from './init-tui-onboarding.js';
 import { registerStructuredVaultCommands } from './structured-vault-commands.js';
 import {
   authenticationFailure,
@@ -181,6 +186,12 @@ export type LocalCliOptions = Readonly<{
   acceptCurrent?: boolean;
   reveal?: boolean;
   json?: boolean;
+  /** Commander `--no-tui` sets `tui: false` (default true). */
+  tui?: boolean;
+  /** TUI presentation: `--ascii` / `--color` / `--no-color` / `--no-splash`. */
+  ascii?: boolean;
+  color?: boolean;
+  splash?: boolean;
   limit?: string;
   caseSensitive?: boolean;
   allowInsecureTransport?: boolean;
@@ -207,7 +218,7 @@ export function buildLocalCli(): Command {
   const init = program
     .command('init')
     .description(
-      'Create a recoverable local database; explicit routing creates a legacy vault and key file.',
+      'Create a vault interactively (Ink TUI on TTY by default). Explicit routing / stdin flags use non-interactive init; --no-tui uses classic guided prompts.',
     );
   // Root init deliberately defaults to the local encrypted-file datastore;
   // MongoDB requires an explicit `--datastore mongodb` choice outside the
@@ -230,9 +241,54 @@ export function buildLocalCli(): Command {
     '--passphrase-stdin',
     'Read the key-file passphrase from standard input (never from an argument).',
   );
+  init.option(
+    '--no-tui',
+    'Use classic guided line prompts instead of Ink TUI onboarding (default on interactive TTY).',
+  );
+  init.option(
+    '--json',
+    'Machine-readable / non-interactive init (skips TUI and classic prompts).',
+  );
+  init.option('--ascii', 'Force printable ASCII borders and glyphs (TUI onboarding).');
+  init.option('--color', 'Force color when the terminal supports it (TUI onboarding).');
+  init.option(
+    '--no-color',
+    'Disable ANSI color for TUI onboarding (also honors NO_COLOR).',
+  );
+  init.option('--no-splash', 'Skip the animated startup splash on TUI onboarding.');
   addKeyOptions(init);
   init.action(async (...args: unknown[]) => {
     const options = getOptions(args);
+    if (shouldRunInitTuiOnboarding(options)) {
+      const result = await runInitTuiOnboarding({
+        ...(options.profileConfigDir === undefined
+          ? {}
+          : { profileConfigDir: options.profileConfigDir }),
+        ...(options.ascii === true ? { ascii: true } : {}),
+        ...(options.color === true
+          ? { color: true }
+          : options.color === false
+            ? { color: false }
+            : {}),
+        ...(options.splash === false ? { splash: false } : {}),
+      });
+      if (result.status === 'completed') {
+        writeInitTuiOnboardingComplete({
+          color: initOnboardingColorEnabled(),
+          profileId: result.profileId,
+          datastore: result.datastore,
+          ...(result.recoveryFile === undefined
+            ? {}
+            : { recoveryFile: result.recoveryFile }),
+          write: (text) => process.stderr.write(text),
+        });
+        return;
+      }
+      if (result.status === 'cancelled') {
+        throw new InitOnboardingCancelledError();
+      }
+      throw new LocalCliError(result.message);
+    }
     const guided = shouldRunInitOnboarding(options);
     if (guided) {
       const { ensureKavrixConfig, getKavrixConfigPath } =
@@ -639,6 +695,7 @@ export function buildLocalCli(): Command {
   });
 
   registerExecutionCommands(program);
+  registerTuiCommand(program);
   registerStructuredVaultCommands(program);
   registerFramesCommand(program);
   applyStdinFrameHelp(program);
@@ -1313,8 +1370,13 @@ const REVISION_ANCHOR_KEYS = [
   'version',
 ] as const;
 
-function shouldRunInitOnboarding(options: LocalCliOptions): boolean {
+/**
+ * Interactive setup eligibility (classic guided or TUI). Requires stdin+stderr TTY
+ * and no non-interactive / explicit-routing flags.
+ */
+export function shouldRunInitOnboarding(options: LocalCliOptions): boolean {
   if (!process.stdin.isTTY || !process.stderr.isTTY) return false;
+  if (options.json === true) return false;
   if (
     options.profile !== undefined ||
     options.profileConfigDir !== undefined ||
@@ -1327,6 +1389,16 @@ function shouldRunInitOnboarding(options: LocalCliOptions): boolean {
     return false;
   }
   return Object.keys(options.routingOverrides ?? {}).length === 0;
+}
+
+/**
+ * Default interactive path: Ink TUI onboarding when stdin+stdout+stderr are TTYs
+ * and `--no-tui` was not passed (Commander sets `tui: false`).
+ */
+export function shouldRunInitTuiOnboarding(options: LocalCliOptions): boolean {
+  if (!shouldRunInitOnboarding(options)) return false;
+  if (options.tui === false) return false;
+  return process.stdout.isTTY;
 }
 
 /** Whether an ambient database-bound profile will route flat commands. */

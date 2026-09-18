@@ -54,6 +54,13 @@ vi.mock('../src/kavrix-config.js', () => ({
   getKavrixConfigPath: configMocks.path,
 }));
 
+vi.mock('../src/init-tui-onboarding.js', () => ({
+  runInitTuiOnboarding: vi.fn(async () => {
+    throw new Error('TUI onboarding should not run in classic init tests');
+  }),
+  writeInitTuiOnboardingComplete: vi.fn(),
+}));
+
 import { PortableKeyFileError } from '@kavrix/key-files';
 import { EncryptedDatabaseStoreError, EncryptedVaultStoreError } from '@kavrix/storage';
 
@@ -62,12 +69,19 @@ import { DatastoreProfileError } from '../src/datastore-profiles.js';
 import { InitOnboardingCancelledError } from '../src/init-onboarding.js';
 import { LocalSecretInput } from '../src/local-secrets.js';
 import {
+  runInitTuiOnboarding,
+  writeInitTuiOnboardingComplete,
+} from '../src/init-tui-onboarding.js';
+import {
   buildLocalCli,
   classifyInitDestinationError,
   runLocalCli,
+  shouldRunInitOnboarding,
+  shouldRunInitTuiOnboarding,
 } from '../src/local-vault-cli.js';
 
 const stdinTtyDescriptor = Object.getOwnPropertyDescriptor(process.stdin, 'isTTY');
+const stdoutTtyDescriptor = Object.getOwnPropertyDescriptor(process.stdout, 'isTTY');
 const stderrTtyDescriptor = Object.getOwnPropertyDescriptor(process.stderr, 'isTTY');
 const originalExitCode = process.exitCode;
 
@@ -91,6 +105,11 @@ beforeEach(() => {
   guidedMocks.execute.mockReset();
   configMocks.ensure.mockClear();
   configMocks.path.mockClear();
+  vi.mocked(runInitTuiOnboarding).mockReset();
+  vi.mocked(runInitTuiOnboarding).mockImplementation(async () => {
+    throw new Error('TUI onboarding should not run in classic init tests');
+  });
+  vi.mocked(writeInitTuiOnboardingComplete).mockReset();
   setTty(true);
   vi.stubEnv('NO_COLOR', '1');
 });
@@ -99,6 +118,7 @@ afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllEnvs();
   restoreProperty(process.stdin, 'isTTY', stdinTtyDescriptor);
+  restoreProperty(process.stdout, 'isTTY', stdoutTtyDescriptor);
   restoreProperty(process.stderr, 'isTTY', stderrTtyDescriptor);
   process.exitCode = originalExitCode;
 });
@@ -185,7 +205,7 @@ describe('root init onboarding composition', () => {
     });
     const stderr = vi.spyOn(process.stderr, 'write').mockReturnValue(true);
 
-    await buildLocalCli().parseAsync(['node', 'kavrix', 'init']);
+    await buildLocalCli().parseAsync(['node', 'kavrix', 'init', '--no-tui']);
 
     const protectedDirectory = join(homedir(), '.kavrix');
     expect(guidedMocks.preflight).toHaveBeenCalledWith({
@@ -222,7 +242,7 @@ describe('root init onboarding composition', () => {
     vi.spyOn(process.stderr, 'write').mockReturnValue(true);
 
     await expect(
-      buildLocalCli().parseAsync(['node', 'kavrix', 'init']),
+      buildLocalCli().parseAsync(['node', 'kavrix', 'init', '--no-tui']),
     ).rejects.toBeInstanceOf(InitOnboardingCancelledError);
 
     expect(read).not.toHaveBeenCalled();
@@ -265,6 +285,173 @@ describe('root init onboarding composition', () => {
     },
   );
 
+  it('routes TUI vs classic via shouldRunInitTuiOnboarding', () => {
+    setTty(true);
+    const base = {
+      keyFile: './kavrix.key',
+      collection: 'kavrix_vaults',
+      vault: 'default',
+      vaultWasDefaulted: true as const,
+      routingOverrides: {},
+    };
+    expect(shouldRunInitOnboarding(base)).toBe(true);
+    expect(shouldRunInitTuiOnboarding(base)).toBe(true);
+    expect(shouldRunInitTuiOnboarding({ ...base, tui: false })).toBe(false);
+    expect(shouldRunInitOnboarding({ ...base, tui: false })).toBe(true);
+    expect(shouldRunInitOnboarding({ ...base, passphraseStdin: true })).toBe(false);
+    expect(shouldRunInitTuiOnboarding({ ...base, passphraseStdin: true })).toBe(false);
+    expect(shouldRunInitOnboarding({ ...base, json: true })).toBe(false);
+    expect(shouldRunInitTuiOnboarding({ ...base, json: true })).toBe(false);
+    Object.defineProperty(process.stdout, 'isTTY', {
+      configurable: true,
+      value: false,
+    });
+    expect(shouldRunInitOnboarding(base)).toBe(true);
+    expect(shouldRunInitTuiOnboarding(base)).toBe(false);
+  });
+
+  it('eligibility matrix covers non-interactive and routing flags', () => {
+    setTty(true);
+    const base = {
+      keyFile: './kavrix.key',
+      collection: 'kavrix_vaults',
+      vault: 'default',
+      vaultWasDefaulted: true as const,
+      routingOverrides: {},
+    };
+    const cases: Array<
+      Readonly<{
+        label: string;
+        patch: Record<string, unknown>;
+        expectOnboarding: boolean;
+        expectTui: boolean;
+      }>
+    > = [
+      { label: 'tty default', patch: {}, expectOnboarding: true, expectTui: true },
+      {
+        label: '--no-tui',
+        patch: { tui: false },
+        expectOnboarding: true,
+        expectTui: false,
+      },
+      {
+        label: '--passphrase-stdin',
+        patch: { passphraseStdin: true },
+        expectOnboarding: false,
+        expectTui: false,
+      },
+      {
+        label: '--database-url-stdin',
+        patch: { databaseUrlStdin: true },
+        expectOnboarding: false,
+        expectTui: false,
+      },
+      {
+        label: '--json',
+        patch: { json: true },
+        expectOnboarding: false,
+        expectTui: false,
+      },
+      {
+        label: '--profile',
+        patch: { profile: 'work' },
+        expectOnboarding: false,
+        expectTui: false,
+      },
+      {
+        label: 'explicit vault',
+        patch: { vault: 'custom', vaultWasDefaulted: undefined },
+        expectOnboarding: false,
+        expectTui: false,
+      },
+      {
+        label: 'routing override',
+        patch: { routingOverrides: { dataFile: './x.vault' } },
+        expectOnboarding: false,
+        expectTui: false,
+      },
+      {
+        label: '--allow-insecure-transport',
+        patch: { allowInsecureTransport: true },
+        expectOnboarding: false,
+        expectTui: false,
+      },
+      {
+        label: '--secrets-stdin',
+        patch: { secretsStdin: true },
+        expectOnboarding: false,
+        expectTui: false,
+      },
+    ];
+    for (const row of cases) {
+      const options = { ...base, ...row.patch };
+      expect(shouldRunInitOnboarding(options), row.label).toBe(row.expectOnboarding);
+      expect(shouldRunInitTuiOnboarding(options), row.label).toBe(row.expectTui);
+    }
+    Object.defineProperty(process.stdin, 'isTTY', { configurable: true, value: false });
+    expect(shouldRunInitOnboarding(base)).toBe(false);
+    expect(shouldRunInitTuiOnboarding(base)).toBe(false);
+  });
+
+  it('invokes TUI onboarding by default on full TTY', async () => {
+    vi.mocked(runInitTuiOnboarding).mockResolvedValueOnce({
+      status: 'completed',
+      profileId: 'default',
+      datastore: 'file',
+    });
+
+    await buildLocalCli().parseAsync(['node', 'kavrix', 'init']);
+
+    expect(runInitTuiOnboarding).toHaveBeenCalledOnce();
+    expect(writeInitTuiOnboardingComplete).toHaveBeenCalledWith(
+      expect.objectContaining({
+        profileId: 'default',
+        datastore: 'file',
+      }),
+    );
+    expect(guidedMocks.execute).not.toHaveBeenCalled();
+  });
+
+  it('passes --ascii and --no-splash into TUI onboarding', async () => {
+    vi.mocked(runInitTuiOnboarding).mockResolvedValueOnce({
+      status: 'completed',
+      profileId: 'default',
+      datastore: 'file',
+    });
+
+    await buildLocalCli().parseAsync([
+      'node',
+      'kavrix',
+      'init',
+      '--ascii',
+      '--no-splash',
+    ]);
+
+    expect(runInitTuiOnboarding).toHaveBeenCalledWith(
+      expect.objectContaining({ ascii: true, splash: false }),
+    );
+  });
+
+  it('maps TUI cancel to InitOnboardingCancelledError', async () => {
+    vi.mocked(runInitTuiOnboarding).mockResolvedValueOnce({ status: 'cancelled' });
+    await expect(
+      buildLocalCli().parseAsync(['node', 'kavrix', 'init']),
+    ).rejects.toBeInstanceOf(InitOnboardingCancelledError);
+  });
+
+  it('maps TUI failed status to LocalCliError', async () => {
+    vi.mocked(runInitTuiOnboarding).mockResolvedValueOnce({
+      status: 'failed',
+      message: 'The datastore profile already exists.',
+    });
+    await expect(
+      buildLocalCli().parseAsync(['node', 'kavrix', 'init']),
+    ).rejects.toMatchObject({
+      name: 'LocalCliError',
+      message: 'The datastore profile already exists.',
+    });
+  });
+
   it('renders an actionable protected-file error for explicit legacy init', async () => {
     setTty(false);
     const stderr = vi.spyOn(process.stderr, 'write').mockReturnValue(true);
@@ -280,6 +467,7 @@ describe('root init onboarding composition', () => {
 
 function setTty(value: boolean): void {
   Object.defineProperty(process.stdin, 'isTTY', { configurable: true, value });
+  Object.defineProperty(process.stdout, 'isTTY', { configurable: true, value });
   Object.defineProperty(process.stderr, 'isTTY', { configurable: true, value });
 }
 

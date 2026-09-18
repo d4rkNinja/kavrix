@@ -50,7 +50,8 @@ function portableKeyFileExitCode(error: PortableKeyFileError): number {
  * sanitized line plus the exit-code contract from the CLI reference
  * (0 ok · 1 generic · 2 usage · 10 auth · 11 missing · 12 denied ·
  * 13 grant · 14 configuration · 15 datastore · 16 integrity · 17 confirm).
- * Unknown failures stay generic and never leak raw error text.
+ * Unknown failures stay generic and never leak raw error text, except
+ * short module-load diagnostics that cannot carry vault secrets.
  */
 export function classifyCliFailure(error: unknown): Readonly<{
   message: string;
@@ -135,6 +136,19 @@ export function classifyCliFailure(error: unknown): Readonly<{
   }
   if (error instanceof LocalCliError) {
     return { message: error.message, exitCode: 1 };
+  }
+  // Bundle/runtime module-load failures are safe to surface: they never carry
+  // vault secrets and otherwise collapse to a generic line that hides the fix.
+  if (
+    error instanceof Error &&
+    error.message.length > 0 &&
+    error.message.length <= 200 &&
+    /^(Dynamic require of |Cannot find module )/u.test(error.message)
+  ) {
+    return {
+      message: `Kavrix command failed: ${error.message}`,
+      exitCode: 1,
+    };
   }
   return { message: 'Kavrix command failed.', exitCode: 1 };
 }

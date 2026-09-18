@@ -7,17 +7,15 @@ authenticated encrypted database with multiple independently encrypted vaults
 in a hardened local container or two MongoDB collections. Version 2 single-vault
 documents remain supported through stable compatibility commands and explicit
 copy-first migration. No Kavrix API server or sync daemon is required or
-shipped. A bare no-option TTY `kavrix init` now runs a local-file-only
-guided flow that preflights destinations, creates an encrypted database and
-owner key, creates and selects one default vault, creates and locally verifies a
-separate recovery kit, then selects the new profile. The generated protected,
-non-secret `~/.kavrix/config.toml` remains a command reference and is not
-loaded automatically. Explicitly routed or non-TTY root `init` remains the
-legacy version 2 compatibility path.
-The schema-driven
-Ink showcase in `packages/tui`
-remains available as the presentation boundary for interactive storage
-selection, but the current no-argument TTY `init` path does not invoke it.
+shipped. A bare no-option TTY `kavrix init` defaults to Ink TUI onboarding
+(pass `--no-tui` for classic masked prompts). It runs a local-file-only flow
+that preflights destinations, creates an encrypted database and owner key,
+creates and selects one default vault, creates and locally verifies a separate
+recovery kit, then selects the new profile. The generated protected, non-secret
+`~/.kavrix/config.toml` remains a command reference and is not loaded
+automatically. Explicitly routed or non-TTY root `init` remains the legacy
+version 2 compatibility path. `kavrix tui` / `kavrix ui` mounts the full Ink
+app against the real CLI backend (zero product mocks).
 
 Active release workspaces:
 
@@ -27,13 +25,14 @@ Active release workspaces:
 - `@kavrix/key-files`: protected database-owner key, recovery-kit, legacy key, revision-anchor, and sealed authorization-state files.
 - `@kavrix/storage`: database-scoped local/MongoDB adapters and fail-closed URI/TLS policy.
 - `@kavrix/runner`: shell-free child execution with minimal environments and secret redaction in captured output.
-- `@kavrix/tui`: Ink components for the interactive storage-selection showcase (animated); presentational only, with static strings and no persistence or cryptography.
-- `kavrix`: CLI composition, recovery-verified local onboarding, protected
-  `config.toml` reference generation, masked input with field-local validation
-  retries and confirmation-pair recovery, TTY-gated status colors with textual
-  markers, sanitized rendering,
-  credential execution, policy firewall, structured database-vault projection,
-  and npm package.
+- `@kavrix/tui`: Ink app shell and screens for `kavrix tui` / onboarding; host
+  backends call the real CLI (static test backend is tests-only).
+- `kavrix`: CLI composition, Ink-first recovery-verified local onboarding
+  (`--no-tui` classic), `kavrix tui` session backend, protected `config.toml`
+  reference generation, masked input with field-local validation retries and
+  confirmation-pair recovery, TTY-gated status colors with textual markers,
+  sanitized rendering, credential execution, policy firewall, structured
+  database-vault projection, and npm package.
 
 The active-versus-parked source boundary and its verification commands are
 recorded in [Active release boundary](active-release-boundary.md). The source

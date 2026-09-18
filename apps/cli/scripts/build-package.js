@@ -109,6 +109,10 @@ const bundle = await build({
   target: ['node24.12'],
   treeShaking: true,
 });
+// Ink (`signal-exit`), `ws`, and other bundled CJS deps still emit esbuild's
+// throwing `__require` helper for bare Node builtins / optional peers. Bridge
+// that helper through the createRequire banner before artifact hashing.
+await bridgeThrowingEsbuildRequire();
 
 const publicModule = `export const CLI_VERSION = ${JSON.stringify(manifest.version)};\n`;
 const publicDeclaration = `export declare const CLI_VERSION: ${JSON.stringify(manifest.version)};\n`;
@@ -139,10 +143,45 @@ await writeFile(
 );
 
 /**
+ * Replace esbuild's throwing ESM `__require` stub with a createRequire bridge.
+ * Optional externals (`bufferutil`, `utf-8-validate`, `react-devtools-core`)
+ * still fail closed for callers that wrap the require in try/catch (as `ws`
+ * does); Node builtins and resolvable CJS modules load normally.
+ */
+async function bridgeThrowingEsbuildRequire() {
+  const throwingMarker = 'Dynamic require of "';
+  const throwingRequirePattern =
+    /var __require = \/\* @__PURE__ \*\/ \(\(x\) => typeof require !== "undefined" \? require : typeof Proxy !== "undefined" \? new Proxy\(x, \{\n {2}get: \(a, b\) => \(typeof require !== "undefined" \? require : a\)\[b\]\n\}\) : x\)\(function\(x\) \{\n {2}if \(typeof require !== "undefined"\) return require\.apply\(this, arguments\);\n {2}throw Error\('Dynamic require of "' \+ x \+ '" is not supported'\);\n\}\);/g;
+  const bridgedRequire = 'var __require = (x) => __kavrixNodeRequire(x);';
+
+  const visit = async (directory) => {
+    for (const entry of await readdir(directory, { withFileTypes: true })) {
+      const path = resolve(directory, entry.name);
+      if (entry.isDirectory()) {
+        await visit(path);
+        continue;
+      }
+      if (!entry.isFile() || !entry.name.endsWith('.js')) continue;
+      const source = await readFile(path, 'utf8');
+      if (!source.includes(throwingMarker)) continue;
+      const rewritten = source.replace(throwingRequirePattern, bridgedRequire);
+      if (rewritten === source || rewritten.includes(throwingMarker)) {
+        throw new Error(
+          `Failed to bridge esbuild __require in ${normalizeRelativePath(relative(packageDirectory, path))}.`,
+        );
+      }
+      await writeFile(path, rewritten, 'utf8');
+    }
+  };
+  await visit(outputDirectory);
+}
+
+/**
  * The reviewed YAML parser is CommonJS and requires bare builtin names
  * ('process', 'buffer'), which esbuild wraps as throwing dynamic requires
- * when emitting ESM. Bridge them through createRequire against the
- * `node:`-prefixed spellings Node resolves reliably.
+ * when emitting ESM. Rewrite those static requires to the banner builtin
+ * bridge at load time; remaining dynamic `__require` calls are handled by
+ * `bridgeThrowingEsbuildRequire` after the bundle emits.
  */
 
 function yamlBuiltinProcessShim() {
@@ -535,6 +574,11 @@ async function validateCompiledArtifacts(artifacts) {
   }
   if (compiled.includes('"sourcesContent"')) {
     throw new Error('The inline source map must not embed private source text.');
+  }
+  if (compiled.includes('Dynamic require of "')) {
+    throw new Error(
+      "Compiled artifacts still contain esbuild's throwing dynamic-require stub.",
+    );
   }
 }
 
