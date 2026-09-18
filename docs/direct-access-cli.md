@@ -1,11 +1,11 @@
 # Direct local CLI
 
 Kavrix no longer uses a Kavrix API or self-hosted server for the supported path.
-The CLI opens the selected local-file or MongoDB adapter itself, validates its
-path or URI policy, decrypts locally with a protected key file or recovery kit,
-and writes only authenticated encrypted database/vault documents. Non-secret
-profiles route the direct connection without storing MongoDB credentials or
-unlock material.
+The CLI is the secrets firewall and the storage client: it opens the selected
+local-file or MongoDB adapter itself, validates its path or URI policy,
+decrypts locally with a protected key file or recovery kit, and writes only
+authenticated encrypted database/vault documents. Non-secret profiles route the
+direct connection without storing MongoDB credentials or unlock material.
 
 Use the local command surface documented in [the CLI reference](./cli-reference.md).
 The direct storage boundary is implemented by

@@ -24,7 +24,7 @@ export const SPLASH_MIN_MS = 1_200;
 export const SPLASH_MAX_MS = 1_800;
 export const SPLASH_ANIMATION_MS = 100;
 
-const TAGLINE = 'zero-knowledge credential vault';
+const TAGLINE = 'local-first secrets firewall';
 
 /**
  * Multi-line dual-tone wordmark (KAV / RIX). Pure presentation — no mocks.

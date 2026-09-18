@@ -1,7 +1,8 @@
 # Security Policy
 
-Kavrix is an experimental `0.2.x` Node.js CLI for zero-knowledge credential
-storage and scoped credential execution. It encrypts credential labels and
+Kavrix is an experimental `0.2.x` Node.js CLI: a local-first secrets firewall
+for developers, applications, and AI agents. It authorizes scoped secret
+execution (policies, grants, agent brokers) and encrypts credential labels and
 values in the local CLI process before writing authenticated ciphertext to a
 protected local database file or directly to the operator's MongoDB. Security
 claims here are limited to the implementation and evidence recorded in

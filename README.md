@@ -1,27 +1,117 @@
 # Kavrix
 
-Kavrix keeps credentials encrypted on your machine, in a local file or your own
-MongoDB deployment. Store and retrieve secrets from the terminal, or let tools
-use only the credentials you allow. Your unlock material stays local.
+**Secrets stay in Kavrix. Applications get access. Agents get permission.**
+
+A local-first secrets firewall for developers, applications, and AI agents.
+
+Give applications and AI agents access to credentials without handing them your
+`.env`. Kavrix decides which process may receive a secret, under which policy
+or grant, and records what happened — without shipping secrets to a Kavrix
+cloud.
 
 ![Kavrix interactive TUI — unlocked home](docs/assets/demo-frame-home-unlocked.png)
 
-## Interactive TUI
+## Why not paste a `.env`?
 
-On Linux, macOS, and Windows with Node.js `>=24.12.0`, Kavrix ships a real Ink
-terminal UI (no mocks — every action runs the same CLI):
+- **Scoped secret execution** — inject only the credentials a command needs,
+  for that process only (`kavrix run`).
+- **Policies and grants** — bound executables, SHA-256 pins, TTLs, confirmation,
+  max-use, and revocable temporary access.
+- **AI agent isolation** — agents hold no credential material; they ask a local
+  broker per operation (`kavrix agent run`).
+- **Auditability** — review authorization and use events without secret
+  plaintext (`kavrix audit`).
+- **Local-first** — encrypted storage on your machine (local file or your own
+  MongoDB). No Kavrix server, account, or telemetry.
 
-```sh
-kavrix init   # TUI onboarding on an interactive TTY (default)
-kavrix tui    # full app: profiles, vaults, credentials, doctor, recovery, …
-```
+The encrypted vault is infrastructure. The product is the secrets firewall in
+front of it.
 
-Use `kavrix init --no-tui` for classic line prompts, or stdin/explicit routing
-for scripts. Demo walkthrough:
+## Demo
+
+Interactive management for the secrets firewall (profiles, vaults, credentials,
+doctor, recovery, and more):
 
 [![Kavrix TUI demo](docs/assets/kavrix-tui-demo.gif)](docs/assets/kavrix-tui-demo.mp4)
 
 Video: [`docs/assets/kavrix-tui-demo.mp4`](docs/assets/kavrix-tui-demo.mp4).
+
+```sh
+kavrix init   # TUI onboarding on an interactive TTY (default)
+kavrix tui    # full interactive app against the real CLI
+```
+
+Use `kavrix init --no-tui` for classic line prompts, or stdin/explicit routing
+for scripts.
+
+## Run tools without pasting secrets
+
+```sh
+# Inject selected credentials as environment variables only.
+kavrix run --secret AWS_KEY=aws/deploy-key -- terraform plan
+```
+
+## AI agents
+
+```sh
+# Agent holds no credentials; the local broker authorizes each request.
+kavrix agent run --agent bot --config kavrix.yaml \
+  --profile work --vault <vault-id> \
+  -- codex
+```
+
+Inside an agent session, children inherit broker access and request credentials
+through `kavrix agent exec`. Denials are distinguishable from broken
+connections, and `kavrix audit` records the events.
+
+## Policies
+
+```sh
+# Bound what a credential may do before anything spawns.
+kavrix policy create deploy --secret aws/deploy-key \
+  --command terraform --hash terraform=<sha256> --ttl 30m --require-confirmation
+
+# Simulate and explain without reading the credential.
+kavrix policy check deploy -- terraform plan
+kavrix policy explain deploy -- terraform plan
+kavrix policy lint
+kavrix policy diff deploy --secret aws/deploy-key --command terraform --ttl 15m
+kavrix policy suggest
+```
+
+Policies support command allowlists, SHA-256 executable pins, execution-window
+TTLs, working-directory restrictions, deny rules, reveal gating, and
+confirmation requirements. Every decision is evaluated fail-closed before a
+child process spawns. Policy simulation, explanation, linting, diffing, and
+suggestions authenticate authorization metadata without decrypting credential
+payloads or mutating the audit/state sidecar.
+
+## Temporary grants
+
+```sh
+# Hand out access that expires and can be revoked.
+kavrix grant create aws/deploy-key --ttl 15m --max-uses 3
+kavrix grant list
+kavrix grant show <grant-id>
+kavrix grant revoke <grant-id>
+```
+
+## Audit
+
+```sh
+# Review what happened, without secret material.
+kavrix audit
+```
+
+## Local-first storage
+
+Secrets stay encrypted on your machine: a protected local database file or your
+own MongoDB deployment. One database holds multiple independently encrypted
+vaults. Unlock material never leaves your control — there is no Kavrix-hosted
+service in the path.
+
+Bring-your-own MongoDB is optional; local file is enough for most developer
+workflows.
 
 ## Requirements
 
@@ -106,39 +196,23 @@ Interactive TTY `kavrix init` opens Ink onboarding by default and stores under
 `kavrix init --passphrase-stdin` is legacy v2 and writes `./kavrix.vault` in the
 current directory — prefer the profile flow above for scripts.
 
-## Quick start (MongoDB)
+## Interactive TUI
 
-Needs a replica-set URI. Profiles do not store the connection string — supply it
-as the first stdin frame on each `db …` command. Root credential commands also
-take `--database-url-stdin`.
+On Linux, macOS, and Windows with Node.js `>=24.12.0`, Kavrix ships a real Ink
+terminal UI for managing the secrets firewall (no mocks — every action runs the
+same CLI):
 
 ```sh
-mkdir -p ~/.kavrix
-kavrix db profile add mongo --datastore mongodb --database kavrix_e2e \
-  --key-file ~/.kavrix/mongo.kavrix.key
-kavrix db profile use mongo
-
-URI='mongodb://127.0.0.1:27017/kavrix_e2e?replicaSet=rs0'
-PASS='MyPassphrase16chars!'
-
-printf '%s\n' "$URI" 'lab' "$PASS" "$PASS" \
-  | kavrix db init --profile mongo --passphrase-stdin
-
-printf '%s\n' "$URI" "$PASS" 'default-vault' \
-  | kavrix db vault create --profile mongo --passphrase-stdin
-# VAULT_ID from created.id / vaultId
-
-printf '%s\n' "$URI" "$PASS" \
-  | kavrix db vault use "$VAULT_ID" --profile mongo --passphrase-stdin
-
-printf '%s\n' "$URI" "$PASS" 'secret-value' \
-  | kavrix put github/token --profile mongo --passphrase-stdin --database-url-stdin --value-stdin
-
-printf '%s\n' "$URI" "$PASS" \
-  | kavrix list --profile mongo --passphrase-stdin --database-url-stdin
+kavrix init   # TUI onboarding on an interactive TTY (default)
+kavrix tui    # full app: profiles, vaults, credentials, doctor, recovery, …
 ```
 
-More detail: [Command guide](docs/cli-reference.md), [CONTRIBUTING.md](CONTRIBUTING.md).
+Use `kavrix init --no-tui` for classic line prompts, or stdin/explicit routing
+for scripts. Demo walkthrough:
+
+[![Kavrix TUI demo](docs/assets/kavrix-tui-demo.gif)](docs/assets/kavrix-tui-demo.mp4)
+
+Video: [`docs/assets/kavrix-tui-demo.mp4`](docs/assets/kavrix-tui-demo.mp4).
 
 ## Credential model
 
@@ -188,52 +262,39 @@ structured access or migration.
 | `kavrix tui` / `ui`    | Full interactive Ink app against the real CLI.                                 |
 | `kavrix init`          | Ink TUI onboarding on TTY (`--no-tui` for classic); non-TTY remains legacy v2. |
 
-## Running tools without pasting secrets
+## Quick start (MongoDB)
+
+Needs a replica-set URI. Profiles do not store the connection string — supply it
+as the first stdin frame on each `db …` command. Root credential commands also
+take `--database-url-stdin`.
 
 ```sh
-# Inject selected credentials as environment variables only.
-kavrix run --secret AWS_KEY=aws/deploy-key -- terraform plan
+mkdir -p ~/.kavrix
+kavrix db profile add mongo --datastore mongodb --database kavrix_e2e \
+  --key-file ~/.kavrix/mongo.kavrix.key
+kavrix db profile use mongo
 
-# Bound what a credential may do before anything spawns.
-kavrix policy create deploy --secret aws/deploy-key \
-  --command terraform --hash terraform=<sha256> --ttl 30m --require-confirmation
+URI='mongodb://127.0.0.1:27017/kavrix_e2e?replicaSet=rs0'
+PASS='MyPassphrase16chars!'
 
-# Simulate and explain without reading the credential.
-kavrix policy check deploy -- terraform plan
-kavrix policy explain deploy -- terraform plan
-kavrix policy lint
-kavrix policy diff deploy --secret aws/deploy-key --command terraform --ttl 15m
-kavrix policy suggest
+printf '%s\n' "$URI" 'lab' "$PASS" "$PASS" \
+  | kavrix db init --profile mongo --passphrase-stdin
 
-# Hand out access that expires and can be revoked.
-kavrix grant create aws/deploy-key --ttl 15m --max-uses 3
-kavrix grant list
-kavrix grant show <grant-id>
-kavrix grant revoke <grant-id>
+printf '%s\n' "$URI" "$PASS" 'default-vault' \
+  | kavrix db vault create --profile mongo --passphrase-stdin
+# VAULT_ID from created.id / vaultId
 
-# Review what happened, without secret material.
-kavrix audit
+printf '%s\n' "$URI" "$PASS" \
+  | kavrix db vault use "$VAULT_ID" --profile mongo --passphrase-stdin
+
+printf '%s\n' "$URI" "$PASS" 'secret-value' \
+  | kavrix put github/token --profile mongo --passphrase-stdin --database-url-stdin --value-stdin
+
+printf '%s\n' "$URI" "$PASS" \
+  | kavrix list --profile mongo --passphrase-stdin --database-url-stdin
 ```
 
-Policies support command allowlists, SHA-256 executable pins, execution-window
-TTLs, working-directory restrictions, deny rules, reveal gating, and
-confirmation requirements. Every decision is evaluated fail-closed before a
-child process spawns. Policy simulation, explanation, linting, diffing, and
-suggestions authenticate authorization metadata without decrypting credential
-payloads or mutating the audit/state sidecar.
-
-## AI coding agents
-
-```sh
-kavrix agent run --agent bot --config kavrix.yaml \
-  --profile work -- <agent-executable>
-```
-
-An agent started this way holds no credential material. When it needs one, it
-asks a local broker over a per-session authenticated channel; the broker checks
-your stored policies for that request and injects the value directly into one
-authorized child process. Denials are distinguishable from broken connections,
-and `kavrix audit` records the events.
+More detail: [Command guide](docs/cli-reference.md), [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Options worth knowing
 
@@ -256,10 +317,30 @@ Without `--profile`, root credential commands still default `--datastore` to
 
 `kavrix <command> --help` is authoritative for your installed version.
 
+## Backups and recovery
+
+Keep at least one database recovery kit on separate protected media from the
+active owner key, and verify it with
+`kavrix db recovery verify --profile work --recovery-file <path>` before you
+rely on it. Back up datastore ciphertext and protected recovery material
+separately.
+
+For local-file sharing, generate a fresh share key with `kavrix db key create`
+and transfer it together with the exact matching database file. That pair grants
+full access to every vault once its passphrase is known; there is no
+vault-scoped local sharing or revocation.
+
+If every valid owner key file and every recovery kit is lost, the database is
+permanently unrecoverable by design. There is no vendor reset or escrow, because
+no one else ever held the required material.
+
 ## Security model
 
-Kavrix uses versioned authenticated encryption, not "unbreakable encryption."
-Vault payloads, the private database catalog, and wrapped keys use
+Kavrix controls which process receives a credential. Once an authorized process
+receives it, Kavrix cannot control what that program does with the value.
+
+Cryptography uses versioned authenticated encryption, not "unbreakable
+encryption." Vault payloads, the private database catalog, and wrapped keys use
 XChaCha20-Poly1305. Passphrase-protected files derive keys with Argon2id.
 HKDF-SHA-256 separates key purposes, and associated data binds every ciphertext
 to the exact database, vault, purpose, key version, revision, and metadata
@@ -280,23 +361,6 @@ encrypted. Remote connections must explicitly enable validated TLS.
 
 Details: [threat model](docs/threat-model.md),
 [cryptography](docs/cryptography.md), [data model](docs/data-model.md).
-
-## Backups and recovery
-
-Keep at least one database recovery kit on separate protected media from the
-active owner key, and verify it with
-`kavrix db recovery verify --profile work --recovery-file <path>` before you
-rely on it. Back up datastore ciphertext and protected recovery material
-separately.
-
-For local-file sharing, generate a fresh share key with `kavrix db key create`
-and transfer it together with the exact matching database file. That pair grants
-full access to every vault once its passphrase is known; there is no
-vault-scoped local sharing or revocation.
-
-If every valid owner key file and every recovery kit is lost, the database is
-permanently unrecoverable by design. There is no vendor reset or escrow, because
-no one else ever held the required material.
 
 ## Limitations
 

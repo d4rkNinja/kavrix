@@ -2,10 +2,13 @@
 
 ## Mission
 
-Kavrix is a production-grade, zero-knowledge credentials vault. `CredVault` is the
-default product label and `creds` is the default executable; both must remain
-configurable. The CLI encrypts sensitive data before it reaches the API or
-MongoDB. Never weaken this boundary for convenience.
+Kavrix is a production-grade, local-first secrets firewall for developers,
+applications, and AI agents. Encrypted vault storage is infrastructure behind
+scoped secret execution, policies, grants, and agent brokers. `CredVault` is
+the default product label and `creds` is the default executable; both must
+remain configurable. The CLI encrypts sensitive data before it reaches any
+datastore adapter (local file or MongoDB). Never weaken this boundary for
+convenience.
 
 ## Non-negotiable security rules
 

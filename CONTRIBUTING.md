@@ -1,8 +1,9 @@
 # Contributing to Kavrix
 
-Thank you for helping improve Kavrix. Credential-vault changes have an unusually
-high cost when they are wrong, so small, reviewable patches and explicit evidence
-are preferred over broad rewrites.
+Thank you for helping improve Kavrix. Changes to the secrets firewall,
+authorization path, or encrypted storage have an unusually high cost when they
+are wrong, so small, reviewable patches and explicit evidence are preferred
+over broad rewrites.
 
 Read [AGENTS.md](./AGENTS.md) before changing code. Security-sensitive behavior
 must also be consistent with `docs/threat-model.md` and `docs/cryptography.md`.

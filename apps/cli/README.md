@@ -1,27 +1,61 @@
 # kavrix
 
-Kavrix is a zero-knowledge credential vault for the terminal. It encrypts
-credential names and values on your machine and stores authenticated ciphertext
-in a protected local database file or in your own MongoDB deployment. One
-database holds multiple independently encrypted vaults, and no Kavrix server,
-account, or telemetry exists anywhere in the path.
+**Secrets stay in Kavrix. Applications get access. Agents get permission.**
 
-Tools consume credentials through tightly scoped execution: `kavrix run`
-injects only the requested values into a child process environment, permission
-policies and temporary grants bound what each executable may do, and
-`kavrix agent run` brokers every request from AI coding agents against those
-policies.
+Local-first secrets firewall for developers, applications, and AI agents.
+
+Give applications and AI agents access to credentials without handing them your
+`.env`. `kavrix run` injects only the values a process needs; policies and
+temporary grants bound what each executable may do; `kavrix agent run` brokers
+every request from AI coding agents. Encrypted storage stays on your machine
+(local file or your own MongoDB) — no Kavrix server, account, or telemetry.
 
 ![Kavrix interactive TUI — unlocked home](media/demo-frame-home-unlocked.png)
 
+## Installation
+
+```sh
+npm install --global kavrix
+kavrix --version
+kavrix --help
+```
+
+Requires Node.js `>=24.12.0 <25` or `>=25.1.0`. MongoDB is needed only if you
+select that datastore; database writes require a transaction-capable replica
+set or sharded topology.
+
+## Run a command with scoped secrets
+
+```sh
+kavrix run --secret AWS_KEY=aws/deploy-key -- terraform plan
+
+kavrix policy create deploy --secret aws/deploy-key \
+  --command terraform --hash terraform=<sha256> --ttl 30m --require-confirmation
+kavrix policy check deploy -- terraform plan
+kavrix policy explain deploy -- terraform plan
+kavrix policy lint
+kavrix policy suggest
+
+kavrix grant create aws/deploy-key --ttl 15m --max-uses 3
+kavrix grant show <grant-id>
+
+kavrix agent run --agent bot --config kavrix.yaml --profile work -- codex
+kavrix audit
+```
+
+Policies are evaluated fail-closed before any child process spawns, grants are
+consumed atomically and can be revoked immediately, and `kavrix audit` records
+policy, grant, authorization, and completion events without secret material.
+
 ## Interactive TUI
 
-On Linux, macOS, and Windows with Node.js `>=24.12.0`, Kavrix ships a real Ink
-terminal UI (no mocks — every action runs the same CLI):
+Manage the secrets firewall interactively (profiles, vaults, credentials,
+doctor, recovery). On Linux, macOS, and Windows with Node.js `>=24.12.0`,
+Kavrix ships a real Ink terminal UI — every action runs the same CLI:
 
 ```sh
 kavrix init   # TUI onboarding on an interactive TTY (default)
-kavrix tui    # full app: profiles, vaults, credentials, doctor, recovery, …
+kavrix tui    # full app
 ```
 
 Use `kavrix init --no-tui` for classic line prompts, or stdin/explicit routing
@@ -31,20 +65,6 @@ for scripts.
 
 Full video on GitHub:
 [kavrix-tui-demo.mp4](https://github.com/d4rkNinja/kavrix/blob/main/docs/assets/kavrix-tui-demo.mp4).
-
-## Requirements
-
-- Node.js `>=24.12.0 <25` or `>=25.1.0`
-- MongoDB only if you select that datastore; database writes require a
-  transaction-capable replica set or sharded topology
-
-## Installation
-
-```sh
-npm install --global kavrix
-kavrix --version
-kavrix --help
-```
 
 ## Quick start
 
@@ -107,6 +127,11 @@ never store MongoDB credentials, passphrases, private labels, keys, or values.
 
 | Group                                                                      | Purpose                                                                               |
 | -------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
+| `run`                                                                      | Execute one command with selected credentials injected as environment variables only. |
+| `policy create/list/show/remove/check/explain/lint/diff/suggest`           | Stored rules plus read-only simulation, diagnostics, previews, and narrowing advice.  |
+| `grant create/list/show/revoke`                                            | Temporary consumable authorizations with live expiry, restrictions, and use caps.     |
+| `audit`                                                                    | Plaintext-free security audit trail.                                                  |
+| `agent run`, `agent exec`                                                  | Credential firewall that brokers AI coding agents.                                    |
 | `db profile ...`                                                           | Manage non-secret datastore routes.                                                   |
 | `db init`, `db status`                                                     | Initialize or authenticate a multi-vault database.                                    |
 | `db vault ...`                                                             | Create, list, inspect, rename, or select encrypted vaults.                            |
@@ -120,11 +145,6 @@ never store MongoDB credentials, passphrases, private labels, keys, or values.
 | `doctor`, `doctor health`                                                  | Validate a vault; repair bounded transient state safely.                              |
 | `tui` / `ui`                                                               | Full interactive Ink app against the real CLI (TTY required).                         |
 | `init`, `vault`, `legacy v2 commands`                                      | Ink TUI onboarding on TTY (`--no-tui` classic); explicit/non-TTY init stays v2.       |
-| `run`                                                                      | Execute one command with selected credentials injected as environment variables only. |
-| `policy create/list/show/remove/check/explain/lint/diff/suggest`           | Stored rules plus read-only simulation, diagnostics, previews, and narrowing advice.  |
-| `grant create/list/show/revoke`                                            | Temporary consumable authorizations with live expiry, restrictions, and use caps.     |
-| `audit`                                                                    | Plaintext-free security audit trail.                                                  |
-| `agent run`, `agent exec`                                                  | Credential firewall that brokers AI coding agents.                                    |
 
 Sensitive plaintext output is opt-in through `--reveal` or multiline-safe
 `--reveal-base64`; listing and dashboard commands never display field values.
@@ -136,31 +156,6 @@ a compatibility projection over the default context/service and never split a
 literal name such as `github/token` into hierarchy segments. Field definitions
 carry copy, reveal, reauthentication, and export policies; present values stay
 redacted until an allowed explicit reveal.
-
-## Running tools without pasting secrets
-
-```sh
-kavrix run --secret AWS_KEY=aws/deploy-key -- terraform plan
-
-kavrix policy create deploy --secret aws/deploy-key \
-  --command terraform --hash terraform=<sha256> --ttl 30m
-kavrix policy check deploy -- terraform plan
-kavrix policy explain deploy -- terraform plan
-kavrix policy lint
-kavrix policy suggest
-
-kavrix grant create aws/deploy-key --ttl 15m --max-uses 3
-kavrix grant show <grant-id>
-
-kavrix agent run
-```
-
-Policies are evaluated fail-closed before any child process spawns, grants are
-consumed atomically and can be revoked immediately, and `kavrix audit` records
-policy, grant, authorization, and completion events without secret material.
-The policy developer tools and grant inspection authenticate metadata without
-decrypting credential payloads, modifying audit state, or creating a missing
-authorization sidecar.
 
 ## Options worth knowing
 
@@ -178,7 +173,10 @@ authorization sidecar.
 | `--overwrite`                       | Opt in to replacing something that already exists.                         |
 | `--allow-insecure-transport`        | Explicit opt-in to unencrypted MongoDB transport (isolated networks only). |
 
-## Security model
+## Security honesty
+
+Kavrix controls which process receives a credential. Once an authorized process
+receives it, Kavrix cannot control what that program does.
 
 Vault payloads, the private database catalog, and wrapped keys use
 XChaCha20-Poly1305 authenticated encryption. Protected key and recovery files
@@ -190,6 +188,12 @@ rollback, forks, and inconsistent heads before plaintext is returned.
 MongoDB stores ciphertext plus opaque routing metadata in two collections; it
 never receives passphrases, root keys, labels, or decrypted values. Remote URIs
 must explicitly enable validated TLS.
+
+Deep security docs on GitHub:
+
+- [Threat model](https://github.com/d4rkNinja/kavrix/blob/main/docs/threat-model.md)
+- [Cryptography](https://github.com/d4rkNinja/kavrix/blob/main/docs/cryptography.md)
+- [Implementation status](https://github.com/d4rkNinja/kavrix/blob/main/docs/implementation-status.md)
 
 ## Limitations
 
@@ -213,8 +217,6 @@ passphrase separately. The pair grants access to all vaults once unlocked.
 
 - [Full README](https://github.com/d4rkNinja/kavrix#readme)
 - [Command guide](https://github.com/d4rkNinja/kavrix/blob/main/docs/cli-reference.md)
-- [Threat model](https://github.com/d4rkNinja/kavrix/blob/main/docs/threat-model.md)
-- [Implementation status](https://github.com/d4rkNinja/kavrix/blob/main/docs/implementation-status.md)
 - [Security reports](https://github.com/d4rkNinja/kavrix/blob/main/SECURITY.md)
 - [Issue tracker](https://github.com/d4rkNinja/kavrix/issues)
 

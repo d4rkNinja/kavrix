@@ -169,7 +169,7 @@ export function BrandBanner({
             </Text>
           ))}
         </Text>
-        <Text {...tint(color, 'gray')}>zero-knowledge credential vault</Text>
+        <Text {...tint(color, 'gray')}>local-first secrets firewall</Text>
       </Box>
     </Box>
   );
