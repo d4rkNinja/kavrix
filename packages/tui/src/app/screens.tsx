@@ -76,6 +76,25 @@ function Footer({ state }: Readonly<{ state: AppRouterState }>): ReactElement {
     overlayHint = ` Key file: ${safe(state.query, ascii)}_`;
   if (overlay === 'input-profile-passphrase' || overlay === 'input-profile-passphrase-confirm')
     overlayHint = ` Passphrase: ${'*'.repeat(Math.min(state.query.length, 32))}_`;
+  if (overlay === 'input-recovery-file' || overlay === 'input-recovery-verify-file')
+    overlayHint = ` Recovery file: ${safe(state.query, ascii)}_`;
+  if (
+    overlay === 'input-recovery-passphrase' ||
+    overlay === 'input-recovery-passphrase-confirm' ||
+    overlay === 'input-recovery-verify-passphrase'
+  )
+    overlayHint = ` Recovery passphrase: ${'*'.repeat(Math.min(state.query.length, 32))}_`;
+  if (overlay === 'confirm-recovery-revoke') overlayHint = ' Revoke recovery slot? y/n';
+  if (overlay === 'confirm-policy-remove') overlayHint = ' Remove policy? y/n';
+  if (overlay === 'confirm-grant-revoke') overlayHint = ' Revoke grant? y/n';
+  if (overlay === 'input-policy-id') overlayHint = ` Policy id: ${safe(state.query, ascii)}_`;
+  if (overlay === 'input-policy-secret') overlayHint = ` Policy secret: ${safe(state.query, ascii)}_`;
+  if (overlay === 'input-policy-command')
+    overlayHint = ` Policy command: ${safe(state.query, ascii)}_`;
+  if (overlay === 'input-grant-secret') overlayHint = ` Grant secret: ${safe(state.query, ascii)}_`;
+  if (overlay === 'input-grant-command')
+    overlayHint = ` Grant command: ${safe(state.query, ascii)}_`;
+  if (overlay === 'input-grant-ttl') overlayHint = ` Grant TTL: ${safe(state.query, ascii)}_`;
   return (
     <Box flexDirection="column">
       {notice === null ? null : (
@@ -237,7 +256,7 @@ export function RecoveryScreen({ state }: Readonly<{ state: AppRouterState }>): 
       state={state}
       title="Recovery"
       accent="red"
-      empty="No recovery slot metadata loaded."
+      empty="No recovery slots. n create · v verify · Enter/x revoke (last slot blocked)."
       rows={state.snapshot.recovery.map((slot) => ({
         id: slot.slotId,
         primary: `${slot.slotId} [${slot.status}]`,
@@ -268,7 +287,7 @@ export function PolicyScreen({ state }: Readonly<{ state: AppRouterState }>): Re
       state={state}
       title="Policy / Grant / Audit"
       accent="blue"
-      empty="No policy, grant, or audit rows."
+      empty="No rows. Enter refresh · n policy · x remove · g grant · r revoke grant."
       rows={state.snapshot.policies.map((row) => ({
         id: `${row.kind}:${row.id}`,
         primary: `${row.kind} ${row.id}`,
@@ -315,9 +334,12 @@ export function HelpScreen({ state }: Readonly<{ state: AppRouterState }>): Reac
     'Credentials: / search, n put, m rename, x remove, r then y REVEAL (15s)',
     'Profiles: Enter use profile, n create file profile (paths default under home)',
     'Session: u unlock, l lock (clears revealed state)',
-    'Doctor: d refresh checks | Recovery: final-slot revoke is blocked here',
-    'Run: p dry-preview credential injection (no argv secrets)',
-    'Agent: g dry-run | Policy/Browse: Enter refreshes rows',
+    'Doctor: d runs real kavrix doctor / db doctor health',
+    'Recovery: n create · v verify · Enter/x revoke (last active slot blocked)',
+    'Run: p validates credential names + kavrix run --help (no secret inject)',
+    'Agent: g runs kavrix agent run --dry-run (surfaces real CLI errors)',
+    'Policy: Enter refresh · n create · x remove · g grant · r revoke grant',
+    'Browse: Enter refreshes rows',
     'Display: a toggles ASCII; NO_COLOR / TERM=dumb disable color',
     'Windows: ASCII borders default on win32; paths use node:path joins',
   ];

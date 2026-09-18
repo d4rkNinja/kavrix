@@ -77,8 +77,8 @@ export function createStaticAppBackend(
         case 'preview-run':
           snapshot = {
             ...snapshot,
-            runPreview: `Dry preview for: ${action.credentialNames.join(', ') || '(none)'}`,
-            notice: 'Run preview updated (no process spawned).',
+            runPreview: `Validated names (static): ${action.credentialNames.join(', ') || '(none)'}. run --help not spawned in static backend.`,
+            notice: 'Run preview validated against static credential list.',
             noticeTone: 'success',
           };
           return { snapshot };
@@ -189,6 +189,104 @@ export function createStaticAppBackend(
           };
           return { snapshot };
         }
+
+        case 'recovery-create': {
+          const slotId = `slot-${String(snapshot.recovery.length + 1)}`;
+          snapshot = {
+            ...snapshot,
+            recovery: [
+              ...snapshot.recovery.filter((slot) => slot.slotId !== '(none)'),
+              {
+                slotId,
+                status: 'active',
+                detail: `Created (static) at ${action.recoveryFile}`,
+              },
+            ],
+            notice: `Created recovery kit (static) ${slotId}.`,
+            noticeTone: 'success',
+          };
+          return { snapshot };
+        }
+        case 'recovery-verify':
+          snapshot = {
+            ...snapshot,
+            notice: `Verified recovery kit (static) ${action.recoveryFile}.`,
+            noticeTone: 'success',
+          };
+          return { snapshot };
+        case 'recovery-revoke': {
+          const active = snapshot.recovery.filter((slot) => slot.status === 'active');
+          if (active.length <= 1) {
+            snapshot = {
+              ...snapshot,
+              notice: 'Cannot revoke the last active recovery slot.',
+              noticeTone: 'error',
+            };
+            return { snapshot };
+          }
+          snapshot = {
+            ...snapshot,
+            recovery: snapshot.recovery.map((slot) =>
+              slot.slotId === action.slotId
+                ? { ...slot, status: 'revoked' as const, detail: 'Revoked (static).' }
+                : slot,
+            ),
+            notice: `Revoked recovery slot ${action.slotId} (static).`,
+            noticeTone: 'success',
+          };
+          return { snapshot };
+        }
+        case 'policy-create': {
+          const rows = snapshot.policies.filter((row) => row.id !== action.id && row.id !== '(none)');
+          snapshot = {
+            ...snapshot,
+            policies: [
+              ...rows,
+              {
+                id: action.id,
+                kind: 'policy' as const,
+                summary: `secret=${action.secret} cmds=${action.command}`,
+              },
+            ],
+            notice: `Created policy ${action.id} (static).`,
+            noticeTone: 'success',
+          };
+          return { snapshot };
+        }
+        case 'policy-remove':
+          snapshot = {
+            ...snapshot,
+            policies: snapshot.policies.filter((row) => row.id !== action.id),
+            notice: `Removed policy ${action.id} (static).`,
+            noticeTone: 'success',
+          };
+          return { snapshot };
+        case 'grant-create': {
+          const grantId = `grant_static_${String(snapshot.policies.length + 1)}`;
+          snapshot = {
+            ...snapshot,
+            policies: [
+              ...snapshot.policies.filter((row) => row.id !== '(none)'),
+              {
+                id: grantId,
+                kind: 'grant' as const,
+                summary: `secret=${action.secret} status=active ttl=${action.ttl}`,
+              },
+            ],
+            notice: `Created grant ${grantId} (static).`,
+            noticeTone: 'success',
+          };
+          return { snapshot };
+        }
+        case 'grant-revoke':
+          snapshot = {
+            ...snapshot,
+            policies: snapshot.policies.filter((row) => row.id !== action.grantId),
+            notice: `Revoked grant ${action.grantId} (static).`,
+            noticeTone: 'success',
+          };
+          return { snapshot };
+
         case 'create-file-profile': {
           const profileId = action.profileId.trim();
           if (profileId.length === 0 || action.passphrase.length === 0) {

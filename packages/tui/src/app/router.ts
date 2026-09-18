@@ -23,6 +23,9 @@ export type AppOverlay =
   | 'confirm-lock'
   | 'confirm-revoke-last'
   | 'confirm-remove'
+  | 'confirm-recovery-revoke'
+  | 'confirm-policy-remove'
+  | 'confirm-grant-revoke'
   | 'input-search'
   | 'input-run'
   | 'input-passphrase'
@@ -33,7 +36,18 @@ export type AppOverlay =
   | 'input-profile-data-file'
   | 'input-profile-key-file'
   | 'input-profile-passphrase'
-  | 'input-profile-passphrase-confirm';
+  | 'input-profile-passphrase-confirm'
+  | 'input-recovery-file'
+  | 'input-recovery-passphrase'
+  | 'input-recovery-passphrase-confirm'
+  | 'input-recovery-verify-file'
+  | 'input-recovery-verify-passphrase'
+  | 'input-policy-id'
+  | 'input-policy-secret'
+  | 'input-policy-command'
+  | 'input-grant-secret'
+  | 'input-grant-command'
+  | 'input-grant-ttl';
 
 export interface AppRouterState {
   readonly screen: AppScreenId;
@@ -54,6 +68,15 @@ export interface AppRouterState {
   readonly pendingKeyFile: string | null;
   /** Ephemeral passphrase held only across create-profile confirm; never snapshotted. */
   readonly pendingPassphrase: string | null;
+  /** Recovery / policy / grant wizard ephemeral fields (never snapshotted). */
+  readonly pendingRecoveryFile: string | null;
+  readonly pendingRecoveryPassphrase: string | null;
+  readonly pendingPolicyId: string | null;
+  readonly pendingPolicySecret: string | null;
+  readonly pendingGrantSecret: string | null;
+  readonly pendingGrantCommand: string | null;
+  readonly pendingSlotId: string | null;
+  readonly pendingGrantId: string | null;
   readonly revealedName: string | null;
   /** Ephemeral plaintext; never copied into AppSnapshot. */
   readonly revealedValue: string | null;
@@ -102,6 +125,14 @@ export function createInitialAppRouterState(
     pendingDataFile: null,
     pendingKeyFile: null,
     pendingPassphrase: null,
+    pendingRecoveryFile: null,
+    pendingRecoveryPassphrase: null,
+    pendingPolicyId: null,
+    pendingPolicySecret: null,
+    pendingGrantSecret: null,
+    pendingGrantCommand: null,
+    pendingSlotId: null,
+    pendingGrantId: null,
     revealedName: null,
     revealedValue: null,
     revealedUntilMs: 0,
@@ -290,6 +321,99 @@ function screenKey(
   if (key.text?.toLowerCase() === 'g' && state.screen === 'agent') {
     return effect(state, { kind: 'backend', action: { type: 'agent-dry-run' } });
   }
+  if (state.screen === 'recovery') {
+    if (key.text?.toLowerCase() === 'n' || key.text?.toLowerCase() === 'c') {
+      return unchanged({
+        ...state,
+        overlay: 'input-recovery-file',
+        query: '',
+        pendingRecoveryFile: null,
+        pendingRecoveryPassphrase: null,
+        message: 'Recovery kit file path:',
+      });
+    }
+    if (key.text?.toLowerCase() === 'v') {
+      return unchanged({
+        ...state,
+        overlay: 'input-recovery-verify-file',
+        query: '',
+        pendingRecoveryFile: null,
+        pendingRecoveryPassphrase: null,
+        message: 'Recovery kit file to verify:',
+      });
+    }
+    if (key.text?.toLowerCase() === 'x') {
+      const slot = state.snapshot.recovery[state.listIndex];
+      if (slot === undefined || slot.slotId.startsWith('(')) return unchanged(state);
+      const active = state.snapshot.recovery.filter((entry) => entry.status === 'active');
+      if (active.length <= 1 && slot.status === 'active') {
+        return unchanged({
+          ...state,
+          overlay: 'confirm-revoke-last',
+          pendingSlotId: slot.slotId,
+          message: 'Cannot revoke the final recovery slot without an explicit warning.',
+        });
+      }
+      return unchanged({
+        ...state,
+        overlay: 'confirm-recovery-revoke',
+        pendingSlotId: slot.slotId,
+        message: `Revoke recovery slot '${slot.slotId}'? y/n`,
+      });
+    }
+  }
+  if (state.screen === 'policy') {
+    if (key.text?.toLowerCase() === 'n') {
+      return unchanged({
+        ...state,
+        overlay: 'input-policy-id',
+        query: '',
+        pendingPolicyId: null,
+        pendingPolicySecret: null,
+        message: 'New policy id:',
+      });
+    }
+    if (key.text?.toLowerCase() === 'x') {
+      const row = state.snapshot.policies[state.listIndex];
+      if (row === undefined || row.kind !== 'policy') {
+        return unchanged({
+          ...state,
+          message: 'Select a policy row to remove (n create, g grant, r revoke grant).',
+        });
+      }
+      return unchanged({
+        ...state,
+        overlay: 'confirm-policy-remove',
+        pendingPolicyId: row.id,
+        message: `Remove policy '${row.id}'? y/n`,
+      });
+    }
+    if (key.text?.toLowerCase() === 'g') {
+      return unchanged({
+        ...state,
+        overlay: 'input-grant-secret',
+        query: '',
+        pendingGrantSecret: null,
+        pendingGrantCommand: null,
+        message: 'Grant secret name:',
+      });
+    }
+    if (key.text?.toLowerCase() === 'r') {
+      const row = state.snapshot.policies[state.listIndex];
+      if (row === undefined || row.kind !== 'grant') {
+        return unchanged({
+          ...state,
+          message: 'Select a grant row to revoke.',
+        });
+      }
+      return unchanged({
+        ...state,
+        overlay: 'confirm-grant-revoke',
+        pendingGrantId: row.id,
+        message: `Revoke grant '${row.id}'? y/n`,
+      });
+    }
+  }
   return unchanged(state);
 }
 
@@ -332,16 +456,6 @@ function overlayKey(
     }
     if (key.text?.toLowerCase() === 'n' || key.name === 'escape') {
       return unchanged({ ...state, overlay: 'none' });
-    }
-    return unchanged(state);
-  }
-  if (state.overlay === 'confirm-revoke-last') {
-    if (key.name === 'escape' || key.text?.toLowerCase() === 'n') {
-      return unchanged({
-        ...state,
-        overlay: 'none',
-        message: 'Final-slot revoke cancelled.',
-      });
     }
     return unchanged(state);
   }
@@ -642,6 +756,349 @@ function overlayKey(
     }
     return unchanged(state);
   }
+
+  if (state.overlay === 'confirm-revoke-last') {
+    if (key.name === 'escape' || key.text?.toLowerCase() === 'n') {
+      return unchanged({
+        ...state,
+        overlay: 'none',
+        pendingSlotId: null,
+        message: 'Final-slot revoke cancelled.',
+      });
+    }
+    return unchanged(state);
+  }
+  if (state.overlay === 'confirm-recovery-revoke') {
+    if (key.text?.toLowerCase() === 'y') {
+      const slotId = state.pendingSlotId;
+      if (slotId === null) return unchanged({ ...state, overlay: 'none' });
+      return effect(
+        { ...state, overlay: 'none', pendingSlotId: null },
+        { kind: 'backend', action: { type: 'recovery-revoke', slotId } },
+      );
+    }
+    if (key.text?.toLowerCase() === 'n' || key.name === 'escape') {
+      return unchanged({
+        ...state,
+        overlay: 'none',
+        pendingSlotId: null,
+        message: 'Recovery revoke cancelled.',
+      });
+    }
+    return unchanged(state);
+  }
+  if (state.overlay === 'confirm-policy-remove') {
+    if (key.text?.toLowerCase() === 'y') {
+      const id = state.pendingPolicyId;
+      if (id === null) return unchanged({ ...state, overlay: 'none' });
+      return effect(
+        { ...state, overlay: 'none', pendingPolicyId: null },
+        { kind: 'backend', action: { type: 'policy-remove', id } },
+      );
+    }
+    if (key.text?.toLowerCase() === 'n' || key.name === 'escape') {
+      return unchanged({
+        ...state,
+        overlay: 'none',
+        pendingPolicyId: null,
+        message: 'Policy remove cancelled.',
+      });
+    }
+    return unchanged(state);
+  }
+  if (state.overlay === 'confirm-grant-revoke') {
+    if (key.text?.toLowerCase() === 'y') {
+      const grantId = state.pendingGrantId;
+      if (grantId === null) return unchanged({ ...state, overlay: 'none' });
+      return effect(
+        { ...state, overlay: 'none', pendingGrantId: null },
+        { kind: 'backend', action: { type: 'grant-revoke', grantId } },
+      );
+    }
+    if (key.text?.toLowerCase() === 'n' || key.name === 'escape') {
+      return unchanged({
+        ...state,
+        overlay: 'none',
+        pendingGrantId: null,
+        message: 'Grant revoke cancelled.',
+      });
+    }
+    return unchanged(state);
+  }
+  if (
+    state.overlay === 'input-recovery-file' ||
+    state.overlay === 'input-recovery-passphrase' ||
+    state.overlay === 'input-recovery-passphrase-confirm' ||
+    state.overlay === 'input-recovery-verify-file' ||
+    state.overlay === 'input-recovery-verify-passphrase'
+  ) {
+    if (key.name === 'escape') {
+      return unchanged({
+        ...state,
+        overlay: 'none',
+        query: '',
+        pendingRecoveryFile: null,
+        pendingRecoveryPassphrase: null,
+        message: 'Recovery flow cancelled.',
+      });
+    }
+    if (key.name === 'backspace') {
+      return unchanged({ ...state, query: removeLast(state.query) });
+    }
+    if (key.name === 'return') {
+      if (state.overlay === 'input-recovery-file') {
+        const recoveryFile = state.query.trim();
+        if (recoveryFile.length === 0) {
+          return unchanged({ ...state, message: 'Recovery file path required.' });
+        }
+        return unchanged({
+          ...state,
+          overlay: 'input-recovery-passphrase',
+          pendingRecoveryFile: recoveryFile,
+          query: '',
+          message: 'Recovery passphrase (masked):',
+        });
+      }
+      if (state.overlay === 'input-recovery-passphrase') {
+        if (state.query.length === 0) {
+          return unchanged({ ...state, message: 'Recovery passphrase required.' });
+        }
+        return unchanged({
+          ...state,
+          overlay: 'input-recovery-passphrase-confirm',
+          pendingRecoveryPassphrase: state.query,
+          query: '',
+          message: 'Confirm recovery passphrase:',
+        });
+      }
+      if (state.overlay === 'input-recovery-passphrase-confirm') {
+        const recoveryFile = state.pendingRecoveryFile;
+        const recoveryPassphrase = state.pendingRecoveryPassphrase;
+        if (recoveryFile === null || recoveryPassphrase === null) {
+          return unchanged({ ...state, overlay: 'none', query: '' });
+        }
+        if (state.query !== recoveryPassphrase) {
+          return unchanged({
+            ...state,
+            overlay: 'input-recovery-passphrase',
+            pendingRecoveryPassphrase: null,
+            query: '',
+            message: 'Passphrases did not match. Re-enter recovery passphrase:',
+          });
+        }
+        return effect(
+          {
+            ...state,
+            overlay: 'none',
+            query: '',
+            pendingRecoveryFile: null,
+            pendingRecoveryPassphrase: null,
+          },
+          {
+            kind: 'backend',
+            action: {
+              type: 'recovery-create',
+              recoveryFile,
+              recoveryPassphrase,
+            },
+          },
+        );
+      }
+      if (state.overlay === 'input-recovery-verify-file') {
+        const recoveryFile = state.query.trim();
+        if (recoveryFile.length === 0) {
+          return unchanged({ ...state, message: 'Recovery file path required.' });
+        }
+        return unchanged({
+          ...state,
+          overlay: 'input-recovery-verify-passphrase',
+          pendingRecoveryFile: recoveryFile,
+          query: '',
+          message: 'Recovery passphrase (masked):',
+        });
+      }
+      const recoveryFile = state.pendingRecoveryFile;
+      if (recoveryFile === null || state.query.length === 0) {
+        return unchanged({ ...state, overlay: 'none', query: '' });
+      }
+      return effect(
+        {
+          ...state,
+          overlay: 'none',
+          query: '',
+          pendingRecoveryFile: null,
+          pendingRecoveryPassphrase: null,
+        },
+        {
+          kind: 'backend',
+          action: {
+            type: 'recovery-verify',
+            recoveryFile,
+            recoveryPassphrase: state.query,
+          },
+        },
+      );
+    }
+    if (isPrintable(key.text)) {
+      const masked =
+        state.overlay === 'input-recovery-passphrase' ||
+        state.overlay === 'input-recovery-passphrase-confirm' ||
+        state.overlay === 'input-recovery-verify-passphrase';
+      const limit = masked ? 1024 : 512;
+      return unchanged({
+        ...state,
+        query: `${state.query}${key.text}`.slice(0, limit),
+      });
+    }
+    return unchanged(state);
+  }
+  if (
+    state.overlay === 'input-policy-id' ||
+    state.overlay === 'input-policy-secret' ||
+    state.overlay === 'input-policy-command'
+  ) {
+    if (key.name === 'escape') {
+      return unchanged({
+        ...state,
+        overlay: 'none',
+        query: '',
+        pendingPolicyId: null,
+        pendingPolicySecret: null,
+        message: 'Policy create cancelled.',
+      });
+    }
+    if (key.name === 'backspace') {
+      return unchanged({ ...state, query: removeLast(state.query) });
+    }
+    if (key.name === 'return') {
+      if (state.overlay === 'input-policy-id') {
+        const id = state.query.trim();
+        if (id.length === 0) {
+          return unchanged({ ...state, message: 'Policy id required.' });
+        }
+        return unchanged({
+          ...state,
+          overlay: 'input-policy-secret',
+          pendingPolicyId: id,
+          query: '',
+          message: `Secret name for policy '${id}':`,
+        });
+      }
+      if (state.overlay === 'input-policy-secret') {
+        const secret = state.query.trim();
+        if (secret.length === 0) {
+          return unchanged({ ...state, message: 'Secret name required.' });
+        }
+        return unchanged({
+          ...state,
+          overlay: 'input-policy-command',
+          pendingPolicySecret: secret,
+          query: '',
+          message: 'Allowed command (executable name):',
+        });
+      }
+      const id = state.pendingPolicyId;
+      const secret = state.pendingPolicySecret;
+      const command = state.query.trim();
+      if (id === null || secret === null || command.length === 0) {
+        return unchanged({ ...state, overlay: 'none', query: '' });
+      }
+      return effect(
+        {
+          ...state,
+          overlay: 'none',
+          query: '',
+          pendingPolicyId: null,
+          pendingPolicySecret: null,
+        },
+        {
+          kind: 'backend',
+          action: { type: 'policy-create', id, secret, command },
+        },
+      );
+    }
+    if (isPrintable(key.text)) {
+      return unchanged({
+        ...state,
+        query: `${state.query}${key.text}`.slice(0, 256),
+      });
+    }
+    return unchanged(state);
+  }
+  if (
+    state.overlay === 'input-grant-secret' ||
+    state.overlay === 'input-grant-command' ||
+    state.overlay === 'input-grant-ttl'
+  ) {
+    if (key.name === 'escape') {
+      return unchanged({
+        ...state,
+        overlay: 'none',
+        query: '',
+        pendingGrantSecret: null,
+        pendingGrantCommand: null,
+        message: 'Grant create cancelled.',
+      });
+    }
+    if (key.name === 'backspace') {
+      return unchanged({ ...state, query: removeLast(state.query) });
+    }
+    if (key.name === 'return') {
+      if (state.overlay === 'input-grant-secret') {
+        const secret = state.query.trim();
+        if (secret.length === 0) {
+          return unchanged({ ...state, message: 'Secret name required.' });
+        }
+        return unchanged({
+          ...state,
+          overlay: 'input-grant-command',
+          pendingGrantSecret: secret,
+          query: '',
+          message: 'Allowed command for grant:',
+        });
+      }
+      if (state.overlay === 'input-grant-command') {
+        const command = state.query.trim();
+        if (command.length === 0) {
+          return unchanged({ ...state, message: 'Command required.' });
+        }
+        return unchanged({
+          ...state,
+          overlay: 'input-grant-ttl',
+          pendingGrantCommand: command,
+          query: '15m',
+          message: 'Grant TTL (e.g. 15m):',
+        });
+      }
+      const secret = state.pendingGrantSecret;
+      const command = state.pendingGrantCommand;
+      const ttl = state.query.trim() || '15m';
+      if (secret === null || command === null) {
+        return unchanged({ ...state, overlay: 'none', query: '' });
+      }
+      return effect(
+        {
+          ...state,
+          overlay: 'none',
+          query: '',
+          pendingGrantSecret: null,
+          pendingGrantCommand: null,
+        },
+        {
+          kind: 'backend',
+          action: { type: 'grant-create', secret, command, ttl },
+        },
+      );
+    }
+    if (isPrintable(key.text)) {
+      return unchanged({
+        ...state,
+        query: `${state.query}${key.text}`.slice(0, 256),
+      });
+    }
+    return unchanged(state);
+  }
+
   void nowMs;
   return unchanged(state);
 }
@@ -665,17 +1122,24 @@ function activateSelection(state: AppRouterState, _nowMs: number): AppRouterTran
       });
     }
     case 'recovery': {
-      const active = state.snapshot.recovery.filter((slot) => slot.status === 'active');
-      if (active.length <= 1) {
+      const slot = state.snapshot.recovery[state.listIndex];
+      if (slot === undefined || slot.slotId.startsWith('(')) {
+        return effect(state, { kind: 'backend', action: { type: 'recovery-status' } });
+      }
+      const active = state.snapshot.recovery.filter((entry) => entry.status === 'active');
+      if (active.length <= 1 && slot.status === 'active') {
         return unchanged({
           ...state,
           overlay: 'confirm-revoke-last',
+          pendingSlotId: slot.slotId,
           message: 'Cannot revoke the final recovery slot without an explicit warning.',
         });
       }
       return unchanged({
         ...state,
-        message: 'Use CLI `kavrix recovery revoke` for slot revocation.',
+        overlay: 'confirm-recovery-revoke',
+        pendingSlotId: slot.slotId,
+        message: `Revoke recovery slot '${slot.slotId}'? y/n`,
       });
     }
     case 'policy':

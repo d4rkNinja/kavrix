@@ -92,9 +92,37 @@ export type CliTuiAction =
   | Readonly<{ type: 'search-credentials'; query: string }>
   | Readonly<{ type: 'run-doctor' }>
   | Readonly<{ type: 'recovery-status' }>
+  | Readonly<{
+      type: 'recovery-create';
+      recoveryFile: string;
+      recoveryPassphrase: string;
+    }>
+  | Readonly<{
+      type: 'recovery-verify';
+      recoveryFile: string;
+      recoveryPassphrase: string;
+    }>
+  | Readonly<{ type: 'recovery-revoke'; slotId: string }>
   | Readonly<{ type: 'preview-run'; credentialNames: readonly string[] }>
-  | Readonly<{ type: 'agent-dry-run' }>
+  | Readonly<{ type: 'agent-dry-run'; configPath?: string; agentName?: string }>
   | Readonly<{ type: 'refresh-policy' }>
+  | Readonly<{
+      type: 'policy-create';
+      id: string;
+      secret: string;
+      command: string;
+      env?: string;
+    }>
+  | Readonly<{ type: 'policy-remove'; id: string }>
+  | Readonly<{
+      type: 'grant-create';
+      secret: string;
+      command: string;
+      ttl: string;
+      env?: string;
+      maxUses?: number;
+    }>
+  | Readonly<{ type: 'grant-revoke'; grantId: string }>
   | Readonly<{ type: 'refresh-browse' }>;
 
 export interface CliTuiBackend {
@@ -135,6 +163,10 @@ class CliTuiSession {
   #credentialNames: string[] = [];
   #vaultId: string | null = null;
   #recoverySlots: CliTuiSnapshot['recovery'] = [];
+  #doctorRows: CliTuiSnapshot['doctor'] = [];
+  #policyRows: CliTuiSnapshot['policies'] = [];
+  #runPreview: string | null = null;
+  #agentStatus: string | null = null;
   #notice: string | null = 'Loaded profile registry.';
   #noticeTone: CliTuiSnapshot['noticeTone'] = 'info';
 
@@ -206,17 +238,35 @@ class CliTuiSession {
         case 'recovery-status':
           await this.#recoveryStatus();
           break;
+        case 'recovery-create':
+          await this.#recoveryCreate(action.recoveryFile, action.recoveryPassphrase);
+          break;
+        case 'recovery-verify':
+          await this.#recoveryVerify(action.recoveryFile, action.recoveryPassphrase);
+          break;
+        case 'recovery-revoke':
+          await this.#recoveryRevoke(action.slotId);
+          break;
         case 'preview-run':
-          this.#notice = `Dry run preview for: ${action.credentialNames.join(', ') || '(none)'}`;
-          this.#noticeTone = 'success';
+          await this.#previewRun(action.credentialNames);
           break;
         case 'agent-dry-run':
-          this.#notice = 'Agent dry-run: no broker socket opened from TUI.';
-          this.#noticeTone = 'info';
+          await this.#agentDryRun(action.configPath, action.agentName);
           break;
         case 'refresh-policy':
-          this.#notice = 'Policy/grant/audit: open via CLI for mutations.';
-          this.#noticeTone = 'info';
+          await this.#refreshPolicy();
+          break;
+        case 'policy-create':
+          await this.#policyCreate(action);
+          break;
+        case 'policy-remove':
+          await this.#policyRemove(action.id);
+          break;
+        case 'grant-create':
+          await this.#grantCreate(action);
+          break;
+        case 'grant-revoke':
+          await this.#grantRevoke(action.grantId);
           break;
         case 'refresh-browse':
           this.#notice = 'Structured browse refreshed from session metadata.';
@@ -291,29 +341,34 @@ class CliTuiSession {
         maskedValue: mask,
       })),
       doctor:
-        this.#passphrase === null
-          ? [
-              {
-                name: 'session',
-                status: 'warning',
-                detail: 'Unlock to run authenticated doctor checks.',
-              },
-            ]
+        this.#doctorRows.length > 0
+          ? this.#doctorRows
+          : this.#passphrase === null
+            ? [
+                {
+                  name: 'session',
+                  status: 'warning' as const,
+                  detail: 'Unlock to run authenticated doctor checks.',
+                },
+              ]
+            : [
+                {
+                  name: 'session',
+                  status: 'ok' as const,
+                  detail: `Unlocked with ${String(this.#credentialNames.length)} credentials.`,
+                },
+              ],
+      recovery,
+      policies:
+        this.#policyRows.length > 0
+          ? this.#policyRows
           : [
               {
-                name: 'session',
-                status: 'ok',
-                detail: `Unlocked with ${String(this.#credentialNames.length)} credentials.`,
+                id: '(none)',
+                kind: 'audit' as const,
+                summary: 'Press Enter to load policy/grant/audit via CLI.',
               },
             ],
-      recovery,
-      policies: [
-        {
-          id: 'runtime',
-          kind: 'audit',
-          summary: 'Authorization mutations remain CLI-gated.',
-        },
-      ],
       browse: [
         {
           id: 'root',
@@ -323,10 +378,12 @@ class CliTuiSession {
         },
       ],
       runPreview:
-        this.#credentialNames.length === 0
-          ? 'Unlock and press p to dry-preview credential injection.'
-          : `Available: ${this.#credentialNames.slice(0, 8).join(', ')}`,
-      agentStatus: 'Agent broker idle (dry-run only from TUI).',
+        this.#runPreview ??
+        (this.#credentialNames.length === 0
+          ? 'Unlock and press p to validate a run preview via CLI.'
+          : `Available: ${this.#credentialNames.slice(0, 8).join(', ')}`),
+      agentStatus:
+        this.#agentStatus ?? 'Press g to run kavrix agent run --dry-run.',
       notice: this.#notice,
       noticeTone: this.#noticeTone,
     };
@@ -341,6 +398,10 @@ class CliTuiSession {
     await registry.use(profileIdSchema.parse(profileId));
     this.#lock();
     this.#recoverySlots = [];
+    this.#doctorRows = [];
+    this.#policyRows = [];
+    this.#runPreview = null;
+    this.#agentStatus = null;
     this.#notice = `Selected profile ${profileId}.`;
     this.#noticeTone = 'success';
   }
@@ -444,6 +505,10 @@ class CliTuiSession {
 
     this.#vaultId = vaultId;
     this.#recoverySlots = [];
+    this.#doctorRows = [];
+    this.#policyRows = [];
+    this.#runPreview = null;
+    this.#agentStatus = null;
     await this.#unlock(action.passphrase);
     this.#notice = `Created and selected file profile ${profileId} (vault ${vaultId}).`;
     this.#noticeTone = 'success';
@@ -598,11 +663,422 @@ class CliTuiSession {
       return;
     }
     const passphrase = this.#passphrase.toString('utf8');
-    await this.#runJsonCommand(
-      ['doctor', ...(await this.#profileArgs()), '--passphrase-stdin'],
+    const current = await this.#currentProfile();
+    const profileArgs = await this.#profileArgs();
+    let raw: unknown;
+    if (current?.databaseId !== undefined) {
+      raw = await this.#runJsonCommand(
+        [
+          'db',
+          'doctor',
+          'health',
+          ...profileArgs,
+          '--json',
+          '--passphrase-stdin',
+        ],
+        [passphrase],
+      );
+    } else {
+      raw = await this.#runJsonCommand(
+        ['doctor', ...profileArgs, '--json', '--passphrase-stdin'],
+        [passphrase],
+      );
+    }
+    this.#doctorRows = parseDoctorRows(raw);
+    this.#notice = `Doctor: ${String(this.#doctorRows.length)} check(s).`;
+    this.#noticeTone = this.#doctorRows.some((row) => row.status === 'error')
+      ? 'error'
+      : this.#doctorRows.some((row) => row.status === 'warning')
+        ? 'warning'
+        : 'success';
+  }
+
+  async #previewRun(credentialNames: readonly string[]): Promise<void> {
+    const names = credentialNames.map((name) => name.trim()).filter((name) => name.length > 0);
+    if (this.#passphrase === null) {
+      throw new Error('Unlock before preview-run.');
+    }
+    const missing = names.filter((name) => !this.#credentialNames.includes(name));
+    // Real CLI validation: kavrix run has no --dry-run; exercise --help.
+    const help = await this.#runTextCommand(['run', '--help'], []);
+    const usage =
+      help
+        .split('\n')
+        .map((line) => line.trim())
+        .find((line) => line.length > 0) ?? 'kavrix run --help';
+    if (missing.length > 0) {
+      this.#runPreview = `Missing credentials: ${missing.join(', ')}. ${usage}`;
+      this.#notice = `preview-run: ${String(missing.length)} credential(s) not in vault.`;
+      this.#noticeTone = 'error';
+      return;
+    }
+    const listed =
+      names.length === 0
+        ? '(none selected — names validated against unlocked list when provided)'
+        : names.join(', ');
+    this.#runPreview = `Validated ${String(names.length)} credential name(s): ${listed}. No --dry-run on kavrix run; ${usage}`;
+    this.#notice = 'preview-run: credential names validated; run --help OK.';
+    this.#noticeTone = 'success';
+  }
+
+  async #agentDryRun(
+    configPath: string | undefined,
+    agentName: string | undefined,
+  ): Promise<void> {
+    const args = ['agent', 'run', '--dry-run', '--json'];
+    if (configPath !== undefined && configPath.trim().length > 0) {
+      args.push('--config', configPath.trim());
+    }
+    if (agentName !== undefined && agentName.trim().length > 0) {
+      args.push('--agent', agentName.trim());
+    } else {
+      args.push('--agent', 'noop');
+    }
+    args.push(...(await this.#profileArgs()));
+    if (this.#passphrase !== null) {
+      args.push('--passphrase-stdin');
+    }
+    const frames =
+      this.#passphrase !== null ? [this.#passphrase.toString('utf8')] : [];
+    try {
+      const raw = await this.#runJsonCommand(args, frames);
+      this.#agentStatus = `agent dry-run OK: ${JSON.stringify(raw)}`;
+      this.#notice = 'Agent dry-run completed.';
+      this.#noticeTone = 'success';
+    } catch (error) {
+      const detail =
+        error instanceof Error ? error.message : 'agent dry-run failed';
+      this.#agentStatus = detail;
+      this.#notice = detail;
+      this.#noticeTone = 'error';
+    }
+  }
+
+  async #refreshPolicy(): Promise<void> {
+    if (this.#passphrase === null) {
+      throw new Error('Unlock before loading policies/grants.');
+    }
+    const passphrase = this.#passphrase.toString('utf8');
+    const profileArgs = await this.#profileArgs();
+    const policyRaw = await this.#runJsonCommand(
+      ['policy', 'list', ...profileArgs, '--json', '--passphrase-stdin'],
       [passphrase],
     );
-    this.#notice = 'Doctor completed.';
+    const grantRaw = await this.#runJsonCommand(
+      ['grant', 'list', ...profileArgs, '--json', '--passphrase-stdin'],
+      [passphrase],
+    );
+    let auditRaw: unknown = { events: [] };
+    try {
+      auditRaw = await this.#runJsonCommand(
+        [
+          'audit',
+          '--limit',
+          '10',
+          ...profileArgs,
+          '--json',
+          '--passphrase-stdin',
+        ],
+        [passphrase],
+      );
+    } catch {
+      // Audit is best-effort when the sidecar is empty or unavailable.
+    }
+    this.#policyRows = parsePolicyRows(policyRaw, grantRaw, auditRaw);
+    this.#notice = `Policy snapshot: ${String(this.#policyRows.length)} row(s).`;
+    this.#noticeTone = 'success';
+  }
+
+  async #policyCreate(
+    action: Extract<CliTuiAction, { type: 'policy-create' }>,
+  ): Promise<void> {
+    if (this.#passphrase === null) {
+      throw new Error('Unlock before creating a policy.');
+    }
+    const id = action.id.trim();
+    const secret = action.secret.trim();
+    const command = action.command.trim();
+    if (id.length === 0 || secret.length === 0 || command.length === 0) {
+      throw new Error('policy-create requires id, secret, and command.');
+    }
+    const passphrase = this.#passphrase.toString('utf8');
+    const args = [
+      'policy',
+      'create',
+      id,
+      '--secret',
+      secret,
+      '--command',
+      command,
+      ...(await this.#profileArgs()),
+      '--passphrase-stdin',
+      '--json',
+    ];
+    if (action.env !== undefined && action.env.trim().length > 0) {
+      args.push('--env', action.env.trim());
+    }
+    await this.#runJsonCommand(args, [passphrase]);
+    await this.#refreshPolicy();
+    this.#notice = `Created policy ${id}.`;
+    this.#noticeTone = 'success';
+  }
+
+  async #policyRemove(id: string): Promise<void> {
+    if (this.#passphrase === null) {
+      throw new Error('Unlock before removing a policy.');
+    }
+    const trimmed = id.trim();
+    if (trimmed.length === 0) {
+      throw new Error('policy-remove requires an id.');
+    }
+    const passphrase = this.#passphrase.toString('utf8');
+    await this.#runJsonCommand(
+      [
+        'policy',
+        'remove',
+        trimmed,
+        ...(await this.#profileArgs()),
+        '--passphrase-stdin',
+        '--json',
+      ],
+      [passphrase],
+    );
+    await this.#refreshPolicy();
+    this.#notice = `Removed policy ${trimmed}.`;
+    this.#noticeTone = 'success';
+  }
+
+  async #grantCreate(
+    action: Extract<CliTuiAction, { type: 'grant-create' }>,
+  ): Promise<void> {
+    if (this.#passphrase === null) {
+      throw new Error('Unlock before creating a grant.');
+    }
+    const secret = action.secret.trim();
+    const command = action.command.trim();
+    const ttl = action.ttl.trim() || '15m';
+    if (secret.length === 0 || command.length === 0) {
+      throw new Error('grant-create requires secret and command.');
+    }
+    const passphrase = this.#passphrase.toString('utf8');
+    const args = [
+      'grant',
+      'create',
+      secret,
+      '--command',
+      command,
+      '--ttl',
+      ttl,
+      ...(await this.#profileArgs()),
+      '--passphrase-stdin',
+      '--json',
+    ];
+    if (action.env !== undefined && action.env.trim().length > 0) {
+      args.push('--env', action.env.trim());
+    }
+    if (action.maxUses !== undefined) {
+      args.push('--max-uses', String(action.maxUses));
+    }
+    await this.#runJsonCommand(args, [passphrase]);
+    await this.#refreshPolicy();
+    this.#notice = `Created grant for ${secret}.`;
+    this.#noticeTone = 'success';
+  }
+
+  async #grantRevoke(grantId: string): Promise<void> {
+    if (this.#passphrase === null) {
+      throw new Error('Unlock before revoking a grant.');
+    }
+    const trimmed = grantId.trim();
+    if (trimmed.length === 0) {
+      throw new Error('grant-revoke requires a grant id.');
+    }
+    const passphrase = this.#passphrase.toString('utf8');
+    await this.#runJsonCommand(
+      [
+        'grant',
+        'revoke',
+        trimmed,
+        ...(await this.#profileArgs()),
+        '--passphrase-stdin',
+        '--json',
+      ],
+      [passphrase],
+    );
+    await this.#refreshPolicy();
+    this.#notice = `Revoked grant ${trimmed}.`;
+    this.#noticeTone = 'success';
+  }
+
+  async #recoveryCreate(
+    recoveryFile: string,
+    recoveryPassphrase: string,
+  ): Promise<void> {
+    const file = recoveryFile.trim();
+    if (file.length === 0 || recoveryPassphrase.length === 0) {
+      throw new Error('recovery-create requires recoveryFile and recoveryPassphrase.');
+    }
+    const current = await this.#currentProfile();
+    if (current === null) {
+      throw new Error('Select a profile before creating recovery.');
+    }
+    if (current.databaseId !== undefined) {
+      if (this.#passphrase === null) {
+        throw new Error('Unlock before db recovery create.');
+      }
+      const passphrase = this.#passphrase.toString('utf8');
+      await this.#runTextCommand(
+        [
+          'db',
+          'recovery',
+          'create',
+          '--recovery-file',
+          file,
+          ...(await this.#profileArgs()),
+          '--passphrase-stdin',
+        ],
+        [passphrase, recoveryPassphrase, recoveryPassphrase],
+      );
+    } else if (current.datastore === 'file') {
+      if (this.#passphrase === null) {
+        throw new Error('Unlock before recovery create.');
+      }
+      const passphrase = this.#passphrase.toString('utf8');
+      await this.#runTextCommand(
+        [
+          'recovery',
+          'create',
+          '--datastore',
+          'file',
+          '--data-file',
+          current.dataFile,
+          '--key-file',
+          current.keyFile,
+          '--recovery-file',
+          file,
+          ...(this.#vaultId === null ? [] : ['--vault', this.#vaultId]),
+          '--passphrase-stdin',
+          '--recovery-passphrase-stdin',
+        ],
+        [passphrase, recoveryPassphrase],
+      );
+    } else {
+      throw new Error('Recovery create for this profile requires the CLI.');
+    }
+    await this.#recoveryStatus();
+    this.#notice = `Created recovery kit at ${file}.`;
+    this.#noticeTone = 'success';
+  }
+
+  async #recoveryVerify(
+    recoveryFile: string,
+    recoveryPassphrase: string,
+  ): Promise<void> {
+    const file = recoveryFile.trim();
+    if (file.length === 0 || recoveryPassphrase.length === 0) {
+      throw new Error('recovery-verify requires recoveryFile and recoveryPassphrase.');
+    }
+    const current = await this.#currentProfile();
+    if (current === null) {
+      throw new Error('Select a profile before verifying recovery.');
+    }
+    if (current.databaseId !== undefined) {
+      if (this.#passphrase === null) {
+        throw new Error('Unlock before db recovery verify.');
+      }
+      const passphrase = this.#passphrase.toString('utf8');
+      await this.#runTextCommand(
+        [
+          'db',
+          'recovery',
+          'verify',
+          '--recovery-file',
+          file,
+          ...(await this.#profileArgs()),
+          '--passphrase-stdin',
+        ],
+        [passphrase, recoveryPassphrase],
+      );
+    } else if (current.datastore === 'file') {
+      await this.#runTextCommand(
+        [
+          'recovery',
+          'verify',
+          '--datastore',
+          'file',
+          '--data-file',
+          current.dataFile,
+          '--recovery-file',
+          file,
+          ...(this.#vaultId === null ? [] : ['--vault', this.#vaultId]),
+          '--recovery-passphrase-stdin',
+        ],
+        [recoveryPassphrase],
+      );
+    } else {
+      throw new Error('Recovery verify for this profile requires the CLI.');
+    }
+    this.#notice = `Verified recovery kit ${file}.`;
+    this.#noticeTone = 'success';
+  }
+
+  async #recoveryRevoke(slotId: string): Promise<void> {
+    const trimmed = slotId.trim();
+    if (trimmed.length === 0) {
+      throw new Error('recovery-revoke requires a slot id.');
+    }
+    const active = this.#recoverySlots.filter((slot) => slot.status === 'active');
+    if (active.length <= 1) {
+      throw new Error(
+        'Cannot revoke the last active recovery slot (CLI refuses final-slot revoke).',
+      );
+    }
+    const current = await this.#currentProfile();
+    if (current === null) {
+      throw new Error('Select a profile before revoking recovery.');
+    }
+    if (current.databaseId !== undefined) {
+      if (this.#passphrase === null) {
+        throw new Error('Unlock before db recovery revoke.');
+      }
+      const passphrase = this.#passphrase.toString('utf8');
+      await this.#runTextCommand(
+        [
+          'db',
+          'recovery',
+          'revoke',
+          trimmed,
+          ...(await this.#profileArgs()),
+          '--passphrase-stdin',
+        ],
+        [passphrase],
+      );
+    } else if (current.datastore === 'file') {
+      if (this.#passphrase === null) {
+        throw new Error('Unlock before recovery revoke.');
+      }
+      const passphrase = this.#passphrase.toString('utf8');
+      await this.#runTextCommand(
+        [
+          'recovery',
+          'revoke',
+          trimmed,
+          '--datastore',
+          'file',
+          '--data-file',
+          current.dataFile,
+          '--key-file',
+          current.keyFile,
+          ...(this.#vaultId === null ? [] : ['--vault', this.#vaultId]),
+          '--passphrase-stdin',
+        ],
+        [passphrase],
+      );
+    } else {
+      throw new Error('Recovery revoke for this profile requires the CLI.');
+    }
+    await this.#recoveryStatus();
+    this.#notice = `Revoked recovery slot ${trimmed}.`;
     this.#noticeTone = 'success';
   }
 
@@ -817,3 +1293,176 @@ function parseRecoverySlots(
     ];
   });
 }
+
+function parseDoctorRows(raw: unknown): CliTuiSnapshot['doctor'] {
+  if (typeof raw !== 'object' || raw === null) {
+    return [
+      {
+        name: 'doctor',
+        status: 'error',
+        detail: 'Unexpected doctor payload.',
+      },
+    ];
+  }
+  const record = raw as Record<string, unknown>;
+  const checks = Array.isArray(record['checks']) ? record['checks'] : null;
+  if (checks !== null && checks.length > 0) {
+    return checks.flatMap((entry) => {
+      if (typeof entry !== 'object' || entry === null) return [];
+      const check = entry as Record<string, unknown>;
+      const name =
+        typeof check['name'] === 'string'
+          ? check['name']
+          : typeof check['id'] === 'string'
+            ? check['id']
+            : 'check';
+      const statusRaw = check['status'];
+      let status: 'ok' | 'warning' | 'error' = 'ok';
+      if (
+        statusRaw === 'warning' ||
+        statusRaw === 'warn' ||
+        statusRaw === 'degraded'
+      ) {
+        status = 'warning';
+      } else if (
+        statusRaw === 'error' ||
+        statusRaw === 'manual-recovery' ||
+        statusRaw === 'fail' ||
+        statusRaw === 'failed'
+      ) {
+        status = 'error';
+      }
+      const detail =
+        typeof check['detail'] === 'string'
+          ? check['detail']
+          : typeof check['message'] === 'string'
+            ? check['message']
+            : String(statusRaw ?? 'ok');
+      return [{ name, status, detail }];
+    });
+  }
+  const rows: Array<{
+    name: string;
+    status: 'ok' | 'warning' | 'error';
+    detail: string;
+  }> = [];
+  if (typeof record['healthy'] === 'boolean') {
+    rows.push({
+      name: 'healthy',
+      status: record['healthy'] === true ? 'ok' : 'error',
+      detail: record['healthy'] === true ? 'Vault authenticated.' : 'Vault unhealthy.',
+    });
+  }
+  if (typeof record['credentialCount'] === 'number') {
+    rows.push({
+      name: 'credentials',
+      status: 'ok',
+      detail: `${String(record['credentialCount'])} credential(s).`,
+    });
+  }
+  if (typeof record['revision'] === 'number') {
+    rows.push({
+      name: 'revision',
+      status: 'ok',
+      detail: `revision ${String(record['revision'])}`,
+    });
+  }
+  if (typeof record['vaultId'] === 'string') {
+    rows.push({
+      name: 'vault',
+      status: 'ok',
+      detail: record['vaultId'],
+    });
+  }
+  if (rows.length === 0) {
+    rows.push({
+      name: 'doctor',
+      status: 'ok',
+      detail: 'Doctor completed (no structured checks).',
+    });
+  }
+  return rows;
+}
+
+function parsePolicyRows(
+  policyRaw: unknown,
+  grantRaw: unknown,
+  auditRaw: unknown,
+): CliTuiSnapshot['policies'] {
+  const rows: Array<{
+    id: string;
+    kind: 'policy' | 'grant' | 'audit';
+    summary: string;
+  }> = [];
+  if (typeof policyRaw === 'object' && policyRaw !== null) {
+    const policies = (policyRaw as Record<string, unknown>)['policies'];
+    if (Array.isArray(policies)) {
+      for (const entry of policies) {
+        if (typeof entry !== 'object' || entry === null) continue;
+        const policy = entry as Record<string, unknown>;
+        const id = typeof policy['id'] === 'string' ? policy['id'] : null;
+        if (id === null) continue;
+        const secret =
+          typeof policy['secret'] === 'string' ? policy['secret'] : '?';
+        const commands = Array.isArray(policy['commands'])
+          ? policy['commands'].filter((item): item is string => typeof item === 'string')
+          : [];
+        rows.push({
+          id,
+          kind: 'policy',
+          summary: `secret=${secret} cmds=${commands.join(',') || '(none)'}`,
+        });
+      }
+    }
+  }
+  if (typeof grantRaw === 'object' && grantRaw !== null) {
+    const grants = (grantRaw as Record<string, unknown>)['grants'];
+    if (Array.isArray(grants)) {
+      for (const entry of grants) {
+        if (typeof entry !== 'object' || entry === null) continue;
+        const grant = entry as Record<string, unknown>;
+        const id =
+          typeof grant['grantId'] === 'string'
+            ? grant['grantId']
+            : typeof grant['id'] === 'string'
+              ? grant['id']
+              : null;
+        if (id === null) continue;
+        const secret = typeof grant['secret'] === 'string' ? grant['secret'] : '?';
+        const status =
+          typeof grant['status'] === 'string' ? grant['status'] : 'unknown';
+        rows.push({
+          id,
+          kind: 'grant',
+          summary: `secret=${secret} status=${status}`,
+        });
+      }
+    }
+  }
+  if (typeof auditRaw === 'object' && auditRaw !== null) {
+    const events = (auditRaw as Record<string, unknown>)['events'];
+    if (Array.isArray(events)) {
+      for (const entry of events.slice(-8)) {
+        if (typeof entry !== 'object' || entry === null) continue;
+        const event = entry as Record<string, unknown>;
+        const action =
+          typeof event['action'] === 'string' ? event['action'] : 'event';
+        const at = typeof event['at'] === 'string' ? event['at'] : '';
+        rows.push({
+          id: `audit:${at}:${action}`,
+          kind: 'audit',
+          summary: at.length > 0 ? `${action} @ ${at}` : action,
+        });
+      }
+    }
+  }
+  if (rows.length === 0) {
+    rows.push({
+      id: '(empty)',
+      kind: 'audit',
+      summary: 'No policies, grants, or recent audit events.',
+    });
+  }
+  return rows;
+}
+

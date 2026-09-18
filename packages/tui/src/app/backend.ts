@@ -95,9 +95,37 @@ export type AppBackendAction =
   | Readonly<{ type: 'search-credentials'; query: string }>
   | Readonly<{ type: 'run-doctor' }>
   | Readonly<{ type: 'recovery-status' }>
+  | Readonly<{
+      type: 'recovery-create';
+      recoveryFile: string;
+      recoveryPassphrase: string;
+    }>
+  | Readonly<{
+      type: 'recovery-verify';
+      recoveryFile: string;
+      recoveryPassphrase: string;
+    }>
+  | Readonly<{ type: 'recovery-revoke'; slotId: string }>
   | Readonly<{ type: 'preview-run'; credentialNames: readonly string[] }>
-  | Readonly<{ type: 'agent-dry-run' }>
+  | Readonly<{ type: 'agent-dry-run'; configPath?: string; agentName?: string }>
   | Readonly<{ type: 'refresh-policy' }>
+  | Readonly<{
+      type: 'policy-create';
+      id: string;
+      secret: string;
+      command: string;
+      env?: string;
+    }>
+  | Readonly<{ type: 'policy-remove'; id: string }>
+  | Readonly<{
+      type: 'grant-create';
+      secret: string;
+      command: string;
+      ttl: string;
+      env?: string;
+      maxUses?: number;
+    }>
+  | Readonly<{ type: 'grant-revoke'; grantId: string }>
   | Readonly<{ type: 'refresh-browse' }>;
 
 export type AppBackendResult = Readonly<{

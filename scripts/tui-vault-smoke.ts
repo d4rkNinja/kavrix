@@ -3,7 +3,7 @@
  * Uses a temp HOME, inits a file database vault via CLI, then exercises
  * CliTuiSession unlock/list/reveal/put/rename/remove without Ink.
  */
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -58,6 +58,7 @@ async function main(): Promise<void> {
   const keyFile = join(home, 'owner.key');
   process.env.HOME = home;
   process.env.USERPROFILE = home;
+  await chmod(home, 0o700);
 
   try {
     let result = await runCli(
@@ -250,6 +251,195 @@ async function main(): Promise<void> {
       return;
     }
     pass('session recovery-status');
+
+    const recoveryFile = join(home, 'recovery.kit');
+    const recoveryPass = 'recovery-pass-phrase-ok';
+    snap = await backend.dispatch({
+      type: 'recovery-create',
+      recoveryFile,
+      recoveryPassphrase: recoveryPass,
+    });
+    if (snap.snapshot.noticeTone === 'error') {
+      fail(`recovery-create: ${snap.snapshot.notice}`);
+      return;
+    }
+    const activeAfterCreate = snap.snapshot.recovery.filter(
+      (slot) => slot.status === 'active' && !slot.slotId.startsWith('('),
+    );
+    if (activeAfterCreate.length < 1) {
+      fail(
+        `recovery-create missing active slot: ${JSON.stringify(snap.snapshot.recovery)}`,
+      );
+      return;
+    }
+    pass(`session recovery-create (${activeAfterCreate[0]?.slotId})`);
+
+    snap = await backend.dispatch({ type: 'recovery-status' });
+    if (snap.snapshot.noticeTone === 'error') {
+      fail(`recovery-status after create: ${snap.snapshot.notice}`);
+      return;
+    }
+    pass('session recovery-status after create');
+
+    snap = await backend.dispatch({
+      type: 'recovery-verify',
+      recoveryFile,
+      recoveryPassphrase: recoveryPass,
+    });
+    if (snap.snapshot.noticeTone === 'error') {
+      fail(`recovery-verify: ${snap.snapshot.notice}`);
+      return;
+    }
+    pass('session recovery-verify');
+
+    snap = await backend.dispatch({ type: 'run-doctor' });
+    if (snap.snapshot.noticeTone === 'error') {
+      fail(`run-doctor: ${snap.snapshot.notice}`);
+      return;
+    }
+    if (snap.snapshot.doctor.length < 1) {
+      fail('run-doctor produced no rows');
+      return;
+    }
+    pass(`session run-doctor (${String(snap.snapshot.doctor.length)} rows)`);
+
+    snap = await backend.dispatch({
+      type: 'policy-create',
+      id: 'tui-smoke-policy',
+      secret: 'seed',
+      command: 'true',
+    });
+    if (snap.snapshot.noticeTone === 'error') {
+      fail(`policy-create: ${snap.snapshot.notice}`);
+      return;
+    }
+    if (
+      !snap.snapshot.policies.some(
+        (row) => row.kind === 'policy' && row.id === 'tui-smoke-policy',
+      )
+    ) {
+      fail(`policy-create missing row: ${JSON.stringify(snap.snapshot.policies)}`);
+      return;
+    }
+    pass('session policy-create');
+
+    snap = await backend.dispatch({ type: 'refresh-policy' });
+    if (snap.snapshot.noticeTone === 'error') {
+      fail(`refresh-policy: ${snap.snapshot.notice}`);
+      return;
+    }
+    if (
+      !snap.snapshot.policies.some(
+        (row) => row.kind === 'policy' && row.id === 'tui-smoke-policy',
+      )
+    ) {
+      fail('refresh-policy lost created policy');
+      return;
+    }
+    pass('session refresh-policy (list)');
+
+    snap = await backend.dispatch({
+      type: 'grant-create',
+      secret: 'seed',
+      command: 'true',
+      ttl: '15m',
+    });
+    if (snap.snapshot.noticeTone === 'error') {
+      fail(`grant-create: ${snap.snapshot.notice}`);
+      return;
+    }
+    const grantRow = snap.snapshot.policies.find((row) => row.kind === 'grant');
+    if (grantRow === undefined) {
+      fail(`grant-create missing grant row: ${JSON.stringify(snap.snapshot.policies)}`);
+      return;
+    }
+    pass(`session grant-create (${grantRow.id})`);
+
+    snap = await backend.dispatch({
+      type: 'grant-revoke',
+      grantId: grantRow.id,
+    });
+    if (snap.snapshot.noticeTone === 'error') {
+      fail(`grant-revoke: ${snap.snapshot.notice}`);
+      return;
+    }
+    const afterRevoke = snap.snapshot.policies.find((row) => row.id === grantRow.id);
+    if (
+      afterRevoke !== undefined &&
+      !afterRevoke.summary.toLowerCase().includes('revoked')
+    ) {
+      fail(
+        `grant-revoke did not clear/revoke grant: ${JSON.stringify(afterRevoke)}`,
+      );
+      return;
+    }
+    pass('session grant-revoke');
+
+    snap = await backend.dispatch({
+      type: 'policy-remove',
+      id: 'tui-smoke-policy',
+    });
+    if (snap.snapshot.noticeTone === 'error') {
+      fail(`policy-remove: ${snap.snapshot.notice}`);
+      return;
+    }
+    if (
+      snap.snapshot.policies.some(
+        (row) => row.kind === 'policy' && row.id === 'tui-smoke-policy',
+      )
+    ) {
+      fail('policy-remove left policy row present');
+      return;
+    }
+    pass('session policy-remove');
+
+    snap = await backend.dispatch({
+      type: 'preview-run',
+      credentialNames: ['seed'],
+    });
+    if (snap.snapshot.noticeTone === 'error') {
+      fail(`preview-run: ${snap.snapshot.notice}`);
+      return;
+    }
+    if (!snap.snapshot.runPreview.toLowerCase().includes('validated')) {
+      fail(`preview-run unexpected preview: ${snap.snapshot.runPreview}`);
+      return;
+    }
+    pass('session preview-run');
+
+    const agentConfig = join(home, 'agent.kavrix.json');
+    await writeFile(
+      agentConfig,
+      `${JSON.stringify(
+        {
+          version: 1,
+          agents: {
+            noop: {
+              permissions: {
+                ping: {
+                  secret: 'seed',
+                  commands: ['true'],
+                  env: 'SEED',
+                },
+              },
+            },
+          },
+        },
+        null,
+        2,
+      )}\n`,
+      'utf8',
+    );
+    snap = await backend.dispatch({
+      type: 'agent-dry-run',
+      configPath: agentConfig,
+      agentName: 'noop',
+    });
+    if (snap.snapshot.noticeTone === 'error') {
+      fail(`agent-dry-run: ${snap.snapshot.notice}`);
+      return;
+    }
+    pass('session agent-dry-run');
 
     await writeFile(join(home, 'tui-vault-smoke.ok'), 'ok\n', 'utf8');
     console.log('tui-vault-smoke: ALL PASS');

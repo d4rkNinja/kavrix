@@ -252,4 +252,200 @@ describe('CliTuiSession mutations (mocked spawn)', () => {
     }
   });
 
+
+  it('runs doctor, policy, grant, recovery, preview, and agent via real CLI frames', async () => {
+    const configDir = await setupProfile();
+    const calls: Array<{ args: readonly string[]; frames: readonly string[] }> =
+      [];
+    let policies: Array<Record<string, unknown>> = [];
+    let grants: Array<Record<string, unknown>> = [];
+    let slots: Array<Record<string, unknown>> = [];
+
+    const backend = createCliTuiBackend({
+      profileConfigDir: configDir,
+      ascii: true,
+      commandRunner: async (args, frames) => {
+        calls.push({ args: [...args], frames: [...frames] });
+        if (args.includes('list') && args[0] !== 'policy' && args[0] !== 'grant') {
+          return JSON.stringify({ names: ['alpha'] });
+        }
+        if (args[0] === 'doctor' || (args[0] === 'db' && args[1] === 'doctor')) {
+          return JSON.stringify({
+            healthy: true,
+            checks: [{ name: 'database-container', status: 'ok', detail: 'ok' }],
+          });
+        }
+        if (args[0] === 'policy' && args[1] === 'list') {
+          return JSON.stringify({ policies });
+        }
+        if (args[0] === 'policy' && args[1] === 'create') {
+          const id = args[2];
+          policies = [
+            ...policies.filter((row) => row['id'] !== id),
+            {
+              id,
+              secret: 'alpha',
+              commands: ['true'],
+              createdAt: '2026-01-01T00:00:00.000Z',
+            },
+          ];
+          return JSON.stringify({ saved: true, id });
+        }
+        if (args[0] === 'policy' && args[1] === 'remove') {
+          const id = args[2];
+          policies = policies.filter((row) => row['id'] !== id);
+          return JSON.stringify({ removed: true, id });
+        }
+        if (args[0] === 'grant' && args[1] === 'list') {
+          return JSON.stringify({ grants });
+        }
+        if (args[0] === 'grant' && args[1] === 'create') {
+          const grantId = 'grant_test_1';
+          grants = [
+            {
+              grantId,
+              secret: 'alpha',
+              status: 'active',
+              commands: ['true'],
+              createdAt: '2026-01-01T00:00:00.000Z',
+            },
+          ];
+          return JSON.stringify({ granted: true, grantId });
+        }
+        if (args[0] === 'grant' && args[1] === 'revoke') {
+          const grantId = args[2];
+          grants = grants.map((row) =>
+            row['grantId'] === grantId ? { ...row, status: 'revoked' } : row,
+          );
+          return JSON.stringify({ revoked: true, grantId });
+        }
+        if (args[0] === 'audit') {
+          return JSON.stringify({ total: 0, shown: 0, events: [] });
+        }
+        if (args.includes('recovery') && args.includes('create')) {
+          slots = [{ id: 'slot-new', state: 'active' }];
+          return JSON.stringify({ slotId: 'slot-new' });
+        }
+        if (args.includes('recovery') && args.includes('verify')) {
+          return JSON.stringify({ verified: true, slotId: 'slot-new' });
+        }
+        if (args.includes('recovery') && args.includes('status')) {
+          return JSON.stringify({
+            active: slots.filter((slot) => slot['state'] === 'active').length,
+            revoked: 0,
+            slots,
+          });
+        }
+        if (args[0] === 'run' && args.includes('--help')) {
+          return 'Usage: kavrix run [options]';
+        }
+        if (args[0] === 'agent' && args.includes('--dry-run')) {
+          return JSON.stringify({ dryRun: true, ok: true, agent: 'noop' });
+        }
+        return '{}';
+      },
+    });
+
+    await backend.dispatch({
+      type: 'unlock',
+      passphrase: 'correct horse battery staple',
+    });
+
+    let result = await backend.dispatch({ type: 'run-doctor' });
+    expect(result.snapshot.doctor.some((row) => row.name === 'database-container')).toBe(
+      true,
+    );
+    expect(result.snapshot.noticeTone).toBe('success');
+
+    result = await backend.dispatch({
+      type: 'policy-create',
+      id: 'allow-true',
+      secret: 'alpha',
+      command: 'true',
+    });
+    expect(result.snapshot.noticeTone).toBe('success');
+    expect(
+      result.snapshot.policies.some(
+        (row) => row.kind === 'policy' && row.id === 'allow-true',
+      ),
+    ).toBe(true);
+    const policyCreate = calls.find(
+      (call) => call.args[0] === 'policy' && call.args[1] === 'create',
+    );
+    expect(policyCreate?.frames).toEqual(['correct horse battery staple']);
+    expect(policyCreate?.args.join(' ')).not.toContain('correct horse');
+
+    result = await backend.dispatch({
+      type: 'grant-create',
+      secret: 'alpha',
+      command: 'true',
+      ttl: '15m',
+    });
+    expect(result.snapshot.noticeTone).toBe('success');
+    expect(result.snapshot.policies.some((row) => row.kind === 'grant')).toBe(true);
+
+    result = await backend.dispatch({
+      type: 'grant-revoke',
+      grantId: 'grant_test_1',
+    });
+    expect(result.snapshot.noticeTone).toBe('success');
+
+    result = await backend.dispatch({
+      type: 'policy-remove',
+      id: 'allow-true',
+    });
+    expect(result.snapshot.noticeTone).toBe('success');
+    expect(
+      result.snapshot.policies.some(
+        (row) => row.kind === 'policy' && row.id === 'allow-true',
+      ),
+    ).toBe(false);
+
+    result = await backend.dispatch({
+      type: 'recovery-create',
+      recoveryFile: join(configDir, 'recovery.kit'),
+      recoveryPassphrase: 'recovery-secret',
+    });
+    expect(result.snapshot.noticeTone).toBe('success');
+    expect(result.snapshot.recovery.some((slot) => slot.slotId === 'slot-new')).toBe(
+      true,
+    );
+    const recoveryCreate = calls.find(
+      (call) => call.args.includes('recovery') && call.args.includes('create'),
+    );
+    expect(recoveryCreate?.frames).toEqual([
+      'correct horse battery staple',
+      'recovery-secret',
+      'recovery-secret',
+    ]);
+    expect(recoveryCreate?.args.join(' ')).not.toContain('recovery-secret');
+
+    result = await backend.dispatch({
+      type: 'recovery-verify',
+      recoveryFile: join(configDir, 'recovery.kit'),
+      recoveryPassphrase: 'recovery-secret',
+    });
+    expect(result.snapshot.noticeTone).toBe('success');
+
+    result = await backend.dispatch({
+      type: 'preview-run',
+      credentialNames: ['alpha'],
+    });
+    expect(result.snapshot.noticeTone).toBe('success');
+    expect(result.snapshot.runPreview.toLowerCase()).toContain('validated');
+
+    result = await backend.dispatch({
+      type: 'agent-dry-run',
+      configPath: join(configDir, 'agent.kavrix.json'),
+      agentName: 'noop',
+    });
+    expect(result.snapshot.noticeTone).toBe('success');
+    const agentCall = calls.find(
+      (call) => call.args[0] === 'agent' && call.args.includes('--dry-run'),
+    );
+    expect(agentCall?.args).toEqual(
+      expect.arrayContaining(['agent', 'run', '--dry-run', '--json', '--agent', 'noop']),
+    );
+  });
+
 });
