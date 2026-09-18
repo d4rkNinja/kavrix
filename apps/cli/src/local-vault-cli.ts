@@ -188,6 +188,10 @@ export type LocalCliOptions = Readonly<{
   json?: boolean;
   /** Commander `--no-tui` sets `tui: false` (default true). */
   tui?: boolean;
+  /** TUI presentation: `--ascii` / `--color` / `--no-color` / `--no-splash`. */
+  ascii?: boolean;
+  color?: boolean;
+  splash?: boolean;
   limit?: string;
   caseSensitive?: boolean;
   allowInsecureTransport?: boolean;
@@ -245,6 +249,13 @@ export function buildLocalCli(): Command {
     '--json',
     'Machine-readable / non-interactive init (skips TUI and classic prompts).',
   );
+  init.option('--ascii', 'Force printable ASCII borders and glyphs (TUI onboarding).');
+  init.option('--color', 'Force color when the terminal supports it (TUI onboarding).');
+  init.option('--no-color', 'Disable ANSI color for TUI onboarding (also honors NO_COLOR).');
+  init.option(
+    '--no-splash',
+    'Skip the animated startup splash on TUI onboarding.',
+  );
   addKeyOptions(init);
   init.action(async (...args: unknown[]) => {
     const options = getOptions(args);
@@ -253,6 +264,13 @@ export function buildLocalCli(): Command {
         ...(options.profileConfigDir === undefined
           ? {}
           : { profileConfigDir: options.profileConfigDir }),
+        ...(options.ascii === true ? { ascii: true } : {}),
+        ...(options.color === true
+          ? { color: true }
+          : options.color === false
+            ? { color: false }
+            : {}),
+        ...(options.splash === false ? { splash: false } : {}),
       });
       if (result.status === 'completed') {
         writeInitTuiOnboardingComplete({

@@ -6,6 +6,8 @@ import { CLI_VERSION } from './version.js';
 export type InitTuiOnboardingOptions = Readonly<{
   ascii?: boolean;
   color?: boolean;
+  /** Commander `--no-splash` sets `splash: false`. */
+  splash?: boolean;
   profileConfigDir?: string;
   configDir?: string;
 }>;
@@ -48,6 +50,7 @@ export async function runInitTuiOnboarding(
     process.env['TERM'] === 'dumb' ||
     process.env['TERM'] === undefined;
   const noSplash =
+    options.splash === false ||
     process.env['KAVRIX_TUI_NO_SPLASH'] === '1' ||
     process.env['KAVRIX_TUI_NO_SPLASH'] === 'true';
 

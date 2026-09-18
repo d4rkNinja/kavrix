@@ -1,6 +1,11 @@
+import { profileIdSchema } from '@kavrix/schemas';
+
 import type { AppBackendAction } from './backend.js';
 import { defaultFileProfilePaths, defaultMongoProfilePaths } from './paths.js';
 import { sanitizePasteText } from './router.js';
+
+/** Matches @kavrix/crypto MIN_PASSPHRASE_BYTES without pulling crypto into TUI. */
+const MIN_ONBOARDING_PASSPHRASE_BYTES = 16;
 
 export type OnboardingStorage = 'file' | 'mongodb';
 
@@ -150,6 +155,14 @@ function keyTransition(
   state: OnboardingState,
   key: OnboardingKey,
 ): OnboardingTransition {
+  // Never abort mid-create — avoids partial profile corruption from Ctrl+C.
+  if (state.step === 'creating') {
+    return unchanged({
+      ...state,
+      message: state.message ?? 'Creating profile — please wait…',
+    });
+  }
+
   if (key.ctrl === true && key.text === 'c') {
     return unchanged({
       ...state,
@@ -184,10 +197,6 @@ function keyTransition(
         message: 'Restarted onboarding.',
       });
     }
-    return unchanged(state);
-  }
-
-  if (state.step === 'creating') {
     return unchanged(state);
   }
 
@@ -261,18 +270,7 @@ function keyTransition(
 
   if (isInputStep(state.step)) {
     if (key.name === 'escape') {
-      return unchanged({
-        ...state,
-        step: 'storage',
-        query: '',
-        profileId: null,
-        dataFile: null,
-        keyFile: null,
-        database: null,
-        databaseUrl: null,
-        passphrase: null,
-        message: 'Back to storage choice.',
-      });
+      return stepBack(state);
     }
     if (key.name === 'backspace') {
       return unchanged({ ...state, query: removeLast(state.query) });
@@ -291,6 +289,10 @@ function commitInput(state: OnboardingState): OnboardingTransition {
   switch (state.step) {
     case 'file-profile-id': {
       const profileId = state.query.trim() || 'default';
+      const idError = validateProfileId(profileId);
+      if (idError !== null) {
+        return unchanged({ ...state, message: idError });
+      }
       const defaults = defaultFileProfilePaths(profileId);
       return unchanged({
         ...state,
@@ -312,6 +314,10 @@ function commitInput(state: OnboardingState): OnboardingTransition {
       }
       const dataFile =
         state.query.trim() || defaultFileProfilePaths(profileId).dataFile;
+      const pathError = validatePathInput(dataFile, 'Data file');
+      if (pathError !== null) {
+        return unchanged({ ...state, message: pathError });
+      }
       return unchanged({
         ...state,
         dataFile,
@@ -331,6 +337,10 @@ function commitInput(state: OnboardingState): OnboardingTransition {
         });
       }
       const keyFile = state.query.trim() || defaultFileProfilePaths(profileId).keyFile;
+      const pathError = validatePathInput(keyFile, 'Key file');
+      if (pathError !== null) {
+        return unchanged({ ...state, message: pathError });
+      }
       return unchanged({
         ...state,
         keyFile,
@@ -342,6 +352,12 @@ function commitInput(state: OnboardingState): OnboardingTransition {
     case 'file-passphrase': {
       if (state.query.length === 0) {
         return unchanged({ ...state, message: 'Passphrase cannot be empty.' });
+      }
+      if (passphraseTooShort(state.query)) {
+        return unchanged({
+          ...state,
+          message: `Passphrase must be at least ${String(MIN_ONBOARDING_PASSPHRASE_BYTES)} UTF-8 bytes.`,
+        });
       }
       return unchanged({
         ...state,
@@ -400,6 +416,10 @@ function commitInput(state: OnboardingState): OnboardingTransition {
     }
     case 'mongo-profile-id': {
       const profileId = state.query.trim() || 'default';
+      const idError = validateProfileId(profileId);
+      if (idError !== null) {
+        return unchanged({ ...state, message: idError });
+      }
       return unchanged({
         ...state,
         profileId,
@@ -419,6 +439,9 @@ function commitInput(state: OnboardingState): OnboardingTransition {
         });
       }
       const database = state.query.trim() || profileId;
+      if (database.length === 0 || database.includes('\0')) {
+        return unchanged({ ...state, message: 'Database name is invalid.' });
+      }
       return unchanged({
         ...state,
         database,
@@ -438,6 +461,10 @@ function commitInput(state: OnboardingState): OnboardingTransition {
         });
       }
       const keyFile = state.query.trim() || defaultMongoProfilePaths(profileId).keyFile;
+      const pathError = validatePathInput(keyFile, 'Key file');
+      if (pathError !== null) {
+        return unchanged({ ...state, message: pathError });
+      }
       return unchanged({
         ...state,
         keyFile,
@@ -461,6 +488,12 @@ function commitInput(state: OnboardingState): OnboardingTransition {
     case 'mongo-passphrase': {
       if (state.query.length === 0) {
         return unchanged({ ...state, message: 'Passphrase cannot be empty.' });
+      }
+      if (passphraseTooShort(state.query)) {
+        return unchanged({
+          ...state,
+          message: `Passphrase must be at least ${String(MIN_ONBOARDING_PASSPHRASE_BYTES)} UTF-8 bytes.`,
+        });
       }
       return unchanged({
         ...state,
@@ -524,6 +557,123 @@ function commitInput(state: OnboardingState): OnboardingTransition {
     default:
       return unchanged(state);
   }
+}
+
+
+function stepBack(state: OnboardingState): OnboardingTransition {
+  switch (state.step) {
+    case 'file-profile-id':
+    case 'mongo-profile-id':
+      return unchanged({
+        ...state,
+        step: 'storage',
+        query: '',
+        profileId: null,
+        dataFile: null,
+        keyFile: null,
+        database: null,
+        databaseUrl: null,
+        passphrase: null,
+        message: 'Back to storage choice.',
+      });
+    case 'file-data-file':
+      return unchanged({
+        ...state,
+        step: 'file-profile-id',
+        query: state.profileId ?? 'default',
+        dataFile: null,
+        message: 'Profile id (Enter accepts default).',
+      });
+    case 'file-key-file':
+      return unchanged({
+        ...state,
+        step: 'file-data-file',
+        query: state.dataFile ?? '',
+        keyFile: null,
+        message: `Data file for '${state.profileId ?? 'default'}' (Enter accepts default).`,
+      });
+    case 'file-passphrase':
+      return unchanged({
+        ...state,
+        step: 'file-key-file',
+        query: state.keyFile ?? '',
+        passphrase: null,
+        message: `Key file for '${state.profileId ?? 'default'}' (Enter accepts default).`,
+      });
+    case 'file-passphrase-confirm':
+      return unchanged({
+        ...state,
+        step: 'file-passphrase',
+        query: '',
+        passphrase: null,
+        message: 'Owner passphrase (masked). Enter continues; Esc back.',
+      });
+    case 'mongo-database':
+      return unchanged({
+        ...state,
+        step: 'mongo-profile-id',
+        query: state.profileId ?? 'default',
+        database: null,
+        message: 'Profile id (Enter accepts default).',
+      });
+    case 'mongo-key-file':
+      return unchanged({
+        ...state,
+        step: 'mongo-database',
+        query: state.database ?? state.profileId ?? '',
+        keyFile: null,
+        message: `MongoDB database name for '${state.profileId ?? 'default'}'.`,
+      });
+    case 'mongo-url':
+      return unchanged({
+        ...state,
+        step: 'mongo-key-file',
+        query: state.keyFile ?? '',
+        databaseUrl: null,
+        message: `Key file for '${state.profileId ?? 'default'}' (Enter accepts default).`,
+      });
+    case 'mongo-passphrase':
+      return unchanged({
+        ...state,
+        step: 'mongo-url',
+        query: '',
+        passphrase: null,
+        databaseUrl: null,
+        message: 'MongoDB URL (masked). Never stored by the TUI.',
+      });
+    case 'mongo-passphrase-confirm':
+      return unchanged({
+        ...state,
+        step: 'mongo-passphrase',
+        query: '',
+        passphrase: null,
+        message: 'Owner passphrase (masked). Enter continues; Esc back.',
+      });
+    default:
+      return unchanged({
+        ...state,
+        step: 'storage',
+        query: '',
+        message: 'Back to storage choice.',
+      });
+  }
+}
+
+function validateProfileId(profileId: string): string | null {
+  const parsed = profileIdSchema.safeParse(profileId);
+  if (parsed.success) return null;
+  return 'Profile id must be 1–128 chars: letters, digits, . _ ~ - (start alnum).';
+}
+
+function validatePathInput(value: string, label: string): string | null {
+  if (value.length === 0 || value.includes('\0')) {
+    return `${label} path is invalid.`;
+  }
+  return null;
+}
+
+function passphraseTooShort(value: string): boolean {
+  return new TextEncoder().encode(value).byteLength < MIN_ONBOARDING_PASSPHRASE_BYTES;
 }
 
 function isInputStep(step: OnboardingStep): boolean {

@@ -310,6 +310,57 @@ describe('root init onboarding composition', () => {
     expect(shouldRunInitTuiOnboarding(base)).toBe(false);
   });
 
+  it('eligibility matrix covers non-interactive and routing flags', () => {
+    setTty(true);
+    const base = {
+      keyFile: './kavrix.key',
+      collection: 'kavrix_vaults',
+      vault: 'default',
+      vaultWasDefaulted: true as const,
+      routingOverrides: {},
+    };
+    const cases: Array<Readonly<{ label: string; patch: Record<string, unknown>; expectOnboarding: boolean; expectTui: boolean }>> = [
+      { label: 'tty default', patch: {}, expectOnboarding: true, expectTui: true },
+      { label: '--no-tui', patch: { tui: false }, expectOnboarding: true, expectTui: false },
+      { label: '--passphrase-stdin', patch: { passphraseStdin: true }, expectOnboarding: false, expectTui: false },
+      { label: '--database-url-stdin', patch: { databaseUrlStdin: true }, expectOnboarding: false, expectTui: false },
+      { label: '--json', patch: { json: true }, expectOnboarding: false, expectTui: false },
+      { label: '--profile', patch: { profile: 'work' }, expectOnboarding: false, expectTui: false },
+      {
+        label: 'explicit vault',
+        patch: { vault: 'custom', vaultWasDefaulted: undefined },
+        expectOnboarding: false,
+        expectTui: false,
+      },
+      {
+        label: 'routing override',
+        patch: { routingOverrides: { dataFile: './x.vault' } },
+        expectOnboarding: false,
+        expectTui: false,
+      },
+      {
+        label: '--allow-insecure-transport',
+        patch: { allowInsecureTransport: true },
+        expectOnboarding: false,
+        expectTui: false,
+      },
+      {
+        label: '--secrets-stdin',
+        patch: { secretsStdin: true },
+        expectOnboarding: false,
+        expectTui: false,
+      },
+    ];
+    for (const row of cases) {
+      const options = { ...base, ...row.patch };
+      expect(shouldRunInitOnboarding(options), row.label).toBe(row.expectOnboarding);
+      expect(shouldRunInitTuiOnboarding(options), row.label).toBe(row.expectTui);
+    }
+    Object.defineProperty(process.stdin, 'isTTY', { configurable: true, value: false });
+    expect(shouldRunInitOnboarding(base)).toBe(false);
+    expect(shouldRunInitTuiOnboarding(base)).toBe(false);
+  });
+
   it('invokes TUI onboarding by default on full TTY', async () => {
     vi.mocked(runInitTuiOnboarding).mockResolvedValueOnce({
       status: 'completed',
@@ -327,6 +378,46 @@ describe('root init onboarding composition', () => {
       }),
     );
     expect(guidedMocks.execute).not.toHaveBeenCalled();
+  });
+
+  it('passes --ascii and --no-splash into TUI onboarding', async () => {
+    vi.mocked(runInitTuiOnboarding).mockResolvedValueOnce({
+      status: 'completed',
+      profileId: 'default',
+      datastore: 'file',
+    });
+
+    await buildLocalCli().parseAsync([
+      'node',
+      'kavrix',
+      'init',
+      '--ascii',
+      '--no-splash',
+    ]);
+
+    expect(runInitTuiOnboarding).toHaveBeenCalledWith(
+      expect.objectContaining({ ascii: true, splash: false }),
+    );
+  });
+
+  it('maps TUI cancel to InitOnboardingCancelledError', async () => {
+    vi.mocked(runInitTuiOnboarding).mockResolvedValueOnce({ status: 'cancelled' });
+    await expect(
+      buildLocalCli().parseAsync(['node', 'kavrix', 'init']),
+    ).rejects.toBeInstanceOf(InitOnboardingCancelledError);
+  });
+
+  it('maps TUI failed status to LocalCliError', async () => {
+    vi.mocked(runInitTuiOnboarding).mockResolvedValueOnce({
+      status: 'failed',
+      message: 'The datastore profile already exists.',
+    });
+    await expect(
+      buildLocalCli().parseAsync(['node', 'kavrix', 'init']),
+    ).rejects.toMatchObject({
+      name: 'LocalCliError',
+      message: 'The datastore profile already exists.',
+    });
   });
 
   it('renders an actionable protected-file error for explicit legacy init', async () => {

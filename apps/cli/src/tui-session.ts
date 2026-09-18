@@ -496,85 +496,100 @@ class CliTuiSession {
       trimmedVaultLabel.length > 0 ? trimmedVaultLabel : `${profileId}-vault`;
     const configDirArgs = this.#configDirArgs('--config-dir');
     const profileConfigDirArgs = this.#configDirArgs('--profile-config-dir');
+    let profileAdded = false;
 
-    await this.#runTextCommand(
-      [
-        'db',
-        'profile',
-        'add',
-        profileId,
-        '--datastore',
-        'file',
-        '--data-file',
-        dataFile,
-        '--key-file',
-        keyFile,
-        ...configDirArgs,
-      ],
-      [],
-    );
+    try {
+      await this.#runTextCommand(
+        [
+          'db',
+          'profile',
+          'add',
+          profileId,
+          '--datastore',
+          'file',
+          '--data-file',
+          dataFile,
+          '--key-file',
+          keyFile,
+          ...configDirArgs,
+        ],
+        [],
+      );
+      profileAdded = true;
 
-    await this.#runTextCommand(
-      ['db', 'profile', 'use', profileId, ...configDirArgs],
-      [],
-    );
+      await this.#runTextCommand(
+        ['db', 'profile', 'use', profileId, ...configDirArgs],
+        [],
+      );
 
-    // Frames: `kavrix frames "db init"` → [mongodb-url,] label, passphrase, passphrase-confirm
-    await this.#runTextCommand(
-      ['db', 'init', '--profile', profileId, ...configDirArgs, '--passphrase-stdin'],
-      [databaseLabel, action.passphrase, action.passphrase],
-    );
+      // Frames: `kavrix frames "db init"` → [mongodb-url,] label, passphrase, passphrase-confirm
+      await this.#runTextCommand(
+        ['db', 'init', '--profile', profileId, ...configDirArgs, '--passphrase-stdin'],
+        [databaseLabel, action.passphrase, action.passphrase],
+      );
 
-    // Frames: `kavrix frames "db vault create"` → [mongodb-url,] passphrase, label
-    const created = await this.#runJsonCommand(
-      [
-        'db',
-        'vault',
-        'create',
-        '--profile',
-        profileId,
-        ...profileConfigDirArgs,
-        '--passphrase-stdin',
-        '--json',
-      ],
-      [action.passphrase, vaultLabel],
-    );
-    const vaultId =
-      typeof created === 'object' &&
-      created !== null &&
-      typeof (created as { vaultId?: unknown }).vaultId === 'string'
-        ? (created as { vaultId: string }).vaultId
-        : null;
-    if (vaultId === null) {
-      throw new Error('db vault create did not return a vaultId.');
+      // Frames: `kavrix frames "db vault create"` → [mongodb-url,] passphrase, label
+      const created = await this.#runJsonCommand(
+        [
+          'db',
+          'vault',
+          'create',
+          '--profile',
+          profileId,
+          ...profileConfigDirArgs,
+          '--passphrase-stdin',
+          '--json',
+        ],
+        [action.passphrase, vaultLabel],
+      );
+      const vaultId =
+        typeof created === 'object' &&
+        created !== null &&
+        typeof (created as { vaultId?: unknown }).vaultId === 'string'
+          ? (created as { vaultId: string }).vaultId
+          : null;
+      if (vaultId === null) {
+        throw new Error('db vault create did not return a vaultId.');
+      }
+
+      // Frames: `kavrix frames "db vault use"` → [mongodb-url,] passphrase
+      await this.#runTextCommand(
+        [
+          'db',
+          'vault',
+          'use',
+          vaultId,
+          '--profile',
+          profileId,
+          ...profileConfigDirArgs,
+          '--passphrase-stdin',
+        ],
+        [action.passphrase],
+      );
+
+      this.#vaultId = vaultId;
+      this.#recoverySlots = [];
+      this.#doctorRows = [];
+      this.#policyRows = [];
+      this.#runPreview = null;
+      this.#agentStatus = null;
+      this.#browseNodes = [];
+      this.#clearDatabaseUrl();
+      await this.#unlock(action.passphrase);
+      this.#notice = `Created and selected file profile ${profileId} (vault ${vaultId}).`;
+      this.#noticeTone = 'success';
+    } catch (error) {
+      if (profileAdded) {
+        await this.#bestEffortRemoveProfile(profileId, configDirArgs);
+      }
+      const detail =
+        error instanceof Error ? error.message : 'File profile create failed.';
+      throw new Error(
+        profileAdded && !detail.includes('already exists')
+          ? `${detail} (partial profile cleaned up when possible).`
+          : detail,
+      );
     }
-
-    // Frames: `kavrix frames "db vault use"` → [mongodb-url,] passphrase
-    await this.#runTextCommand(
-      [
-        'db',
-        'vault',
-        'use',
-        vaultId,
-        '--profile',
-        profileId,
-        ...profileConfigDirArgs,
-        '--passphrase-stdin',
-      ],
-      [action.passphrase],
-    );
-
-    this.#vaultId = vaultId;
-    this.#recoverySlots = [];
-    this.#doctorRows = [];
-    this.#policyRows = [];
-    this.#runPreview = null;
-    this.#agentStatus = null;
-    this.#browseNodes = [];
-    this.#clearDatabaseUrl();
-    await this.#unlock(action.passphrase);
-    this.#notice = `Created and selected file profile ${profileId} (vault ${vaultId}).`;
-    this.#noticeTone = 'success';
   }
 
   /**
@@ -616,96 +631,126 @@ class CliTuiSession {
     const transport = needsInsecureTransport(databaseUrl)
       ? (['--allow-insecure-transport'] as const)
       : [];
+    let profileAdded = false;
 
-    await this.#runTextCommand(
-      [
-        'db',
-        'profile',
-        'add',
-        profileId,
-        '--datastore',
-        'mongodb',
-        '--database',
-        database,
-        '--key-file',
-        keyFile,
-        ...collectionArgs,
-        ...configDirArgs,
-      ],
-      [],
-    );
+    try {
+      await this.#runTextCommand(
+        [
+          'db',
+          'profile',
+          'add',
+          profileId,
+          '--datastore',
+          'mongodb',
+          '--database',
+          database,
+          '--key-file',
+          keyFile,
+          ...collectionArgs,
+          ...configDirArgs,
+        ],
+        [],
+      );
+      profileAdded = true;
 
-    await this.#runTextCommand(
-      ['db', 'profile', 'use', profileId, ...configDirArgs],
-      [],
-    );
+      await this.#runTextCommand(
+        ['db', 'profile', 'use', profileId, ...configDirArgs],
+        [],
+      );
 
-    this.#setDatabaseUrl(databaseUrl);
+      this.#setDatabaseUrl(databaseUrl);
 
-    // Frames: db init → [mongodb-url,] label, passphrase, passphrase-confirm
-    await this.#runTextCommand(
-      [
-        'db',
-        'init',
-        '--profile',
-        profileId,
-        ...configDirArgs,
-        ...transport,
-        '--passphrase-stdin',
-      ],
-      [databaseUrl, databaseLabel, action.passphrase, action.passphrase],
-    );
+      // Frames: db init → [mongodb-url,] label, passphrase, passphrase-confirm
+      await this.#runTextCommand(
+        [
+          'db',
+          'init',
+          '--profile',
+          profileId,
+          ...configDirArgs,
+          ...transport,
+          '--passphrase-stdin',
+        ],
+        [databaseUrl, databaseLabel, action.passphrase, action.passphrase],
+      );
 
-    // Frames: db vault create → [mongodb-url,] passphrase, label
-    const created = await this.#runJsonCommand(
-      [
-        'db',
-        'vault',
-        'create',
-        '--profile',
-        profileId,
-        ...profileConfigDirArgs,
-        ...transport,
-        '--passphrase-stdin',
-        '--json',
-      ],
-      [databaseUrl, action.passphrase, vaultLabel],
-    );
-    const vaultId =
-      typeof created === 'object' &&
-      created !== null &&
-      typeof (created as { vaultId?: unknown }).vaultId === 'string'
-        ? (created as { vaultId: string }).vaultId
-        : null;
-    if (vaultId === null) {
-      throw new Error('db vault create did not return a vaultId.');
+      // Frames: db vault create → [mongodb-url,] passphrase, label
+      const created = await this.#runJsonCommand(
+        [
+          'db',
+          'vault',
+          'create',
+          '--profile',
+          profileId,
+          ...profileConfigDirArgs,
+          ...transport,
+          '--passphrase-stdin',
+          '--json',
+        ],
+        [databaseUrl, action.passphrase, vaultLabel],
+      );
+      const vaultId =
+        typeof created === 'object' &&
+        created !== null &&
+        typeof (created as { vaultId?: unknown }).vaultId === 'string'
+          ? (created as { vaultId: string }).vaultId
+          : null;
+      if (vaultId === null) {
+        throw new Error('db vault create did not return a vaultId.');
+      }
+
+      await this.#runTextCommand(
+        [
+          'db',
+          'vault',
+          'use',
+          vaultId,
+          '--profile',
+          profileId,
+          ...profileConfigDirArgs,
+          ...transport,
+          '--passphrase-stdin',
+        ],
+        [databaseUrl, action.passphrase],
+      );
+
+      this.#vaultId = vaultId;
+      this.#recoverySlots = [];
+      this.#doctorRows = [];
+      this.#policyRows = [];
+      this.#runPreview = null;
+      this.#agentStatus = null;
+      this.#browseNodes = [];
+      await this.#unlock(action.passphrase, databaseUrl);
+      this.#notice = `Created and selected mongodb profile ${profileId} (vault ${vaultId}).`;
+      this.#noticeTone = 'success';
+    } catch (error) {
+      this.#clearDatabaseUrl();
+      if (profileAdded) {
+        await this.#bestEffortRemoveProfile(profileId, configDirArgs);
+      }
+      const detail =
+        error instanceof Error ? error.message : 'MongoDB profile create failed.';
+      throw new Error(
+        profileAdded && !detail.includes('already exists')
+          ? `${detail} (partial profile cleaned up when possible).`
+          : detail,
+      );
     }
+  }
 
-    await this.#runTextCommand(
-      [
-        'db',
-        'vault',
-        'use',
-        vaultId,
-        '--profile',
-        profileId,
-        ...profileConfigDirArgs,
-        ...transport,
-        '--passphrase-stdin',
-      ],
-      [databaseUrl, action.passphrase],
-    );
-
-    this.#vaultId = vaultId;
-    this.#recoverySlots = [];
-    this.#doctorRows = [];
-    this.#policyRows = [];
-    this.#runPreview = null;
-    this.#agentStatus = null;
-    this.#browseNodes = [];
-    await this.#unlock(action.passphrase, databaseUrl);
-    this.#notice = `Created and selected mongodb profile ${profileId} (vault ${vaultId}).`;
-    this.#noticeTone = 'success';
+  async #bestEffortRemoveProfile(
+    profileId: string,
+    configDirArgs: readonly string[],
+  ): Promise<void> {
+    try {
+      await this.#runTextCommand(
+        ['db', 'profile', 'remove', profileId, ...configDirArgs],
+        [],
+      );
+    } catch {
+      // Honest best-effort: surface the original create error to the user.
+    }
   }
 
   #configDirArgs(flag: '--config-dir' | '--profile-config-dir'): string[] {

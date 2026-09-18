@@ -34,6 +34,15 @@ describe('init TUI onboarding helpers', () => {
     await expect(runInitTuiOnboarding({})).rejects.toThrow(/Pass --no-tui/i);
   });
 
+  it('rejects non-TTY even when --no-splash / --ascii options are set', async () => {
+    Object.defineProperty(process.stdin, 'isTTY', { configurable: true, value: false });
+    Object.defineProperty(process.stdout, 'isTTY', { configurable: true, value: true });
+    Object.defineProperty(process.stderr, 'isTTY', { configurable: true, value: true });
+    await expect(
+      runInitTuiOnboarding({ splash: false, ascii: true, color: false }),
+    ).rejects.toBeInstanceOf(LocalCliError);
+  });
+
   it('writes a sanitized completion banner', () => {
     const lines: string[] = [];
     writeInitTuiOnboardingComplete({

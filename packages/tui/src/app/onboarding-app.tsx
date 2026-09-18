@@ -117,11 +117,15 @@ export function KavrixOnboardingApp({
       });
       stateRef.current = next.state;
       setState(next.state);
-    } catch {
+    } catch (error) {
+      const notice =
+        error instanceof Error && error.message.trim().length > 0
+          ? error.message
+          : 'Operation failed safely.';
       const next = transitionOnboarding(stateRef.current, {
         type: 'backend-result',
         ok: false,
-        notice: 'Operation failed safely.',
+        notice,
         profileId: null,
         datastore: null,
       });
