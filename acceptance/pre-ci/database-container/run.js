@@ -38,6 +38,8 @@ const expectedPackageFiles = Object.freeze([
   'dist/index.d.ts',
   'dist/index.js',
   'dist/kavrix.cdx.json',
+  'media/demo-frame-home-unlocked.png',
+  'media/kavrix-tui-demo.gif',
   'package.json',
 ]);
 function fail(message) {
@@ -1042,6 +1044,7 @@ async function scanPackage(packageRoot) {
   const files = (await walkFiles(packageRoot)).sort();
   assertExactPackageFiles(files);
   for (const file of files) {
+    if (/\.(png|gif|jpe?g|webp|mp4|webm)$/iu.test(file)) continue;
     const content = await readFile(join(packageRoot, file));
     const text = content.toString('utf8');
     assertNoSensitiveText(text, `package ${file}`);
