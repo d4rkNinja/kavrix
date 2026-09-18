@@ -20,7 +20,8 @@ agent-dry-run / browse actions via `createCliTuiBackend` (production).
 | `kavrix ui --help` (alias) | PASS |
 | `kavrix tui` on non-TTY | PASS (clear error, exit 1) |
 | `node scripts/tui-smoke.mjs` | PASS (12 screens) |
-| `node scripts/tui-vault-smoke.mjs` | PASS (real HOME vault; recovery/policy/grant/doctor/preview/agent/browse; mongo SKIP without MONGO_URL) |
+| `node scripts/tui-vault-smoke.mjs` | PASS (real HOME vault; recovery/policy/grant/doctor/preview/agent/browse) |
+| `MONGO_URL=…rs0` + vault-smoke | **PASS** including `create-mongodb-profile` (live replica set on 127.0.0.1:27017) |
 
 ## Screens
 
@@ -191,3 +192,15 @@ node scripts/tui-vault-smoke.mjs
 # optional live mongo:
 # MONGO_URL='mongodb://127.0.0.1:27017/?replicaSet=rs0' node scripts/tui-vault-smoke.mjs
 ```
+
+## Live Mongo (2026-09-18)
+
+Verified on this machine with `MONGO_URL=mongodb://127.0.0.1:27017/?replicaSet=rs0`:
+`create-mongodb-profile` **PASS** end-to-end (no product mocks).
+
+## Remaining honest gaps
+
+1. Full human TTY color paint is not CI-driven (open `kavrix tui` in a real terminal).
+2. Browse lists capped (20/20/30); no field-level drill-down yet.
+3. `kavrix run` has no `--dry-run` — preview uses list + `has` + `run --help` and does not inject secrets.
+4. Agent dry-run needs a real agent config or shows the real CLI error.
