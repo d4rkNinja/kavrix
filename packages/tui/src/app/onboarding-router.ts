@@ -1,7 +1,11 @@
 import { profileIdSchema } from '@kavrix/schemas';
 
 import type { AppBackendAction } from './backend.js';
-import { defaultFileProfilePaths, defaultMongoProfilePaths } from './paths.js';
+import {
+  defaultFileProfilePaths,
+  defaultMongoProfilePaths,
+  defaultRecoveryFilePath,
+} from './paths.js';
 import { sanitizePasteText } from './router.js';
 
 /** Matches @kavrix/crypto MIN_PASSPHRASE_BYTES without pulling crypto into TUI. */
@@ -17,12 +21,18 @@ export type OnboardingStep =
   | 'file-key-file'
   | 'file-passphrase'
   | 'file-passphrase-confirm'
+  | 'file-recovery-passphrase'
+  | 'file-recovery-passphrase-confirm'
+  | 'file-recovery-file'
   | 'mongo-profile-id'
   | 'mongo-database'
   | 'mongo-key-file'
   | 'mongo-url'
   | 'mongo-passphrase'
   | 'mongo-passphrase-confirm'
+  | 'mongo-recovery-passphrase'
+  | 'mongo-recovery-passphrase-confirm'
+  | 'mongo-recovery-file'
   | 'creating'
   | 'success'
   | 'error';
@@ -45,6 +55,8 @@ export interface OnboardingState {
   readonly database: string | null;
   readonly databaseUrl: string | null;
   readonly passphrase: string | null;
+  readonly recoveryPassphrase: string | null;
+  readonly recoveryFile: string | null;
   readonly message: string | null;
   readonly error: string | null;
   readonly ascii: boolean;
@@ -55,6 +67,7 @@ export interface OnboardingState {
   readonly completed: boolean;
   readonly completedProfileId: string | null;
   readonly completedDatastore: OnboardingStorage | null;
+  readonly completedRecoveryFile: string | null;
 }
 
 export type OnboardingEffect =
@@ -97,6 +110,8 @@ export function createInitialOnboardingState(
     database: null,
     databaseUrl: null,
     passphrase: null,
+    recoveryPassphrase: null,
+    recoveryFile: null,
     message: 'Welcome — press Enter to begin setup.',
     error: null,
     ascii: options.ascii ?? false,
@@ -107,6 +122,7 @@ export function createInitialOnboardingState(
     completed: false,
     completedProfileId: null,
     completedDatastore: null,
+    completedRecoveryFile: null,
   };
 }
 
@@ -129,12 +145,14 @@ export function transitionOnboarding(
         step: 'success',
         query: '',
         passphrase: null,
+        recoveryPassphrase: null,
         databaseUrl: null,
         message: action.notice ?? 'Vault ready.',
         error: null,
         completed: true,
         completedProfileId: action.profileId,
         completedDatastore: action.datastore ?? state.storage,
+        completedRecoveryFile: state.recoveryFile,
       });
     }
     return unchanged({
@@ -142,6 +160,7 @@ export function transitionOnboarding(
       step: 'error',
       query: '',
       passphrase: null,
+      recoveryPassphrase: null,
       databaseUrl: null,
       message: null,
       error: action.notice ?? 'Setup failed safely.',
@@ -364,20 +383,12 @@ function commitInput(state: OnboardingState): OnboardingTransition {
         passphrase: state.query,
         step: 'file-passphrase-confirm',
         query: '',
-        message: 'Confirm passphrase (masked). Enter creates the vault.',
+        message: 'Confirm owner passphrase (masked). Enter continues to recovery kit.',
       });
     }
     case 'file-passphrase-confirm': {
-      const profileId = state.profileId;
-      const dataFile = state.dataFile;
-      const keyFile = state.keyFile;
       const passphrase = state.passphrase;
-      if (
-        profileId === null ||
-        dataFile === null ||
-        keyFile === null ||
-        passphrase === null
-      ) {
+      if (passphrase === null) {
         return unchanged({
           ...state,
           step: 'storage',
@@ -394,13 +405,93 @@ function commitInput(state: OnboardingState): OnboardingTransition {
           message: 'Passphrases did not match. Re-enter passphrase.',
         });
       }
+      return unchanged({
+        ...state,
+        step: 'file-recovery-passphrase',
+        query: '',
+        message:
+          'Recovery-kit passphrase (masked; separate from owner). Enter continues.',
+      });
+    }
+    case 'file-recovery-passphrase': {
+      if (state.query.length === 0) {
+        return unchanged({ ...state, message: 'Recovery passphrase cannot be empty.' });
+      }
+      if (passphraseTooShort(state.query)) {
+        return unchanged({
+          ...state,
+          message: `Passphrase must be at least ${String(MIN_ONBOARDING_PASSPHRASE_BYTES)} UTF-8 bytes.`,
+        });
+      }
+      return unchanged({
+        ...state,
+        recoveryPassphrase: state.query,
+        step: 'file-recovery-passphrase-confirm',
+        query: '',
+        message: 'Confirm recovery-kit passphrase (masked).',
+      });
+    }
+    case 'file-recovery-passphrase-confirm': {
+      const recoveryPassphrase = state.recoveryPassphrase;
+      const profileId = state.profileId;
+      if (recoveryPassphrase === null || profileId === null) {
+        return unchanged({
+          ...state,
+          step: 'storage',
+          query: '',
+          message: 'Create cancelled.',
+        });
+      }
+      if (state.query !== recoveryPassphrase) {
+        return unchanged({
+          ...state,
+          step: 'file-recovery-passphrase',
+          recoveryPassphrase: null,
+          query: '',
+          message: 'Recovery passphrases did not match. Re-enter recovery passphrase.',
+        });
+      }
+      return unchanged({
+        ...state,
+        step: 'file-recovery-file',
+        query: defaultRecoveryFilePath(profileId),
+        message: `Recovery kit path for '${profileId}' (Enter accepts secure ~/.kavrix default).`,
+      });
+    }
+    case 'file-recovery-file': {
+      const profileId = state.profileId;
+      const dataFile = state.dataFile;
+      const keyFile = state.keyFile;
+      const passphrase = state.passphrase;
+      const recoveryPassphrase = state.recoveryPassphrase;
+      if (
+        profileId === null ||
+        dataFile === null ||
+        keyFile === null ||
+        passphrase === null ||
+        recoveryPassphrase === null
+      ) {
+        return unchanged({
+          ...state,
+          step: 'storage',
+          query: '',
+          message: 'Create cancelled.',
+        });
+      }
+      const recoveryFile = state.query.trim() || defaultRecoveryFilePath(profileId);
+      const pathError = validatePathInput(recoveryFile, 'Recovery file');
+      if (pathError !== null) {
+        return unchanged({ ...state, message: pathError });
+      }
       return effect(
         {
           ...state,
+          recoveryFile,
           step: 'creating',
           query: '',
           passphrase: null,
-          message: `Creating file profile '${profileId}'…`,
+          recoveryPassphrase: null,
+          message: `Creating file profile '${profileId}' and recovery kit…`,
         },
         {
           kind: 'backend',
@@ -410,6 +501,8 @@ function commitInput(state: OnboardingState): OnboardingTransition {
             dataFile,
             keyFile,
             passphrase,
+            recoveryFile,
+            recoveryPassphrase,
           },
         },
       );
@@ -500,22 +593,12 @@ function commitInput(state: OnboardingState): OnboardingTransition {
         passphrase: state.query,
         step: 'mongo-passphrase-confirm',
         query: '',
-        message: 'Confirm passphrase (masked). Enter creates the vault.',
+        message: 'Confirm owner passphrase (masked). Enter continues to recovery kit.',
       });
     }
     case 'mongo-passphrase-confirm': {
-      const profileId = state.profileId;
-      const database = state.database;
-      const keyFile = state.keyFile;
-      const databaseUrl = state.databaseUrl;
       const passphrase = state.passphrase;
-      if (
-        profileId === null ||
-        database === null ||
-        keyFile === null ||
-        databaseUrl === null ||
-        passphrase === null
-      ) {
+      if (passphrase === null) {
         return unchanged({
           ...state,
           step: 'storage',
@@ -532,14 +615,96 @@ function commitInput(state: OnboardingState): OnboardingTransition {
           message: 'Passphrases did not match. Re-enter passphrase.',
         });
       }
+      return unchanged({
+        ...state,
+        step: 'mongo-recovery-passphrase',
+        query: '',
+        message:
+          'Recovery-kit passphrase (masked; separate from owner). Enter continues.',
+      });
+    }
+    case 'mongo-recovery-passphrase': {
+      if (state.query.length === 0) {
+        return unchanged({ ...state, message: 'Recovery passphrase cannot be empty.' });
+      }
+      if (passphraseTooShort(state.query)) {
+        return unchanged({
+          ...state,
+          message: `Passphrase must be at least ${String(MIN_ONBOARDING_PASSPHRASE_BYTES)} UTF-8 bytes.`,
+        });
+      }
+      return unchanged({
+        ...state,
+        recoveryPassphrase: state.query,
+        step: 'mongo-recovery-passphrase-confirm',
+        query: '',
+        message: 'Confirm recovery-kit passphrase (masked).',
+      });
+    }
+    case 'mongo-recovery-passphrase-confirm': {
+      const recoveryPassphrase = state.recoveryPassphrase;
+      const profileId = state.profileId;
+      if (recoveryPassphrase === null || profileId === null) {
+        return unchanged({
+          ...state,
+          step: 'storage',
+          query: '',
+          message: 'Create cancelled.',
+        });
+      }
+      if (state.query !== recoveryPassphrase) {
+        return unchanged({
+          ...state,
+          step: 'mongo-recovery-passphrase',
+          recoveryPassphrase: null,
+          query: '',
+          message: 'Recovery passphrases did not match. Re-enter recovery passphrase.',
+        });
+      }
+      return unchanged({
+        ...state,
+        step: 'mongo-recovery-file',
+        query: defaultRecoveryFilePath(profileId),
+        message: `Recovery kit path for '${profileId}' (Enter accepts secure ~/.kavrix default).`,
+      });
+    }
+    case 'mongo-recovery-file': {
+      const profileId = state.profileId;
+      const database = state.database;
+      const keyFile = state.keyFile;
+      const databaseUrl = state.databaseUrl;
+      const passphrase = state.passphrase;
+      const recoveryPassphrase = state.recoveryPassphrase;
+      if (
+        profileId === null ||
+        database === null ||
+        keyFile === null ||
+        databaseUrl === null ||
+        passphrase === null ||
+        recoveryPassphrase === null
+      ) {
+        return unchanged({
+          ...state,
+          step: 'storage',
+          query: '',
+          message: 'Create cancelled.',
+        });
+      }
+      const recoveryFile = state.query.trim() || defaultRecoveryFilePath(profileId);
+      const pathError = validatePathInput(recoveryFile, 'Recovery file');
+      if (pathError !== null) {
+        return unchanged({ ...state, message: pathError });
+      }
       return effect(
         {
           ...state,
+          recoveryFile,
           step: 'creating',
           query: '',
           passphrase: null,
+          recoveryPassphrase: null,
           databaseUrl: null,
-          message: `Creating MongoDB profile '${profileId}'…`,
+          message: `Creating MongoDB profile '${profileId}' and recovery kit…`,
         },
         {
           kind: 'backend',
@@ -550,6 +715,8 @@ function commitInput(state: OnboardingState): OnboardingTransition {
             keyFile,
             databaseUrl,
             passphrase,
+            recoveryFile,
+            recoveryPassphrase,
           },
         },
       );
@@ -573,6 +740,8 @@ function stepBack(state: OnboardingState): OnboardingTransition {
         database: null,
         databaseUrl: null,
         passphrase: null,
+        recoveryPassphrase: null,
+        recoveryFile: null,
         message: 'Back to storage choice.',
       });
     case 'file-data-file':
@@ -606,6 +775,31 @@ function stepBack(state: OnboardingState): OnboardingTransition {
         query: '',
         passphrase: null,
         message: 'Owner passphrase (masked). Enter continues; Esc back.',
+      });
+    case 'file-recovery-passphrase':
+      return unchanged({
+        ...state,
+        step: 'file-passphrase-confirm',
+        query: '',
+        recoveryPassphrase: null,
+        message: 'Confirm owner passphrase (masked). Enter continues to recovery kit.',
+      });
+    case 'file-recovery-passphrase-confirm':
+      return unchanged({
+        ...state,
+        step: 'file-recovery-passphrase',
+        query: '',
+        recoveryPassphrase: null,
+        message:
+          'Recovery-kit passphrase (masked; separate from owner). Enter continues.',
+      });
+    case 'file-recovery-file':
+      return unchanged({
+        ...state,
+        step: 'file-recovery-passphrase-confirm',
+        query: '',
+        recoveryFile: null,
+        message: 'Confirm recovery-kit passphrase (masked).',
       });
     case 'mongo-database':
       return unchanged({
@@ -648,6 +842,31 @@ function stepBack(state: OnboardingState): OnboardingTransition {
         passphrase: null,
         message: 'Owner passphrase (masked). Enter continues; Esc back.',
       });
+    case 'mongo-recovery-passphrase':
+      return unchanged({
+        ...state,
+        step: 'mongo-passphrase-confirm',
+        query: '',
+        recoveryPassphrase: null,
+        message: 'Confirm owner passphrase (masked). Enter continues to recovery kit.',
+      });
+    case 'mongo-recovery-passphrase-confirm':
+      return unchanged({
+        ...state,
+        step: 'mongo-recovery-passphrase',
+        query: '',
+        recoveryPassphrase: null,
+        message:
+          'Recovery-kit passphrase (masked; separate from owner). Enter continues.',
+      });
+    case 'mongo-recovery-file':
+      return unchanged({
+        ...state,
+        step: 'mongo-recovery-passphrase-confirm',
+        query: '',
+        recoveryFile: null,
+        message: 'Confirm recovery-kit passphrase (masked).',
+      });
     default:
       return unchanged({
         ...state,
@@ -682,12 +901,18 @@ function isInputStep(step: OnboardingStep): boolean {
     step === 'file-key-file' ||
     step === 'file-passphrase' ||
     step === 'file-passphrase-confirm' ||
+    step === 'file-recovery-passphrase' ||
+    step === 'file-recovery-passphrase-confirm' ||
+    step === 'file-recovery-file' ||
     step === 'mongo-profile-id' ||
     step === 'mongo-database' ||
     step === 'mongo-key-file' ||
     step === 'mongo-url' ||
     step === 'mongo-passphrase' ||
-    step === 'mongo-passphrase-confirm'
+    step === 'mongo-passphrase-confirm' ||
+    step === 'mongo-recovery-passphrase' ||
+    step === 'mongo-recovery-passphrase-confirm' ||
+    step === 'mongo-recovery-file'
   );
 }
 
@@ -695,9 +920,13 @@ function isSecretStep(step: OnboardingStep): boolean {
   return (
     step === 'file-passphrase' ||
     step === 'file-passphrase-confirm' ||
+    step === 'file-recovery-passphrase' ||
+    step === 'file-recovery-passphrase-confirm' ||
     step === 'mongo-url' ||
     step === 'mongo-passphrase' ||
-    step === 'mongo-passphrase-confirm'
+    step === 'mongo-passphrase-confirm' ||
+    step === 'mongo-recovery-passphrase' ||
+    step === 'mongo-recovery-passphrase-confirm'
   );
 }
 

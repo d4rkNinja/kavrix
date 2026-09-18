@@ -84,6 +84,9 @@ export type AppBackendAction =
       passphrase: string;
       databaseLabel?: string;
       vaultLabel?: string;
+      /** When set (init onboarding), create + verify a recovery kit after vault. */
+      recoveryFile?: string;
+      recoveryPassphrase?: string;
     }>
   | Readonly<{
       type: 'create-mongodb-profile';
@@ -96,6 +99,9 @@ export type AppBackendAction =
       vaultLabel?: string;
       databaseCollection?: string;
       vaultCollection?: string;
+      /** When set (init onboarding), create + verify a recovery kit after vault. */
+      recoveryFile?: string;
+      recoveryPassphrase?: string;
     }>
   | Readonly<{ type: 'use-vault'; vaultId: string }>
   | Readonly<{

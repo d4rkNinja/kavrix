@@ -13,7 +13,7 @@ function press(state: OnboardingState, key: OnboardingKey): OnboardingState {
 }
 
 describe('init onboarding router', () => {
-  it('walks welcome → storage → file create effect', () => {
+  it('walks welcome → storage → file create effect with recovery kit', () => {
     let state = createInitialOnboardingState({ ascii: true, color: false });
     expect(describeOnboardingScreen(state)).toContain('step=welcome');
 
@@ -42,6 +42,22 @@ describe('init onboarding router', () => {
     for (const ch of 'correct-horse-battery') {
       state = press(state, { text: ch });
     }
+    state = press(state, { name: 'return' });
+    expect(state.step).toBe('file-recovery-passphrase');
+
+    for (const ch of 'recovery-horse-battery') {
+      state = press(state, { text: ch });
+    }
+    state = press(state, { name: 'return' });
+    expect(state.step).toBe('file-recovery-passphrase-confirm');
+
+    for (const ch of 'recovery-horse-battery') {
+      state = press(state, { text: ch });
+    }
+    state = press(state, { name: 'return' });
+    expect(state.step).toBe('file-recovery-file');
+    expect(state.query).toMatch(/\.kavrix[/\\]kavrix\.recovery$/);
+
     const transition = transitionOnboarding(state, {
       type: 'key',
       key: { name: 'return' },
@@ -53,10 +69,16 @@ describe('init onboarding router', () => {
         type: 'create-file-profile',
         profileId: 'default',
         passphrase: 'correct-horse-battery',
+        recoveryPassphrase: 'recovery-horse-battery',
       });
       expect(
         'dataFile' in transition.effect.action &&
           transition.effect.action.dataFile.length > 0,
+      ).toBe(true);
+      expect(
+        'recoveryFile' in transition.effect.action &&
+          typeof transition.effect.action.recoveryFile === 'string' &&
+          transition.effect.action.recoveryFile.includes('.kavrix'),
       ).toBe(true);
     }
   });
@@ -161,7 +183,7 @@ describe('init onboarding router', () => {
     expect(state.quit).toBe(true);
   });
 
-  it('wires mongodb create-mongodb-profile effect', () => {
+  it('wires mongodb create-mongodb-profile effect with recovery kit', () => {
     let state = createInitialOnboardingState();
     state = press(state, { name: 'return' });
     state = press(state, { name: 'down' });
@@ -175,6 +197,13 @@ describe('init onboarding router', () => {
     for (const ch of 'correct-horse-battery') state = press(state, { text: ch });
     state = press(state, { name: 'return' });
     for (const ch of 'correct-horse-battery') state = press(state, { text: ch });
+    state = press(state, { name: 'return' });
+    expect(state.step).toBe('mongo-recovery-passphrase');
+    for (const ch of 'recovery-horse-battery') state = press(state, { text: ch });
+    state = press(state, { name: 'return' });
+    for (const ch of 'recovery-horse-battery') state = press(state, { text: ch });
+    state = press(state, { name: 'return' });
+    expect(state.step).toBe('mongo-recovery-file');
     const transition = transitionOnboarding(state, {
       type: 'key',
       key: { name: 'return' },
@@ -187,7 +216,12 @@ describe('init onboarding router', () => {
         profileId: 'default',
         databaseUrl: 'mongodb://127.0.0.1:27017',
         passphrase: 'correct-horse-battery',
+        recoveryPassphrase: 'recovery-horse-battery',
       });
+      expect(
+        'recoveryFile' in transition.effect.action &&
+          typeof transition.effect.action.recoveryFile === 'string',
+      ).toBe(true);
     }
   });
 
@@ -224,5 +258,64 @@ describe('init onboarding router', () => {
     expect(next.state.step).toBe('error');
     expect(next.state.quit).toBe(false);
     expect(next.state.error).toMatch(/already exists/i);
+  });
+
+  it('rejects mismatched recovery passphrase confirm', () => {
+    let state = createInitialOnboardingState({ ascii: true });
+    state = press(state, { name: 'return' });
+    state = press(state, { name: 'return' });
+    state = press(state, { name: 'return' });
+    state = press(state, { name: 'return' });
+    state = press(state, { name: 'return' });
+    for (const ch of 'correct-horse-battery') state = press(state, { text: ch });
+    state = press(state, { name: 'return' });
+    for (const ch of 'correct-horse-battery') state = press(state, { text: ch });
+    state = press(state, { name: 'return' });
+    expect(state.step).toBe('file-recovery-passphrase');
+    for (const ch of 'recovery-horse-battery') state = press(state, { text: ch });
+    state = press(state, { name: 'return' });
+    for (const ch of 'recovery-horse-staple!') state = press(state, { text: ch });
+    state = press(state, { name: 'return' });
+    expect(state.step).toBe('file-recovery-passphrase');
+    expect(state.message).toMatch(/did not match/i);
+  });
+
+  it('steps back from recovery file to recovery passphrase confirm', () => {
+    let state = createInitialOnboardingState();
+    state = press(state, { name: 'return' });
+    state = press(state, { name: 'return' });
+    state = press(state, { name: 'return' });
+    state = press(state, { name: 'return' });
+    state = press(state, { name: 'return' });
+    for (const ch of 'correct-horse-battery') state = press(state, { text: ch });
+    state = press(state, { name: 'return' });
+    for (const ch of 'correct-horse-battery') state = press(state, { text: ch });
+    state = press(state, { name: 'return' });
+    for (const ch of 'recovery-horse-battery') state = press(state, { text: ch });
+    state = press(state, { name: 'return' });
+    for (const ch of 'recovery-horse-battery') state = press(state, { text: ch });
+    state = press(state, { name: 'return' });
+    expect(state.step).toBe('file-recovery-file');
+    state = press(state, { name: 'escape' });
+    expect(state.step).toBe('file-recovery-passphrase-confirm');
+  });
+
+  it('records completedRecoveryFile on backend success', () => {
+    const state = {
+      ...createInitialOnboardingState(),
+      step: 'creating' as const,
+      storage: 'file' as const,
+      profileId: 'default',
+      recoveryFile: '/home/user/.kavrix/kavrix.recovery',
+    };
+    const next = transitionOnboarding(state, {
+      type: 'backend-result',
+      ok: true,
+      notice: 'Created',
+      profileId: 'default',
+      datastore: 'file',
+    });
+    expect(next.state.step).toBe('success');
+    expect(next.state.completedRecoveryFile).toBe('/home/user/.kavrix/kavrix.recovery');
   });
 });

@@ -277,6 +277,9 @@ export function buildLocalCli(): Command {
           color: initOnboardingColorEnabled(),
           profileId: result.profileId,
           datastore: result.datastore,
+          ...(result.recoveryFile === undefined
+            ? {}
+            : { recoveryFile: result.recoveryFile }),
           write: (text) => process.stderr.write(text),
         });
         return;

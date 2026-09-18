@@ -43,18 +43,22 @@ describe('init TUI onboarding helpers', () => {
     ).rejects.toBeInstanceOf(LocalCliError);
   });
 
-  it('writes a sanitized completion banner', () => {
+  it('writes a sanitized completion banner with recovery kit path', () => {
     const lines: string[] = [];
     writeInitTuiOnboardingComplete({
       write: (text) => lines.push(text),
       profileId: 'work',
       datastore: 'file',
+      recoveryFile: '/home/user/.kavrix/work.recovery',
       color: false,
     });
     const text = lines.join('');
     expect(text).toContain('SETUP COMPLETE');
+    expect(text).toContain('Recovery kit created and verified locally');
+    expect(text).toContain('Recovery kit path: /home/user/.kavrix/work.recovery');
     expect(text).toContain('kavrix tui');
     expect(text).toContain('--profile work');
     expect(text).toContain('--no-tui');
+    expect(text).toContain('separate secure locations');
   });
 });

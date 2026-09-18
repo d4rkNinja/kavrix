@@ -82,6 +82,9 @@ export type CliTuiAction =
       passphrase: string;
       databaseLabel?: string;
       vaultLabel?: string;
+      /** When set (init onboarding), create + verify a recovery kit after vault. */
+      recoveryFile?: string;
+      recoveryPassphrase?: string;
     }>
   | Readonly<{
       type: 'create-mongodb-profile';
@@ -94,6 +97,9 @@ export type CliTuiAction =
       vaultLabel?: string;
       databaseCollection?: string;
       vaultCollection?: string;
+      /** When set (init onboarding), create + verify a recovery kit after vault. */
+      recoveryFile?: string;
+      recoveryPassphrase?: string;
     }>
   | Readonly<{ type: 'use-vault'; vaultId: string }>
   | Readonly<{
@@ -488,6 +494,17 @@ class CliTuiSession {
     if (action.passphrase.length === 0) {
       throw new Error('Passphrase is required to initialize the database.');
     }
+    const recoveryFile = action.recoveryFile?.trim() ?? '';
+    const recoveryPassphrase = action.recoveryPassphrase ?? '';
+    const wantsRecovery = recoveryFile.length > 0 || recoveryPassphrase.length > 0;
+    if (
+      wantsRecovery &&
+      (recoveryFile.length === 0 || recoveryPassphrase.length === 0)
+    ) {
+      throw new Error(
+        'recoveryFile and recoveryPassphrase are both required to create a recovery kit.',
+      );
+    }
     const trimmedDatabaseLabel = action.databaseLabel?.trim() ?? '';
     const trimmedVaultLabel = action.vaultLabel?.trim() ?? '';
     const databaseLabel =
@@ -497,6 +514,7 @@ class CliTuiSession {
     const configDirArgs = this.#configDirArgs('--config-dir');
     const profileConfigDirArgs = this.#configDirArgs('--profile-config-dir');
     let profileAdded = false;
+    let vaultReady = false;
 
     try {
       await this.#runTextCommand(
@@ -576,14 +594,41 @@ class CliTuiSession {
       this.#browseNodes = [];
       this.#clearDatabaseUrl();
       await this.#unlock(action.passphrase);
-      this.#notice = `Created and selected file profile ${profileId} (vault ${vaultId}).`;
+      vaultReady = true;
+
+      if (wantsRecovery) {
+        try {
+          await this.#recoveryCreate(recoveryFile, recoveryPassphrase);
+          await this.#recoveryVerify(recoveryFile, recoveryPassphrase);
+        } catch (recoveryError) {
+          const detail =
+            recoveryError instanceof Error
+              ? recoveryError.message
+              : 'Recovery kit create/verify failed.';
+          throw new Error(
+            `Vault was created for profile ${profileId}, but recovery kit setup failed: ${detail}. ` +
+              `Protected state was retained. Inspect with \`kavrix db doctor health --profile ${profileId}\`, ` +
+              `then create/verify with \`kavrix db recovery create|verify --profile ${profileId} --recovery-file ${recoveryFile}\` ` +
+              'before relying on this profile.',
+            { cause: recoveryError },
+          );
+        }
+        this.#notice =
+          `Created and selected file profile ${profileId} (vault ${vaultId}); ` +
+          `recovery kit created and verified at ${recoveryFile}.`;
+      } else {
+        this.#notice = `Created and selected file profile ${profileId} (vault ${vaultId}).`;
+      }
       this.#noticeTone = 'success';
     } catch (error) {
-      if (profileAdded) {
+      if (profileAdded && !vaultReady) {
         await this.#bestEffortRemoveProfile(profileId, configDirArgs);
       }
       const detail =
         error instanceof Error ? error.message : 'File profile create failed.';
+      if (vaultReady) {
+        throw error instanceof Error ? error : new Error(detail, { cause: error });
+      }
       throw new Error(
         profileAdded && !detail.includes('already exists')
           ? `${detail} (partial profile cleaned up when possible).`
@@ -614,6 +659,17 @@ class CliTuiSession {
     if (action.passphrase.length === 0) {
       throw new Error('Passphrase is required to initialize the database.');
     }
+    const recoveryFile = action.recoveryFile?.trim() ?? '';
+    const recoveryPassphrase = action.recoveryPassphrase ?? '';
+    const wantsRecovery = recoveryFile.length > 0 || recoveryPassphrase.length > 0;
+    if (
+      wantsRecovery &&
+      (recoveryFile.length === 0 || recoveryPassphrase.length === 0)
+    ) {
+      throw new Error(
+        'recoveryFile and recoveryPassphrase are both required to create a recovery kit.',
+      );
+    }
     const trimmedDatabaseLabel = action.databaseLabel?.trim() ?? '';
     const trimmedVaultLabel = action.vaultLabel?.trim() ?? '';
     const databaseLabel =
@@ -633,6 +689,7 @@ class CliTuiSession {
       ? (['--allow-insecure-transport'] as const)
       : [];
     let profileAdded = false;
+    let vaultReady = false;
 
     try {
       await this.#runTextCommand(
@@ -723,15 +780,42 @@ class CliTuiSession {
       this.#agentStatus = null;
       this.#browseNodes = [];
       await this.#unlock(action.passphrase, databaseUrl);
-      this.#notice = `Created and selected mongodb profile ${profileId} (vault ${vaultId}).`;
+      vaultReady = true;
+
+      if (wantsRecovery) {
+        try {
+          await this.#recoveryCreate(recoveryFile, recoveryPassphrase);
+          await this.#recoveryVerify(recoveryFile, recoveryPassphrase);
+        } catch (recoveryError) {
+          const detail =
+            recoveryError instanceof Error
+              ? recoveryError.message
+              : 'Recovery kit create/verify failed.';
+          throw new Error(
+            `Vault was created for profile ${profileId}, but recovery kit setup failed: ${detail}. ` +
+              `Protected state was retained. Inspect with \`kavrix db doctor health --profile ${profileId}\`, ` +
+              `then create/verify with \`kavrix db recovery create|verify --profile ${profileId} --recovery-file ${recoveryFile}\` ` +
+              'before relying on this profile.',
+            { cause: recoveryError },
+          );
+        }
+        this.#notice =
+          `Created and selected mongodb profile ${profileId} (vault ${vaultId}); ` +
+          `recovery kit created and verified at ${recoveryFile}.`;
+      } else {
+        this.#notice = `Created and selected mongodb profile ${profileId} (vault ${vaultId}).`;
+      }
       this.#noticeTone = 'success';
     } catch (error) {
       this.#clearDatabaseUrl();
-      if (profileAdded) {
+      if (profileAdded && !vaultReady) {
         await this.#bestEffortRemoveProfile(profileId, configDirArgs);
       }
       const detail =
         error instanceof Error ? error.message : 'MongoDB profile create failed.';
+      if (vaultReady) {
+        throw error instanceof Error ? error : new Error(detail, { cause: error });
+      }
       throw new Error(
         profileAdded && !detail.includes('already exists')
           ? `${detail} (partial profile cleaned up when possible).`

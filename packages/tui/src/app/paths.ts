@@ -16,6 +16,19 @@ export function defaultFileProfilePaths(
   };
 }
 
+/**
+ * Default recovery-kit path under the secure `~/.kavrix` directory
+ * (mirrors classic guided init resolving `./kavrix.recovery` → `~/.kavrix/...`).
+ */
+export function defaultRecoveryFilePath(
+  profileId: string,
+  home: string = homedir(),
+): string {
+  const fileName =
+    profileId === 'default' ? 'kavrix.recovery' : `${profileId}.recovery`;
+  return join(home, '.kavrix', fileName);
+}
+
 /** Exported for presentation / path.sep documentation tests. */
 export function pathSeparator(): string {
   return sep;

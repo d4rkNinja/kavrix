@@ -138,6 +138,9 @@ describe('CliTuiSession mutations (mocked spawn)', () => {
     dirs.push(dir);
     const calls: Array<{ args: readonly string[]; frames: readonly string[] }> = [];
     let vaultCreated = false;
+    let recoveryCreated = false;
+    let recoveryVerified = false;
+    const recoveryFile = join(dir, 'fresh.recovery');
 
     const backend = createCliTuiBackend({
       profileConfigDir: dir,
@@ -176,6 +179,13 @@ describe('CliTuiSession mutations (mocked spawn)', () => {
           ]);
           expect(args).toContain('--passphrase-stdin');
           expect(joined).not.toContain('correct horse');
+          const registry = await DatastoreProfileRegistry.open({
+            configDirectory: dir,
+          });
+          await registry.bindDatabaseIdForInitialization(
+            profileIdSchema.parse('fresh'),
+            databaseIdSchema.parse('db_fresh'),
+          );
           return '';
         }
         if (args.includes('vault') && args.includes('create')) {
@@ -187,6 +197,37 @@ describe('CliTuiSession mutations (mocked spawn)', () => {
           expect(frames).toEqual(['correct horse battery staple']);
           expect(args).toContain('vault_fresh');
           return '';
+        }
+        if (args[0] === 'db' && args[1] === 'recovery' && args.includes('create')) {
+          expect(args).toEqual(
+            expect.arrayContaining(['--recovery-file', recoveryFile]),
+          );
+          expect(frames).toEqual([
+            'correct horse battery staple',
+            'recovery-secret-kit!!',
+            'recovery-secret-kit!!',
+          ]);
+          expect(joined).not.toContain('recovery-secret');
+          recoveryCreated = true;
+          return '';
+        }
+        if (args[0] === 'db' && args[1] === 'recovery' && args.includes('verify')) {
+          expect(args).toEqual(
+            expect.arrayContaining(['--recovery-file', recoveryFile]),
+          );
+          expect(frames).toEqual([
+            'correct horse battery staple',
+            'recovery-secret-kit!!',
+          ]);
+          recoveryVerified = true;
+          return '';
+        }
+        if (args[0] === 'db' && args[1] === 'recovery' && args.includes('status')) {
+          return JSON.stringify({
+            slots: [{ id: 'slot-onboard', state: 'active' }],
+            active: 1,
+            revoked: 0,
+          });
         }
         if (args.includes('list')) {
           return JSON.stringify({ names: [] });
@@ -201,10 +242,15 @@ describe('CliTuiSession mutations (mocked spawn)', () => {
       dataFile: join(dir, 'db.kavrix'),
       keyFile: join(dir, 'owner.key'),
       passphrase: 'correct horse battery staple',
+      recoveryFile,
+      recoveryPassphrase: 'recovery-secret-kit!!',
     });
 
     expect(vaultCreated).toBe(true);
+    expect(recoveryCreated).toBe(true);
+    expect(recoveryVerified).toBe(true);
     expect(result.snapshot.noticeTone).toBe('success');
+    expect(result.snapshot.notice).toMatch(/recovery kit created and verified/i);
     expect(result.snapshot.home.profileId).toBe('fresh');
     expect(result.snapshot.home.vaultId).toBe('vault_fresh');
     expect(result.snapshot.home.unlocked).toBe(true);
@@ -235,7 +281,87 @@ describe('CliTuiSession mutations (mocked spawn)', () => {
     // Secrets never appear on argv across the whole create sequence.
     for (const call of calls) {
       expect(call.args.join(' ')).not.toContain('correct horse');
+      expect(call.args.join(' ')).not.toContain('recovery-secret');
     }
+  });
+
+  it('retains profile when recovery fails after vault create', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'kavrix-tui-create-recfail-'));
+    dirs.push(dir);
+    let removed = false;
+    const recoveryFile = join(dir, 'broken.recovery');
+
+    const backend = createCliTuiBackend({
+      profileConfigDir: dir,
+      ascii: true,
+      commandRunner: async (args, frames) => {
+        if (args.includes('add') && args.includes('profile')) {
+          const registry = await DatastoreProfileRegistry.open({
+            configDirectory: dir,
+          });
+          await registry.add({
+            id: profileIdSchema.parse('kept'),
+            datastore: 'file',
+            dataFile: join(dir, 'db.kavrix'),
+            keyFile: join(dir, 'owner.key'),
+          });
+          return '';
+        }
+        if (
+          args.includes('use') &&
+          args.includes('profile') &&
+          !args.includes('vault')
+        ) {
+          const registry = await DatastoreProfileRegistry.open({
+            configDirectory: dir,
+          });
+          await registry.use(profileIdSchema.parse('kept'));
+          return '';
+        }
+        if (args[0] === 'db' && args[1] === 'init') {
+          const registry = await DatastoreProfileRegistry.open({
+            configDirectory: dir,
+          });
+          await registry.bindDatabaseIdForInitialization(
+            profileIdSchema.parse('kept'),
+            databaseIdSchema.parse('db_kept'),
+          );
+          return '';
+        }
+        if (args.includes('vault') && args.includes('create')) {
+          return JSON.stringify({ vaultId: 'vault_kept' });
+        }
+        if (args.includes('vault') && args.includes('use')) {
+          return '';
+        }
+        if (args.includes('list')) {
+          return JSON.stringify({ names: [] });
+        }
+        if (args[0] === 'db' && args[1] === 'recovery' && args.includes('create')) {
+          throw new Error('simulated recovery create failure');
+        }
+        if (args.includes('remove') && args.includes('profile')) {
+          removed = true;
+          return '';
+        }
+        return '{}';
+      },
+    });
+
+    const result = await backend.dispatch({
+      type: 'create-file-profile',
+      profileId: 'kept',
+      dataFile: join(dir, 'db.kavrix'),
+      keyFile: join(dir, 'owner.key'),
+      passphrase: 'correct horse battery staple',
+      recoveryFile,
+      recoveryPassphrase: 'recovery-secret-kit!!',
+    });
+
+    expect(result.snapshot.noticeTone).toBe('error');
+    expect(result.snapshot.notice).toMatch(/recovery kit setup failed/i);
+    expect(result.snapshot.notice).toMatch(/Protected state was retained/i);
+    expect(removed).toBe(false);
   });
 
   it('runs doctor, policy, grant, recovery, preview, and agent via real CLI frames', async () => {

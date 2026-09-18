@@ -29,6 +29,7 @@ export type OnboardingAppResult =
       status: 'completed';
       profileId: string;
       datastore: OnboardingStorage;
+      recoveryFile?: string;
     }>
   | Readonly<{ status: 'cancelled' }>
   | Readonly<{ status: 'failed'; message: string }>;
@@ -173,6 +174,9 @@ export function KavrixOnboardingApp({
         status: 'completed',
         profileId: state.completedProfileId,
         datastore: state.completedDatastore,
+        ...(state.completedRecoveryFile === null
+          ? {}
+          : { recoveryFile: state.completedRecoveryFile }),
       });
       return;
     }
@@ -296,7 +300,7 @@ function renderOnboardingBody(state: OnboardingState): ReactElement {
         </Text>
         <Text {...tint(color, 'gray')}>
           {safe(
-            'Interactive setup creates a real profile + vault via the CLI backend.',
+            'Interactive setup creates a real profile, vault, and verified recovery kit.',
             ascii,
           )}
         </Text>
@@ -351,10 +355,7 @@ function renderOnboardingBody(state: OnboardingState): ReactElement {
           {safe(state.message ?? 'Working…', ascii)}
         </Text>
         <Text {...tint(color, 'gray')}>
-          {safe(
-            'Running real CLI create-file-profile / create-mongodb-profile…',
-            ascii,
-          )}
+          {safe('Running real CLI create + recovery create/verify…', ascii)}
         </Text>
       </Panel>
     );
@@ -379,6 +380,11 @@ function renderOnboardingBody(state: OnboardingState): ReactElement {
             ascii,
           )}
         </Text>
+        {state.completedRecoveryFile !== null ? (
+          <Text {...tint(color, 'green')}>
+            {safe(`Recovery kit verified: ${state.completedRecoveryFile}`, ascii)}
+          </Text>
+        ) : null}
         <Text {...tint(color, 'gray')}>
           {safe('Press Enter to finish, then run: kavrix tui', ascii)}
         </Text>
@@ -447,10 +453,19 @@ function inputTitle(step: OnboardingState['step']): string {
       return 'MongoDB URL';
     case 'file-passphrase':
     case 'mongo-passphrase':
-      return 'Passphrase';
+      return 'Owner passphrase';
     case 'file-passphrase-confirm':
     case 'mongo-passphrase-confirm':
-      return 'Confirm passphrase';
+      return 'Confirm owner passphrase';
+    case 'file-recovery-passphrase':
+    case 'mongo-recovery-passphrase':
+      return 'Recovery passphrase';
+    case 'file-recovery-passphrase-confirm':
+    case 'mongo-recovery-passphrase-confirm':
+      return 'Confirm recovery passphrase';
+    case 'file-recovery-file':
+    case 'mongo-recovery-file':
+      return 'Recovery kit path';
     default:
       return 'Value';
   }
@@ -460,9 +475,13 @@ function isMaskedStep(step: OnboardingState['step']): boolean {
   return (
     step === 'file-passphrase' ||
     step === 'file-passphrase-confirm' ||
+    step === 'file-recovery-passphrase' ||
+    step === 'file-recovery-passphrase-confirm' ||
     step === 'mongo-url' ||
     step === 'mongo-passphrase' ||
-    step === 'mongo-passphrase-confirm'
+    step === 'mongo-passphrase-confirm' ||
+    step === 'mongo-recovery-passphrase' ||
+    step === 'mongo-recovery-passphrase-confirm'
   );
 }
 

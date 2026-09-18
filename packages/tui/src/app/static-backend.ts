@@ -360,7 +360,10 @@ export function createStaticAppBackend(
               },
             ],
             credentials: [],
-            notice: `Created file profile ${profileId} (static).`,
+            notice:
+              action.recoveryFile !== undefined && action.recoveryFile.trim().length > 0
+                ? `Created file profile ${profileId} (static); recovery kit at ${action.recoveryFile.trim()}.`
+                : `Created file profile ${profileId} (static).`,
             noticeTone: 'success',
           };
           return { snapshot };
@@ -410,7 +413,10 @@ export function createStaticAppBackend(
               },
             ],
             credentials: [],
-            notice: `Created mongodb profile ${profileId} (static).`,
+            notice:
+              action.recoveryFile !== undefined && action.recoveryFile.trim().length > 0
+                ? `Created mongodb profile ${profileId} (static); recovery kit at ${action.recoveryFile.trim()}.`
+                : `Created mongodb profile ${profileId} (static).`,
             noticeTone: 'success',
           };
           return { snapshot };
