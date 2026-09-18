@@ -22,12 +22,7 @@ export function registerTuiCommand(program: Command): void {
     .option('--config-dir <path>', 'Protected profile configuration directory.')
     .action(async (...args: unknown[]) => {
       const command = args.at(-1) as Command;
-      const options = command.opts() as {
-        ascii?: boolean;
-        color?: boolean;
-        profileConfigDir?: string;
-        configDir?: string;
-      };
+      const options = command.opts();
       await runInteractiveTui(options);
     });
 }
@@ -40,7 +35,7 @@ export async function runInteractiveTui(
     configDir?: string;
   }>,
 ): Promise<void> {
-  if (process.stdin.isTTY !== true || process.stdout.isTTY !== true) {
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
     throw new LocalCliError(
       'kavrix tui requires an interactive TTY on stdin and stdout. Use numbered CLI commands for automation.',
     );

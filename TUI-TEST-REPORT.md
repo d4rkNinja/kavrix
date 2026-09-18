@@ -10,133 +10,141 @@ agent-dry-run / browse actions via `createCliTuiBackend` (production).
 
 ## Build / automation
 
-| Check | Result |
-| --- | --- |
-| `pnpm --filter @kavrix/tui build` | PASS |
-| `pnpm --filter @kavrix/tui test` | PASS (68 tests) |
-| `pnpm --filter kavrix build` | PASS |
-| `vitest` `apps/cli/test/tui-session.test.ts` | PASS (4 tests, mocked spawn frames) |
-| `kavrix tui --help` | PASS |
-| `kavrix ui --help` (alias) | PASS |
-| `kavrix tui` on non-TTY | PASS (clear error, exit 1) |
-| `node scripts/tui-smoke.mjs` | PASS (12 screens) |
-| `node scripts/tui-vault-smoke.mjs` | PASS (real HOME vault; recovery/policy/grant/doctor/preview/agent/browse) |
-| `MONGO_URL=…rs0` + vault-smoke | **PASS** including `create-mongodb-profile` (live replica set on 127.0.0.1:27017) |
-
+| Check                                        | Result                                                                            |
+| -------------------------------------------- | --------------------------------------------------------------------------------- |
+| `pnpm --filter @kavrix/tui build`            | PASS                                                                              |
+| `pnpm --filter @kavrix/tui test`             | PASS (68 tests)                                                                   |
+| `pnpm --filter kavrix build`                 | PASS                                                                              |
+| `vitest` `apps/cli/test/tui-session.test.ts` | PASS (4 tests, mocked spawn frames)                                               |
+| `kavrix tui --help`                          | PASS                                                                              |
+| `kavrix ui --help` (alias)                   | PASS                                                                              |
+| `kavrix tui` on non-TTY                      | PASS (clear error, exit 1)                                                        |
+| `node scripts/tui-smoke.mjs`                 | PASS (12 screens)                                                                 |
+| `node scripts/tui-vault-smoke.mjs`           | PASS (real HOME vault; recovery/policy/grant/doctor/preview/agent/browse)         |
+| `MONGO_URL=…rs0` + vault-smoke               | **PASS** including `create-mongodb-profile` (live replica set on 127.0.0.1:27017) |
 
 ## UI enhancement (Ink + OpenTUI skill patterns)
 
 Presentation-only redesign (2026-09-18): OpenTUI skill layouts/containers/selects
 adapted to Ink for cross-OS Node CLI. See `UI-ENHANCEMENT.md`.
 
-| Check | Result |
-| --- | --- |
-| Full-screen header / content / footer | PASS |
-| Status pills + key chips footer | PASS |
-| Panels (`round` / `double` / ASCII `classic`) | PASS |
-| Home width≥80 split / narrow stack | PASS |
-| Overlay modals (passphrase / confirm) | PASS |
-| ASCII / win32 / NO_COLOR | PASS (68 unit tests + smoke render) |
-| `createCliTuiBackend` wiring unchanged | PASS (presentation-only) |
+| Check                                         | Result                              |
+| --------------------------------------------- | ----------------------------------- |
+| Full-screen header / content / footer         | PASS                                |
+| Status pills + key chips footer               | PASS                                |
+| Panels (`round` / `double` / ASCII `classic`) | PASS                                |
+| Home width≥80 split / narrow stack            | PASS                                |
+| Overlay modals (passphrase / confirm)         | PASS                                |
+| ASCII / win32 / NO_COLOR                      | PASS (68 unit tests + smoke render) |
+| `createCliTuiBackend` wiring unchanged        | PASS (presentation-only)            |
 
 ## Screens
 
-| Screen | Linux TTY color | ASCII mode | NO_COLOR | Windows path assumptions | Notes |
-| --- | --- | --- | --- | --- | --- |
-| Home / dashboard | PASS | PASS | PASS | PASS | Dual-tone banner + status pills; width≥80 split panels; `BrandBanner` shared |
-| Profiles | PASS | PASS | PASS | PASS | Enter = use-profile; `n` = file; `m` = mongodb |
-| Vaults | PASS | PASS | PASS | PASS | Selection + status from session |
-| Credentials (masked) | PASS | PASS | PASS | PASS | Card rows in green panel; mask `••••••••` / ASCII `********` |
-| Credentials (REVEAL) | PASS | PASS | PASS | PASS | Modal confirm + red inset reveal panel; 15s clear |
-| Credentials (put/rename/remove) | PASS | PASS | PASS | PASS | `n` put, `m` rename, `x` confirm-remove; stdin frames only |
-| Doctor | PASS | PASS | PASS | PASS | Yellow panel; pass/warn/fail colorized SelectRows; real CLI doctor |
-| Recovery | PASS | PASS | PASS | PASS | `n` create, `v` verify, Enter/`x` revoke; last active slot blocked |
-| Run | PASS | PASS | PASS | PASS | `p` → list+has + `kavrix run --help` (no secret inject; no `--dry-run` on run) |
-| Policy / Grant / Audit | PASS | PASS | PASS | PASS | Enter refresh; `n`/`x` policy; `g`/`r` grant — real CLI |
-| Agent | PASS | PASS | PASS | PASS | `g` → `kavrix agent run --dry-run` (real CLI text/errors; empty status until run) |
-| Context / Service / Item | PASS | PASS | PASS | PASS | Browse from real `context`/`service`/`item` list when unlocked |
-| Help / keymap | PASS | PASS | PASS | PASS | Includes recovery/policy/grant/mongo keys |
-| Storage showcase dest. | PASS | PASS | PASS | PASS | Existing presentational showcase retained |
+| Screen                          | Linux TTY color | ASCII mode | NO_COLOR | Windows path assumptions | Notes                                                                             |
+| ------------------------------- | --------------- | ---------- | -------- | ------------------------ | --------------------------------------------------------------------------------- |
+| Home / dashboard                | PASS            | PASS       | PASS     | PASS                     | Dual-tone banner + status pills; width≥80 split panels; `BrandBanner` shared      |
+| Profiles                        | PASS            | PASS       | PASS     | PASS                     | Enter = use-profile; `n` = file; `m` = mongodb                                    |
+| Vaults                          | PASS            | PASS       | PASS     | PASS                     | Selection + status from session                                                   |
+| Credentials (masked)            | PASS            | PASS       | PASS     | PASS                     | Card rows in green panel; mask `••••••••` / ASCII `********`                      |
+| Credentials (REVEAL)            | PASS            | PASS       | PASS     | PASS                     | Modal confirm + red inset reveal panel; 15s clear                                 |
+| Credentials (put/rename/remove) | PASS            | PASS       | PASS     | PASS                     | `n` put, `m` rename, `x` confirm-remove; stdin frames only                        |
+| Doctor                          | PASS            | PASS       | PASS     | PASS                     | Yellow panel; pass/warn/fail colorized SelectRows; real CLI doctor                |
+| Recovery                        | PASS            | PASS       | PASS     | PASS                     | `n` create, `v` verify, Enter/`x` revoke; last active slot blocked                |
+| Run                             | PASS            | PASS       | PASS     | PASS                     | `p` → list+has + `kavrix run --help` (no secret inject; no `--dry-run` on run)    |
+| Policy / Grant / Audit          | PASS            | PASS       | PASS     | PASS                     | Enter refresh; `n`/`x` policy; `g`/`r` grant — real CLI                           |
+| Agent                           | PASS            | PASS       | PASS     | PASS                     | `g` → `kavrix agent run --dry-run` (real CLI text/errors; empty status until run) |
+| Context / Service / Item        | PASS            | PASS       | PASS     | PASS                     | Browse from real `context`/`service`/`item` list when unlocked                    |
+| Help / keymap                   | PASS            | PASS       | PASS     | PASS                     | Includes recovery/policy/grant/mongo keys                                         |
+| Storage showcase dest.          | PASS            | PASS       | PASS     | PASS                     | Existing presentational showcase retained                                         |
 
 Legend: render + router navigation covered by vitest (`packages/tui/test/app/router.test.ts`). ASCII / NO_COLOR / win32 defaults covered by `resolveAppPresentation` tests and home/credentials/profiles ASCII snapshots.
 
 ## Exact keybindings (product TUI)
 
 ### Global
-| Key | Action |
-| --- | --- |
-| `j` / `k` / arrows | Move selection |
-| Enter | Activate selection (screen-specific) |
-| Esc | Back to Home (or cancel overlay) |
-| `u` | Unlock (mongodb: URL overlay then passphrase; file: passphrase) |
-| `l` | Lock (confirm) |
-| `a` | Toggle ASCII |
-| `?` | Help |
-| `q` | Quit |
+
+| Key                | Action                                                          |
+| ------------------ | --------------------------------------------------------------- |
+| `j` / `k` / arrows | Move selection                                                  |
+| Enter              | Activate selection (screen-specific)                            |
+| Esc                | Back to Home (or cancel overlay)                                |
+| `u`                | Unlock (mongodb: URL overlay then passphrase; file: passphrase) |
+| `l`                | Lock (confirm)                                                  |
+| `a`                | Toggle ASCII                                                    |
+| `?`                | Help                                                            |
+| `q`                | Quit                                                            |
 
 ### Profiles
-| Key | Action |
-| --- | --- |
-| Enter | `use-profile` |
-| `n` | create-file-profile wizard (id → data file → key file → passphrase → confirm) |
-| `m` | create-mongodb-profile wizard (id → database → key file → URL → passphrase → confirm) |
+
+| Key   | Action                                                                                |
+| ----- | ------------------------------------------------------------------------------------- |
+| Enter | `use-profile`                                                                         |
+| `n`   | create-file-profile wizard (id → data file → key file → passphrase → confirm)         |
+| `m`   | create-mongodb-profile wizard (id → database → key file → URL → passphrase → confirm) |
 
 ### Credentials
-| Key | Action |
-| --- | --- |
-| `/` | Search |
-| `n` | Put credential |
-| `m` | Rename selected |
-| `x` | Remove selected (confirm) |
-| `r` then `y` | REVEAL selected (15s) |
+
+| Key          | Action                    |
+| ------------ | ------------------------- |
+| `/`          | Search                    |
+| `n`          | Put credential            |
+| `m`          | Rename selected           |
+| `x`          | Remove selected (confirm) |
+| `r` then `y` | REVEAL selected (15s)     |
 
 ### Doctor
-| Key | Action |
-| --- | --- |
+
+| Key                | Action                                                    |
+| ------------------ | --------------------------------------------------------- |
 | `d` / enter screen | `run-doctor` → real `kavrix doctor` or `db doctor health` |
 
 ### Recovery
-| Key | Action |
-| --- | --- |
-| Enter screen | `recovery-status` |
-| `n` / `c` | `recovery-create` (file path → recovery passphrase → confirm) |
-| `v` | `recovery-verify` (file path → recovery passphrase) |
-| Enter / `x` | `recovery-revoke` selected slot (blocked when only one active) |
+
+| Key          | Action                                                         |
+| ------------ | -------------------------------------------------------------- |
+| Enter screen | `recovery-status`                                              |
+| `n` / `c`    | `recovery-create` (file path → recovery passphrase → confirm)  |
+| `v`          | `recovery-verify` (file path → recovery passphrase)            |
+| Enter / `x`  | `recovery-revoke` selected slot (blocked when only one active) |
 
 ### Policy / Grant / Audit
-| Key | Action |
-| --- | --- |
+
+| Key   | Action                                                    |
+| ----- | --------------------------------------------------------- |
 | Enter | `refresh-policy` (`policy list` + `grant list` + `audit`) |
-| `n` | `policy-create` (id → secret → command) |
-| `x` | `policy-remove` selected policy row (confirm) |
-| `g` | `grant-create` (secret → command → TTL) |
-| `r` | `grant-revoke` selected grant row (confirm) |
+| `n`   | `policy-create` (id → secret → command)                   |
+| `x`   | `policy-remove` selected policy row (confirm)             |
+| `g`   | `grant-create` (secret → command → TTL)                   |
+| `r`   | `grant-revoke` selected grant row (confirm)               |
 
 ### Run
-| Key | Action |
-| --- | --- |
+
+| Key | Action                                                                                                       |
+| --- | ------------------------------------------------------------------------------------------------------------ |
 | `p` | `preview-run` — unlocked list + `kavrix has` per name + `kavrix run --help` (surfaces CLI stderr on failure) |
 
 ### Agent
-| Key | Action |
-| --- | --- |
+
+| Key | Action                                                |
+| --- | ----------------------------------------------------- |
 | `g` | `agent-dry-run` → `kavrix agent run --dry-run --json` |
 
 ### Browse
-| Key | Action |
-| --- | --- |
+
+| Key                  | Action                                                                                   |
+| -------------------- | ---------------------------------------------------------------------------------------- |
 | Enter / enter screen | `refresh-browse` → `context list` then nested `service list` / `item list` when unlocked |
 
 ## win32 presentation assumptions
 
-| Assumption | Behavior | Covered by |
-| --- | --- | --- |
-| `process.platform === 'win32'` | ASCII borders/glyphs default on (same as `--ascii`) | `resolveAppPresentation({ platform: 'win32' })` |
-| Explicit `--ascii` | Forces ASCII even on UTF-capable Unix terminals | `resolveAppPresentation({ ascii: true })` |
-| `NO_COLOR` / `noColor: true` / `TERM=dumb` | Color disabled | presentation unit tests |
-| Path construction | Defaults use `node:path.join` / `path.sep` (no bashisms) | `defaultFileProfilePaths` / `defaultMongoProfilePaths` + `pathSeparator()` tests |
-| Default file profile paths | `~/.local/share/kavrix/<id>/db.kavrix` and `owner.key` via `join(homedir(), …)` | router create-profile overlay + paths helper |
-| Default mongo key path | `~/.local/share/kavrix/<id>/owner.key` (URL never on disk) | router mongo wizard + paths helper |
+| Assumption                                 | Behavior                                                                        | Covered by                                                                       |
+| ------------------------------------------ | ------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
+| `process.platform === 'win32'`             | ASCII borders/glyphs default on (same as `--ascii`)                             | `resolveAppPresentation({ platform: 'win32' })`                                  |
+| Explicit `--ascii`                         | Forces ASCII even on UTF-capable Unix terminals                                 | `resolveAppPresentation({ ascii: true })`                                        |
+| `NO_COLOR` / `noColor: true` / `TERM=dumb` | Color disabled                                                                  | presentation unit tests                                                          |
+| Path construction                          | Defaults use `node:path.join` / `path.sep` (no bashisms)                        | `defaultFileProfilePaths` / `defaultMongoProfilePaths` + `pathSeparator()` tests |
+| Default file profile paths                 | `~/.local/share/kavrix/<id>/db.kavrix` and `owner.key` via `join(homedir(), …)` | router create-profile overlay + paths helper                                     |
+| Default mongo key path                     | `~/.local/share/kavrix/<id>/owner.key` (URL never on disk)                      | router mongo wizard + paths helper                                               |
 
 On Windows hosts, `path.sep` is `\\`; the TUI never concatenates paths with `/` literals for profile files.
 
@@ -180,12 +188,12 @@ kavrix db profile add      → (none; routing only)
 
 ## Test counts
 
-| Suite | Tests |
-| --- | --- |
-| `packages/tui/test` | 68 |
-| `apps/cli/test/tui-session.test.ts` | 4 (incl. mocked create-mongodb-profile + browse) |
-| `scripts/tui-smoke.mjs` | 12 screens |
-| `scripts/tui-vault-smoke.mjs` | ALL PASS; create-mongodb-profile SKIP without `MONGO_URL` / `KAVRIX_MONGODB_URI` |
+| Suite                               | Tests                                                                            |
+| ----------------------------------- | -------------------------------------------------------------------------------- |
+| `packages/tui/test`                 | 68                                                                               |
+| `apps/cli/test/tui-session.test.ts` | 4 (incl. mocked create-mongodb-profile + browse)                                 |
+| `scripts/tui-smoke.mjs`             | 12 screens                                                                       |
+| `scripts/tui-vault-smoke.mjs`       | ALL PASS; create-mongodb-profile SKIP without `MONGO_URL` / `KAVRIX_MONGODB_URI` |
 
 ## Remaining gaps (true leftovers)
 

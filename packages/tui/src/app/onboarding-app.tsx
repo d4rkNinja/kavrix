@@ -3,7 +3,7 @@ import { useCallback, useEffect, useRef, useState, type ReactElement } from 'rea
 
 import { BrandBanner } from '../showcase.js';
 import { sanitizeTerminalText } from '../terminal-text.js';
-import type { InteractiveAppBackend } from './backend.js';
+import type { InteractiveAppBackend, AppBackendAction } from './backend.js';
 import {
   createInitialOnboardingState,
   transitionOnboarding,
@@ -90,39 +90,36 @@ export function KavrixOnboardingApp({
     exitRef.current();
   }, []);
 
-  const runBackend = useCallback(
-    async (action: import('./backend.js').AppBackendAction): Promise<void> => {
-      try {
-        const result = await backendRef.current.dispatch(action);
-        const ok = result.snapshot.noticeTone === 'success';
-        const next = transitionOnboarding(stateRef.current, {
-          type: 'backend-result',
-          ok,
-          notice: result.snapshot.notice,
-          profileId: result.snapshot.home.profileId,
-          datastore:
-            result.snapshot.home.datastore === 'mongodb'
-              ? 'mongodb'
-              : result.snapshot.home.datastore === 'file'
-                ? 'file'
-                : null,
-        });
-        stateRef.current = next.state;
-        setState(next.state);
-      } catch {
-        const next = transitionOnboarding(stateRef.current, {
-          type: 'backend-result',
-          ok: false,
-          notice: 'Operation failed safely.',
-          profileId: null,
-          datastore: null,
-        });
-        stateRef.current = next.state;
-        setState(next.state);
-      }
-    },
-    [],
-  );
+  const runBackend = useCallback(async (action: AppBackendAction): Promise<void> => {
+    try {
+      const result = await backendRef.current.dispatch(action);
+      const ok = result.snapshot.noticeTone === 'success';
+      const next = transitionOnboarding(stateRef.current, {
+        type: 'backend-result',
+        ok,
+        notice: result.snapshot.notice,
+        profileId: result.snapshot.home.profileId,
+        datastore:
+          result.snapshot.home.datastore === 'mongodb'
+            ? 'mongodb'
+            : result.snapshot.home.datastore === 'file'
+              ? 'file'
+              : null,
+      });
+      stateRef.current = next.state;
+      setState(next.state);
+    } catch {
+      const next = transitionOnboarding(stateRef.current, {
+        type: 'backend-result',
+        ok: false,
+        notice: 'Operation failed safely.',
+        profileId: null,
+        datastore: null,
+      });
+      stateRef.current = next.state;
+      setState(next.state);
+    }
+  }, []);
 
   const dispatchKey = useCallback(
     (key: OnboardingKey): void => {
@@ -154,7 +151,11 @@ export function KavrixOnboardingApp({
 
   useEffect(() => {
     if (!state.quit) return;
-    if (state.completed && state.completedProfileId !== null && state.completedDatastore !== null) {
+    if (
+      state.completed &&
+      state.completedProfileId !== null &&
+      state.completedDatastore !== null
+    ) {
       finish({
         status: 'completed',
         profileId: state.completedProfileId,
@@ -185,7 +186,9 @@ export function KavrixOnboardingApp({
 
 function sanitizePasteTextLocal(raw: string): string {
   let text = raw;
+  // eslint-disable-next-line no-control-regex -- strip bracketed-paste / OSC markers
   text = text.replace(/\x1b\[200~/gu, '').replace(/\x1b\[201~/gu, '');
+  // eslint-disable-next-line no-control-regex -- strip OSC sequences terminated by BEL/ST
   text = text.replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/gu, '');
   text = text.replace(/\r/gu, '');
   text = text.replace(/^\n+/u, '').replace(/\n+$/u, '');
@@ -193,7 +196,9 @@ function sanitizePasteTextLocal(raw: string): string {
   return text;
 }
 
-function OnboardingChrome({ state }: Readonly<{ state: OnboardingState }>): ReactElement {
+function OnboardingChrome({
+  state,
+}: Readonly<{ state: OnboardingState }>): ReactElement {
   const { color, ascii, width, height } = state;
   const accent: AppAccent =
     state.step === 'success' ? 'green' : state.step === 'error' ? 'red' : 'cyan';
@@ -203,7 +208,13 @@ function OnboardingChrome({ state }: Readonly<{ state: OnboardingState }>): Reac
       <Panel accent={accent} ascii={ascii} color={color} paddingX={1} paddingY={0}>
         <BrandBanner color={color} ascii={ascii} dualTone />
         <Box flexDirection="row" columnGap={1} flexWrap="wrap" marginTop={0}>
-          <StatusPill label="mode" value="init" accent="cyan" color={color} ascii={ascii} />
+          <StatusPill
+            label="mode"
+            value="init"
+            accent="cyan"
+            color={color}
+            ascii={ascii}
+          />
           <StatusPill
             label="step"
             value={state.step}
@@ -247,7 +258,14 @@ function renderOnboardingBody(state: OnboardingState): ReactElement {
 
   if (state.step === 'welcome') {
     return (
-      <Panel title="Welcome" accent="cyan" ascii={ascii} color={color} paddingX={1} paddingY={1}>
+      <Panel
+        title="Welcome"
+        accent="cyan"
+        ascii={ascii}
+        color={color}
+        paddingX={1}
+        paddingY={1}
+      >
         <Text bold {...tint(color, 'cyan')}>
           {safe('Initialize a Kavrix vault', ascii)}
         </Text>
@@ -266,7 +284,14 @@ function renderOnboardingBody(state: OnboardingState): ReactElement {
 
   if (state.step === 'storage') {
     return (
-      <Panel title="Storage" accent="magenta" ascii={ascii} color={color} paddingX={1} paddingY={1}>
+      <Panel
+        title="Storage"
+        accent="magenta"
+        ascii={ascii}
+        color={color}
+        paddingX={1}
+        paddingY={1}
+      >
         <SelectRow
           active={state.storageIndex === 0}
           label="1  Local encrypted file"
@@ -289,12 +314,22 @@ function renderOnboardingBody(state: OnboardingState): ReactElement {
 
   if (state.step === 'creating') {
     return (
-      <Panel title="Creating" accent="yellow" ascii={ascii} color={color} paddingX={1} paddingY={1}>
+      <Panel
+        title="Creating"
+        accent="yellow"
+        ascii={ascii}
+        color={color}
+        paddingX={1}
+        paddingY={1}
+      >
         <Text bold {...tint(color, 'yellow')}>
           {safe(state.message ?? 'Working…', ascii)}
         </Text>
         <Text {...tint(color, 'gray')}>
-          {safe('Running real CLI create-file-profile / create-mongodb-profile…', ascii)}
+          {safe(
+            'Running real CLI create-file-profile / create-mongodb-profile…',
+            ascii,
+          )}
         </Text>
       </Panel>
     );
@@ -302,7 +337,14 @@ function renderOnboardingBody(state: OnboardingState): ReactElement {
 
   if (state.step === 'success') {
     return (
-      <Panel title="Success" accent="green" ascii={ascii} color={color} paddingX={1} paddingY={1}>
+      <Panel
+        title="Success"
+        accent="green"
+        ascii={ascii}
+        color={color}
+        paddingX={1}
+        paddingY={1}
+      >
         <Text bold {...tint(color, 'green')}>
           {safe('SETUP COMPLETE', ascii)}
         </Text>
@@ -321,7 +363,14 @@ function renderOnboardingBody(state: OnboardingState): ReactElement {
 
   if (state.step === 'error') {
     return (
-      <Panel title="Error" accent="red" ascii={ascii} color={color} paddingX={1} paddingY={1}>
+      <Panel
+        title="Error"
+        accent="red"
+        ascii={ascii}
+        color={color}
+        paddingX={1}
+        paddingY={1}
+      >
         <Text bold {...tint(color, 'red')}>
           {safe(state.error ?? 'Setup failed.', ascii)}
         </Text>
@@ -337,7 +386,14 @@ function renderOnboardingBody(state: OnboardingState): ReactElement {
     ? `${title}: ${masked}_`
     : `${title}: ${safe(query, ascii)}_`;
   return (
-    <Panel title="Input" accent="cyan" ascii={ascii} color={color} paddingX={1} paddingY={1}>
+    <Panel
+      title="Input"
+      accent="cyan"
+      ascii={ascii}
+      color={color}
+      paddingX={1}
+      paddingY={1}
+    >
       <Text bold {...tint(color, 'cyan')}>
         {safe(body, ascii)}
       </Text>
@@ -417,7 +473,9 @@ export function mountOnboardingApp(
     waitUntilExit: async () => {
       const fromCallback = await Promise.race([
         resultPromise,
-        instance.waitUntilExit().then((): OnboardingAppResult => ({ status: 'cancelled' })),
+        instance
+          .waitUntilExit()
+          .then((): OnboardingAppResult => ({ status: 'cancelled' })),
       ]);
       return fromCallback;
     },
@@ -426,7 +484,6 @@ export function mountOnboardingApp(
     },
   };
 }
-
 
 function mapInkInput(
   input: string,
@@ -454,4 +511,3 @@ function mapInkInput(
   if (input.length === 0) return null;
   return { text: input, ctrl: key.ctrl };
 }
-

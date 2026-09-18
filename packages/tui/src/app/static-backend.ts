@@ -17,13 +17,17 @@ export function createStaticAppBackend(
 ): InteractiveAppBackend {
   let snapshot = initial;
   const asciiMask = (): string =>
-    snapshot.credentials[0]?.maskedValue.includes('•') === true ? '••••••••' : '********';
+    snapshot.credentials[0]?.maskedValue.includes('•') === true
+      ? '••••••••'
+      : '********';
 
   return {
     async load(): Promise<AppSnapshot> {
+      await Promise.resolve();
       return snapshot;
     },
     async dispatch(action: AppBackendAction): Promise<AppBackendResult> {
+      await Promise.resolve();
       switch (action.type) {
         case 'refresh':
         case 'run-doctor':
@@ -47,7 +51,8 @@ export function createStaticAppBackend(
                       id: 'static-context',
                       kind: 'context' as const,
                       label: 'static',
-                      detail: 'Static browse placeholder (CLI backend loads real lists).',
+                      detail:
+                        'Static browse placeholder (CLI backend loads real lists).',
                     },
                   ],
             notice: 'Browse refreshed (static).',
@@ -86,7 +91,7 @@ export function createStaticAppBackend(
               ...snapshot.home,
               credentialCount: filtered.length,
             },
-            notice: `Search query recorded (${action.query.length} chars).`,
+            notice: `Search query recorded (${String(action.query.length)} chars).`,
             noticeTone: 'info',
           };
           return { snapshot };
@@ -125,7 +130,9 @@ export function createStaticAppBackend(
           }
           const mask = asciiMask();
           const next: AppCredentialSummary = { name, maskedValue: mask };
-          const without = snapshot.credentials.filter((credential) => credential.name !== name);
+          const without = snapshot.credentials.filter(
+            (credential) => credential.name !== name,
+          );
           const credentials = [...without, next].sort((left, right) =>
             left.name.localeCompare(right.name),
           );
@@ -261,7 +268,9 @@ export function createStaticAppBackend(
           return { snapshot };
         }
         case 'policy-create': {
-          const rows = snapshot.policies.filter((row) => row.id !== action.id && row.id !== '(none)');
+          const rows = snapshot.policies.filter(
+            (row) => row.id !== action.id && row.id !== '(none)',
+          );
           snapshot = {
             ...snapshot,
             policies: [

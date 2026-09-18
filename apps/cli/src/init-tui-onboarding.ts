@@ -25,11 +25,7 @@ export type InitTuiOnboardingResult =
 export async function runInitTuiOnboarding(
   options: InitTuiOnboardingOptions = {},
 ): Promise<InitTuiOnboardingResult> {
-  if (
-    process.stdin.isTTY !== true ||
-    process.stdout.isTTY !== true ||
-    process.stderr.isTTY !== true
-  ) {
+  if (!process.stdin.isTTY || !process.stdout.isTTY || !process.stderr.isTTY) {
     throw new LocalCliError(
       'kavrix init TUI requires an interactive TTY on stdin, stdout, and stderr. Pass --no-tui for classic prompts.',
     );

@@ -165,9 +165,7 @@ export interface CliTuiSessionOptions {
   readonly commandRunner?: CliTuiCommandRunner;
 }
 
-export function createCliTuiBackend(
-  options: CliTuiSessionOptions = {},
-): CliTuiBackend {
+export function createCliTuiBackend(options: CliTuiSessionOptions = {}): CliTuiBackend {
   const session = new CliTuiSession(options);
   return {
     load: () => session.snapshot(),
@@ -322,7 +320,8 @@ class CliTuiSession {
             {
               slotId: '(see CLI)',
               status: 'active' as const,
-              detail: 'Open Recovery to load status from kavrix recovery / db recovery.',
+              detail:
+                'Open Recovery to load status from kavrix recovery / db recovery.',
             },
           ];
     return {
@@ -472,7 +471,7 @@ class CliTuiSession {
     this.#noticeTone = 'success';
   }
 
-    /**
+  /**
    * Matches scripts/tui-vault-smoke.ts:
    * db profile add → db profile use → db init → db vault create → db vault use.
    * Secrets travel only as stdin frames (`--passphrase-stdin`).
@@ -489,9 +488,12 @@ class CliTuiSession {
     if (action.passphrase.length === 0) {
       throw new Error('Passphrase is required to initialize the database.');
     }
+    const trimmedDatabaseLabel = action.databaseLabel?.trim() ?? '';
+    const trimmedVaultLabel = action.vaultLabel?.trim() ?? '';
     const databaseLabel =
-      action.databaseLabel?.trim() || `${profileId}-db`;
-    const vaultLabel = action.vaultLabel?.trim() || `${profileId}-vault`;
+      trimmedDatabaseLabel.length > 0 ? trimmedDatabaseLabel : `${profileId}-db`;
+    const vaultLabel =
+      trimmedVaultLabel.length > 0 ? trimmedVaultLabel : `${profileId}-vault`;
     const configDirArgs = this.#configDirArgs('--config-dir');
     const profileConfigDirArgs = this.#configDirArgs('--profile-config-dir');
 
@@ -519,14 +521,7 @@ class CliTuiSession {
 
     // Frames: `kavrix frames "db init"` → [mongodb-url,] label, passphrase, passphrase-confirm
     await this.#runTextCommand(
-      [
-        'db',
-        'init',
-        '--profile',
-        profileId,
-        ...configDirArgs,
-        '--passphrase-stdin',
-      ],
+      ['db', 'init', '--profile', profileId, ...configDirArgs, '--passphrase-stdin'],
       [databaseLabel, action.passphrase, action.passphrase],
     );
 
@@ -582,7 +577,6 @@ class CliTuiSession {
     this.#noticeTone = 'success';
   }
 
-
   /**
    * Matches db profile add mongodb → use → init → vault create → vault use.
    * Mongo URL + passphrase travel only as stdin frames (`--passphrase-stdin`
@@ -604,17 +598,17 @@ class CliTuiSession {
     if (action.passphrase.length === 0) {
       throw new Error('Passphrase is required to initialize the database.');
     }
+    const trimmedDatabaseLabel = action.databaseLabel?.trim() ?? '';
+    const trimmedVaultLabel = action.vaultLabel?.trim() ?? '';
     const databaseLabel =
-      action.databaseLabel?.trim() || `${profileId}-db`;
-    const vaultLabel = action.vaultLabel?.trim() || `${profileId}-vault`;
+      trimmedDatabaseLabel.length > 0 ? trimmedDatabaseLabel : `${profileId}-db`;
+    const vaultLabel =
+      trimmedVaultLabel.length > 0 ? trimmedVaultLabel : `${profileId}-vault`;
     const configDirArgs = this.#configDirArgs('--config-dir');
     const profileConfigDirArgs = this.#configDirArgs('--profile-config-dir');
     const collectionArgs: string[] = [];
     if (action.databaseCollection?.trim()) {
-      collectionArgs.push(
-        '--database-collection',
-        action.databaseCollection.trim(),
-      );
+      collectionArgs.push('--database-collection', action.databaseCollection.trim());
     }
     if (action.vaultCollection?.trim()) {
       collectionArgs.push('--vault-collection', action.vaultCollection.trim());
@@ -931,13 +925,7 @@ class CliTuiSession {
     } else {
       const auth = await this.#flatAuth([passphrase]);
       raw = await this.#runJsonCommand(
-        [
-          'doctor',
-          ...profileArgs,
-          ...auth.args,
-          '--json',
-          '--passphrase-stdin',
-        ],
+        ['doctor', ...profileArgs, ...auth.args, '--json', '--passphrase-stdin'],
         auth.frames,
       );
     }
@@ -958,11 +946,9 @@ class CliTuiSession {
       throw new Error('Unlock before preview-run.');
     }
     const passphrase = this.#passphrase.toString('utf8');
-    const missingLocal = names.filter(
-      (name) => !this.#credentialNames.includes(name),
-    );
+    const missingLocal = names.filter((name) => !this.#credentialNames.includes(name));
     // Real CLI validation: kavrix run has no --dry-run; exercise --help + has.
-    let help = '';
+    let help: string;
     try {
       help = await this.#runTextCommand(['run', '--help'], []);
     } catch (error) {
@@ -991,14 +977,7 @@ class CliTuiSession {
       try {
         const auth = await this.#flatAuth([passphrase]);
         const raw = await this.#runJsonCommand(
-          [
-            'has',
-            name,
-            ...profileArgs,
-            ...auth.args,
-            '--json',
-            '--passphrase-stdin',
-          ],
+          ['has', name, ...profileArgs, ...auth.args, '--json', '--passphrase-stdin'],
           auth.frames,
         );
         const exists =
@@ -1008,8 +987,7 @@ class CliTuiSession {
         if (exists) present.push(name);
         else absent.push(name);
       } catch (error) {
-        const detail =
-          error instanceof Error ? error.message : `has ${name} failed`;
+        const detail = error instanceof Error ? error.message : `has ${name} failed`;
         this.#runPreview = `CLI has failed for ${name}: ${detail}. ${usage}`;
         this.#notice = `preview-run: ${detail}`;
         this.#noticeTone = 'error';
@@ -1061,8 +1039,7 @@ class CliTuiSession {
       this.#notice = 'Agent dry-run completed.';
       this.#noticeTone = 'success';
     } catch (error) {
-      const detail =
-        error instanceof Error ? error.message : 'agent dry-run failed';
+      const detail = error instanceof Error ? error.message : 'agent dry-run failed';
       this.#agentStatus = detail;
       this.#notice = detail;
       this.#noticeTone = 'error';
@@ -1077,25 +1054,11 @@ class CliTuiSession {
     const profileArgs = await this.#profileArgs();
     const auth = await this.#flatAuth([passphrase]);
     const policyRaw = await this.#runJsonCommand(
-      [
-        'policy',
-        'list',
-        ...profileArgs,
-        ...auth.args,
-        '--json',
-        '--passphrase-stdin',
-      ],
+      ['policy', 'list', ...profileArgs, ...auth.args, '--json', '--passphrase-stdin'],
       auth.frames,
     );
     const grantRaw = await this.#runJsonCommand(
-      [
-        'grant',
-        'list',
-        ...profileArgs,
-        ...auth.args,
-        '--json',
-        '--passphrase-stdin',
-      ],
+      ['grant', 'list', ...profileArgs, ...auth.args, '--json', '--passphrase-stdin'],
       auth.frames,
     );
     let auditRaw: unknown = { events: [] };
@@ -1333,10 +1296,7 @@ class CliTuiSession {
         throw new Error('Unlock before db recovery verify.');
       }
       const passphrase = this.#passphrase.toString('utf8');
-      const frames = await this.#ownerAuthFrames([
-        passphrase,
-        recoveryPassphrase,
-      ]);
+      const frames = await this.#ownerAuthFrames([passphrase, recoveryPassphrase]);
       const transport = await this.#ownerTransportArgs();
       await this.#runTextCommand(
         [
@@ -1514,14 +1474,14 @@ class CliTuiSession {
     }
     const passphrase = this.#passphrase.toString('utf8');
     const profileArgs = await this.#profileArgs();
-    const vaultArgs = await this.#vaultFlagArgs();
+    const vaultArgs = this.#vaultFlagArgs();
     const auth = await this.#flatAuth([passphrase]);
-    const nodes: Array<{
+    const nodes: {
       id: string;
       kind: 'context' | 'service' | 'item' | 'field';
       label: string;
       detail: string;
-    }> = [];
+    }[] = [];
     try {
       const contextRaw = await this.#runJsonCommand(
         [
@@ -1539,9 +1499,7 @@ class CliTuiSession {
         typeof contextRaw === 'object' &&
         contextRaw !== null &&
         Array.isArray((contextRaw as { contexts?: unknown }).contexts)
-          ? (
-              (contextRaw as { contexts: unknown[] }).contexts
-            ).flatMap((entry) => {
+          ? (contextRaw as { contexts: unknown[] }).contexts.flatMap((entry) => {
               if (typeof entry === 'string') return [entry];
               if (
                 typeof entry === 'object' &&
@@ -1643,8 +1601,7 @@ class CliTuiSession {
             }
           }
         } catch (error) {
-          const detail =
-            error instanceof Error ? error.message : 'service list failed';
+          const detail = error instanceof Error ? error.message : 'service list failed';
           nodes.push({
             id: `service-error:${contextName}`,
             kind: 'service',
@@ -1657,8 +1614,7 @@ class CliTuiSession {
       this.#notice = `Browse: ${String(nodes.length)} node(s) from context/service/item list.`;
       this.#noticeTone = 'success';
     } catch (error) {
-      const detail =
-        error instanceof Error ? error.message : 'context list failed';
+      const detail = error instanceof Error ? error.message : 'context list failed';
       this.#browseNodes = [
         {
           id: 'error',
@@ -1749,7 +1705,7 @@ class CliTuiSession {
     return { args: [], frames: [...rest] };
   }
 
-  async #vaultFlagArgs(): Promise<string[]> {
+  #vaultFlagArgs(): string[] {
     return this.#vaultId === null ? [] : ['--vault', this.#vaultId];
   }
 
@@ -1805,13 +1761,15 @@ class CliTuiSession {
     });
     const stdout: Buffer[] = [];
     const stderr: Buffer[] = [];
-    child.stdout?.on('data', (chunk: Buffer) => stdout.push(chunk));
-    child.stderr?.on('data', (chunk: Buffer) => stderr.push(chunk));
+    child.stdout.on('data', (chunk: Buffer) => stdout.push(chunk));
+    child.stderr.on('data', (chunk: Buffer) => stderr.push(chunk));
     const payload = frames.map((frame) => `${frame}\n`).join('');
-    child.stdin?.end(payload, 'utf8');
+    child.stdin.end(payload, 'utf8');
     const code = await new Promise<number | null>((resolve, reject) => {
       child.on('error', reject);
-      child.on('close', (exitCode) => resolve(exitCode));
+      child.on('close', (exitCode) => {
+        resolve(exitCode);
+      });
     });
     if (code !== 0) {
       const detail = Buffer.concat(stderr).toString('utf8').trim() || 'CLI failed.';
@@ -1885,8 +1843,7 @@ function parseRecoverySlots(
           : null;
     if (id === null) return [];
     const stateRaw = slot['state'] ?? slot['status'];
-    const status: 'active' | 'revoked' =
-      stateRaw === 'revoked' ? 'revoked' : 'active';
+    const status: 'active' | 'revoked' = stateRaw === 'revoked' ? 'revoked' : 'active';
     const createdAt =
       typeof slot['createdAt'] === 'string' ? ` created ${slot['createdAt']}` : '';
     return [
@@ -1923,11 +1880,7 @@ function parseDoctorRows(raw: unknown): CliTuiSnapshot['doctor'] {
             : 'check';
       const statusRaw = check['status'];
       let status: 'ok' | 'warning' | 'error' = 'ok';
-      if (
-        statusRaw === 'warning' ||
-        statusRaw === 'warn' ||
-        statusRaw === 'degraded'
-      ) {
+      if (statusRaw === 'warning' || statusRaw === 'warn' || statusRaw === 'degraded') {
         status = 'warning';
       } else if (
         statusRaw === 'error' ||
@@ -1942,20 +1895,22 @@ function parseDoctorRows(raw: unknown): CliTuiSnapshot['doctor'] {
           ? check['detail']
           : typeof check['message'] === 'string'
             ? check['message']
-            : String(statusRaw ?? 'ok');
+            : typeof statusRaw === 'string'
+              ? statusRaw
+              : 'ok';
       return [{ name, status, detail }];
     });
   }
-  const rows: Array<{
+  const rows: {
     name: string;
     status: 'ok' | 'warning' | 'error';
     detail: string;
-  }> = [];
+  }[] = [];
   if (typeof record['healthy'] === 'boolean') {
     rows.push({
       name: 'healthy',
-      status: record['healthy'] === true ? 'ok' : 'error',
-      detail: record['healthy'] === true ? 'Vault authenticated.' : 'Vault unhealthy.',
+      status: record['healthy'] ? 'ok' : 'error',
+      detail: record['healthy'] ? 'Vault authenticated.' : 'Vault unhealthy.',
     });
   }
   if (typeof record['credentialCount'] === 'number') {
@@ -1994,11 +1949,11 @@ function parsePolicyRows(
   grantRaw: unknown,
   auditRaw: unknown,
 ): CliTuiSnapshot['policies'] {
-  const rows: Array<{
+  const rows: {
     id: string;
     kind: 'policy' | 'grant' | 'audit';
     summary: string;
-  }> = [];
+  }[] = [];
   if (typeof policyRaw === 'object' && policyRaw !== null) {
     const policies = (policyRaw as Record<string, unknown>)['policies'];
     if (Array.isArray(policies)) {
@@ -2007,10 +1962,11 @@ function parsePolicyRows(
         const policy = entry as Record<string, unknown>;
         const id = typeof policy['id'] === 'string' ? policy['id'] : null;
         if (id === null) continue;
-        const secret =
-          typeof policy['secret'] === 'string' ? policy['secret'] : '?';
+        const secret = typeof policy['secret'] === 'string' ? policy['secret'] : '?';
         const commands = Array.isArray(policy['commands'])
-          ? policy['commands'].filter((item): item is string => typeof item === 'string')
+          ? policy['commands'].filter(
+              (item): item is string => typeof item === 'string',
+            )
           : [];
         rows.push({
           id,
@@ -2050,8 +2006,7 @@ function parsePolicyRows(
       for (const entry of events.slice(-8)) {
         if (typeof entry !== 'object' || entry === null) continue;
         const event = entry as Record<string, unknown>;
-        const action =
-          typeof event['action'] === 'string' ? event['action'] : 'event';
+        const action = typeof event['action'] === 'string' ? event['action'] : 'event';
         const at = typeof event['at'] === 'string' ? event['at'] : '';
         rows.push({
           id: `audit:${at}:${action}`,
@@ -2070,4 +2025,3 @@ function parsePolicyRows(
   }
   return rows;
 }
-

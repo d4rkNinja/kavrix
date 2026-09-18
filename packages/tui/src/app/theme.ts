@@ -1,25 +1,20 @@
 import type { AppTone } from './backend.js';
 
 export type AppAccent =
-  | 'cyan'
-  | 'green'
-  | 'yellow'
-  | 'magenta'
-  | 'blue'
-  | 'red'
-  | 'white'
-  | 'gray';
+  'cyan' | 'green' | 'yellow' | 'magenta' | 'blue' | 'red' | 'white' | 'gray';
 
 /** Ink `borderStyle` keys we use for OpenTUI-like panels. */
 export type PanelBorderStyle = 'round' | 'double' | 'single' | 'classic';
 
-export function resolveAppPresentation(options: Readonly<{
-  color?: boolean;
-  ascii?: boolean;
-  platform?: NodeJS.Platform;
-  noColor?: boolean;
-  term?: string | undefined;
-}>): Readonly<{ color: boolean; ascii: boolean }> {
+export function resolveAppPresentation(
+  options: Readonly<{
+    color?: boolean;
+    ascii?: boolean;
+    platform?: NodeJS.Platform;
+    noColor?: boolean;
+    term?: string | undefined;
+  }>,
+): Readonly<{ color: boolean; ascii: boolean }> {
   const noColor =
     options.noColor === true ||
     process.env['NO_COLOR'] !== undefined ||

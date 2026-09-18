@@ -701,10 +701,11 @@ describe('static backend create-file-profile', () => {
   });
 });
 
-
 describe('paste into overlays', () => {
   it('sanitizes bracketed-paste noise and trailing newlines', () => {
-    expect(sanitizePasteText('\x1b[200~secret-value\r\n\x1b[201~')).toBe('secret-value');
+    expect(sanitizePasteText('\x1b[200~secret-value\r\n\x1b[201~')).toBe(
+      'secret-value',
+    );
     expect(sanitizePasteText('mongo://url\n')).toBe('mongo://url');
   });
 
@@ -754,25 +755,39 @@ describe('paste into overlays', () => {
 describe('agent dry-run overlays', () => {
   it('prompts for agent name then optional config before dispatch', () => {
     let state = navigateToScreen(hydrate(), 'agent');
-    let next = transitionAppRouter(state, { type: 'key', key: { text: 'g' } });
+    let next = transitionAppRouter(state, {
+      type: 'key',
+      key: { text: 'g' },
+      nowMs: 0,
+    });
     expect(next.effect.kind).toBe('none');
     state = next.state;
     expect(state.overlay).toBe('input-agent-name');
     next = transitionAppRouter(state, {
       type: 'key',
       key: { text: 'ci-bot' },
+      nowMs: 0,
     });
     state = next.state;
-    next = transitionAppRouter(state, { type: 'key', key: { name: 'return' } });
+    next = transitionAppRouter(state, {
+      type: 'key',
+      key: { name: 'return' },
+      nowMs: 0,
+    });
     state = next.state;
     expect(state.overlay).toBe('input-agent-config');
     expect(state.pendingAgentName).toBe('ci-bot');
     next = transitionAppRouter(state, {
       type: 'key',
       key: { text: '/tmp/kavrix.yaml' },
+      nowMs: 0,
     });
     state = next.state;
-    next = transitionAppRouter(state, { type: 'key', key: { name: 'return' } });
+    next = transitionAppRouter(state, {
+      type: 'key',
+      key: { name: 'return' },
+      nowMs: 0,
+    });
     expect(next.effect).toEqual({
       kind: 'backend',
       action: {
@@ -785,12 +800,20 @@ describe('agent dry-run overlays', () => {
 
   it('rejects empty agent name without inventing noop', () => {
     let state = navigateToScreen(hydrate(), 'agent');
-    let next = transitionAppRouter(state, { type: 'key', key: { text: 'g' } });
+    let next = transitionAppRouter(state, {
+      type: 'key',
+      key: { text: 'g' },
+      nowMs: 0,
+    });
     state = next.state;
-    next = transitionAppRouter(state, { type: 'key', key: { name: 'return' } });
+    next = transitionAppRouter(state, {
+      type: 'key',
+      key: { name: 'return' },
+      nowMs: 0,
+    });
     expect(next.effect.kind).toBe('none');
     expect(next.state.overlay).toBe('input-agent-name');
-    expect(next.state.message.toLowerCase()).toContain('agent name required');
+    expect(next.state.message?.toLowerCase()).toContain('agent name required');
   });
 });
 
@@ -828,14 +851,17 @@ describe('help and credentials UX', () => {
   });
 
   it('shows unlock empty-state guidance on credentials', () => {
-    const locked = transitionAppRouter(createInitialAppRouterState({ width: 100, height: 30 }), {
-      type: 'hydrate',
-      snapshot: {
-        ...sampleSnapshot(),
-        home: { ...sampleSnapshot().home, unlocked: false, credentialCount: 0 },
-        credentials: [],
+    const locked = transitionAppRouter(
+      createInitialAppRouterState({ width: 100, height: 30 }),
+      {
+        type: 'hydrate',
+        snapshot: {
+          ...sampleSnapshot(),
+          home: { ...sampleSnapshot().home, unlocked: false, credentialCount: 0 },
+          credentials: [],
+        },
       },
-    }).state;
+    ).state;
     const frameText = frame(navigateToScreen(locked, 'credentials'));
     expect(frameText).toMatch(/Press u to unlock/i);
   });

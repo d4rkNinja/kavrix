@@ -9,13 +9,13 @@ CLI binary: `node apps/cli/dist/bin.js` (spawned by `createCliTuiBackend` / smok
 
 ## Phase 1 — Mock / stub audit
 
-| Check | Result | Notes |
-| --- | --- | --- |
-| `runInteractiveTui` mounts only `createCliTuiBackend` | PASS | `apps/cli/src/tui-command.ts` |
-| `createStaticAppBackend` product-path usage | PASS | Tests only (`packages/tui/test`); comment says never for `kavrix tui` |
-| Agent dry-run invents `--agent noop` | PASS (fixed) | Requires real agent name; TUI prompts `input-agent-name` then optional config |
-| Storage showcase fake vault ops | PASS (fixed) | Renamed to **Storage docs (read-only)**; shows live home/doctor; no mutate |
-| Grep mock\|stub\|fake\|noop\|placeholder in product paths | PASS | Remaining hits only in `static-backend.ts` (test backend) + build esbuild `__require` bridge comments |
+| Check                                                     | Result       | Notes                                                                                                 |
+| --------------------------------------------------------- | ------------ | ----------------------------------------------------------------------------------------------------- |
+| `runInteractiveTui` mounts only `createCliTuiBackend`     | PASS         | `apps/cli/src/tui-command.ts`                                                                         |
+| `createStaticAppBackend` product-path usage               | PASS         | Tests only (`packages/tui/test`); comment says never for `kavrix tui`                                 |
+| Agent dry-run invents `--agent noop`                      | PASS (fixed) | Requires real agent name; TUI prompts `input-agent-name` then optional config                         |
+| Storage showcase fake vault ops                           | PASS (fixed) | Renamed to **Storage docs (read-only)**; shows live home/doctor; no mutate                            |
+| Grep mock\|stub\|fake\|noop\|placeholder in product paths | PASS         | Remaining hits only in `static-backend.ts` (test backend) + build esbuild `__require` bridge comments |
 
 ## Phase 2 — Live file vault (`scripts/tui-vault-smoke.ts`)
 
@@ -27,36 +27,36 @@ MONGO_URL='mongodb://127.0.0.1:27017/?replicaSet=rs0' \
   node --import tsx scripts/tui-vault-smoke.ts
 ```
 
-| Item | Result | Exact path / command |
-| --- | --- | --- |
-| profiles: list | PASS | session unlock → snapshot.profiles |
-| profiles: use | PASS | `dispatch({ type: 'use-profile', profileId: 'smoke' })` |
-| profiles: create-file-profile | PASS | `dispatch({ type: 'create-file-profile', ... })` → real `db profile add/use/init/vault create/use` |
-| unlock | PASS | `dispatch({ type: 'unlock', passphrase })` → `kavrix list --json --passphrase-stdin` |
-| lock | PASS | `dispatch({ type: 'lock' })` |
-| vaults: list | PASS | snapshot.vaults after unlock |
-| vaults: use | PASS | `dispatch({ type: 'use-vault', vaultId })` → real `kavrix db vault use` |
-| credentials: list | PASS | unlock list |
-| credentials: put | PASS | `put-credential` |
-| credentials: rename | PASS | `rename-credential` |
-| credentials: remove | PASS | `remove-credential` |
-| credentials: reveal | PASS | `reveal-credential` |
-| credentials: copy (OSC52 / clipboard) | PASS | `copy-credential` (headless: system clipboard shim on PATH; product prefers OSC 52 on TTY) |
-| doctor | PASS | `run-doctor` → `kavrix doctor` |
-| recovery: status | PASS | `recovery-status` |
-| recovery: create | PASS | two kits A/B |
-| recovery: verify | PASS | `recovery-verify` |
-| recovery: revoke (non-last) | PASS | revoked one of two active slots; one remained |
-| policy: create | PASS | `policy-create` |
-| policy: list | PASS | `refresh-policy` |
-| policy: remove | PASS | `policy-remove` |
-| grant: create | PASS | `grant-create` |
-| grant: revoke | PASS | `grant-revoke` |
-| browse refresh (context/service/item) | PASS | `refresh-browse` (3 nodes) before and after profile switch |
-| preview-run (list+has+run --help) | PASS | no `--dry-run` on `kavrix run` (documented in preview text) |
-| agent dry-run (real CLI + config) | PASS | `agent run --dry-run --json --agent <name> --config <file>` |
-| agent dry-run missing name (no noop) | PASS | honest error; CLI not spawned |
-| mongodb profile create (27017 rs0) | PASS | `MONGO_URL=mongodb://127.0.0.1:27017/?replicaSet=rs0` |
+| Item                                  | Result | Exact path / command                                                                               |
+| ------------------------------------- | ------ | -------------------------------------------------------------------------------------------------- |
+| profiles: list                        | PASS   | session unlock → snapshot.profiles                                                                 |
+| profiles: use                         | PASS   | `dispatch({ type: 'use-profile', profileId: 'smoke' })`                                            |
+| profiles: create-file-profile         | PASS   | `dispatch({ type: 'create-file-profile', ... })` → real `db profile add/use/init/vault create/use` |
+| unlock                                | PASS   | `dispatch({ type: 'unlock', passphrase })` → `kavrix list --json --passphrase-stdin`               |
+| lock                                  | PASS   | `dispatch({ type: 'lock' })`                                                                       |
+| vaults: list                          | PASS   | snapshot.vaults after unlock                                                                       |
+| vaults: use                           | PASS   | `dispatch({ type: 'use-vault', vaultId })` → real `kavrix db vault use`                            |
+| credentials: list                     | PASS   | unlock list                                                                                        |
+| credentials: put                      | PASS   | `put-credential`                                                                                   |
+| credentials: rename                   | PASS   | `rename-credential`                                                                                |
+| credentials: remove                   | PASS   | `remove-credential`                                                                                |
+| credentials: reveal                   | PASS   | `reveal-credential`                                                                                |
+| credentials: copy (OSC52 / clipboard) | PASS   | `copy-credential` (headless: system clipboard shim on PATH; product prefers OSC 52 on TTY)         |
+| doctor                                | PASS   | `run-doctor` → `kavrix doctor`                                                                     |
+| recovery: status                      | PASS   | `recovery-status`                                                                                  |
+| recovery: create                      | PASS   | two kits A/B                                                                                       |
+| recovery: verify                      | PASS   | `recovery-verify`                                                                                  |
+| recovery: revoke (non-last)           | PASS   | revoked one of two active slots; one remained                                                      |
+| policy: create                        | PASS   | `policy-create`                                                                                    |
+| policy: list                          | PASS   | `refresh-policy`                                                                                   |
+| policy: remove                        | PASS   | `policy-remove`                                                                                    |
+| grant: create                         | PASS   | `grant-create`                                                                                     |
+| grant: revoke                         | PASS   | `grant-revoke`                                                                                     |
+| browse refresh (context/service/item) | PASS   | `refresh-browse` (3 nodes) before and after profile switch                                         |
+| preview-run (list+has+run --help)     | PASS   | no `--dry-run` on `kavrix run` (documented in preview text)                                        |
+| agent dry-run (real CLI + config)     | PASS   | `agent run --dry-run --json --agent <name> --config <file>`                                        |
+| agent dry-run missing name (no noop)  | PASS   | honest error; CLI not spawned                                                                      |
+| mongodb profile create (27017 rs0)    | PASS   | `MONGO_URL=mongodb://127.0.0.1:27017/?replicaSet=rs0`                                              |
 
 **Smoke summary:** `tui-vault-smoke: ALL PASS`
 
@@ -72,15 +72,15 @@ node apps/cli/dist/bin.js agent run --dry-run --json --agent missing
 
 ## Phase 3 — Automated gates
 
-| Gate | Result | Command |
-| --- | --- | --- |
-| `@kavrix/tui` unit tests | PASS (77) | `pnpm --filter @kavrix/tui test` |
-| `@kavrix/tui` build | PASS | `pnpm --filter @kavrix/tui build` |
-| `kavrix` build | PASS | `pnpm --filter kavrix build` |
-| `apps/cli/test/tui-session.test.ts` | PASS (5) | `pnpm exec vitest run apps/cli/test/tui-session.test.ts` |
-| `scripts/tui-smoke.mjs` inventory | PASS (12 screens) | `node scripts/tui-smoke.mjs` |
-| `scripts/tui-vault-smoke` + mongo | PASS | see Phase 2 |
-| Windows / ASCII presentation | PASS | `resolveAppPresentation({ platform:'win32' })` → `{ ascii: true }`; `--ascii` help OK; router ASCII/NO_COLOR tests green |
+| Gate                                | Result            | Command                                                                                                                  |
+| ----------------------------------- | ----------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `@kavrix/tui` unit tests            | PASS (77)         | `pnpm --filter @kavrix/tui test`                                                                                         |
+| `@kavrix/tui` build                 | PASS              | `pnpm --filter @kavrix/tui build`                                                                                        |
+| `kavrix` build                      | PASS              | `pnpm --filter kavrix build`                                                                                             |
+| `apps/cli/test/tui-session.test.ts` | PASS (5)          | `pnpm exec vitest run apps/cli/test/tui-session.test.ts`                                                                 |
+| `scripts/tui-smoke.mjs` inventory   | PASS (12 screens) | `node scripts/tui-smoke.mjs`                                                                                             |
+| `scripts/tui-vault-smoke` + mongo   | PASS              | see Phase 2                                                                                                              |
+| Windows / ASCII presentation        | PASS              | `resolveAppPresentation({ platform:'win32' })` → `{ ascii: true }`; `--ascii` help OK; router ASCII/NO_COLOR tests green |
 
 ## Phase 4 — Honest remaining gaps (CLI product limits only)
 
@@ -96,16 +96,15 @@ node apps/cli/dist/bin.js agent run --dry-run --json --agent missing
 - **Bugfix:** `use-vault` now runs real `kavrix db vault use` (was in-memory only).
 - Clearer clipboard fallback error when OSC 52 and system CLIs are unavailable.
 
-
 ## Init TUI onboarding (default on TTY)
 
 Interactive `kavrix init` opens Ink onboarding (`mountOnboardingApp`) by default when stdin+stdout+stderr are TTYs. It dispatches real `create-file-profile` / `create-mongodb-profile` via `createCliTuiBackend` (no mocks).
 
-| Flag / condition | Path |
-| --- | --- |
-| TTY + no blocking flags | Ink TUI onboarding |
-| `--no-tui` | Classic guided `LocalSecretInput` + recovery kit |
-| `--passphrase-stdin` / `--database-url-stdin` / `--json` / explicit routing / missing TTY | `handleInit` (non-interactive) |
+| Flag / condition                                                                          | Path                                             |
+| ----------------------------------------------------------------------------------------- | ------------------------------------------------ |
+| TTY + no blocking flags                                                                   | Ink TUI onboarding                               |
+| `--no-tui`                                                                                | Classic guided `LocalSecretInput` + recovery kit |
+| `--passphrase-stdin` / `--database-url-stdin` / `--json` / explicit routing / missing TTY | `handleInit` (non-interactive)                   |
 
 After success, stderr handoff suggests `kavrix tui` and profile-scoped put/list.
 

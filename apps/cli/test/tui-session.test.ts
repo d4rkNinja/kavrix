@@ -2,11 +2,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import {
-  databaseIdSchema,
-  profileIdSchema,
-  vaultIdSchema,
-} from '@kavrix/schemas';
+import { databaseIdSchema, profileIdSchema, vaultIdSchema } from '@kavrix/schemas';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { DatastoreProfileRegistry } from '../src/datastore-profiles.js';
@@ -41,8 +37,7 @@ describe('CliTuiSession mutations (mocked spawn)', () => {
 
   it('unlocks, puts, renames, removes via stdin frames only', async () => {
     const configDir = await setupProfile();
-    const calls: Array<{ args: readonly string[]; frames: readonly string[] }> =
-      [];
+    const calls: Array<{ args: readonly string[]; frames: readonly string[] }> = [];
     let names = ['alpha'];
 
     const backend = createCliTuiBackend({
@@ -99,15 +94,9 @@ describe('CliTuiSession mutations (mocked spawn)', () => {
       value: 'secret-value',
     });
     expect(result.snapshot.noticeTone).toBe('success');
-    expect(result.snapshot.credentials.map((c) => c.name)).toEqual([
-      'alpha',
-      'beta',
-    ]);
+    expect(result.snapshot.credentials.map((c) => c.name)).toEqual(['alpha', 'beta']);
     const putCall = calls.find((call) => call.args.includes('put'));
-    expect(putCall?.frames).toEqual([
-      'correct horse battery staple',
-      'secret-value',
-    ]);
+    expect(putCall?.frames).toEqual(['correct horse battery staple', 'secret-value']);
     expect(putCall?.args).toEqual(
       expect.arrayContaining([
         'put',
@@ -123,10 +112,7 @@ describe('CliTuiSession mutations (mocked spawn)', () => {
       from: 'beta',
       to: 'gamma',
     });
-    expect(result.snapshot.credentials.map((c) => c.name)).toEqual([
-      'alpha',
-      'gamma',
-    ]);
+    expect(result.snapshot.credentials.map((c) => c.name)).toEqual(['alpha', 'gamma']);
     const renameCall = calls.find((call) => call.args.includes('rename'));
     expect(renameCall?.frames).toEqual(['correct horse battery staple']);
 
@@ -150,8 +136,7 @@ describe('CliTuiSession mutations (mocked spawn)', () => {
   it('creates a file profile via documented CLI frames then unlocks', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'kavrix-tui-create-'));
     dirs.push(dir);
-    const calls: Array<{ args: readonly string[]; frames: readonly string[] }> =
-      [];
+    const calls: Array<{ args: readonly string[]; frames: readonly string[] }> = [];
     let vaultCreated = false;
 
     const backend = createCliTuiBackend({
@@ -172,7 +157,11 @@ describe('CliTuiSession mutations (mocked spawn)', () => {
           });
           return '';
         }
-        if (args.includes('use') && args.includes('profile') && !args.includes('vault')) {
+        if (
+          args.includes('use') &&
+          args.includes('profile') &&
+          !args.includes('vault')
+        ) {
           const registry = await DatastoreProfileRegistry.open({
             configDirectory: dir,
           });
@@ -190,10 +179,7 @@ describe('CliTuiSession mutations (mocked spawn)', () => {
           return '';
         }
         if (args.includes('vault') && args.includes('create')) {
-          expect(frames).toEqual([
-            'correct horse battery staple',
-            'fresh-vault',
-          ]);
+          expect(frames).toEqual(['correct horse battery staple', 'fresh-vault']);
           vaultCreated = true;
           return JSON.stringify({ vaultId: 'vault_fresh' });
         }
@@ -252,11 +238,9 @@ describe('CliTuiSession mutations (mocked spawn)', () => {
     }
   });
 
-
   it('runs doctor, policy, grant, recovery, preview, and agent via real CLI frames', async () => {
     const configDir = await setupProfile();
-    const calls: Array<{ args: readonly string[]; frames: readonly string[] }> =
-      [];
+    const calls: Array<{ args: readonly string[]; frames: readonly string[] }> = [];
     let policies: Array<Record<string, unknown>> = [];
     let grants: Array<Record<string, unknown>> = [];
     let slots: Array<Record<string, unknown>> = [];
@@ -376,9 +360,9 @@ describe('CliTuiSession mutations (mocked spawn)', () => {
     });
 
     let result = await backend.dispatch({ type: 'run-doctor' });
-    expect(result.snapshot.doctor.some((row) => row.name === 'database-container')).toBe(
-      true,
-    );
+    expect(
+      result.snapshot.doctor.some((row) => row.name === 'database-container'),
+    ).toBe(true);
     expect(result.snapshot.noticeTone).toBe('success');
 
     result = await backend.dispatch({
@@ -468,18 +452,21 @@ describe('CliTuiSession mutations (mocked spawn)', () => {
       (call) => call.args[0] === 'agent' && call.args.includes('--dry-run'),
     );
     expect(agentCall?.args).toEqual(
-      expect.arrayContaining(['agent', 'run', '--dry-run', '--json', '--agent', 'noop']),
+      expect.arrayContaining([
+        'agent',
+        'run',
+        '--dry-run',
+        '--json',
+        '--agent',
+        'noop',
+      ]),
     );
     expect(result.snapshot.agentStatus.length).toBeGreaterThan(0);
 
     result = await backend.dispatch({ type: 'refresh-browse' });
     expect(result.snapshot.noticeTone).toBe('success');
-    expect(result.snapshot.browse.some((node) => node.kind === 'context')).toBe(
-      true,
-    );
-    expect(result.snapshot.browse.some((node) => node.kind === 'service')).toBe(
-      true,
-    );
+    expect(result.snapshot.browse.some((node) => node.kind === 'context')).toBe(true);
+    expect(result.snapshot.browse.some((node) => node.kind === 'service')).toBe(true);
     expect(result.snapshot.browse.some((node) => node.kind === 'item')).toBe(true);
     const hasCall = calls.find((call) => call.args[0] === 'has');
     expect(hasCall?.frames).toEqual(['correct horse battery staple']);
@@ -489,8 +476,7 @@ describe('CliTuiSession mutations (mocked spawn)', () => {
   it('creates mongodb profile via db profile add/init frames with URL on stdin only', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'kavrix-tui-mongo-'));
     dirs.push(dir);
-    const calls: Array<{ args: readonly string[]; frames: readonly string[] }> =
-      [];
+    const calls: Array<{ args: readonly string[]; frames: readonly string[] }> = [];
     let vaultCreated = false;
     const mongoUrl = 'mongodb://127.0.0.1:27017/?replicaSet=rs0';
     const passphrase = 'correct horse battery staple';
@@ -538,12 +524,7 @@ describe('CliTuiSession mutations (mocked spawn)', () => {
           return '';
         }
         if (args[0] === 'db' && args[1] === 'init') {
-          expect(frames).toEqual([
-            mongoUrl,
-            'mongo-db',
-            passphrase,
-            passphrase,
-          ]);
+          expect(frames).toEqual([mongoUrl, 'mongo-db', passphrase, passphrase]);
           expect(args).toContain('--passphrase-stdin');
           expect(joined).not.toContain(mongoUrl);
           expect(joined).not.toContain(passphrase);
@@ -605,8 +586,7 @@ describe('CliTuiSession mutations (mocked spawn)', () => {
   it('rejects agent dry-run without agent name and does not invent noop', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'kavrix-tui-agent-'));
     dirs.push(dir);
-    const calls: Array<{ args: readonly string[]; frames: readonly string[] }> =
-      [];
+    const calls: Array<{ args: readonly string[]; frames: readonly string[] }> = [];
     const backend = createCliTuiBackend({
       profileConfigDir: dir,
       ascii: true,
@@ -617,9 +597,10 @@ describe('CliTuiSession mutations (mocked spawn)', () => {
     });
     const result = await backend.dispatch({ type: 'agent-dry-run' });
     expect(result.snapshot.noticeTone).toBe('error');
-    expect(result.snapshot.agentStatus.toLowerCase()).toContain('requires an agent name');
+    expect(result.snapshot.agentStatus.toLowerCase()).toContain(
+      'requires an agent name',
+    );
     expect(result.snapshot.agentStatus.toLowerCase()).not.toContain('noop');
     expect(calls.some((call) => call.args[0] === 'agent')).toBe(false);
   });
-
 });

@@ -241,7 +241,10 @@ export function buildLocalCli(): Command {
     '--no-tui',
     'Use classic guided line prompts instead of Ink TUI onboarding (default on interactive TTY).',
   );
-  init.option('--json', 'Machine-readable / non-interactive init (skips TUI and classic prompts).');
+  init.option(
+    '--json',
+    'Machine-readable / non-interactive init (skips TUI and classic prompts).',
+  );
   addKeyOptions(init);
   init.action(async (...args: unknown[]) => {
     const options = getOptions(args);
@@ -1374,7 +1377,7 @@ export function shouldRunInitOnboarding(options: LocalCliOptions): boolean {
 export function shouldRunInitTuiOnboarding(options: LocalCliOptions): boolean {
   if (!shouldRunInitOnboarding(options)) return false;
   if (options.tui === false) return false;
-  return process.stdout.isTTY === true;
+  return process.stdout.isTTY;
 }
 
 /** Whether an ambient database-bound profile will route flat commands. */

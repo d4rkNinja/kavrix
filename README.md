@@ -179,13 +179,13 @@ structured access or migration.
 
 ### Keys, recovery, and health
 
-| Command                | Purpose                                                     |
-| ---------------------- | ----------------------------------------------------------- |
-| `kavrix key ...`       | Verify, copy, replicate, assign, or rewrap key files.       |
-| `kavrix recovery ...`  | Create, verify, inspect, revoke, or use recovery kits.      |
-| `kavrix doctor`        | Authenticate and validate a vault without revealing values. |
-| `kavrix doctor health` | Diagnose and safely repair bounded transient state.         |
-| `kavrix tui` / `ui`    | Full interactive Ink app against the real CLI.              |
+| Command                | Purpose                                                                        |
+| ---------------------- | ------------------------------------------------------------------------------ |
+| `kavrix key ...`       | Verify, copy, replicate, assign, or rewrap key files.                          |
+| `kavrix recovery ...`  | Create, verify, inspect, revoke, or use recovery kits.                         |
+| `kavrix doctor`        | Authenticate and validate a vault without revealing values.                    |
+| `kavrix doctor health` | Diagnose and safely repair bounded transient state.                            |
+| `kavrix tui` / `ui`    | Full interactive Ink app against the real CLI.                                 |
 | `kavrix init`          | Ink TUI onboarding on TTY (`--no-tui` for classic); non-TTY remains legacy v2. |
 
 ## Running tools without pasting secrets

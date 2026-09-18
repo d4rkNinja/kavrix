@@ -24,14 +24,7 @@ export type OnboardingStep =
 
 export interface OnboardingKey {
   readonly name?:
-    | 'up'
-    | 'down'
-    | 'left'
-    | 'right'
-    | 'tab'
-    | 'return'
-    | 'escape'
-    | 'backspace';
+    'up' | 'down' | 'left' | 'right' | 'tab' | 'return' | 'escape' | 'backspace';
   readonly text?: string;
   readonly ctrl?: boolean;
 }
@@ -60,8 +53,7 @@ export interface OnboardingState {
 }
 
 export type OnboardingEffect =
-  | Readonly<{ kind: 'backend'; action: AppBackendAction }>
-  | Readonly<{ kind: 'none' }>;
+  Readonly<{ kind: 'backend'; action: AppBackendAction }> | Readonly<{ kind: 'none' }>;
 
 export interface OnboardingTransition {
   readonly state: OnboardingState;
@@ -154,7 +146,10 @@ export function transitionOnboarding(
   return keyTransition(state, action.key);
 }
 
-function keyTransition(state: OnboardingState, key: OnboardingKey): OnboardingTransition {
+function keyTransition(
+  state: OnboardingState,
+  key: OnboardingKey,
+): OnboardingTransition {
   if (key.ctrl === true && key.text === 'c') {
     return unchanged({
       ...state,
@@ -164,7 +159,11 @@ function keyTransition(state: OnboardingState, key: OnboardingKey): OnboardingTr
   }
 
   if (state.step === 'success') {
-    if (key.name === 'return' || key.name === 'escape' || key.text?.toLowerCase() === 'q') {
+    if (
+      key.name === 'return' ||
+      key.name === 'escape' ||
+      key.text?.toLowerCase() === 'q'
+    ) {
       return unchanged({ ...state, quit: true });
     }
     return unchanged(state);
@@ -304,7 +303,12 @@ function commitInput(state: OnboardingState): OnboardingTransition {
     case 'file-data-file': {
       const profileId = state.profileId;
       if (profileId === null) {
-        return unchanged({ ...state, step: 'storage', query: '', message: 'Restarted.' });
+        return unchanged({
+          ...state,
+          step: 'storage',
+          query: '',
+          message: 'Restarted.',
+        });
       }
       const dataFile =
         state.query.trim() || defaultFileProfilePaths(profileId).dataFile;
@@ -319,10 +323,14 @@ function commitInput(state: OnboardingState): OnboardingTransition {
     case 'file-key-file': {
       const profileId = state.profileId;
       if (profileId === null || state.dataFile === null) {
-        return unchanged({ ...state, step: 'storage', query: '', message: 'Restarted.' });
+        return unchanged({
+          ...state,
+          step: 'storage',
+          query: '',
+          message: 'Restarted.',
+        });
       }
-      const keyFile =
-        state.query.trim() || defaultFileProfilePaths(profileId).keyFile;
+      const keyFile = state.query.trim() || defaultFileProfilePaths(profileId).keyFile;
       return unchanged({
         ...state,
         keyFile,
@@ -403,7 +411,12 @@ function commitInput(state: OnboardingState): OnboardingTransition {
     case 'mongo-database': {
       const profileId = state.profileId;
       if (profileId === null) {
-        return unchanged({ ...state, step: 'storage', query: '', message: 'Restarted.' });
+        return unchanged({
+          ...state,
+          step: 'storage',
+          query: '',
+          message: 'Restarted.',
+        });
       }
       const database = state.query.trim() || profileId;
       return unchanged({
@@ -417,10 +430,14 @@ function commitInput(state: OnboardingState): OnboardingTransition {
     case 'mongo-key-file': {
       const profileId = state.profileId;
       if (profileId === null || state.database === null) {
-        return unchanged({ ...state, step: 'storage', query: '', message: 'Restarted.' });
+        return unchanged({
+          ...state,
+          step: 'storage',
+          query: '',
+          message: 'Restarted.',
+        });
       }
-      const keyFile =
-        state.query.trim() || defaultMongoProfilePaths(profileId).keyFile;
+      const keyFile = state.query.trim() || defaultMongoProfilePaths(profileId).keyFile;
       return unchanged({
         ...state,
         keyFile,
@@ -542,11 +559,7 @@ function appendText(
 ): OnboardingTransition {
   if (text === undefined || text.length === 0) return unchanged(state);
   const chunk =
-    text.length > 1
-      ? sanitizePasteText(text)
-      : isPrintable(text)
-        ? text
-        : '';
+    text.length > 1 ? sanitizePasteText(text) : isPrintable(text) ? text : '';
   if (chunk.length === 0) return unchanged(state);
   return unchanged({
     ...state,
@@ -555,7 +568,7 @@ function appendText(
 }
 
 function isPrintable(value: string | undefined): value is string {
-  return value !== undefined && value.length === 1 && !/\p{C}/u.test(value);
+  return typeof value === 'string' && value.length === 1 && !/\p{C}/u.test(value);
 }
 
 function removeLast(value: string): string {

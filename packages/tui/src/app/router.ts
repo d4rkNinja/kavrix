@@ -1,18 +1,11 @@
 import { APP_MENU, type AppScreenId } from './ids.js';
-import type { AppSnapshot } from './backend.js';
+import type { AppBackendAction, AppSnapshot } from './backend.js';
 import { emptySnapshot } from './backend.js';
 import { defaultFileProfilePaths, defaultMongoProfilePaths } from './paths.js';
 
 export interface AppKey {
   readonly name?:
-    | 'up'
-    | 'down'
-    | 'left'
-    | 'right'
-    | 'tab'
-    | 'return'
-    | 'escape'
-    | 'backspace';
+    'up' | 'down' | 'left' | 'right' | 'tab' | 'return' | 'escape' | 'backspace';
   readonly text?: string;
   readonly ctrl?: boolean;
 }
@@ -100,8 +93,7 @@ export interface AppRouterState {
 }
 
 export type AppRouterEffect =
-  | Readonly<{ kind: 'backend'; action: import('./backend.js').AppBackendAction }>
-  | Readonly<{ kind: 'none' }>;
+  Readonly<{ kind: 'backend'; action: AppBackendAction }> | Readonly<{ kind: 'none' }>;
 
 export interface AppRouterTransition {
   readonly state: AppRouterState;
@@ -110,7 +102,12 @@ export interface AppRouterTransition {
 
 export type AppRouterAction =
   | Readonly<{ type: 'hydrate'; snapshot: AppSnapshot }>
-  | Readonly<{ type: 'backend-result'; snapshot: AppSnapshot; revealedSecret?: string; nowMs: number }>
+  | Readonly<{
+      type: 'backend-result';
+      snapshot: AppSnapshot;
+      revealedSecret?: string;
+      nowMs: number;
+    }>
   | Readonly<{ type: 'resize'; width: number; height: number }>
   | Readonly<{ type: 'tick'; nowMs: number }>
   | Readonly<{ type: 'key'; key: AppKey; nowMs: number }>;
@@ -164,20 +161,28 @@ export function transitionAppRouter(
 ): AppRouterTransition {
   switch (action.type) {
     case 'hydrate':
-      return unchanged({ ...state, snapshot: action.snapshot, message: action.snapshot.notice });
+      return unchanged({
+        ...state,
+        snapshot: action.snapshot,
+        message: action.snapshot.notice,
+      });
     case 'backend-result': {
       const revealedName =
-        action.revealedSecret === undefined ? state.revealedName : state.pendingRevealName;
+        action.revealedSecret === undefined
+          ? state.revealedName
+          : state.pendingRevealName;
       return unchanged({
         ...state,
         snapshot: action.snapshot,
         message: action.snapshot.notice ?? state.message,
-        pendingRevealName: action.revealedSecret === undefined ? state.pendingRevealName : null,
+        pendingRevealName:
+          action.revealedSecret === undefined ? state.pendingRevealName : null,
         revealedName,
-        revealedValue:
-          action.revealedSecret === undefined ? state.revealedValue : action.revealedSecret,
+        revealedValue: action.revealedSecret ?? state.revealedValue,
         revealedUntilMs:
-          action.revealedSecret === undefined ? state.revealedUntilMs : action.nowMs + 15_000,
+          action.revealedSecret === undefined
+            ? state.revealedUntilMs
+            : action.nowMs + 15_000,
         overlay: 'none',
       });
     }
@@ -203,7 +208,11 @@ export function transitionAppRouter(
   }
 }
 
-function keyTransition(state: AppRouterState, key: AppKey, nowMs: number): AppRouterTransition {
+function keyTransition(
+  state: AppRouterState,
+  key: AppKey,
+  nowMs: number,
+): AppRouterTransition {
   if (key.ctrl === true && key.text?.toLowerCase() === 'c') {
     return unchanged({ ...state, quit: true });
   }
@@ -227,7 +236,8 @@ function keyTransition(state: AppRouterState, key: AppKey, nowMs: number): AppRo
         overlay: 'input-unlock-mongo-url',
         query: '',
         pendingMongoUrl: null,
-        message: 'MongoDB URL (masked). Paste works (Ctrl+Shift+V / Cmd+V). Enter continues; Esc cancels.',
+        message:
+          'MongoDB URL (masked). Paste works (Ctrl+Shift+V / Cmd+V). Enter continues; Esc cancels.',
       });
     }
     return unchanged({
@@ -235,7 +245,8 @@ function keyTransition(state: AppRouterState, key: AppKey, nowMs: number): AppRo
       overlay: 'input-passphrase',
       query: '',
       pendingMongoUrl: null,
-      message: 'Unlock vault — enter passphrase (masked). Paste works (Ctrl+Shift+V / Cmd+V). Enter unlocks; Esc cancels.',
+      message:
+        'Unlock vault — enter passphrase (masked). Paste works (Ctrl+Shift+V / Cmd+V). Enter unlocks; Esc cancels.',
     });
   }
   if (key.text?.toLowerCase() === 'l') {
@@ -243,7 +254,7 @@ function keyTransition(state: AppRouterState, key: AppKey, nowMs: number): AppRo
   }
 
   if (state.screen === 'home') return homeKey(state, key);
-  return screenKey(state, key, nowMs);
+  return screenKey(state, key);
 }
 
 function homeKey(state: AppRouterState, key: AppKey): AppRouterTransition {
@@ -272,11 +283,7 @@ function homeKey(state: AppRouterState, key: AppKey): AppRouterTransition {
   return unchanged(state);
 }
 
-function screenKey(
-  state: AppRouterState,
-  key: AppKey,
-  nowMs: number,
-): AppRouterTransition {
+function screenKey(state: AppRouterState, key: AppKey): AppRouterTransition {
   const length = listLength(state);
   if (key.name === 'up' || key.text === 'k') {
     return unchanged({ ...state, listIndex: clamp(state.listIndex - 1, length) });
@@ -376,7 +383,8 @@ function screenKey(
         overlay: 'input-unlock-mongo-url',
         query: '',
         pendingMongoUrl: null,
-        message: 'MongoDB URL (masked). Paste works (Ctrl+Shift+V / Cmd+V). Enter continues; Esc cancels.',
+        message:
+          'MongoDB URL (masked). Paste works (Ctrl+Shift+V / Cmd+V). Enter continues; Esc cancels.',
       });
     }
     return unchanged({
@@ -384,13 +392,14 @@ function screenKey(
       overlay: 'input-passphrase',
       query: '',
       pendingMongoUrl: null,
-      message: 'Unlock vault — enter passphrase (masked). Paste works (Ctrl+Shift+V / Cmd+V). Enter unlocks; Esc cancels.',
+      message:
+        'Unlock vault — enter passphrase (masked). Paste works (Ctrl+Shift+V / Cmd+V). Enter unlocks; Esc cancels.',
     });
   }
   if (key.text?.toLowerCase() === 'l') {
     return unchanged({ ...state, overlay: 'confirm-lock' });
   }
-  if (key.name === 'return') return activateSelection(state, nowMs);
+  if (key.name === 'return') return activateSelection(state);
   if (key.text?.toLowerCase() === 'd' && state.screen === 'doctor') {
     return effect(state, { kind: 'backend', action: { type: 'run-doctor' } });
   }
@@ -431,7 +440,9 @@ function screenKey(
     if (key.text?.toLowerCase() === 'x') {
       const slot = state.snapshot.recovery[state.listIndex];
       if (slot === undefined || slot.slotId.startsWith('(')) return unchanged(state);
-      const active = state.snapshot.recovery.filter((entry) => entry.status === 'active');
+      const active = state.snapshot.recovery.filter(
+        (entry) => entry.status === 'active',
+      );
       if (active.length <= 1 && slot.status === 'active') {
         return unchanged({
           ...state,
@@ -461,7 +472,7 @@ function screenKey(
     }
     if (key.text?.toLowerCase() === 'x') {
       const row = state.snapshot.policies[state.listIndex];
-      if (row === undefined || row.kind !== 'policy') {
+      if (row?.kind !== 'policy') {
         return unchanged({
           ...state,
           message: 'Select a policy row to remove (n create, g grant, r revoke grant).',
@@ -486,7 +497,7 @@ function screenKey(
     }
     if (key.text?.toLowerCase() === 'r') {
       const row = state.snapshot.policies[state.listIndex];
-      if (row === undefined || row.kind !== 'grant') {
+      if (row?.kind !== 'grant') {
         return unchanged({
           ...state,
           message: 'Select a grant row to revoke.',
@@ -568,7 +579,8 @@ function overlayKey(
         overlay: 'input-passphrase',
         pendingMongoUrl: url,
         query: '',
-        message: 'Unlock vault — enter passphrase (masked). Paste works (Ctrl+Shift+V / Cmd+V). Enter unlocks; Esc cancels.',
+        message:
+          'Unlock vault — enter passphrase (masked). Paste works (Ctrl+Shift+V / Cmd+V). Enter unlocks; Esc cancels.',
       });
     }
     return appendOverlayText(state, key.text, 2048);
@@ -731,7 +743,8 @@ function overlayKey(
         if (profileId === null) {
           return unchanged({ ...state, overlay: 'none', query: '' });
         }
-        const dataFile = state.query.trim() || defaultFileProfilePaths(profileId).dataFile;
+        const dataFile =
+          state.query.trim() || defaultFileProfilePaths(profileId).dataFile;
         return unchanged({
           ...state,
           overlay: 'input-profile-key-file',
@@ -993,10 +1006,7 @@ function overlayKey(
         : 512;
     return appendOverlayText(state, key.text, mongoLimit);
   }
-  if (
-    state.overlay === 'input-agent-name' ||
-    state.overlay === 'input-agent-config'
-  ) {
+  if (state.overlay === 'input-agent-name' || state.overlay === 'input-agent-config') {
     if (key.name === 'escape') {
       return unchanged({
         ...state,
@@ -1069,7 +1079,10 @@ function overlayKey(
       if (state.overlay === 'input-search') {
         return effect(
           { ...state, overlay: 'none' },
-          { kind: 'backend', action: { type: 'search-credentials', query: state.query } },
+          {
+            kind: 'backend',
+            action: { type: 'search-credentials', query: state.query },
+          },
         );
       }
       const names = state.query
@@ -1413,7 +1426,7 @@ function overlayKey(
   return unchanged(state);
 }
 
-function activateSelection(state: AppRouterState, _nowMs: number): AppRouterTransition {
+function activateSelection(state: AppRouterState): AppRouterTransition {
   switch (state.screen) {
     case 'profiles': {
       const profile = state.snapshot.profiles[state.listIndex];
@@ -1436,7 +1449,9 @@ function activateSelection(state: AppRouterState, _nowMs: number): AppRouterTran
       if (slot === undefined || slot.slotId.startsWith('(')) {
         return effect(state, { kind: 'backend', action: { type: 'recovery-status' } });
       }
-      const active = state.snapshot.recovery.filter((entry) => entry.status === 'active');
+      const active = state.snapshot.recovery.filter(
+        (entry) => entry.status === 'active',
+      );
       if (active.length <= 1 && slot.status === 'active') {
         return unchanged({
           ...state,
@@ -1519,7 +1534,9 @@ function removeLast(value: string): string {
  */
 export function sanitizePasteText(raw: string): string {
   let text = raw;
+  // eslint-disable-next-line no-control-regex -- strip bracketed-paste / OSC markers
   text = text.replace(/\x1b\[200~/gu, '').replace(/\x1b\[201~/gu, '');
+  // eslint-disable-next-line no-control-regex -- strip OSC sequences terminated by BEL/ST
   text = text.replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/gu, '');
   text = text.replace(/\r/gu, '');
   text = text.replace(/^\n+/u, '').replace(/\n+$/u, '');
@@ -1529,7 +1546,7 @@ export function sanitizePasteText(raw: string): string {
 }
 
 function isPrintable(value: string | undefined): value is string {
-  return value !== undefined && value.length === 1 && !/\p{C}/u.test(value);
+  return typeof value === 'string' && value.length === 1 && !/\p{C}/u.test(value);
 }
 
 /** Append typed char or multi-char paste into the overlay query (once). */

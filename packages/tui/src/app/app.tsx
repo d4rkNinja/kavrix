@@ -1,7 +1,7 @@
 import { render, useApp, useInput, usePaste, useStdout } from 'ink';
 import { useCallback, useEffect, useRef, useState, type ReactElement } from 'react';
 
-import type { InteractiveAppBackend } from './backend.js';
+import type { AppBackendAction, InteractiveAppBackend } from './backend.js';
 import {
   createInitialAppRouterState,
   sanitizePasteText,
@@ -52,7 +52,7 @@ export function KavrixApp({
   exitRef.current = exit;
 
   const runBackend = useCallback(
-    async (action: import('./backend.js').AppBackendAction): Promise<void> => {
+    async (action: AppBackendAction): Promise<void> => {
       try {
         const result = await backendRef.current.dispatch(action);
         dispatchRef.current({
@@ -136,11 +136,7 @@ export function KavrixApp({
     dispatch({ type: 'key', key: { text: cleaned }, nowMs: now() });
   });
 
-  return (
-    <AppChrome state={state}>
-      {renderActiveScreen(state)}
-    </AppChrome>
-  );
+  return <AppChrome state={state}>{renderActiveScreen(state)}</AppChrome>;
 }
 
 export interface MountKavrixAppOptions {

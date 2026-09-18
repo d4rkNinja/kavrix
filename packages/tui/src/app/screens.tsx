@@ -42,7 +42,11 @@ function overlayCopy(
   const q = safe(query, ascii);
   switch (overlay) {
     case 'confirm-reveal':
-      return { title: 'Confirm reveal', body: 'REVEAL selected secret? y/n', accent: 'red' };
+      return {
+        title: 'Confirm reveal',
+        body: 'REVEAL selected secret? y/n',
+        accent: 'red',
+      };
     case 'confirm-lock':
       return { title: 'Confirm lock', body: 'Lock session? y/n', accent: 'yellow' };
     case 'confirm-remove':
@@ -143,7 +147,8 @@ function overlayCopy(
     case 'input-mongo-url':
     case 'input-unlock-mongo-url':
       return {
-        title: overlay === 'input-unlock-mongo-url' ? 'Unlock vault (MongoDB)' : 'Mongo URL',
+        title:
+          overlay === 'input-unlock-mongo-url' ? 'Unlock vault (MongoDB)' : 'Mongo URL',
         body: `Mongo URL: ${masked}_`,
         accent: 'yellow',
         hint: 'Paste works (Ctrl+Shift+V / Cmd+V)',
@@ -226,7 +231,10 @@ function overlayCopy(
 export function AppChrome({
   state,
   children,
-}: Readonly<{ state: AppRouterState; children: ReactElement | ReactElement[] }>): ReactElement {
+}: Readonly<{
+  state: AppRouterState;
+  children: ReactElement | ReactElement[];
+}>): ReactElement {
   const { color, ascii, width, height } = state;
   const home = state.snapshot.home;
   const accent = screenAccent(state.screen);
@@ -329,9 +337,7 @@ function Footer({ state }: Readonly<{ state: AppRouterState }>): ReactElement {
         <Box flexDirection="row" columnGap={1} flexWrap="wrap">
           {chips.map((chip, index) => (
             <Box key={`${chip.keyLabel}-${chip.hint}`} flexDirection="row">
-              {index === 0 ? null : (
-                <Text {...tint(color, 'gray')}>{sep}</Text>
-              )}
+              {index === 0 ? null : <Text {...tint(color, 'gray')}>{sep}</Text>}
               <KeyChip
                 keyLabel={chip.keyLabel}
                 hint={chip.hint}
@@ -346,9 +352,7 @@ function Footer({ state }: Readonly<{ state: AppRouterState }>): ReactElement {
   );
 }
 
-function footerChips(
-  screen: AppRouterState['screen'],
-): readonly Readonly<{
+function footerChips(screen: AppRouterState['screen']): readonly Readonly<{
   keyLabel: string;
   hint: string;
   accent: AppAccent;
@@ -399,7 +403,9 @@ function footerChips(
   }
 }
 
-export function HomeScreen({ state }: Readonly<{ state: AppRouterState }>): ReactElement {
+export function HomeScreen({
+  state,
+}: Readonly<{ state: AppRouterState }>): ReactElement {
   const { color, ascii, snapshot, menuIndex, width } = state;
   const entries = APP_MENU.filter((entry) => entry.id !== 'home');
   const wide = width >= 80;
@@ -488,7 +494,9 @@ function StatusBlock({
   );
 }
 
-export function ProfilesScreen({ state }: Readonly<{ state: AppRouterState }>): ReactElement {
+export function ProfilesScreen({
+  state,
+}: Readonly<{ state: AppRouterState }>): ReactElement {
   const { color, ascii } = state;
   return (
     <Box flexDirection="column" flexGrow={1}>
@@ -513,7 +521,9 @@ export function ProfilesScreen({ state }: Readonly<{ state: AppRouterState }>): 
   );
 }
 
-export function VaultsScreen({ state }: Readonly<{ state: AppRouterState }>): ReactElement {
+export function VaultsScreen({
+  state,
+}: Readonly<{ state: AppRouterState }>): ReactElement {
   return (
     <ListScreen
       state={state}
@@ -529,13 +539,22 @@ export function VaultsScreen({ state }: Readonly<{ state: AppRouterState }>): Re
   );
 }
 
-export function CredentialsScreen({ state }: Readonly<{ state: AppRouterState }>): ReactElement {
+export function CredentialsScreen({
+  state,
+}: Readonly<{ state: AppRouterState }>): ReactElement {
   const { color, ascii, listIndex, revealedName, revealedValue, snapshot } = state;
   return (
     <Box flexDirection="column" flexGrow={1}>
-      <Panel title="Credentials" accent="green" ascii={ascii} color={color} paddingX={1}>
+      <Panel
+        title="Credentials"
+        accent="green"
+        ascii={ascii}
+        color={color}
+        paddingX={1}
+      >
         <Text {...tint(color, 'gray')}>
-          Values stay masked. c copy · r then y REVEAL (15s) · n put · m rename · x remove.
+          Values stay masked. c copy · r then y REVEAL (15s) · n put · m rename · x
+          remove.
         </Text>
         {state.snapshot.credentials.length === 0 ? (
           <Text {...tint(color, 'yellow')}>
@@ -555,17 +574,19 @@ export function CredentialsScreen({ state }: Readonly<{ state: AppRouterState }>
                 <CardRow
                   active={active}
                   title={credential.name}
-                  subtitle={
-                    revealed
-                      ? ''
-                      : credential.maskedValue || secretMask(ascii)
-                  }
+                  subtitle={revealed ? '' : credential.maskedValue || secretMask(ascii)}
                   accent="green"
                   color={color}
                   ascii={ascii}
                 />
                 {revealed ? (
-                  <Panel accent="red" ascii={ascii} color={color} paddingX={1} kind="panel">
+                  <Panel
+                    accent="red"
+                    ascii={ascii}
+                    color={color}
+                    paddingX={1}
+                    kind="panel"
+                  >
                     <Text bold {...tint(color, 'red')}>
                       {safe(`REVEAL: ${revealedValue ?? ''}`, ascii)}
                     </Text>
@@ -580,11 +601,20 @@ export function CredentialsScreen({ state }: Readonly<{ state: AppRouterState }>
   );
 }
 
-export function DoctorScreen({ state }: Readonly<{ state: AppRouterState }>): ReactElement {
+export function DoctorScreen({
+  state,
+}: Readonly<{ state: AppRouterState }>): ReactElement {
   const { color, ascii, listIndex } = state;
   const rows = state.snapshot.doctor;
   return (
-    <Panel title="Doctor" accent="yellow" ascii={ascii} color={color} paddingX={1} flexGrow={1}>
+    <Panel
+      title="Doctor"
+      accent="yellow"
+      ascii={ascii}
+      color={color}
+      paddingX={1}
+      flexGrow={1}
+    >
       {rows.length === 0 ? (
         <Text {...tint(color, 'yellow')}>
           {safe('Press d to run doctor checks.', ascii)}
@@ -610,7 +640,9 @@ export function DoctorScreen({ state }: Readonly<{ state: AppRouterState }>): Re
   );
 }
 
-export function RecoveryScreen({ state }: Readonly<{ state: AppRouterState }>): ReactElement {
+export function RecoveryScreen({
+  state,
+}: Readonly<{ state: AppRouterState }>): ReactElement {
   return (
     <ListScreen
       state={state}
@@ -626,10 +658,18 @@ export function RecoveryScreen({ state }: Readonly<{ state: AppRouterState }>): 
   );
 }
 
-export function RunScreen({ state }: Readonly<{ state: AppRouterState }>): ReactElement {
+export function RunScreen({
+  state,
+}: Readonly<{ state: AppRouterState }>): ReactElement {
   const { color, ascii, snapshot } = state;
   return (
-    <Panel title="Run (dry preview)" accent="cyan" ascii={ascii} color={color} paddingX={1}>
+    <Panel
+      title="Run (dry preview)"
+      accent="cyan"
+      ascii={ascii}
+      color={color}
+      paddingX={1}
+    >
       <Text {...tint(color, 'gray')}>
         Press p, type credential names, Enter. Secrets are never placed on argv.
       </Text>
@@ -638,7 +678,9 @@ export function RunScreen({ state }: Readonly<{ state: AppRouterState }>): React
   );
 }
 
-export function PolicyScreen({ state }: Readonly<{ state: AppRouterState }>): ReactElement {
+export function PolicyScreen({
+  state,
+}: Readonly<{ state: AppRouterState }>): ReactElement {
   return (
     <ListScreen
       state={state}
@@ -654,7 +696,9 @@ export function PolicyScreen({ state }: Readonly<{ state: AppRouterState }>): Re
   );
 }
 
-export function AgentScreen({ state }: Readonly<{ state: AppRouterState }>): ReactElement {
+export function AgentScreen({
+  state,
+}: Readonly<{ state: AppRouterState }>): ReactElement {
   const { color, ascii, snapshot } = state;
   return (
     <Panel title="Agent" accent="magenta" ascii={ascii} color={color} paddingX={1}>
@@ -669,7 +713,9 @@ export function AgentScreen({ state }: Readonly<{ state: AppRouterState }>): Rea
   );
 }
 
-export function StorageDocsScreen({ state }: Readonly<{ state: AppRouterState }>): ReactElement {
+export function StorageDocsScreen({
+  state,
+}: Readonly<{ state: AppRouterState }>): ReactElement {
   const { color, ascii, snapshot } = state;
   const home = snapshot.home;
   const doctor = snapshot.doctor;
@@ -707,7 +753,10 @@ export function StorageDocsScreen({ state }: Readonly<{ state: AppRouterState }>
         {safe('• MongoDB — sync opaque ciphertext through your own deployment.', ascii)}
       </Text>
       <Text {...tint(color, 'gray')}>
-        {safe('Both keep client-side encryption; the datastore never receives a vault key.', ascii)}
+        {safe(
+          'Both keep client-side encryption; the datastore never receives a vault key.',
+          ascii,
+        )}
       </Text>
       {doctor.length > 0 ? (
         <Box flexDirection="column" marginTop={1}>
@@ -716,20 +765,28 @@ export function StorageDocsScreen({ state }: Readonly<{ state: AppRouterState }>
           </Text>
           {doctor.slice(0, 8).map((check) => (
             <Text key={check.name}>
-              {safe(`${check.status.toUpperCase()} ${check.name}: ${check.detail}`, ascii)}
+              {safe(
+                `${check.status.toUpperCase()} ${check.name}: ${check.detail}`,
+                ascii,
+              )}
             </Text>
           ))}
         </Box>
       ) : (
         <Text {...tint(color, 'gray')}>
-          {safe('No doctor results yet — open Doctor and press d to run real checks.', ascii)}
+          {safe(
+            'No doctor results yet — open Doctor and press d to run real checks.',
+            ascii,
+          )}
         </Text>
       )}
     </Panel>
   );
 }
 
-export function BrowseScreen({ state }: Readonly<{ state: AppRouterState }>): ReactElement {
+export function BrowseScreen({
+  state,
+}: Readonly<{ state: AppRouterState }>): ReactElement {
   return (
     <ListScreen
       state={state}
@@ -745,7 +802,9 @@ export function BrowseScreen({ state }: Readonly<{ state: AppRouterState }>): Re
   );
 }
 
-export function HelpScreen({ state }: Readonly<{ state: AppRouterState }>): ReactElement {
+export function HelpScreen({
+  state,
+}: Readonly<{ state: AppRouterState }>): ReactElement {
   const { color, ascii } = state;
   const lines = [
     '--- Getting started ---',
@@ -769,9 +828,17 @@ export function HelpScreen({ state }: Readonly<{ state: AppRouterState }>): Reac
     'Display: a ASCII · NO_COLOR / TERM=dumb disable color · win32 ASCII default',
   ];
   return (
-    <Panel title="Help / Keymap" accent="white" ascii={ascii} color={color} paddingX={1}>
+    <Panel
+      title="Help / Keymap"
+      accent="white"
+      ascii={ascii}
+      color={color}
+      paddingX={1}
+    >
       {lines.map((line, index) => (
-        <Text key={`${String(index)}:${line}`}>{safe(line.length === 0 ? ' ' : line, ascii)}</Text>
+        <Text key={`${String(index)}:${line}`}>
+          {safe(line.length === 0 ? ' ' : line, ascii)}
+        </Text>
       ))}
     </Panel>
   );
@@ -792,7 +859,14 @@ function ListScreen({
 }>): ReactElement {
   const { color, ascii, listIndex } = state;
   return (
-    <Panel title={title} accent={accent} ascii={ascii} color={color} paddingX={1} flexGrow={1}>
+    <Panel
+      title={title}
+      accent={accent}
+      ascii={ascii}
+      color={color}
+      paddingX={1}
+      flexGrow={1}
+    >
       {rows.length === 0 ? (
         <Text {...tint(color, 'yellow')}>{safe(empty, ascii)}</Text>
       ) : (
@@ -843,4 +917,3 @@ export function renderActiveScreen(state: AppRouterState): ReactElement {
       return <StorageDocsScreen state={state} />;
   }
 }
-

@@ -9,10 +9,7 @@ const CLIPBOARD_CLEAR_MS = 30_000;
 const OSC_CLEAR_TIMERS = new Set<ReturnType<typeof setTimeout>>();
 
 /** Write UTF-8 text to the terminal clipboard via OSC 52. */
-export function writeOsc52Clipboard(
-  stdout: NodeJS.WriteStream,
-  value: string,
-): void {
+export function writeOsc52Clipboard(stdout: NodeJS.WriteStream, value: string): void {
   const payload = Buffer.from(value, 'utf8').toString('base64');
   stdout.write(`\x1b]52;c;${payload}\x07`);
 }
@@ -35,7 +32,7 @@ function scheduleOsc52Clear(stdout: NodeJS.WriteStream, clearAfterMs: number): v
       // Best-effort clear; ignore closed streams.
     }
   }, clearAfterMs);
-  timer.unref?.();
+  timer.unref();
   OSC_CLEAR_TIMERS.add(timer);
 }
 
@@ -62,7 +59,7 @@ function runClipboardCommand(
       if (code === 0) resolve();
       else reject(new Error(`${executable} exited ${String(code ?? 'null')}`));
     });
-    child.stdin?.end(stdin, 'utf8');
+    child.stdin.end(stdin, 'utf8');
   });
 }
 
@@ -121,7 +118,7 @@ export async function copySecretToClipboard(
 ): Promise<'osc52' | 'system'> {
   const clearAfterMs = options.clearAfterMs ?? CLIPBOARD_CLEAR_MS;
   const stdout = options.stdout ?? process.stdout;
-  if (stdout.isTTY === true) {
+  if (stdout.isTTY) {
     try {
       writeOsc52Clipboard(stdout, value);
       scheduleOsc52Clear(stdout, clearAfterMs);

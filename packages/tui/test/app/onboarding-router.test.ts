@@ -4,15 +4,11 @@ import {
   createInitialOnboardingState,
   describeOnboardingScreen,
   transitionOnboarding,
+  type OnboardingKey,
   type OnboardingState,
 } from '../../src/index.js';
 
-function press(
-  state: OnboardingState,
-  key: Parameters<typeof transitionOnboarding>[1] extends { type: 'key'; key: infer K }
-    ? K
-    : never,
-): OnboardingState {
+function press(state: OnboardingState, key: OnboardingKey): OnboardingState {
   return transitionOnboarding(state, { type: 'key', key }).state;
 }
 
@@ -46,7 +42,10 @@ describe('init onboarding router', () => {
     for (const ch of 'secret') {
       state = press(state, { text: ch });
     }
-    const transition = transitionOnboarding(state, { type: 'key', key: { name: 'return' } });
+    const transition = transitionOnboarding(state, {
+      type: 'key',
+      key: { name: 'return' },
+    });
     expect(transition.state.step).toBe('creating');
     expect(transition.effect.kind).toBe('backend');
     if (transition.effect.kind === 'backend') {

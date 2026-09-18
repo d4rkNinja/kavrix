@@ -151,7 +151,7 @@ await writeFile(
 async function bridgeThrowingEsbuildRequire() {
   const throwingMarker = 'Dynamic require of "';
   const throwingRequirePattern =
-    /var __require = \/\* @__PURE__ \*\/ \(\(x\) => typeof require !== "undefined" \? require : typeof Proxy !== "undefined" \? new Proxy\(x, \{\n  get: \(a, b\) => \(typeof require !== "undefined" \? require : a\)\[b\]\n\}\) : x\)\(function\(x\) \{\n  if \(typeof require !== "undefined"\) return require\.apply\(this, arguments\);\n  throw Error\('Dynamic require of "' \+ x \+ '" is not supported'\);\n\}\);/g;
+    /var __require = \/\* @__PURE__ \*\/ \(\(x\) => typeof require !== "undefined" \? require : typeof Proxy !== "undefined" \? new Proxy\(x, \{\n {2}get: \(a, b\) => \(typeof require !== "undefined" \? require : a\)\[b\]\n\}\) : x\)\(function\(x\) \{\n {2}if \(typeof require !== "undefined"\) return require\.apply\(this, arguments\);\n {2}throw Error\('Dynamic require of "' \+ x \+ '" is not supported'\);\n\}\);/g;
   const bridgedRequire = 'var __require = (x) => __kavrixNodeRequire(x);';
 
   const visit = async (directory) => {

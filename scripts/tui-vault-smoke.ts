@@ -95,11 +95,9 @@ async function main(): Promise<void> {
     }
     pass('db profile add');
 
-    result = await runCli(
-      ['db', 'profile', 'use', 'smoke', '--config-dir', cfg],
-      [],
-      { HOME: home },
-    );
+    result = await runCli(['db', 'profile', 'use', 'smoke', '--config-dir', cfg], [], {
+      HOME: home,
+    });
     if (result.code !== 0) {
       fail(`profile use: ${result.stderr || result.stdout}`);
       return;
@@ -272,7 +270,11 @@ async function main(): Promise<void> {
       return;
     }
     const copyNotice = (snap.snapshot.notice ?? '').toLowerCase();
-    if (!copyNotice.includes('copy') && !copyNotice.includes('clipboard') && !copyNotice.includes('osc')) {
+    if (
+      !copyNotice.includes('copy') &&
+      !copyNotice.includes('clipboard') &&
+      !copyNotice.includes('osc')
+    ) {
       // Still accept success tone; clipboard backends vary in headless CI.
       console.log(`NOTE: copy notice=${JSON.stringify(snap.snapshot.notice)}`);
     }
@@ -339,7 +341,9 @@ async function main(): Promise<void> {
       );
       return;
     }
-    pass(`session recovery-status after create (${String(activeAfterCreate.length)} active)`);
+    pass(
+      `session recovery-status after create (${String(activeAfterCreate.length)} active)`,
+    );
 
     snap = await backend.dispatch({
       type: 'recovery-verify',
@@ -375,7 +379,9 @@ async function main(): Promise<void> {
       fail('recovery-revoke accidentally cleared all active slots');
       return;
     }
-    pass(`session recovery-revoke (${revokeTarget.slotId}; ${String(remainingActive.length)} remain)`);
+    pass(
+      `session recovery-revoke (${revokeTarget.slotId}; ${String(remainingActive.length)} remain)`,
+    );
 
     snap = await backend.dispatch({ type: 'run-doctor' });
     if (snap.snapshot.noticeTone === 'error') {
@@ -453,9 +459,7 @@ async function main(): Promise<void> {
       afterRevoke !== undefined &&
       !afterRevoke.summary.toLowerCase().includes('revoked')
     ) {
-      fail(
-        `grant-revoke did not clear/revoke grant: ${JSON.stringify(afterRevoke)}`,
-      );
+      fail(`grant-revoke did not clear/revoke grant: ${JSON.stringify(afterRevoke)}`);
       return;
     }
     pass('session grant-revoke');
@@ -539,7 +543,9 @@ async function main(): Promise<void> {
       return;
     }
     if (!snap.snapshot.agentStatus.toLowerCase().includes('agent name')) {
-      fail(`agent-dry-run missing-name message unexpected: ${snap.snapshot.agentStatus}`);
+      fail(
+        `agent-dry-run missing-name message unexpected: ${snap.snapshot.agentStatus}`,
+      );
       return;
     }
     pass('session agent-dry-run rejects missing name (no noop)');
@@ -560,7 +566,9 @@ async function main(): Promise<void> {
       return;
     }
     if (!snap.snapshot.profiles.some((p) => p.id === 'smoke-file-2')) {
-      fail(`create-file-profile missing profile: ${JSON.stringify(snap.snapshot.profiles)}`);
+      fail(
+        `create-file-profile missing profile: ${JSON.stringify(snap.snapshot.profiles)}`,
+      );
       return;
     }
     pass('session create-file-profile');
@@ -606,7 +614,8 @@ async function main(): Promise<void> {
     }
     pass(`session refresh-browse (${String(snap.snapshot.browse.length)} nodes)`);
 
-    const mongoUrl = process.env.MONGO_URL?.trim() || process.env.KAVRIX_MONGODB_URI?.trim();
+    const mongoUrl =
+      process.env.MONGO_URL?.trim() || process.env.KAVRIX_MONGODB_URI?.trim();
     if (!mongoUrl) {
       console.log('SKIP: create-mongodb-profile (set MONGO_URL for live mongo smoke)');
     } else {

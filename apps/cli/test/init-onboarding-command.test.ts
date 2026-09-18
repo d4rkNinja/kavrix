@@ -302,7 +302,10 @@ describe('root init onboarding composition', () => {
     expect(shouldRunInitTuiOnboarding({ ...base, passphraseStdin: true })).toBe(false);
     expect(shouldRunInitOnboarding({ ...base, json: true })).toBe(false);
     expect(shouldRunInitTuiOnboarding({ ...base, json: true })).toBe(false);
-    Object.defineProperty(process.stdout, 'isTTY', { configurable: true, value: false });
+    Object.defineProperty(process.stdout, 'isTTY', {
+      configurable: true,
+      value: false,
+    });
     expect(shouldRunInitOnboarding(base)).toBe(true);
     expect(shouldRunInitTuiOnboarding(base)).toBe(false);
   });

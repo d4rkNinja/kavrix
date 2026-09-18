@@ -34,4 +34,3 @@ export function defaultMongoProfilePaths(
     keyFile: join(base, 'owner.key'),
   };
 }
-
