@@ -96,6 +96,19 @@ node apps/cli/dist/bin.js agent run --dry-run --json --agent missing
 - **Bugfix:** `use-vault` now runs real `kavrix db vault use` (was in-memory only).
 - Clearer clipboard fallback error when OSC 52 and system CLIs are unavailable.
 
+
+## Init TUI onboarding (default on TTY)
+
+Interactive `kavrix init` opens Ink onboarding (`mountOnboardingApp`) by default when stdin+stdout+stderr are TTYs. It dispatches real `create-file-profile` / `create-mongodb-profile` via `createCliTuiBackend` (no mocks).
+
+| Flag / condition | Path |
+| --- | --- |
+| TTY + no blocking flags | Ink TUI onboarding |
+| `--no-tui` | Classic guided `LocalSecretInput` + recovery kit |
+| `--passphrase-stdin` / `--database-url-stdin` / `--json` / explicit routing / missing TTY | `handleInit` (non-interactive) |
+
+After success, stderr handoff suggests `kavrix tui` and profile-scoped put/list.
+
 ## Release readiness
 
 - **Blockers:** none found for TUI release on file vault + available Mongo rs0.

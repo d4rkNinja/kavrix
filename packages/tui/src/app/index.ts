@@ -36,3 +36,23 @@ export {
   ModalFrame,
   CardRow,
 } from './widgets.js';
+export {
+  createInitialOnboardingState,
+  transitionOnboarding,
+  describeOnboardingScreen,
+  type OnboardingState,
+  type OnboardingStep,
+  type OnboardingStorage,
+  type OnboardingKey,
+  type OnboardingAction,
+  type OnboardingTransition,
+  type OnboardingEffect,
+} from './onboarding-router.js';
+export {
+  KavrixOnboardingApp,
+  mountOnboardingApp,
+  type KavrixOnboardingAppProps,
+  type MountOnboardingAppOptions,
+  type OnboardingAppHandle,
+  type OnboardingAppResult,
+} from './onboarding-app.js';

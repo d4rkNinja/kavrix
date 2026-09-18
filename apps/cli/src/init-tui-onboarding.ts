@@ -1,0 +1,108 @@
+import { LocalCliError } from './cli-error.js';
+import { terminalColorEnabled } from './terminal-presentation.js';
+import { createCliTuiBackend } from './tui-session.js';
+
+export type InitTuiOnboardingOptions = Readonly<{
+  ascii?: boolean;
+  color?: boolean;
+  profileConfigDir?: string;
+  configDir?: string;
+}>;
+
+export type InitTuiOnboardingResult =
+  | Readonly<{
+      status: 'completed';
+      profileId: string;
+      datastore: 'file' | 'mongodb';
+    }>
+  | Readonly<{ status: 'cancelled' }>
+  | Readonly<{ status: 'failed'; message: string }>;
+
+/**
+ * Opens Ink TUI onboarding for interactive `kavrix init`.
+ * Uses real `createCliTuiBackend` create-file-profile / create-mongodb-profile.
+ */
+export async function runInitTuiOnboarding(
+  options: InitTuiOnboardingOptions = {},
+): Promise<InitTuiOnboardingResult> {
+  if (
+    process.stdin.isTTY !== true ||
+    process.stdout.isTTY !== true ||
+    process.stderr.isTTY !== true
+  ) {
+    throw new LocalCliError(
+      'kavrix init TUI requires an interactive TTY on stdin, stdout, and stderr. Pass --no-tui for classic prompts.',
+    );
+  }
+
+  const noColorFlag =
+    process.env['NO_COLOR'] !== undefined ||
+    process.argv.includes('--no-color') ||
+    options.color === false;
+  const color =
+    options.color === true
+      ? true
+      : noColorFlag
+        ? false
+        : terminalColorEnabled(process.stdout);
+  const ascii =
+    options.ascii === true ||
+    process.platform === 'win32' ||
+    process.env['TERM'] === 'dumb' ||
+    process.env['TERM'] === undefined;
+
+  const profileConfigDir = options.profileConfigDir ?? options.configDir;
+  const backend = createCliTuiBackend({
+    ascii,
+    ...(profileConfigDir === undefined ? {} : { profileConfigDir }),
+  });
+
+  const tui = await import('@kavrix/tui');
+  const handle = tui.mountOnboardingApp({
+    backend,
+    stdout: process.stdout,
+    stdin: process.stdin,
+    ascii,
+    color,
+  });
+  try {
+    return await handle.waitUntilExit();
+  } finally {
+    handle.unmount();
+  }
+}
+
+export function writeInitTuiOnboardingComplete(
+  options: Readonly<{
+    write: (text: string) => void;
+    profileId: string;
+    datastore: 'file' | 'mongodb';
+    color?: boolean;
+  }>,
+): void {
+  const color = options.color === true;
+  const bold = color ? '\u001b[1m' : '';
+  const green = color ? '\u001b[32m' : '';
+  const reset = color ? '\u001b[0m' : '';
+  const profileId = options.profileId.replace(/[^\w.-]/gu, '');
+  options.write(
+    [
+      '',
+      `${bold}${green}SETUP COMPLETE${reset}`,
+      '',
+      `${green}[OK]${reset} ${
+        options.datastore === 'mongodb' ? 'MongoDB' : 'Local file'
+      } profile initialized via TUI onboarding.`,
+      `${green}[OK]${reset} Default vault created and selected.`,
+      `${green}[OK]${reset} Protected datastore profile selected: ${profileId}`,
+      '',
+      'Try:',
+      `  kavrix tui`,
+      `  kavrix put <name> --profile ${profileId}`,
+      `  kavrix list --profile ${profileId}`,
+      '',
+      'Tip: pass --no-tui next time for classic line prompts.',
+      '',
+    ].join('\n'),
+  );
+}
