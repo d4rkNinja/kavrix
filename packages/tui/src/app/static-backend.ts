@@ -106,6 +106,13 @@ export function createStaticAppBackend(
             noticeTone: 'warning',
           };
           return { snapshot };
+        case 'copy-credential':
+          snapshot = {
+            ...snapshot,
+            notice: `Copied (clipboard clears in ~30s) — static stub for ${action.name}.`,
+            noticeTone: 'success',
+          };
+          return { snapshot };
         case 'put-credential': {
           const name = action.name.trim();
           if (name.length === 0 || action.value.length === 0) {

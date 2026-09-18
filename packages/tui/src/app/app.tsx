@@ -1,9 +1,10 @@
-import { render, useApp, useInput, useStdout } from 'ink';
+import { render, useApp, useInput, usePaste, useStdout } from 'ink';
 import { useCallback, useEffect, useRef, useState, type ReactElement } from 'react';
 
 import type { InteractiveAppBackend } from './backend.js';
 import {
   createInitialAppRouterState,
+  sanitizePasteText,
   transitionAppRouter,
   type AppKey,
   type AppRouterAction,
@@ -125,6 +126,14 @@ export function KavrixApp({
   useInput((input, key) => {
     const mapped = mapInkInput(input, key);
     if (mapped !== null) dispatch({ type: 'key', key: mapped, nowMs: now() });
+  });
+
+  // Bracketed paste arrives here (not via useInput) so multi-char paste never
+  // looks like Enter. Overlay fields append the full sanitized string once.
+  usePaste((text) => {
+    const cleaned = sanitizePasteText(text);
+    if (cleaned.length === 0) return;
+    dispatch({ type: 'key', key: { text: cleaned }, nowMs: now() });
   });
 
   return (

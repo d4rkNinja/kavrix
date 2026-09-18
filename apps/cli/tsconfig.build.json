@@ -48,6 +48,7 @@
     "src/local-vault-cli.ts",
     "src/tui-command.ts",
     "src/tui-session.ts",
+    "src/tui-clipboard.ts",
     "src/kavrix-config.ts",
     "src/version.ts"
   ],

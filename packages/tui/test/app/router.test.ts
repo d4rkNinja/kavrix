@@ -9,6 +9,7 @@ import {
   emptySnapshot,
   navigateToScreen,
   transitionAppRouter,
+  sanitizePasteText,
   HomeScreen,
   ProfilesScreen,
   VaultsScreen,
@@ -697,5 +698,102 @@ describe('static backend create-file-profile', () => {
     expect(result.snapshot.profiles.some((p) => p.id === 'fresh' && p.selected)).toBe(
       true,
     );
+  });
+});
+
+
+describe('paste into overlays', () => {
+  it('sanitizes bracketed-paste noise and trailing newlines', () => {
+    expect(sanitizePasteText('\x1b[200~secret-value\r\n\x1b[201~')).toBe('secret-value');
+    expect(sanitizePasteText('mongo://url\n')).toBe('mongo://url');
+  });
+
+  it('appends multi-character paste once without treating it as Enter', () => {
+    let state = hydrate();
+    state = transitionAppRouter(state, {
+      type: 'key',
+      key: { text: 'u' },
+      nowMs: 0,
+    }).state;
+    expect(state.overlay).toBe('input-passphrase');
+    const pasted = transitionAppRouter(state, {
+      type: 'key',
+      key: { text: 'long-passphrase-paste\r\n' },
+      nowMs: 1,
+    });
+    expect(pasted.state.overlay).toBe('input-passphrase');
+    expect(pasted.state.query).toBe('long-passphrase-paste');
+    expect(pasted.effect.kind).toBe('none');
+  });
+
+  it('pastes long URLs into unlock mongo URL overlay', () => {
+    const base = createInitialAppRouterState({ width: 100, height: 30 });
+    let state = transitionAppRouter(base, {
+      type: 'hydrate',
+      snapshot: {
+        ...sampleSnapshot(),
+        home: { ...sampleSnapshot().home, datastore: 'mongodb' },
+      },
+    }).state;
+    state = transitionAppRouter(state, {
+      type: 'key',
+      key: { text: 'u' },
+      nowMs: 0,
+    }).state;
+    const url = 'mongodb://user:pass@127.0.0.1:27017/db?authSource=admin';
+    state = transitionAppRouter(state, {
+      type: 'key',
+      key: { text: `${url}\n` },
+      nowMs: 1,
+    }).state;
+    expect(state.overlay).toBe('input-unlock-mongo-url');
+    expect(state.query).toBe(url);
+  });
+});
+
+describe('copy credential', () => {
+  it('dispatches copy-credential without reveal overlay', () => {
+    const state = navigateToScreen(hydrate(), 'credentials');
+    const copied = transitionAppRouter(state, {
+      type: 'key',
+      key: { text: 'c' },
+      nowMs: 0,
+    });
+    expect(copied.state.overlay).toBe('none');
+    expect(copied.state.revealedValue).toBeNull();
+    expect(copied.effect).toEqual({
+      kind: 'backend',
+      action: { type: 'copy-credential', name: 'api-key' },
+    });
+  });
+
+  it('static backend reports clipboard clear notice without plaintext', async () => {
+    const backend = createStaticAppBackend(sampleSnapshot());
+    const result = await backend.dispatch({ type: 'copy-credential', name: 'api-key' });
+    expect(result.revealedSecret).toBeUndefined();
+    expect(result.snapshot.notice).toMatch(/Copied \(clipboard clears/i);
+  });
+});
+
+describe('help and credentials UX', () => {
+  it('documents copy/paste and getting started on Help', () => {
+    const frameText = frame(navigateToScreen(hydrate(), 'help'));
+    expect(frameText).toMatch(/Getting started/i);
+    expect(frameText).toMatch(/Paste into overlays/i);
+    expect(frameText).toMatch(/c copy/i);
+    expect(frameText).toMatch(/Mouse tracking is NOT enabled/i);
+  });
+
+  it('shows unlock empty-state guidance on credentials', () => {
+    const locked = transitionAppRouter(createInitialAppRouterState({ width: 100, height: 30 }), {
+      type: 'hydrate',
+      snapshot: {
+        ...sampleSnapshot(),
+        home: { ...sampleSnapshot().home, unlocked: false, credentialCount: 0 },
+        credentials: [],
+      },
+    }).state;
+    const frameText = frame(navigateToScreen(locked, 'credentials'));
+    expect(frameText).toMatch(/Press u to unlock/i);
   });
 });

@@ -148,6 +148,7 @@ export function SelectRow({
   accent = 'cyan',
   color,
   ascii,
+  labelWidth,
 }: Readonly<{
   active: boolean;
   label: string;
@@ -155,14 +156,23 @@ export function SelectRow({
   accent?: AppAccent;
   color: boolean;
   ascii: boolean;
+  /** When set, pads the label column so hints align across rows. */
+  labelWidth?: number;
 }>): ReactElement {
   const pointer = pointerGlyph(ascii);
   const bar = active ? pointer : ' ';
+  const rawLabel = safe(label, ascii);
+  const paddedLabel =
+    labelWidth === undefined
+      ? rawLabel
+      : rawLabel.length >= labelWidth
+        ? rawLabel.slice(0, labelWidth)
+        : `${rawLabel}${' '.repeat(labelWidth - rawLabel.length)}`;
   if (active) {
     return (
       <Text>
         <Text bold {...tint(color, accent)} inverse={color}>
-          {` ${bar} ${safe(label, ascii)} `}
+          {` ${bar} ${paddedLabel} `}
         </Text>
         {hint === undefined || hint.length === 0 ? null : (
           <Text dimColor {...tint(color, 'gray')}>
@@ -175,10 +185,10 @@ export function SelectRow({
   }
   return (
     <Text dimColor {...tint(color, 'gray')}>
-      {` ${bar} ${safe(label, ascii)}`}
+      {` ${bar} ${paddedLabel}`}
       {hint === undefined || hint.length === 0 ? null : (
         <Text dimColor {...tint(color, 'gray')}>
-          {' '}
+          {'  '}
           {safe(hint, ascii)}
         </Text>
       )}

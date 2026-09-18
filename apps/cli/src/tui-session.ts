@@ -10,6 +10,7 @@ import {
   DatastoreProfileRegistry,
   type DatastoreProfile,
 } from './datastore-profiles.js';
+import { copySecretToClipboard } from './tui-clipboard.js';
 
 /**
  * Structural host backend used by `kavrix tui`. Kept free of `@kavrix/tui`
@@ -102,6 +103,7 @@ export type CliTuiAction =
     }>
   | Readonly<{ type: 'lock' }>
   | Readonly<{ type: 'reveal-credential'; name: string }>
+  | Readonly<{ type: 'copy-credential'; name: string }>
   | Readonly<{ type: 'put-credential'; name: string; value: string }>
   | Readonly<{ type: 'rename-credential'; from: string; to: string }>
   | Readonly<{ type: 'remove-credential'; name: string }>
@@ -235,6 +237,9 @@ class CliTuiSession {
           const snapshot = await this.#buildSnapshot();
           return { snapshot, revealedSecret: revealed };
         }
+        case 'copy-credential':
+          await this.#copyCredential(action.name);
+          break;
         case 'put-credential':
           await this.#putCredential(action.name, action.value);
           break;
@@ -718,9 +723,9 @@ class CliTuiSession {
     }
   }
 
-  async #reveal(name: string): Promise<string> {
+  async #fetchCredentialValue(name: string): Promise<string> {
     if (this.#passphrase === null) {
-      throw new Error('Unlock the vault before revealing.');
+      throw new Error('Unlock the vault before reading credentials.');
     }
     const passphrase = this.#passphrase.toString('utf8');
     const auth = await this.#flatAuth([passphrase]);
@@ -735,9 +740,25 @@ class CliTuiSession {
       ],
       auth.frames,
     );
+    return output.trimEnd();
+  }
+
+  async #reveal(name: string): Promise<string> {
+    const value = await this.#fetchCredentialValue(name);
     this.#notice = `REVEAL active for ${name} (15s UI timer).`;
     this.#noticeTone = 'warning';
-    return output.trimEnd();
+    return value;
+  }
+
+  /**
+   * Fetch the secret and write it to the clipboard without returning plaintext
+   * to the TUI (copy-without-reveal). Prefers OSC 52; falls back to system.
+   */
+  async #copyCredential(name: string): Promise<void> {
+    const secret = await this.#fetchCredentialValue(name);
+    await copySecretToClipboard(secret);
+    this.#notice = 'Copied (clipboard clears in ~30s)';
+    this.#noticeTone = 'success';
   }
 
   async #putCredential(name: string, value: string): Promise<void> {

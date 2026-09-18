@@ -106,6 +106,8 @@ export type AppBackendAction =
     }>
   | Readonly<{ type: 'lock' }>
   | Readonly<{ type: 'reveal-credential'; name: string }>
+  /** Copy secret to clipboard without returning plaintext to the TUI. */
+  | Readonly<{ type: 'copy-credential'; name: string }>
   | Readonly<{ type: 'put-credential'; name: string; value: string }>
   | Readonly<{ type: 'rename-credential'; from: string; to: string }>
   | Readonly<{ type: 'remove-credential'; name: string }>

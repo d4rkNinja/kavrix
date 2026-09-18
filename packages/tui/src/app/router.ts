@@ -222,7 +222,7 @@ function keyTransition(state: AppRouterState, key: AppKey, nowMs: number): AppRo
         overlay: 'input-unlock-mongo-url',
         query: '',
         pendingMongoUrl: null,
-        message: 'MongoDB URL (masked). Enter continues; Esc cancels.',
+        message: 'MongoDB URL (masked). Paste works (Ctrl+Shift+V / Cmd+V). Enter continues; Esc cancels.',
       });
     }
     return unchanged({
@@ -230,7 +230,7 @@ function keyTransition(state: AppRouterState, key: AppKey, nowMs: number): AppRo
       overlay: 'input-passphrase',
       query: '',
       pendingMongoUrl: null,
-      message: 'Enter passphrase (masked). Enter unlocks; Esc cancels.',
+      message: 'Unlock vault — enter passphrase (masked). Paste works (Ctrl+Shift+V / Cmd+V). Enter unlocks; Esc cancels.',
     });
   }
   if (key.text?.toLowerCase() === 'l') {
@@ -290,6 +290,20 @@ function screenKey(
       overlay: 'confirm-reveal',
       pendingRevealName: name,
       message: `REVEAL confirmation required for '${name}'.`,
+    });
+  }
+  if (key.text?.toLowerCase() === 'c' && state.screen === 'credentials') {
+    const name = state.snapshot.credentials[state.listIndex]?.name;
+    if (name === undefined) {
+      return unchanged({
+        ...state,
+        message: 'Select a credential to copy (c), or unlock / n put.',
+      });
+    }
+    // Flat credentials have no per-field copy policy; copy without on-screen reveal.
+    return effect(state, {
+      kind: 'backend',
+      action: { type: 'copy-credential', name },
     });
   }
   if (key.text?.toLowerCase() === 'n' && state.screen === 'profiles') {
@@ -357,7 +371,7 @@ function screenKey(
         overlay: 'input-unlock-mongo-url',
         query: '',
         pendingMongoUrl: null,
-        message: 'MongoDB URL (masked). Enter continues; Esc cancels.',
+        message: 'MongoDB URL (masked). Paste works (Ctrl+Shift+V / Cmd+V). Enter continues; Esc cancels.',
       });
     }
     return unchanged({
@@ -365,7 +379,7 @@ function screenKey(
       overlay: 'input-passphrase',
       query: '',
       pendingMongoUrl: null,
-      message: 'Enter passphrase (masked). Enter unlocks; Esc cancels.',
+      message: 'Unlock vault — enter passphrase (masked). Paste works (Ctrl+Shift+V / Cmd+V). Enter unlocks; Esc cancels.',
     });
   }
   if (key.text?.toLowerCase() === 'l') {
@@ -542,16 +556,10 @@ function overlayKey(
         overlay: 'input-passphrase',
         pendingMongoUrl: url,
         query: '',
-        message: 'Enter passphrase (masked). Enter unlocks; Esc cancels.',
+        message: 'Unlock vault — enter passphrase (masked). Paste works (Ctrl+Shift+V / Cmd+V). Enter unlocks; Esc cancels.',
       });
     }
-    if (isPrintable(key.text)) {
-      return unchanged({
-        ...state,
-        query: `${state.query}${key.text}`.slice(0, 2048),
-      });
-    }
-    return unchanged(state);
+    return appendOverlayText(state, key.text, 2048);
   }
   if (state.overlay === 'input-passphrase') {
     if (key.name === 'escape') {
@@ -581,13 +589,7 @@ function overlayKey(
         },
       );
     }
-    if (isPrintable(key.text)) {
-      return unchanged({
-        ...state,
-        query: `${state.query}${key.text}`.slice(0, 1024),
-      });
-    }
-    return unchanged(state);
+    return appendOverlayText(state, key.text, 1024);
   }
   if (state.overlay === 'confirm-remove') {
     if (key.text?.toLowerCase() === 'y') {
@@ -669,14 +671,8 @@ function overlayKey(
         { kind: 'backend', action: { type: 'rename-credential', from, to } },
       );
     }
-    if (isPrintable(key.text)) {
-      const limit = state.overlay === 'input-put-value' ? 4096 : 256;
-      return unchanged({
-        ...state,
-        query: `${state.query}${key.text}`.slice(0, limit),
-      });
-    }
-    return unchanged(state);
+    const putLimit = state.overlay === 'input-put-value' ? 4096 : 256;
+    return appendOverlayText(state, key.text, putLimit);
   }
   if (
     state.overlay === 'input-profile-id' ||
@@ -816,17 +812,12 @@ function overlayKey(
         },
       );
     }
-    if (isPrintable(key.text)) {
-      const masked =
-        state.overlay === 'input-profile-passphrase' ||
-        state.overlay === 'input-profile-passphrase-confirm';
-      const limit = masked ? 1024 : 512;
-      return unchanged({
-        ...state,
-        query: `${state.query}${key.text}`.slice(0, limit),
-      });
-    }
-    return unchanged(state);
+    const profileLimit =
+      state.overlay === 'input-profile-passphrase' ||
+      state.overlay === 'input-profile-passphrase-confirm'
+        ? 1024
+        : 512;
+    return appendOverlayText(state, key.text, profileLimit);
   }
 
   if (
@@ -982,18 +973,13 @@ function overlayKey(
         },
       );
     }
-    if (isPrintable(key.text)) {
-      const masked =
-        state.overlay === 'input-mongo-url' ||
-        state.overlay === 'input-mongo-passphrase' ||
-        state.overlay === 'input-mongo-passphrase-confirm';
-      const limit = masked ? 2048 : 512;
-      return unchanged({
-        ...state,
-        query: `${state.query}${key.text}`.slice(0, limit),
-      });
-    }
-    return unchanged(state);
+    const mongoLimit =
+      state.overlay === 'input-mongo-url' ||
+      state.overlay === 'input-mongo-passphrase' ||
+      state.overlay === 'input-mongo-passphrase-confirm'
+        ? 2048
+        : 512;
+    return appendOverlayText(state, key.text, mongoLimit);
   }
   if (state.overlay === 'input-search' || state.overlay === 'input-run') {
     if (key.name === 'escape') {
@@ -1018,13 +1004,7 @@ function overlayKey(
         { kind: 'backend', action: { type: 'preview-run', credentialNames: names } },
       );
     }
-    if (isPrintable(key.text)) {
-      return unchanged({
-        ...state,
-        query: `${state.query}${key.text}`.slice(0, 256),
-      });
-    }
-    return unchanged(state);
+    return appendOverlayText(state, key.text, 256);
   }
 
   if (state.overlay === 'confirm-revoke-last') {
@@ -1209,18 +1189,13 @@ function overlayKey(
         },
       );
     }
-    if (isPrintable(key.text)) {
-      const masked =
-        state.overlay === 'input-recovery-passphrase' ||
-        state.overlay === 'input-recovery-passphrase-confirm' ||
-        state.overlay === 'input-recovery-verify-passphrase';
-      const limit = masked ? 1024 : 512;
-      return unchanged({
-        ...state,
-        query: `${state.query}${key.text}`.slice(0, limit),
-      });
-    }
-    return unchanged(state);
+    const recoveryLimit =
+      state.overlay === 'input-recovery-passphrase' ||
+      state.overlay === 'input-recovery-passphrase-confirm' ||
+      state.overlay === 'input-recovery-verify-passphrase'
+        ? 1024
+        : 512;
+    return appendOverlayText(state, key.text, recoveryLimit);
   }
   if (
     state.overlay === 'input-policy-id' ||
@@ -1287,13 +1262,7 @@ function overlayKey(
         },
       );
     }
-    if (isPrintable(key.text)) {
-      return unchanged({
-        ...state,
-        query: `${state.query}${key.text}`.slice(0, 256),
-      });
-    }
-    return unchanged(state);
+    return appendOverlayText(state, key.text, 256);
   }
   if (
     state.overlay === 'input-grant-secret' ||
@@ -1360,13 +1329,7 @@ function overlayKey(
         },
       );
     }
-    if (isPrintable(key.text)) {
-      return unchanged({
-        ...state,
-        query: `${state.query}${key.text}`.slice(0, 256),
-      });
-    }
-    return unchanged(state);
+    return appendOverlayText(state, key.text, 256);
   }
 
   void nowMs;
@@ -1473,8 +1436,39 @@ function removeLast(value: string): string {
   return Array.from(value).slice(0, -1).join('');
 }
 
+/**
+ * Normalize pasted text for overlay fields.
+ * Strips bracketed-paste markers and trailing CR/LF so paste never acts as Enter.
+ */
+export function sanitizePasteText(raw: string): string {
+  let text = raw;
+  text = text.replace(/\x1b\[200~/gu, '').replace(/\x1b\[201~/gu, '');
+  text = text.replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/gu, '');
+  text = text.replace(/\r/gu, '');
+  text = text.replace(/^\n+/u, '').replace(/\n+$/u, '');
+  // Drop remaining C0/C1 controls (keep printable + spaces).
+  text = text.replace(/\p{C}/gu, '');
+  return text;
+}
+
 function isPrintable(value: string | undefined): value is string {
-  return value !== undefined && value.length > 0 && !/\p{C}/u.test(value);
+  return value !== undefined && value.length === 1 && !/\p{C}/u.test(value);
+}
+
+/** Append typed char or multi-char paste into the overlay query (once). */
+function appendOverlayText(
+  state: AppRouterState,
+  text: string | undefined,
+  limit: number,
+): AppRouterTransition {
+  if (text === undefined || text.length === 0) return unchanged(state);
+  const chunk =
+    text.length > 1 ? sanitizePasteText(text) : isPrintable(text) ? text : '';
+  if (chunk.length === 0) return unchanged(state);
+  return unchanged({
+    ...state,
+    query: `${state.query}${chunk}`.slice(0, limit),
+  });
 }
 
 function unchanged(state: AppRouterState): AppRouterTransition {

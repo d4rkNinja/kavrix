@@ -11,52 +11,45 @@ Kavrix ships as a Node/npm CLI for Linux / macOS / Windows, so `kavrix tui` stay
 **Ink + React** for cross-OS compatibility. This work applies the **OpenTUI skill
 design system** (layouts, containers, selects, banners, modals) using Ink equivalents.
 
-Skill references adapted:
+## Copy / paste (2026-09-18)
 
-- `.agents/skills/opentui/references/layout/patterns.md` — header / content / footer;
-  sidebar-style split when width ≥ 80; centered modals
-- `.agents/skills/opentui/references/components/containers.md` — bordered boxes, title
-  simulation, padding, per-screen `borderColor`, styles round | double | classic
-- `.agents/skills/opentui/references/components/inputs.md` — select rows with clear
-  active highlight (inverse / accent bar)
-- `.agents/skills/opentui/references/components/text-display.md` — dual-tone brand banner
+### Paste into text overlays
 
-## OpenTUI → Ink mapping
+- Ink `usePaste` is wired in `packages/tui/src/app/app.tsx` alongside `useInput`.
+  Bracketed paste arrives as one string and is **never** forwarded as Enter.
+- Router `sanitizePasteText` + `appendOverlayText` strip `\x1b[200~` / `\x1b[201~`,
+  trailing `\r`/`\n`, and remaining controls; multi-char `input` is treated as paste.
+- Masked overlays (passphrase, Mongo URL, put value) still mask display; long pastes
+  append once up to field limits.
+- Unlock / URL / put-value modals show: `Paste works (Ctrl+Shift+V / Cmd+V)`.
 
-| OpenTUI | Ink equivalent |
-| --- | --- |
-| `box` + `borderStyle="rounded"` | `Box borderStyle="round"` |
-| `borderStyle="double"` (modals) | `Box borderStyle="double"` |
-| ASCII / Windows borders | `Box borderStyle="classic"` (`+-+|`) |
-| `title=` on box | `Panel` header via `sectionTitle()` label row |
-| `select` active row | `SelectRow` with `inverse` + accent / dim inactive |
-| Full-screen column layout | `AppChrome`: Header → `flexGrow={1}` Content → Footer |
-| Sidebar when width > 60 | Home: row at width ≥ 80, stacked otherwise |
-| Centered modal | `ModalFrame` (double / classic) for passphrase & confirms |
-| Status chrome | `StatusPill` row (lock, profile, vault, creds) |
-| Footer keymap | `KeyChip` colored keys + dim labels |
+### Copy credential without printing forever
 
-## Presentation changes (wiring untouched)
+- Credentials screen: `c` → backend `copy-credential` (no on-screen plaintext).
+- CLI session (`apps/cli/src/tui-session.ts` + `tui-clipboard.ts`): fetch via `get --reveal`,
+  write clipboard preferring **OSC 52**, fallback to `pbcopy` / PowerShell / `wl-copy` /
+  `xclip` / `xsel`. Best-effort OSC clear after ~30s.
+- Notice: `Copied (clipboard clears in ~30s)`. Reveal remains `r` then `y` (15s UI timer).
+- Footer on Credentials documents `c copy` / `r reveal`.
 
-- New widgets: `packages/tui/src/app/widgets.tsx`
-  (`Panel`, `StatusPill`, `KeyChip`, `SelectRow`, `SectionTitle`, `ModalFrame`, `CardRow`)
-- Theme helpers: `panelBorderStyle`, `screenAccent`, `doctorStatusAccent`
-- `screens.tsx` — premium panel chrome on every screen; credentials card rows +
-  warning reveal inset; doctor pass/warn/fail colorization
-- `showcase.tsx` — `BrandBanner` dual-tone cyan/magenta (`dualTone` prop)
-- **No** changes to `createCliTuiBackend` / router action semantics — presentation only
+### Mouse selection
 
-## Cross-OS / accessibility
+- Mouse tracking is **not** enabled (Ink default). OS terminal drag-select / Shift+drag
+  still works. Documented on the Help screen.
 
-- `process.platform === 'win32'` or `--ascii` or ASCII presentation → classic borders,
-  `>` pointers, `********` masks, no fancy unicode
-- `NO_COLOR` / `--no-color` / `TERM=dumb` → no color props
-- No Bun-only APIs
+## UX polish
+
+- Contextual footer key chips (home / credentials / profiles / default).
+- Empty states with next action (credentials unlock/put; vaults profile+unlock).
+- Navigate menu: aligned label + hint columns via `SelectRow` `labelWidth`.
+- Unlock modal: clearer title (`Unlock vault`) + paste hint.
+- Help: short “Getting started” + copy/paste notes.
+- ASCII / Windows (`--ascii`, win32) and `NO_COLOR` unchanged.
 
 ## Verify
 
 ```bash
-pnpm --filter @kavrix/tui test   # 68 PASS
+pnpm --filter @kavrix/tui test
 pnpm --filter @kavrix/tui build
 pnpm --filter kavrix build
 ```

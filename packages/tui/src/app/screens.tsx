@@ -36,7 +36,7 @@ function overlayCopy(
   overlay: AppOverlay,
   query: string,
   ascii: boolean,
-): Readonly<{ title: string; body: string; accent: AppAccent }> | null {
+): Readonly<{ title: string; body: string; accent: AppAccent; hint?: string }> | null {
   if (overlay === 'none') return null;
   const masked = '*'.repeat(Math.min(query.length, 32));
   const q = safe(query, ascii);
@@ -81,9 +81,10 @@ function overlayCopy(
       return { title: 'Run preview', body: `Run creds: ${q}_`, accent: 'cyan' };
     case 'input-passphrase':
       return {
-        title: 'Passphrase',
+        title: 'Unlock vault',
         body: `Passphrase: ${masked}_`,
         accent: 'yellow',
+        hint: 'Paste works (Ctrl+Shift+V / Cmd+V)',
       };
     case 'input-put-name':
       return { title: 'Put credential', body: `New name: ${q}_`, accent: 'green' };
@@ -92,6 +93,7 @@ function overlayCopy(
         title: 'Put value',
         body: `Value: ${masked}_`,
         accent: 'green',
+        hint: 'Paste works (Ctrl+Shift+V / Cmd+V)',
       };
     case 'input-rename':
       return { title: 'Rename', body: `Rename to: ${q}_`, accent: 'green' };
@@ -141,9 +143,10 @@ function overlayCopy(
     case 'input-mongo-url':
     case 'input-unlock-mongo-url':
       return {
-        title: 'Mongo URL',
+        title: overlay === 'input-unlock-mongo-url' ? 'Unlock vault (MongoDB)' : 'Mongo URL',
         body: `Mongo URL: ${masked}_`,
         accent: 'yellow',
+        hint: 'Paste works (Ctrl+Shift+V / Cmd+V)',
       };
     case 'input-mongo-passphrase':
     case 'input-mongo-passphrase-confirm':
@@ -272,8 +275,19 @@ export function AppChrome({
             <Text bold {...tint(color, overlay.accent)}>
               {safe(overlay.body, ascii)}
             </Text>
+            {overlay.hint === undefined ? null : (
+              <Text {...tint(color, 'cyan')}>{safe(overlay.hint, ascii)}</Text>
+            )}
             <Text {...tint(color, 'gray')}>
-              {safe('Enter confirm · Esc cancel', ascii)}
+              {safe(
+                overlay.title.startsWith('Confirm') ||
+                  overlay.title.startsWith('Revoke') ||
+                  overlay.title.startsWith('Remove') ||
+                  overlay.title.startsWith('Recovery blocked')
+                  ? 'y confirm · n/Esc cancel'
+                  : 'Enter continue · Esc cancel',
+                ascii,
+              )}
             </Text>
           </ModalFrame>
         )}
@@ -289,6 +303,7 @@ function Footer({ state }: Readonly<{ state: AppRouterState }>): ReactElement {
   const notice = message ?? snapshot.notice;
   const noticeAccent = toneAccent(snapshot.noticeTone);
   const sep = ascii ? ' | ' : ' · ';
+  const chips = footerChips(state.screen);
   return (
     <Box flexDirection="column">
       {notice === null ? null : (
@@ -298,27 +313,76 @@ function Footer({ state }: Readonly<{ state: AppRouterState }>): ReactElement {
       )}
       <Panel accent="gray" ascii={ascii} color={color} paddingX={1}>
         <Box flexDirection="row" columnGap={1} flexWrap="wrap">
-          <KeyChip keyLabel="j/k" hint="move" color={color} keyAccent="cyan" />
-          <Text {...tint(color, 'gray')}>{sep}</Text>
-          <KeyChip keyLabel="Enter" hint="open" color={color} keyAccent="green" />
-          <Text {...tint(color, 'gray')}>{sep}</Text>
-          <KeyChip keyLabel="Esc" hint="home" color={color} keyAccent="yellow" />
-          <Text {...tint(color, 'gray')}>{sep}</Text>
-          <KeyChip keyLabel="/" hint="search" color={color} keyAccent="magenta" />
-          <Text {...tint(color, 'gray')}>{sep}</Text>
-          <KeyChip keyLabel="u" hint="unlock" color={color} keyAccent="green" />
-          <Text {...tint(color, 'gray')}>{sep}</Text>
-          <KeyChip keyLabel="l" hint="lock" color={color} keyAccent="yellow" />
-          <Text {...tint(color, 'gray')}>{sep}</Text>
-          <KeyChip keyLabel="a" hint="ascii" color={color} keyAccent="blue" />
-          <Text {...tint(color, 'gray')}>{sep}</Text>
-          <KeyChip keyLabel="?" hint="help" color={color} keyAccent="white" />
-          <Text {...tint(color, 'gray')}>{sep}</Text>
-          <KeyChip keyLabel="q" hint="quit" color={color} keyAccent="red" />
+          {chips.map((chip, index) => (
+            <Box key={`${chip.keyLabel}-${chip.hint}`} flexDirection="row">
+              {index === 0 ? null : (
+                <Text {...tint(color, 'gray')}>{sep}</Text>
+              )}
+              <KeyChip
+                keyLabel={chip.keyLabel}
+                hint={chip.hint}
+                color={color}
+                keyAccent={chip.accent}
+              />
+            </Box>
+          ))}
         </Box>
       </Panel>
     </Box>
   );
+}
+
+function footerChips(
+  screen: AppRouterState['screen'],
+): readonly Readonly<{
+  keyLabel: string;
+  hint: string;
+  accent: AppAccent;
+}>[] {
+  const commonTail = [
+    { keyLabel: 'Esc', hint: 'home', accent: 'yellow' as const },
+    { keyLabel: '?', hint: 'help', accent: 'white' as const },
+    { keyLabel: 'q', hint: 'quit', accent: 'red' as const },
+  ];
+  switch (screen) {
+    case 'credentials':
+      return [
+        { keyLabel: 'j/k', hint: 'move', accent: 'cyan' },
+        { keyLabel: 'c', hint: 'copy', accent: 'green' },
+        { keyLabel: 'r', hint: 'reveal', accent: 'red' },
+        { keyLabel: 'n', hint: 'put', accent: 'green' },
+        { keyLabel: 'm', hint: 'rename', accent: 'magenta' },
+        { keyLabel: 'x', hint: 'remove', accent: 'red' },
+        { keyLabel: '/', hint: 'search', accent: 'magenta' },
+        { keyLabel: 'u', hint: 'unlock', accent: 'green' },
+        ...commonTail,
+      ];
+    case 'profiles':
+      return [
+        { keyLabel: 'j/k', hint: 'move', accent: 'cyan' },
+        { keyLabel: 'Enter', hint: 'use', accent: 'green' },
+        { keyLabel: 'n', hint: 'file', accent: 'blue' },
+        { keyLabel: 'm', hint: 'mongo', accent: 'blue' },
+        ...commonTail,
+      ];
+    case 'home':
+      return [
+        { keyLabel: 'j/k', hint: 'move', accent: 'cyan' },
+        { keyLabel: 'Enter', hint: 'open', accent: 'green' },
+        { keyLabel: 'u', hint: 'unlock', accent: 'green' },
+        { keyLabel: 'l', hint: 'lock', accent: 'yellow' },
+        { keyLabel: 'r', hint: 'refresh', accent: 'cyan' },
+        ...commonTail,
+      ];
+    default:
+      return [
+        { keyLabel: 'j/k', hint: 'move', accent: 'cyan' },
+        { keyLabel: 'Enter', hint: 'open', accent: 'green' },
+        { keyLabel: 'u', hint: 'unlock', accent: 'green' },
+        { keyLabel: 'l', hint: 'lock', accent: 'yellow' },
+        ...commonTail,
+      ];
+  }
 }
 
 export function HomeScreen({ state }: Readonly<{ state: AppRouterState }>): ReactElement {
@@ -348,20 +412,24 @@ export function HomeScreen({ state }: Readonly<{ state: AppRouterState }>): Reac
       paddingX={1}
       paddingY={0}
     >
-      {entries.map((entry, index) => {
-        const active = index === menuIndex;
-        return (
-          <SelectRow
-            key={entry.id}
-            active={active}
-            label={entry.label}
-            hint={entry.hint}
-            accent={entry.accent}
-            color={color}
-            ascii={ascii}
-          />
-        );
-      })}
+      {(() => {
+        const labelWidth = Math.max(...entries.map((entry) => entry.label.length), 8);
+        return entries.map((entry, index) => {
+          const active = index === menuIndex;
+          return (
+            <SelectRow
+              key={entry.id}
+              active={active}
+              label={entry.label}
+              hint={entry.hint}
+              accent={entry.accent}
+              color={color}
+              ascii={ascii}
+              labelWidth={labelWidth}
+            />
+          );
+        });
+      })()}
     </Panel>
   );
   if (wide) {
@@ -437,7 +505,7 @@ export function VaultsScreen({ state }: Readonly<{ state: AppRouterState }>): Re
       state={state}
       title="Vaults"
       accent="magenta"
-      empty="No vaults in the current profile."
+      empty="No vaults yet. Select a profile, then unlock (u)."
       rows={state.snapshot.vaults.map((vault) => ({
         id: vault.id,
         primary: `${vault.id}${vault.selected ? ' *' : ''}`,
@@ -448,15 +516,22 @@ export function VaultsScreen({ state }: Readonly<{ state: AppRouterState }>): Re
 }
 
 export function CredentialsScreen({ state }: Readonly<{ state: AppRouterState }>): ReactElement {
-  const { color, ascii, listIndex, revealedName, revealedValue } = state;
+  const { color, ascii, listIndex, revealedName, revealedValue, snapshot } = state;
   return (
     <Box flexDirection="column" flexGrow={1}>
       <Panel title="Credentials" accent="green" ascii={ascii} color={color} paddingX={1}>
         <Text {...tint(color, 'gray')}>
-          Values stay masked. n put · m rename · x remove · r then y REVEAL (15s).
+          Values stay masked. c copy · r then y REVEAL (15s) · n put · m rename · x remove.
         </Text>
         {state.snapshot.credentials.length === 0 ? (
-          <Text {...tint(color, 'yellow')}>No credentials (unlock or refresh).</Text>
+          <Text {...tint(color, 'yellow')}>
+            {safe(
+              snapshot.home.unlocked
+                ? 'No credentials yet. Press n to put one.'
+                : 'Vault locked. Press u to unlock, then n to put.',
+              ascii,
+            )}
+          </Text>
         ) : (
           state.snapshot.credentials.map((credential, index) => {
             const active = index === listIndex;
@@ -594,24 +669,30 @@ export function BrowseScreen({ state }: Readonly<{ state: AppRouterState }>): Re
 export function HelpScreen({ state }: Readonly<{ state: AppRouterState }>): ReactElement {
   const { color, ascii } = state;
   const lines = [
-    'Global: j/k or arrows move, Enter open, Esc back to Home, q quit',
-    'Home: choose a destination from the colorful menu',
-    'Credentials: / search, n put, m rename, x remove, r then y REVEAL (15s)',
-    'Profiles: Enter use, n file profile, m mongodb profile (URL stdin frames only)',
-    'Session: u unlock, l lock (clears revealed state)',
-    'Doctor: d runs real kavrix doctor / db doctor health',
-    'Recovery: n create · v verify · Enter/x revoke (last active slot blocked)',
-    'Run: p validates via list+has + kavrix run --help (no secret inject)',
-    'Agent: g runs kavrix agent run --dry-run (surfaces real CLI errors)',
-    'Policy: Enter refresh · n create · x remove · g grant · r revoke grant',
-    'Browse: Enter refreshes from kavrix context/service/item list when unlocked',
-    'Display: a toggles ASCII; NO_COLOR / TERM=dumb disable color',
-    'Windows: ASCII borders default on win32; paths use node:path joins',
+    '--- Getting started ---',
+    '1) Profiles: n file or m mongodb, then Enter to select',
+    '2) Unlock with u (paste works in passphrase / URL overlays)',
+    '3) Credentials: n put · c copy (no on-screen plaintext) · r then y REVEAL',
+    '',
+    '--- Copy / paste ---',
+    'Paste into overlays: Ctrl+Shift+V / Cmd+V (bracketed paste; never submits Enter)',
+    'Copy credential: c on Credentials (clipboard clears in ~30s; OSC 52 preferred)',
+    'Terminal select/copy still works (Shift+drag if the terminal needs it)',
+    'Mouse tracking is NOT enabled — OS drag-select is not stolen',
+    '',
+    '--- Keymap ---',
+    'Global: j/k or arrows move, Enter open, Esc Home, q quit',
+    'Credentials: c copy · r reveal · n put · m rename · x remove · / search',
+    'Profiles: Enter use · n file · m mongodb (URL+passphrase on stdin frames)',
+    'Session: u unlock · l lock (clears revealed state)',
+    'Doctor: d · Recovery: n/c create · v verify · Enter/x revoke',
+    'Run: p · Agent: g dry-run · Policy: n/x/g/r · Browse: Enter refresh',
+    'Display: a ASCII · NO_COLOR / TERM=dumb disable color · win32 ASCII default',
   ];
   return (
     <Panel title="Help / Keymap" accent="white" ascii={ascii} color={color} paddingX={1}>
-      {lines.map((line) => (
-        <Text key={line}>{safe(line, ascii)}</Text>
+      {lines.map((line, index) => (
+        <Text key={`${String(index)}:${line}`}>{safe(line.length === 0 ? ' ' : line, ascii)}</Text>
       ))}
     </Panel>
   );
