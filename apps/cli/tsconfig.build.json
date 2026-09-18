@@ -46,6 +46,8 @@
     "src/execution/broker-protocol.ts",
     "src/execution/authorization-state.ts",
     "src/local-vault-cli.ts",
+    "src/tui-command.ts",
+    "src/tui-session.ts",
     "src/kavrix-config.ts",
     "src/version.ts"
   ],

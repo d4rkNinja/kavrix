@@ -112,6 +112,7 @@ import {
 import { CLI_VERSION } from './version.js';
 import { applyStdinFrameHelp, registerFramesCommand } from './stdin-frames.js';
 import { registerExecutionCommands } from './execution/register.js';
+import { registerTuiCommand } from './tui-command.js';
 import { registerStructuredVaultCommands } from './structured-vault-commands.js';
 import {
   authenticationFailure,
@@ -639,6 +640,7 @@ export function buildLocalCli(): Command {
   });
 
   registerExecutionCommands(program);
+  registerTuiCommand(program);
   registerStructuredVaultCommands(program);
   registerFramesCommand(program);
   applyStdinFrameHelp(program);
