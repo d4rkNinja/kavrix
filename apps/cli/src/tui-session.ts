@@ -70,13 +70,16 @@ export interface CliTuiSnapshot {
   readonly noticeTone: 'info' | 'success' | 'warning' | 'error' | 'muted';
 }
 
-type CliTuiAction =
+export type CliTuiAction =
   | Readonly<{ type: 'refresh' }>
   | Readonly<{ type: 'use-profile'; profileId: string }>
   | Readonly<{ type: 'use-vault'; vaultId: string }>
   | Readonly<{ type: 'unlock'; passphrase: string }>
   | Readonly<{ type: 'lock' }>
   | Readonly<{ type: 'reveal-credential'; name: string }>
+  | Readonly<{ type: 'put-credential'; name: string; value: string }>
+  | Readonly<{ type: 'rename-credential'; from: string; to: string }>
+  | Readonly<{ type: 'remove-credential'; name: string }>
   | Readonly<{ type: 'search-credentials'; query: string }>
   | Readonly<{ type: 'run-doctor' }>
   | Readonly<{ type: 'recovery-status' }>
@@ -92,12 +95,19 @@ export interface CliTuiBackend {
   ): Promise<Readonly<{ snapshot: CliTuiSnapshot; revealedSecret?: string }>>;
 }
 
+export type CliTuiCommandRunner = (
+  args: readonly string[],
+  frames: readonly string[],
+) => Promise<string>;
+
 const require = createRequire(import.meta.url);
 
 export interface CliTuiSessionOptions {
   readonly profileConfigDir?: string;
   readonly ascii?: boolean;
   readonly binPath?: string;
+  /** Optional injectable CLI runner (tests); secrets stay in frames only. */
+  readonly commandRunner?: CliTuiCommandRunner;
 }
 
 export function createCliTuiBackend(
@@ -115,6 +125,7 @@ class CliTuiSession {
   #passphrase: Buffer | null = null;
   #credentialNames: string[] = [];
   #vaultId: string | null = null;
+  #recoverySlots: CliTuiSnapshot['recovery'] = [];
   #notice: string | null = 'Loaded profile registry.';
   #noticeTone: CliTuiSnapshot['noticeTone'] = 'info';
 
@@ -132,6 +143,9 @@ class CliTuiSession {
     try {
       switch (action.type) {
         case 'refresh':
+          if (this.#passphrase !== null) {
+            await this.#refreshCredentialList();
+          }
           this.#notice = 'Refreshed.';
           this.#noticeTone = 'info';
           break;
@@ -156,6 +170,15 @@ class CliTuiSession {
           const snapshot = await this.#buildSnapshot();
           return { snapshot, revealedSecret: revealed };
         }
+        case 'put-credential':
+          await this.#putCredential(action.name, action.value);
+          break;
+        case 'rename-credential':
+          await this.#renameCredential(action.from, action.to);
+          break;
+        case 'remove-credential':
+          await this.#removeCredential(action.name);
+          break;
         case 'search-credentials': {
           const query = action.query.trim().toLocaleLowerCase();
           this.#credentialNames = this.#credentialNames.filter((name) =>
@@ -169,9 +192,7 @@ class CliTuiSession {
           await this.#runDoctor();
           break;
         case 'recovery-status':
-          this.#notice =
-            'Recovery status: use `kavrix recovery status` for durable kit metadata.';
-          this.#noticeTone = 'info';
+          await this.#recoveryStatus();
           break;
         case 'preview-run':
           this.#notice = `Dry run preview for: ${action.credentialNames.join(', ') || '(none)'}`;
@@ -209,6 +230,16 @@ class CliTuiSession {
     const current = registry === null ? null : await registry.current();
     const ascii = this.#options.ascii === true;
     const mask = ascii ? '********' : '••••••••';
+    const recovery =
+      this.#recoverySlots.length > 0
+        ? this.#recoverySlots
+        : [
+            {
+              slotId: '(see CLI)',
+              status: 'active' as const,
+              detail: 'Open Recovery to load status from kavrix recovery / db recovery.',
+            },
+          ];
     return {
       home: {
         profileId: current?.id ?? null,
@@ -263,13 +294,7 @@ class CliTuiSession {
                 detail: `Unlocked with ${String(this.#credentialNames.length)} credentials.`,
               },
             ],
-      recovery: [
-        {
-          slotId: '(see CLI)',
-          status: 'active',
-          detail: 'TUI shows status only; create/verify/revoke stay on CLI.',
-        },
-      ],
+      recovery,
       policies: [
         {
           id: 'runtime',
@@ -303,6 +328,7 @@ class CliTuiSession {
     });
     await registry.use(profileIdSchema.parse(profileId));
     this.#lock();
+    this.#recoverySlots = [];
     this.#notice = `Selected profile ${profileId}.`;
     this.#noticeTone = 'success';
   }
@@ -316,7 +342,7 @@ class CliTuiSession {
     const bytes = Buffer.from(passphrase, 'utf8');
     try {
       const names = await this.#runJsonCommand(
-        [...(await this.#profileArgs()), 'list', '--json', '--passphrase-stdin'],
+        ['list', ...(await this.#profileArgs()), '--json', '--passphrase-stdin'],
         [passphrase],
       );
       const parsed = names as { names?: unknown };
@@ -341,12 +367,107 @@ class CliTuiSession {
     }
     const passphrase = this.#passphrase.toString('utf8');
     const output = await this.#runTextCommand(
-      [...(await this.#profileArgs()), 'get', name, '--reveal', '--passphrase-stdin'],
+      ['get', name, ...(await this.#profileArgs()), '--reveal', '--passphrase-stdin'],
       [passphrase],
     );
     this.#notice = `REVEAL active for ${name} (15s UI timer).`;
     this.#noticeTone = 'warning';
     return output.trimEnd();
+  }
+
+  async #putCredential(name: string, value: string): Promise<void> {
+    if (this.#passphrase === null) {
+      throw new Error('Unlock the vault before putting credentials.');
+    }
+    const trimmed = name.trim();
+    if (trimmed.length === 0 || value.length === 0) {
+      throw new Error('Credential name and value are required.');
+    }
+    const passphrase = this.#passphrase.toString('utf8');
+    // Frames contract: `kavrix frames put` → [mongodb-url,] passphrase, value
+    await this.#runTextCommand(
+      [
+        'put',
+        trimmed,
+        ...(await this.#profileArgs()),
+        '--passphrase-stdin',
+        '--value-stdin',
+        '--overwrite',
+        '--json',
+      ],
+      [passphrase, value],
+    );
+    await this.#refreshCredentialList();
+    this.#notice = `Stored credential ${trimmed}.`;
+    this.#noticeTone = 'success';
+  }
+
+  async #renameCredential(from: string, to: string): Promise<void> {
+    if (this.#passphrase === null) {
+      throw new Error('Unlock the vault before renaming credentials.');
+    }
+    const source = from.trim();
+    const target = to.trim();
+    if (source.length === 0 || target.length === 0) {
+      throw new Error('Rename requires from and to names.');
+    }
+    const passphrase = this.#passphrase.toString('utf8');
+    // Frames: `kavrix frames rename` → [mongodb-url,] passphrase
+    await this.#runTextCommand(
+      [
+        'rename',
+        source,
+        target,
+        ...(await this.#profileArgs()),
+        '--passphrase-stdin',
+        '--json',
+      ],
+      [passphrase],
+    );
+    await this.#refreshCredentialList();
+    this.#notice = `Renamed ${source} → ${target}.`;
+    this.#noticeTone = 'success';
+  }
+
+  async #removeCredential(name: string): Promise<void> {
+    if (this.#passphrase === null) {
+      throw new Error('Unlock the vault before removing credentials.');
+    }
+    const trimmed = name.trim();
+    if (trimmed.length === 0) {
+      throw new Error('Credential name is required.');
+    }
+    const passphrase = this.#passphrase.toString('utf8');
+    // Frames: `kavrix frames remove` → [mongodb-url,] passphrase
+    await this.#runTextCommand(
+      [
+        'remove',
+        trimmed,
+        ...(await this.#profileArgs()),
+        '--passphrase-stdin',
+        '--json',
+      ],
+      [passphrase],
+    );
+    await this.#refreshCredentialList();
+    this.#notice = `Removed credential ${trimmed}.`;
+    this.#noticeTone = 'success';
+  }
+
+  async #refreshCredentialList(): Promise<void> {
+    if (this.#passphrase === null) return;
+    const passphrase = this.#passphrase.toString('utf8');
+    const names = await this.#runJsonCommand(
+      ['list', ...(await this.#profileArgs()), '--json', '--passphrase-stdin'],
+      [passphrase],
+    );
+    const parsed = names as { names?: unknown };
+    if (!Array.isArray(parsed.names)) {
+      throw new Error('Unexpected list response.');
+    }
+    this.#credentialNames = parsed.names.filter(
+      (entry): entry is string => typeof entry === 'string',
+    );
   }
 
   async #runDoctor(): Promise<void> {
@@ -357,11 +478,79 @@ class CliTuiSession {
     }
     const passphrase = this.#passphrase.toString('utf8');
     await this.#runJsonCommand(
-      [...(await this.#profileArgs()), 'doctor', '--passphrase-stdin'],
+      ['doctor', ...(await this.#profileArgs()), '--passphrase-stdin'],
       [passphrase],
     );
     this.#notice = 'Doctor completed.';
     this.#noticeTone = 'success';
+  }
+
+  async #recoveryStatus(): Promise<void> {
+    const current = await this.#currentProfile();
+    if (current === null) {
+      this.#notice = 'Select a profile before loading recovery status.';
+      this.#noticeTone = 'warning';
+      return;
+    }
+
+    if (current.databaseId !== undefined) {
+      if (this.#passphrase === null) {
+        this.#notice = 'Unlock before db recovery status.';
+        this.#noticeTone = 'warning';
+        return;
+      }
+      const passphrase = this.#passphrase.toString('utf8');
+      const raw = await this.#runJsonCommand(
+        [
+          'db',
+          'recovery',
+          'status',
+          ...(await this.#profileArgs()),
+          '--json',
+          '--passphrase-stdin',
+        ],
+        [passphrase],
+      );
+      this.#recoverySlots = parseRecoverySlots(raw, 'db');
+      this.#notice = `Recovery status: ${String(this.#recoverySlots.length)} slot(s).`;
+      this.#noticeTone = 'success';
+      return;
+    }
+
+    // Legacy / unbound file vault: `kavrix recovery status` (no secrets).
+    if (current.datastore === 'file') {
+      const raw = await this.#runJsonCommand(
+        [
+          'recovery',
+          'status',
+          '--datastore',
+          'file',
+          '--data-file',
+          current.dataFile,
+          '--json',
+          ...(this.#vaultId === null ? [] : ['--vault', this.#vaultId]),
+        ],
+        [],
+      );
+      this.#recoverySlots = parseRecoverySlots(raw, 'legacy');
+      this.#notice = `Recovery status: ${String(this.#recoverySlots.length)} slot(s).`;
+      this.#noticeTone = 'success';
+      return;
+    }
+
+    this.#notice =
+      'Recovery status for this profile requires CLI (`kavrix recovery status` / `db recovery status`).';
+    this.#noticeTone = 'info';
+  }
+
+  async #currentProfile(): Promise<DatastoreProfile | null> {
+    const registry = await DatastoreProfileRegistry.openIfPresent({
+      ...(this.#options.profileConfigDir === undefined
+        ? {}
+        : { configDirectory: this.#options.profileConfigDir }),
+    });
+    if (registry === null) return null;
+    return registry.current();
   }
 
   #lock(): void {
@@ -411,6 +600,9 @@ class CliTuiSession {
     args: readonly string[],
     frames: readonly string[],
   ): Promise<string> {
+    if (this.#options.commandRunner !== undefined) {
+      return this.#options.commandRunner(args, frames);
+    }
     const bin = this.#binPath();
     const env = { ...process.env };
     delete env['FORCE_COLOR'];
@@ -442,4 +634,65 @@ function describeProfile(profile: DatastoreProfile): string {
     return `file ${profile.dataFile}`;
   }
   return `mongodb ${profile.database}/${profile.vaultCollection}`;
+}
+
+function parseRecoverySlots(
+  raw: unknown,
+  mode: 'db' | 'legacy',
+): CliTuiSnapshot['recovery'] {
+  if (typeof raw !== 'object' || raw === null) {
+    return [
+      {
+        slotId: '(unavailable)',
+        status: 'active',
+        detail: 'Unexpected recovery status payload.',
+      },
+    ];
+  }
+  const record = raw as Record<string, unknown>;
+  const slots = Array.isArray(record['slots']) ? record['slots'] : [];
+  if (slots.length === 0) {
+    const active =
+      typeof record['active'] === 'number'
+        ? record['active']
+        : typeof record['activeKits'] === 'number'
+          ? record['activeKits']
+          : 0;
+    const revoked =
+      typeof record['revoked'] === 'number'
+        ? record['revoked']
+        : typeof record['revokedKits'] === 'number'
+          ? record['revokedKits']
+          : 0;
+    return [
+      {
+        slotId: '(none)',
+        status: 'active',
+        detail: `${mode} recovery: ${String(active)} active, ${String(revoked)} revoked.`,
+      },
+    ];
+  }
+  return slots.flatMap((entry) => {
+    if (typeof entry !== 'object' || entry === null) return [];
+    const slot = entry as Record<string, unknown>;
+    const id =
+      typeof slot['id'] === 'string'
+        ? slot['id']
+        : typeof slot['slotId'] === 'string'
+          ? slot['slotId']
+          : null;
+    if (id === null) return [];
+    const stateRaw = slot['state'] ?? slot['status'];
+    const status: 'active' | 'revoked' =
+      stateRaw === 'revoked' ? 'revoked' : 'active';
+    const createdAt =
+      typeof slot['createdAt'] === 'string' ? ` created ${slot['createdAt']}` : '';
+    return [
+      {
+        slotId: id,
+        status,
+        detail: `${status}${createdAt}`,
+      },
+    ];
+  });
 }

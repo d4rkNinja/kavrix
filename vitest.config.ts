@@ -57,6 +57,7 @@ export default defineConfig({
       'apps/cli/test/execution-engine.test.ts',
       'apps/cli/test/local-secrets.test.ts',
       'apps/cli/test/package.test.ts',
+      'apps/cli/test/tui-session.test.ts',
       'packages/schemas/test/database-container.test.ts',
       'packages/schemas/test/**/*.test.ts',
       'packages/core/test/**/*.test.ts',

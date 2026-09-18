@@ -2,6 +2,7 @@ import {
   emptySnapshot,
   type AppBackendAction,
   type AppBackendResult,
+  type AppCredentialSummary,
   type AppSnapshot,
   type InteractiveAppBackend,
 } from './backend.js';
@@ -9,11 +10,15 @@ import {
 /**
  * Read-only host backend that serves a fixed snapshot. Useful for CI inventory
  * smoke and presentational mounts that do not unlock vault material.
+ * Credential put/rename/remove mutate the in-memory snapshot only.
  */
 export function createStaticAppBackend(
   initial: AppSnapshot = emptySnapshot('Static TUI snapshot.'),
 ): InteractiveAppBackend {
   let snapshot = initial;
+  const asciiMask = (): string =>
+    snapshot.credentials[0]?.maskedValue.includes('•') === true ? '••••••••' : '********';
+
   return {
     async load(): Promise<AppSnapshot> {
       return snapshot;
@@ -22,7 +27,6 @@ export function createStaticAppBackend(
       switch (action.type) {
         case 'refresh':
         case 'run-doctor':
-        case 'recovery-status':
         case 'refresh-policy':
         case 'refresh-browse':
         case 'agent-dry-run':
@@ -33,13 +37,43 @@ export function createStaticAppBackend(
             noticeTone: 'info',
           };
           return { snapshot };
-        case 'search-credentials':
+        case 'recovery-status':
           snapshot = {
             ...snapshot,
+            recovery:
+              snapshot.recovery.length > 0
+                ? snapshot.recovery
+                : [
+                    {
+                      slotId: '(none)',
+                      status: 'active',
+                      detail: 'Static recovery status (no kits).',
+                    },
+                  ],
+            notice: 'Recovery status refreshed (static).',
+            noticeTone: 'info',
+          };
+          return { snapshot };
+        case 'search-credentials': {
+          const query = action.query.trim().toLocaleLowerCase();
+          const filtered =
+            query.length === 0
+              ? snapshot.credentials
+              : snapshot.credentials.filter((credential) =>
+                  credential.name.toLocaleLowerCase().includes(query),
+                );
+          snapshot = {
+            ...snapshot,
+            credentials: filtered,
+            home: {
+              ...snapshot.home,
+              credentialCount: filtered.length,
+            },
             notice: `Search query recorded (${action.query.length} chars).`,
             noticeTone: 'info',
           };
           return { snapshot };
+        }
         case 'preview-run':
           snapshot = {
             ...snapshot,
@@ -55,6 +89,106 @@ export function createStaticAppBackend(
             noticeTone: 'warning',
           };
           return { snapshot };
+        case 'put-credential': {
+          const name = action.name.trim();
+          if (name.length === 0 || action.value.length === 0) {
+            snapshot = {
+              ...snapshot,
+              notice: 'put-credential requires a non-empty name and value.',
+              noticeTone: 'warning',
+            };
+            return { snapshot };
+          }
+          const mask = asciiMask();
+          const next: AppCredentialSummary = { name, maskedValue: mask };
+          const without = snapshot.credentials.filter((credential) => credential.name !== name);
+          const credentials = [...without, next].sort((left, right) =>
+            left.name.localeCompare(right.name),
+          );
+          snapshot = {
+            ...snapshot,
+            credentials,
+            home: {
+              ...snapshot.home,
+              credentialCount: credentials.length,
+              unlocked: true,
+            },
+            notice: `Stored credential ${name} (static).`,
+            noticeTone: 'success',
+          };
+          return { snapshot };
+        }
+        case 'rename-credential': {
+          const from = action.from.trim();
+          const to = action.to.trim();
+          if (from.length === 0 || to.length === 0) {
+            snapshot = {
+              ...snapshot,
+              notice: 'rename-credential requires from and to names.',
+              noticeTone: 'warning',
+            };
+            return { snapshot };
+          }
+          if (snapshot.credentials.every((credential) => credential.name !== from)) {
+            snapshot = {
+              ...snapshot,
+              notice: `Credential ${from} not found (static).`,
+              noticeTone: 'error',
+            };
+            return { snapshot };
+          }
+          if (snapshot.credentials.some((credential) => credential.name === to)) {
+            snapshot = {
+              ...snapshot,
+              notice: `Credential ${to} already exists (static).`,
+              noticeTone: 'error',
+            };
+            return { snapshot };
+          }
+          const credentials = snapshot.credentials.map((credential) =>
+            credential.name === from ? { ...credential, name: to } : credential,
+          );
+          snapshot = {
+            ...snapshot,
+            credentials,
+            notice: `Renamed ${from} → ${to} (static).`,
+            noticeTone: 'success',
+          };
+          return { snapshot };
+        }
+        case 'remove-credential': {
+          const name = action.name.trim();
+          if (name.length === 0) {
+            snapshot = {
+              ...snapshot,
+              notice: 'remove-credential requires a name.',
+              noticeTone: 'warning',
+            };
+            return { snapshot };
+          }
+          const credentials = snapshot.credentials.filter(
+            (credential) => credential.name !== name,
+          );
+          if (credentials.length === snapshot.credentials.length) {
+            snapshot = {
+              ...snapshot,
+              notice: `Credential ${name} not found (static).`,
+              noticeTone: 'error',
+            };
+            return { snapshot };
+          }
+          snapshot = {
+            ...snapshot,
+            credentials,
+            home: {
+              ...snapshot.home,
+              credentialCount: credentials.length,
+            },
+            notice: `Removed credential ${name} (static).`,
+            noticeTone: 'success',
+          };
+          return { snapshot };
+        }
         case 'use-profile':
         case 'use-vault':
           snapshot = {

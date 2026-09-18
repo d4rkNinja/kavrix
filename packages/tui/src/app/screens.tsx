@@ -55,12 +55,19 @@ function Footer({ state }: Readonly<{ state: AppRouterState }>): ReactElement {
   let overlayHint = '';
   if (overlay === 'confirm-reveal') overlayHint = ' REVEAL? y/n';
   if (overlay === 'confirm-lock') overlayHint = ' Lock session? y/n';
+  if (overlay === 'confirm-remove') overlayHint = ' Remove credential? y/n';
   if (overlay === 'confirm-revoke-last')
     overlayHint = ' Final recovery slot — revoke blocked without CLI warning. Esc/n';
   if (overlay === 'input-search') overlayHint = ` Search: ${safe(state.query, ascii)}_`;
   if (overlay === 'input-run') overlayHint = ` Run creds: ${safe(state.query, ascii)}_`;
   if (overlay === 'input-passphrase')
     overlayHint = ` Passphrase: ${'*'.repeat(Math.min(state.query.length, 32))}_`;
+  if (overlay === 'input-put-name')
+    overlayHint = ` New name: ${safe(state.query, ascii)}_`;
+  if (overlay === 'input-put-value')
+    overlayHint = ` Value: ${'*'.repeat(Math.min(state.query.length, 32))}_`;
+  if (overlay === 'input-rename')
+    overlayHint = ` Rename to: ${safe(state.query, ascii)}_`;
   return (
     <Box flexDirection="column">
       {notice === null ? null : (
@@ -167,7 +174,7 @@ export function CredentialsScreen({ state }: Readonly<{ state: AppRouterState }>
         {sectionTitle('Credentials', ascii)}
       </Text>
       <Text {...tint(color, 'gray')}>
-        Values stay masked. Press r then confirm REVEAL (y) to show one for 15s.
+        Values stay masked. n put · m rename · x remove · r then y REVEAL (15s).
       </Text>
       {state.snapshot.credentials.length === 0 ? (
         <Text {...tint(color, 'yellow')}>No credentials (unlock or refresh).</Text>
@@ -291,7 +298,7 @@ export function HelpScreen({ state }: Readonly<{ state: AppRouterState }>): Reac
   const lines = [
     'Global: j/k or arrows move, Enter open, Esc back to Home, q quit',
     'Home: choose a destination from the colorful menu',
-    'Credentials: / search, r then y to REVEAL (15s), values masked by default',
+    'Credentials: / search, n put, m rename, x remove, r then y REVEAL (15s)',
     'Session: u unlock, l lock (clears revealed state)',
     'Doctor: d refresh checks | Recovery: final-slot revoke is blocked here',
     'Run: p dry-preview credential injection (no argv secrets)',

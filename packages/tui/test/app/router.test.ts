@@ -236,3 +236,125 @@ describe('static backend', () => {
     expect(result.snapshot.noticeTone).toBe('warning');
   });
 });
+
+describe('credential mutation overlays', () => {
+  it('dispatches put-credential after name and value overlays', () => {
+    let state = navigateToScreen(hydrate(), 'credentials');
+    state = transitionAppRouter(state, {
+      type: 'key',
+      key: { text: 'n' },
+      nowMs: 0,
+    }).state;
+    expect(state.overlay).toBe('input-put-name');
+    for (const ch of 'new-secret') {
+      state = transitionAppRouter(state, {
+        type: 'key',
+        key: { text: ch },
+        nowMs: 0,
+      }).state;
+    }
+    state = transitionAppRouter(state, {
+      type: 'key',
+      key: { name: 'return' },
+      nowMs: 0,
+    }).state;
+    expect(state.overlay).toBe('input-put-value');
+    expect(state.pendingName).toBe('new-secret');
+    for (const ch of 'value') {
+      state = transitionAppRouter(state, {
+        type: 'key',
+        key: { text: ch },
+        nowMs: 0,
+      }).state;
+    }
+    const saved = transitionAppRouter(state, {
+      type: 'key',
+      key: { name: 'return' },
+      nowMs: 1,
+    });
+    expect(saved.effect).toEqual({
+      kind: 'backend',
+      action: { type: 'put-credential', name: 'new-secret', value: 'value' },
+    });
+  });
+
+  it('dispatches rename-credential from m overlay', () => {
+    let state = navigateToScreen(hydrate(), 'credentials');
+    state = transitionAppRouter(state, {
+      type: 'key',
+      key: { text: 'm' },
+      nowMs: 0,
+    }).state;
+    expect(state.overlay).toBe('input-rename');
+    expect(state.pendingName).toBe('api-key');
+    for (const ch of 'api-key-2') {
+      state = transitionAppRouter(state, {
+        type: 'key',
+        key: { text: ch },
+        nowMs: 0,
+      }).state;
+    }
+    const renamed = transitionAppRouter(state, {
+      type: 'key',
+      key: { name: 'return' },
+      nowMs: 1,
+    });
+    expect(renamed.effect).toEqual({
+      kind: 'backend',
+      action: { type: 'rename-credential', from: 'api-key', to: 'api-key-2' },
+    });
+  });
+
+  it('requires confirm before remove-credential', () => {
+    let state = navigateToScreen(hydrate(), 'credentials');
+    state = transitionAppRouter(state, {
+      type: 'key',
+      key: { text: 'x' },
+      nowMs: 0,
+    }).state;
+    expect(state.overlay).toBe('confirm-remove');
+    expect(state.pendingName).toBe('api-key');
+    const removed = transitionAppRouter(state, {
+      type: 'key',
+      key: { text: 'y' },
+      nowMs: 1,
+    });
+    expect(removed.effect).toEqual({
+      kind: 'backend',
+      action: { type: 'remove-credential', name: 'api-key' },
+    });
+  });
+});
+
+describe('static backend mutations', () => {
+  it('puts renames and removes credentials in memory', async () => {
+    const backend = createStaticAppBackend(sampleSnapshot());
+    let result = await backend.dispatch({
+      type: 'put-credential',
+      name: 'token',
+      value: 'abc',
+    });
+    expect(result.snapshot.credentials.map((c) => c.name)).toContain('token');
+    expect(result.snapshot.noticeTone).toBe('success');
+
+    result = await backend.dispatch({
+      type: 'rename-credential',
+      from: 'token',
+      to: 'token-renamed',
+    });
+    expect(result.snapshot.credentials.map((c) => c.name)).toContain('token-renamed');
+    expect(result.snapshot.credentials.map((c) => c.name)).not.toContain('token');
+
+    result = await backend.dispatch({
+      type: 'remove-credential',
+      name: 'token-renamed',
+    });
+    expect(result.snapshot.credentials.map((c) => c.name)).not.toContain(
+      'token-renamed',
+    );
+
+    result = await backend.dispatch({ type: 'recovery-status' });
+    expect(result.snapshot.recovery.length).toBeGreaterThan(0);
+    expect(result.snapshot.notice).toMatch(/Recovery status/i);
+  });
+});

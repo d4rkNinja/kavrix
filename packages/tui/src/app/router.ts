@@ -21,9 +21,13 @@ export type AppOverlay =
   | 'confirm-reveal'
   | 'confirm-lock'
   | 'confirm-revoke-last'
+  | 'confirm-remove'
   | 'input-search'
   | 'input-run'
-  | 'input-passphrase';
+  | 'input-passphrase'
+  | 'input-put-name'
+  | 'input-put-value'
+  | 'input-rename';
 
 export interface AppRouterState {
   readonly screen: AppScreenId;
@@ -37,6 +41,8 @@ export interface AppRouterState {
   readonly height: number;
   readonly snapshot: AppSnapshot;
   readonly pendingRevealName: string | null;
+  /** Shared pending credential name for put/rename/remove overlays. */
+  readonly pendingName: string | null;
   readonly revealedName: string | null;
   /** Ephemeral plaintext; never copied into AppSnapshot. */
   readonly revealedValue: string | null;
@@ -81,6 +87,7 @@ export function createInitialAppRouterState(
     height: Math.max(12, options.height ?? 24),
     snapshot: emptySnapshot(),
     pendingRevealName: null,
+    pendingName: null,
     revealedName: null,
     revealedValue: null,
     revealedUntilMs: 0,
@@ -206,6 +213,36 @@ function screenKey(
       message: `REVEAL confirmation required for '${name}'.`,
     });
   }
+  if (key.text?.toLowerCase() === 'n' && state.screen === 'credentials') {
+    return unchanged({
+      ...state,
+      overlay: 'input-put-name',
+      query: '',
+      pendingName: null,
+      message: 'New credential name. Enter continues; Esc cancels.',
+    });
+  }
+  if (key.text?.toLowerCase() === 'm' && state.screen === 'credentials') {
+    const name = state.snapshot.credentials[state.listIndex]?.name;
+    if (name === undefined) return unchanged(state);
+    return unchanged({
+      ...state,
+      overlay: 'input-rename',
+      query: '',
+      pendingName: name,
+      message: `Rename '${name}' to:`,
+    });
+  }
+  if (key.text?.toLowerCase() === 'x' && state.screen === 'credentials') {
+    const name = state.snapshot.credentials[state.listIndex]?.name;
+    if (name === undefined) return unchanged(state);
+    return unchanged({
+      ...state,
+      overlay: 'confirm-remove',
+      pendingName: name,
+      message: `Remove credential '${name}'? y/n`,
+    });
+  }
   if (key.text?.toLowerCase() === 'u') {
     return unchanged({
       ...state,
@@ -305,6 +342,95 @@ function overlayKey(
       return unchanged({
         ...state,
         query: `${state.query}${key.text}`.slice(0, 1024),
+      });
+    }
+    return unchanged(state);
+  }
+  if (state.overlay === 'confirm-remove') {
+    if (key.text?.toLowerCase() === 'y') {
+      const name = state.pendingName;
+      if (name === null) return unchanged({ ...state, overlay: 'none' });
+      return effect(
+        { ...state, overlay: 'none', pendingName: null },
+        { kind: 'backend', action: { type: 'remove-credential', name } },
+      );
+    }
+    if (key.text?.toLowerCase() === 'n' || key.name === 'escape') {
+      return unchanged({
+        ...state,
+        overlay: 'none',
+        pendingName: null,
+        message: 'Remove cancelled.',
+      });
+    }
+    return unchanged(state);
+  }
+  if (
+    state.overlay === 'input-put-name' ||
+    state.overlay === 'input-put-value' ||
+    state.overlay === 'input-rename'
+  ) {
+    if (key.name === 'escape') {
+      return unchanged({
+        ...state,
+        overlay: 'none',
+        query: '',
+        pendingName: null,
+        message: 'Credential edit cancelled.',
+      });
+    }
+    if (key.name === 'backspace') {
+      return unchanged({ ...state, query: removeLast(state.query) });
+    }
+    if (key.name === 'return') {
+      if (state.overlay === 'input-put-name') {
+        const name = state.query.trim();
+        if (name.length === 0) {
+          return unchanged({
+            ...state,
+            message: 'Credential name cannot be empty.',
+          });
+        }
+        return unchanged({
+          ...state,
+          overlay: 'input-put-value',
+          pendingName: name,
+          query: '',
+          message: `Value for '${name}' (masked). Enter saves; Esc cancels.`,
+        });
+      }
+      if (state.overlay === 'input-put-value') {
+        const name = state.pendingName;
+        const value = state.query;
+        if (name === null || value.length === 0) {
+          return unchanged({
+            ...state,
+            message: 'Credential value cannot be empty.',
+          });
+        }
+        return effect(
+          { ...state, overlay: 'none', query: '', pendingName: null },
+          { kind: 'backend', action: { type: 'put-credential', name, value } },
+        );
+      }
+      const from = state.pendingName;
+      const to = state.query.trim();
+      if (from === null || to.length === 0) {
+        return unchanged({
+          ...state,
+          message: 'New credential name cannot be empty.',
+        });
+      }
+      return effect(
+        { ...state, overlay: 'none', query: '', pendingName: null },
+        { kind: 'backend', action: { type: 'rename-credential', from, to } },
+      );
+    }
+    if (isPrintable(key.text)) {
+      const limit = state.overlay === 'input-put-value' ? 4096 : 256;
+      return unchanged({
+        ...state,
+        query: `${state.query}${key.text}`.slice(0, limit),
       });
     }
     return unchanged(state);

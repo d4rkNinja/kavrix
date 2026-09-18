@@ -80,6 +80,9 @@ export type AppBackendAction =
   | Readonly<{ type: 'unlock'; passphrase: string }>
   | Readonly<{ type: 'lock' }>
   | Readonly<{ type: 'reveal-credential'; name: string }>
+  | Readonly<{ type: 'put-credential'; name: string; value: string }>
+  | Readonly<{ type: 'rename-credential'; from: string; to: string }>
+  | Readonly<{ type: 'remove-credential'; name: string }>
   | Readonly<{ type: 'search-credentials'; query: string }>
   | Readonly<{ type: 'run-doctor' }>
   | Readonly<{ type: 'recovery-status' }>
