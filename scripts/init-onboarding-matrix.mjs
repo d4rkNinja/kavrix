@@ -39,13 +39,21 @@ function run(args, opts = {}) {
     out.includes('--no-splash') &&
     out.includes('--passphrase-stdin') &&
     out.includes('--json');
-  record('help lists onboarding flags', ok ? 'PASS' : 'FAIL', ok ? '' : out.slice(0, 200));
+  record(
+    'help lists onboarding flags',
+    ok ? 'PASS' : 'FAIL',
+    ok ? '' : out.slice(0, 200),
+  );
 }
 
 // 2) Unknown TTY-less --ascii should parse (accepted option)
 {
   const r = run(['init', '--ascii', '--help']);
-  record('init --ascii accepted', r.status === 0 ? 'PASS' : 'FAIL', r.stderr.slice(0, 120));
+  record(
+    'init --ascii accepted',
+    r.status === 0 ? 'PASS' : 'FAIL',
+    r.stderr.slice(0, 120),
+  );
 }
 
 // 3) Non-interactive: missing passphrase-stdin frames → handleInit path, no hang
@@ -94,7 +102,10 @@ function run(args, opts = {}) {
         '--config-dir',
         join(dir, 'cfg'),
       ],
-      { input: 'correct horse battery staple\ncorrect horse battery staple\n', timeout: 60_000 },
+      {
+        input: 'correct horse battery staple\ncorrect horse battery staple\n',
+        timeout: 60_000,
+      },
     );
     // May succeed or fail depending on defaults; must not hang and must not be Ink
     const hung = r.error?.code === 'ETIMEDOUT';
@@ -255,7 +266,15 @@ function run(args, opts = {}) {
       { timeout: 15_000 },
     );
     const bad = run(
-      ['db', 'init', '--profile', 'matrixbad', '--config-dir', cfg, '--passphrase-stdin'],
+      [
+        'db',
+        'init',
+        '--profile',
+        'matrixbad',
+        '--config-dir',
+        cfg,
+        '--passphrase-stdin',
+      ],
       {
         input: `mongodb://127.0.0.1:1/?serverSelectionTimeoutMS=1000\nbad-db\n${passphrase}\n${passphrase}\n`,
         timeout: 25_000,
@@ -267,7 +286,9 @@ function run(args, opts = {}) {
       !hung && bad.status !== 0 ? 'PASS' : 'FAIL',
       hung ? 'timed out' : `exit=${String(bad.status)}`,
     );
-    run(['db', 'profile', 'remove', 'matrixbad', '--config-dir', cfg], { timeout: 10_000 });
+    run(['db', 'profile', 'remove', 'matrixbad', '--config-dir', cfg], {
+      timeout: 10_000,
+    });
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

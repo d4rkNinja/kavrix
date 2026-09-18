@@ -319,13 +319,45 @@ describe('root init onboarding composition', () => {
       vaultWasDefaulted: true as const,
       routingOverrides: {},
     };
-    const cases: Array<Readonly<{ label: string; patch: Record<string, unknown>; expectOnboarding: boolean; expectTui: boolean }>> = [
+    const cases: Array<
+      Readonly<{
+        label: string;
+        patch: Record<string, unknown>;
+        expectOnboarding: boolean;
+        expectTui: boolean;
+      }>
+    > = [
       { label: 'tty default', patch: {}, expectOnboarding: true, expectTui: true },
-      { label: '--no-tui', patch: { tui: false }, expectOnboarding: true, expectTui: false },
-      { label: '--passphrase-stdin', patch: { passphraseStdin: true }, expectOnboarding: false, expectTui: false },
-      { label: '--database-url-stdin', patch: { databaseUrlStdin: true }, expectOnboarding: false, expectTui: false },
-      { label: '--json', patch: { json: true }, expectOnboarding: false, expectTui: false },
-      { label: '--profile', patch: { profile: 'work' }, expectOnboarding: false, expectTui: false },
+      {
+        label: '--no-tui',
+        patch: { tui: false },
+        expectOnboarding: true,
+        expectTui: false,
+      },
+      {
+        label: '--passphrase-stdin',
+        patch: { passphraseStdin: true },
+        expectOnboarding: false,
+        expectTui: false,
+      },
+      {
+        label: '--database-url-stdin',
+        patch: { databaseUrlStdin: true },
+        expectOnboarding: false,
+        expectTui: false,
+      },
+      {
+        label: '--json',
+        patch: { json: true },
+        expectOnboarding: false,
+        expectTui: false,
+      },
+      {
+        label: '--profile',
+        patch: { profile: 'work' },
+        expectOnboarding: false,
+        expectTui: false,
+      },
       {
         label: 'explicit vault',
         patch: { vault: 'custom', vaultWasDefaulted: undefined },

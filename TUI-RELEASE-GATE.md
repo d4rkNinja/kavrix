@@ -119,17 +119,17 @@ pnpm exec vitest run apps/cli/test/init-onboarding-command.test.ts apps/cli/test
 MONGO_URL='mongodb://127.0.0.1:27017/?replicaSet=rs0' node scripts/init-onboarding-matrix.mjs
 ```
 
-| Case                                                                 | Result | How verified |
-| -------------------------------------------------------------------- | ------ | ------------ |
-| 1. TTY default → Ink TUI (file + mongodb paths)                      | PASS   | Router unit walk + `shouldRunInitTuiOnboarding` + init action invokes `runInitTuiOnboarding` (Ink mount needs real TTY; not driven headless) |
-| 2. `--no-tui` → classic guided prompts create vault + recovery       | PASS   | `init-onboarding-command` classic path test |
-| 3. Non-interactive (`--passphrase-stdin` / routing / `--json` / no TTY) → `handleInit`, never hangs waiting for Ink | PASS | Eligibility matrix + `init-onboarding-matrix.mjs` |
-| 4. Cancel / Esc / Ctrl+C mid TUI → clean exit; no partial corrupt profile | PASS | Router cancel/Esc; Ctrl+C ignored while `creating`; backend best-effort `db profile remove` on failed create |
-| 5. Validation errors (bad paths, mismatch, short passphrase, existing) → clear message, retry | PASS | Router unit tests (short/mismatch/invalid id) + conflict smoke |
-| 6. Mongo TUI path (URL + passphrase masked); no server → honest error | PASS | Router mongo effect + unreachable mongo smoke (serverSelection timeout); live mongo when `MONGO_URL` set |
-| 7. Already initialized / profile exists → clear conflict             | PASS   | Backend notice + matrix re-init conflict |
-| 8. Windows/ascii `--ascii` / win32 presentation                      | PASS   | `init --ascii` accepted; ascii presentation helpers; win32 → ascii in `runInitTuiOnboarding` |
-| 9. `--no-splash` does not break init onboarding                      | PASS   | Option wired into `runInitTuiOnboarding({ splash: false })`; SplashGate skip |
+| Case                                                                                                                | Result | How verified                                                                                                                                 |
+| ------------------------------------------------------------------------------------------------------------------- | ------ | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1. TTY default → Ink TUI (file + mongodb paths)                                                                     | PASS   | Router unit walk + `shouldRunInitTuiOnboarding` + init action invokes `runInitTuiOnboarding` (Ink mount needs real TTY; not driven headless) |
+| 2. `--no-tui` → classic guided prompts create vault + recovery                                                      | PASS   | `init-onboarding-command` classic path test                                                                                                  |
+| 3. Non-interactive (`--passphrase-stdin` / routing / `--json` / no TTY) → `handleInit`, never hangs waiting for Ink | PASS   | Eligibility matrix + `init-onboarding-matrix.mjs`                                                                                            |
+| 4. Cancel / Esc / Ctrl+C mid TUI → clean exit; no partial corrupt profile                                           | PASS   | Router cancel/Esc; Ctrl+C ignored while `creating`; backend best-effort `db profile remove` on failed create                                 |
+| 5. Validation errors (bad paths, mismatch, short passphrase, existing) → clear message, retry                       | PASS   | Router unit tests (short/mismatch/invalid id) + conflict smoke                                                                               |
+| 6. Mongo TUI path (URL + passphrase masked); no server → honest error                                               | PASS   | Router mongo effect + unreachable mongo smoke (serverSelection timeout); live mongo when `MONGO_URL` set                                     |
+| 7. Already initialized / profile exists → clear conflict                                                            | PASS   | Backend notice + matrix re-init conflict                                                                                                     |
+| 8. Windows/ascii `--ascii` / win32 presentation                                                                     | PASS   | `init --ascii` accepted; ascii presentation helpers; win32 → ascii in `runInitTuiOnboarding`                                                 |
+| 9. `--no-splash` does not break init onboarding                                                                     | PASS   | Option wired into `runInitTuiOnboarding({ splash: false })`; SplashGate skip                                                                 |
 
 **Honest limits:** full Ink keystroke drive of `kavrix init` still requires a real TTY (headless box covers routing/validation/backend; interactive paint is covered by unit router + manual/desktop demos). Mid-create SIGKILL can still leave orphan data/key files even after profile remove.
 

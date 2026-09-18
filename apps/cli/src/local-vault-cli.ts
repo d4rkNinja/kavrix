@@ -251,11 +251,11 @@ export function buildLocalCli(): Command {
   );
   init.option('--ascii', 'Force printable ASCII borders and glyphs (TUI onboarding).');
   init.option('--color', 'Force color when the terminal supports it (TUI onboarding).');
-  init.option('--no-color', 'Disable ANSI color for TUI onboarding (also honors NO_COLOR).');
   init.option(
-    '--no-splash',
-    'Skip the animated startup splash on TUI onboarding.',
+    '--no-color',
+    'Disable ANSI color for TUI onboarding (also honors NO_COLOR).',
   );
+  init.option('--no-splash', 'Skip the animated startup splash on TUI onboarding.');
   addKeyOptions(init);
   init.action(async (...args: unknown[]) => {
     const options = getOptions(args);

@@ -559,7 +559,6 @@ function commitInput(state: OnboardingState): OnboardingTransition {
   }
 }
 
-
 function stepBack(state: OnboardingState): OnboardingTransition {
   switch (state.step) {
     case 'file-profile-id':
