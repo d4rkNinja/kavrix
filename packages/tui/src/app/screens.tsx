@@ -5,14 +5,21 @@ import { BrandBanner } from '../showcase.js';
 import { sanitizeTerminalText, secretMask } from '../terminal-text.js';
 import type { AppSnapshot } from './backend.js';
 import { APP_MENU } from './ids.js';
-import type { AppRouterState } from './router.js';
+import type { AppOverlay, AppRouterState } from './router.js';
 import {
-  boxLine,
-  pointerGlyph,
-  sectionTitle,
+  doctorStatusAccent,
+  screenAccent,
   toneAccent,
   type AppAccent,
 } from './theme.js';
+import {
+  CardRow,
+  KeyChip,
+  ModalFrame,
+  Panel,
+  SelectRow,
+  StatusPill,
+} from './widgets.js';
 
 function tint(
   enabled: boolean,
@@ -25,127 +32,350 @@ function safe(value: string, ascii: boolean): string {
   return sanitizeTerminalText(value, ascii);
 }
 
+function overlayCopy(
+  overlay: AppOverlay,
+  query: string,
+  ascii: boolean,
+): Readonly<{ title: string; body: string; accent: AppAccent }> | null {
+  if (overlay === 'none') return null;
+  const masked = '*'.repeat(Math.min(query.length, 32));
+  const q = safe(query, ascii);
+  switch (overlay) {
+    case 'confirm-reveal':
+      return { title: 'Confirm reveal', body: 'REVEAL selected secret? y/n', accent: 'red' };
+    case 'confirm-lock':
+      return { title: 'Confirm lock', body: 'Lock session? y/n', accent: 'yellow' };
+    case 'confirm-remove':
+      return {
+        title: 'Confirm remove',
+        body: 'Remove credential? y/n',
+        accent: 'red',
+      };
+    case 'confirm-revoke-last':
+      return {
+        title: 'Recovery blocked',
+        body: 'Final recovery slot — revoke blocked without CLI warning. Esc/n',
+        accent: 'red',
+      };
+    case 'confirm-recovery-revoke':
+      return {
+        title: 'Revoke recovery',
+        body: 'Revoke recovery slot? y/n',
+        accent: 'red',
+      };
+    case 'confirm-policy-remove':
+      return {
+        title: 'Remove policy',
+        body: 'Remove policy? y/n',
+        accent: 'yellow',
+      };
+    case 'confirm-grant-revoke':
+      return {
+        title: 'Revoke grant',
+        body: 'Revoke grant? y/n',
+        accent: 'yellow',
+      };
+    case 'input-search':
+      return { title: 'Search', body: `Search: ${q}_`, accent: 'cyan' };
+    case 'input-run':
+      return { title: 'Run preview', body: `Run creds: ${q}_`, accent: 'cyan' };
+    case 'input-passphrase':
+      return {
+        title: 'Passphrase',
+        body: `Passphrase: ${masked}_`,
+        accent: 'yellow',
+      };
+    case 'input-put-name':
+      return { title: 'Put credential', body: `New name: ${q}_`, accent: 'green' };
+    case 'input-put-value':
+      return {
+        title: 'Put value',
+        body: `Value: ${masked}_`,
+        accent: 'green',
+      };
+    case 'input-rename':
+      return { title: 'Rename', body: `Rename to: ${q}_`, accent: 'green' };
+    case 'input-profile-id':
+      return {
+        title: 'File profile',
+        body: `Profile id: ${q}_`,
+        accent: 'blue',
+      };
+    case 'input-profile-data-file':
+      return {
+        title: 'File profile',
+        body: `Data file: ${q}_`,
+        accent: 'blue',
+      };
+    case 'input-profile-key-file':
+      return {
+        title: 'File profile',
+        body: `Key file: ${q}_`,
+        accent: 'blue',
+      };
+    case 'input-profile-passphrase':
+    case 'input-profile-passphrase-confirm':
+      return {
+        title: 'File profile passphrase',
+        body: `Passphrase: ${masked}_`,
+        accent: 'yellow',
+      };
+    case 'input-mongo-profile-id':
+      return {
+        title: 'Mongo profile',
+        body: `Mongo profile id: ${q}_`,
+        accent: 'blue',
+      };
+    case 'input-mongo-database':
+      return {
+        title: 'Mongo profile',
+        body: `Mongo database: ${q}_`,
+        accent: 'blue',
+      };
+    case 'input-mongo-key-file':
+      return {
+        title: 'Mongo profile',
+        body: `Mongo key file: ${q}_`,
+        accent: 'blue',
+      };
+    case 'input-mongo-url':
+    case 'input-unlock-mongo-url':
+      return {
+        title: 'Mongo URL',
+        body: `Mongo URL: ${masked}_`,
+        accent: 'yellow',
+      };
+    case 'input-mongo-passphrase':
+    case 'input-mongo-passphrase-confirm':
+      return {
+        title: 'Mongo passphrase',
+        body: `Passphrase: ${masked}_`,
+        accent: 'yellow',
+      };
+    case 'input-recovery-file':
+    case 'input-recovery-verify-file':
+      return {
+        title: 'Recovery file',
+        body: `Recovery file: ${q}_`,
+        accent: 'red',
+      };
+    case 'input-recovery-passphrase':
+    case 'input-recovery-passphrase-confirm':
+    case 'input-recovery-verify-passphrase':
+      return {
+        title: 'Recovery passphrase',
+        body: `Recovery passphrase: ${masked}_`,
+        accent: 'red',
+      };
+    case 'input-policy-id':
+      return {
+        title: 'Create policy',
+        body: `Policy id: ${q}_`,
+        accent: 'blue',
+      };
+    case 'input-policy-secret':
+      return {
+        title: 'Create policy',
+        body: `Policy secret: ${q}_`,
+        accent: 'blue',
+      };
+    case 'input-policy-command':
+      return {
+        title: 'Create policy',
+        body: `Policy command: ${q}_`,
+        accent: 'blue',
+      };
+    case 'input-grant-secret':
+      return {
+        title: 'Create grant',
+        body: `Grant secret: ${q}_`,
+        accent: 'blue',
+      };
+    case 'input-grant-command':
+      return {
+        title: 'Create grant',
+        body: `Grant command: ${q}_`,
+        accent: 'blue',
+      };
+    case 'input-grant-ttl':
+      return {
+        title: 'Create grant',
+        body: `Grant TTL: ${q}_`,
+        accent: 'blue',
+      };
+  }
+}
+
 export function AppChrome({
   state,
   children,
 }: Readonly<{ state: AppRouterState; children: ReactElement | ReactElement[] }>): ReactElement {
-  const { color, ascii, width } = state;
+  const { color, ascii, width, height } = state;
   const home = state.snapshot.home;
+  const accent = screenAccent(state.screen);
+  const overlay = overlayCopy(state.overlay, state.query, ascii);
+  const ellipsis = ascii ? '...' : '…';
+  const vaultShort =
+    home.vaultId === null
+      ? '-'
+      : home.vaultId.length > 12
+        ? `${home.vaultId.slice(0, 10)}${ellipsis}`
+        : home.vaultId;
+
   return (
-    <Box flexDirection="column" width={width}>
-      <BrandBanner color={color} ascii={ascii} />
-      <Text {...tint(color, 'gray')}>
-        {safe(
-          `profile=${home.profileId ?? '-'} vault=${home.vaultId ?? '-'} unlocked=${home.unlocked ? 'yes' : 'no'} creds=${String(home.credentialCount)}`,
-          ascii,
+    <Box flexDirection="column" width={width} height={height}>
+      <Panel accent={accent} ascii={ascii} color={color} paddingX={1} paddingY={0}>
+        <BrandBanner color={color} ascii={ascii} dualTone />
+        <Box flexDirection="row" columnGap={1} flexWrap="wrap" marginTop={0}>
+          <StatusPill
+            label="lock"
+            value={home.unlocked ? 'open' : 'locked'}
+            accent={home.unlocked ? 'green' : 'yellow'}
+            color={color}
+            ascii={ascii}
+          />
+          <StatusPill
+            label="profile"
+            value={home.profileId ?? '-'}
+            accent="blue"
+            color={color}
+            ascii={ascii}
+          />
+          <StatusPill
+            label="vault"
+            value={vaultShort}
+            accent="magenta"
+            color={color}
+            ascii={ascii}
+          />
+          <StatusPill
+            label="creds"
+            value={String(home.credentialCount)}
+            accent="green"
+            color={color}
+            ascii={ascii}
+          />
+        </Box>
+      </Panel>
+
+      <Box flexDirection="column" flexGrow={1} paddingX={0} paddingY={0}>
+        {overlay === null ? (
+          children
+        ) : (
+          <ModalFrame
+            title={overlay.title}
+            accent={overlay.accent}
+            ascii={ascii}
+            color={color}
+            width={width}
+          >
+            <Text bold {...tint(color, overlay.accent)}>
+              {safe(overlay.body, ascii)}
+            </Text>
+            <Text {...tint(color, 'gray')}>
+              {safe('Enter confirm · Esc cancel', ascii)}
+            </Text>
+          </ModalFrame>
         )}
-      </Text>
-      <Text {...tint(color, 'cyan')}>{boxLine(ascii, Math.min(width, 72))}</Text>
-      {children}
-      <Text {...tint(color, 'cyan')}>{boxLine(ascii, Math.min(width, 72))}</Text>
+      </Box>
+
       <Footer state={state} />
     </Box>
   );
 }
 
 function Footer({ state }: Readonly<{ state: AppRouterState }>): ReactElement {
-  const { color, ascii, overlay, message, snapshot } = state;
+  const { color, ascii, message, snapshot } = state;
   const notice = message ?? snapshot.notice;
   const noticeAccent = toneAccent(snapshot.noticeTone);
-  let overlayHint = '';
-  if (overlay === 'confirm-reveal') overlayHint = ' REVEAL? y/n';
-  if (overlay === 'confirm-lock') overlayHint = ' Lock session? y/n';
-  if (overlay === 'confirm-remove') overlayHint = ' Remove credential? y/n';
-  if (overlay === 'confirm-revoke-last')
-    overlayHint = ' Final recovery slot — revoke blocked without CLI warning. Esc/n';
-  if (overlay === 'input-search') overlayHint = ` Search: ${safe(state.query, ascii)}_`;
-  if (overlay === 'input-run') overlayHint = ` Run creds: ${safe(state.query, ascii)}_`;
-  if (overlay === 'input-passphrase')
-    overlayHint = ` Passphrase: ${'*'.repeat(Math.min(state.query.length, 32))}_`;
-  if (overlay === 'input-put-name')
-    overlayHint = ` New name: ${safe(state.query, ascii)}_`;
-  if (overlay === 'input-put-value')
-    overlayHint = ` Value: ${'*'.repeat(Math.min(state.query.length, 32))}_`;
-  if (overlay === 'input-rename')
-    overlayHint = ` Rename to: ${safe(state.query, ascii)}_`;
-  if (overlay === 'input-profile-id')
-    overlayHint = ` Profile id: ${safe(state.query, ascii)}_`;
-  if (overlay === 'input-profile-data-file')
-    overlayHint = ` Data file: ${safe(state.query, ascii)}_`;
-  if (overlay === 'input-profile-key-file')
-    overlayHint = ` Key file: ${safe(state.query, ascii)}_`;
-  if (overlay === 'input-profile-passphrase' || overlay === 'input-profile-passphrase-confirm')
-    overlayHint = ` Passphrase: ${'*'.repeat(Math.min(state.query.length, 32))}_`;
-  if (overlay === 'input-mongo-profile-id')
-    overlayHint = ` Mongo profile id: ${safe(state.query, ascii)}_`;
-  if (overlay === 'input-mongo-database')
-    overlayHint = ` Mongo database: ${safe(state.query, ascii)}_`;
-  if (overlay === 'input-mongo-key-file')
-    overlayHint = ` Mongo key file: ${safe(state.query, ascii)}_`;
-  if (overlay === 'input-mongo-url' || overlay === 'input-unlock-mongo-url')
-    overlayHint = ` Mongo URL: ${'*'.repeat(Math.min(state.query.length, 32))}_`;
-  if (overlay === 'input-mongo-passphrase' || overlay === 'input-mongo-passphrase-confirm')
-    overlayHint = ` Passphrase: ${'*'.repeat(Math.min(state.query.length, 32))}_`;
-  if (overlay === 'input-recovery-file' || overlay === 'input-recovery-verify-file')
-    overlayHint = ` Recovery file: ${safe(state.query, ascii)}_`;
-  if (
-    overlay === 'input-recovery-passphrase' ||
-    overlay === 'input-recovery-passphrase-confirm' ||
-    overlay === 'input-recovery-verify-passphrase'
-  )
-    overlayHint = ` Recovery passphrase: ${'*'.repeat(Math.min(state.query.length, 32))}_`;
-  if (overlay === 'confirm-recovery-revoke') overlayHint = ' Revoke recovery slot? y/n';
-  if (overlay === 'confirm-policy-remove') overlayHint = ' Remove policy? y/n';
-  if (overlay === 'confirm-grant-revoke') overlayHint = ' Revoke grant? y/n';
-  if (overlay === 'input-policy-id') overlayHint = ` Policy id: ${safe(state.query, ascii)}_`;
-  if (overlay === 'input-policy-secret') overlayHint = ` Policy secret: ${safe(state.query, ascii)}_`;
-  if (overlay === 'input-policy-command')
-    overlayHint = ` Policy command: ${safe(state.query, ascii)}_`;
-  if (overlay === 'input-grant-secret') overlayHint = ` Grant secret: ${safe(state.query, ascii)}_`;
-  if (overlay === 'input-grant-command')
-    overlayHint = ` Grant command: ${safe(state.query, ascii)}_`;
-  if (overlay === 'input-grant-ttl') overlayHint = ` Grant TTL: ${safe(state.query, ascii)}_`;
+  const sep = ascii ? ' | ' : ' · ';
   return (
     <Box flexDirection="column">
       {notice === null ? null : (
-        <Text {...tint(color, noticeAccent)}>{safe(notice, ascii)}</Text>
+        <Panel accent={noticeAccent} ascii={ascii} color={color} paddingX={1}>
+          <Text {...tint(color, noticeAccent)}>{safe(notice, ascii)}</Text>
+        </Panel>
       )}
-      {overlayHint.length === 0 ? null : (
-        <Text bold {...tint(color, 'yellow')}>
-          {safe(overlayHint, ascii)}
-        </Text>
-      )}
-      <Text {...tint(color, 'gray')}>
-        {ascii
-          ? 'j/k move | Enter open | Esc home | / search | u unlock | l lock | a ascii | ? help | q quit'
-          : 'j/k move · Enter open · Esc home · / search · u unlock · l lock · a ascii · ? help · q quit'}
-      </Text>
+      <Panel accent="gray" ascii={ascii} color={color} paddingX={1}>
+        <Box flexDirection="row" columnGap={1} flexWrap="wrap">
+          <KeyChip keyLabel="j/k" hint="move" color={color} keyAccent="cyan" />
+          <Text {...tint(color, 'gray')}>{sep}</Text>
+          <KeyChip keyLabel="Enter" hint="open" color={color} keyAccent="green" />
+          <Text {...tint(color, 'gray')}>{sep}</Text>
+          <KeyChip keyLabel="Esc" hint="home" color={color} keyAccent="yellow" />
+          <Text {...tint(color, 'gray')}>{sep}</Text>
+          <KeyChip keyLabel="/" hint="search" color={color} keyAccent="magenta" />
+          <Text {...tint(color, 'gray')}>{sep}</Text>
+          <KeyChip keyLabel="u" hint="unlock" color={color} keyAccent="green" />
+          <Text {...tint(color, 'gray')}>{sep}</Text>
+          <KeyChip keyLabel="l" hint="lock" color={color} keyAccent="yellow" />
+          <Text {...tint(color, 'gray')}>{sep}</Text>
+          <KeyChip keyLabel="a" hint="ascii" color={color} keyAccent="blue" />
+          <Text {...tint(color, 'gray')}>{sep}</Text>
+          <KeyChip keyLabel="?" hint="help" color={color} keyAccent="white" />
+          <Text {...tint(color, 'gray')}>{sep}</Text>
+          <KeyChip keyLabel="q" hint="quit" color={color} keyAccent="red" />
+        </Box>
+      </Panel>
     </Box>
   );
 }
 
 export function HomeScreen({ state }: Readonly<{ state: AppRouterState }>): ReactElement {
-  const { color, ascii, snapshot, menuIndex } = state;
+  const { color, ascii, snapshot, menuIndex, width } = state;
   const entries = APP_MENU.filter((entry) => entry.id !== 'home');
-  const pointer = pointerGlyph(ascii);
-  return (
-    <Box flexDirection="column" gap={1}>
-      <Text bold {...tint(color, 'cyan')}>
-        {sectionTitle('Home / Dashboard', ascii)}
-      </Text>
+  const wide = width >= 80;
+  const statusPanel = (
+    <Panel
+      title="Home / Dashboard"
+      accent="cyan"
+      ascii={ascii}
+      color={color}
+      {...(wide ? { flexGrow: 1 } : {})}
+      paddingX={1}
+      paddingY={0}
+    >
       <StatusBlock snapshot={snapshot} color={color} ascii={ascii} />
-      <Text bold {...tint(color, 'magenta')}>
-        Navigate
-      </Text>
+    </Panel>
+  );
+  const navPanel = (
+    <Panel
+      title="Navigate"
+      accent="magenta"
+      ascii={ascii}
+      color={color}
+      {...(wide ? { flexGrow: 1 } : {})}
+      paddingX={1}
+      paddingY={0}
+    >
       {entries.map((entry, index) => {
         const active = index === menuIndex;
         return (
-          <Text key={entry.id} bold={active} {...tint(color, active ? entry.accent : 'gray')}>
-            {active ? pointer : ' '} {safe(entry.label, ascii)}{' '}
-            <Text {...tint(color, 'gray')}>{safe(entry.hint, ascii)}</Text>
-          </Text>
+          <SelectRow
+            key={entry.id}
+            active={active}
+            label={entry.label}
+            hint={entry.hint}
+            accent={entry.accent}
+            color={color}
+            ascii={ascii}
+          />
         );
       })}
+    </Panel>
+  );
+  if (wide) {
+    return (
+      <Box flexDirection="row" columnGap={1} flexGrow={1}>
+        {statusPanel}
+        {navPanel}
+      </Box>
+    );
+  }
+  return (
+    <Box flexDirection="column" gap={0} flexGrow={1}>
+      {statusPanel}
+      {navPanel}
     </Box>
   );
 }
@@ -159,13 +389,19 @@ function StatusBlock({
   return (
     <Box flexDirection="column">
       <Text {...tint(color, home.unlocked ? 'green' : 'yellow')}>
-        {home.unlocked ? (ascii ? '[OK] Unlocked' : '● Unlocked') : ascii ? '[!] Locked' : '○ Locked'}
+        {home.unlocked
+          ? ascii
+            ? '[OK] Unlocked'
+            : '\u25cf Unlocked'
+          : ascii
+            ? '[!] Locked'
+            : '\u25cb Locked'}
       </Text>
       <Text>
         Datastore:{' '}
         <Text {...tint(color, 'cyan')}>{safe(home.datastore ?? '(none)', ascii)}</Text>
       </Text>
-      <Text>{safe(home.message, ascii)}</Text>
+      <Text {...tint(color, 'gray')}>{safe(home.message, ascii)}</Text>
     </Box>
   );
 }
@@ -173,7 +409,7 @@ function StatusBlock({
 export function ProfilesScreen({ state }: Readonly<{ state: AppRouterState }>): ReactElement {
   const { color, ascii } = state;
   return (
-    <Box flexDirection="column" gap={1}>
+    <Box flexDirection="column" flexGrow={1}>
       <ListScreen
         state={state}
         title="Profiles"
@@ -213,53 +449,75 @@ export function VaultsScreen({ state }: Readonly<{ state: AppRouterState }>): Re
 
 export function CredentialsScreen({ state }: Readonly<{ state: AppRouterState }>): ReactElement {
   const { color, ascii, listIndex, revealedName, revealedValue } = state;
-  const pointer = pointerGlyph(ascii);
   return (
-    <Box flexDirection="column" gap={1}>
-      <Text bold {...tint(color, 'green')}>
-        {sectionTitle('Credentials', ascii)}
-      </Text>
-      <Text {...tint(color, 'gray')}>
-        Values stay masked. n put · m rename · x remove · r then y REVEAL (15s).
-      </Text>
-      {state.snapshot.credentials.length === 0 ? (
-        <Text {...tint(color, 'yellow')}>No credentials (unlock or refresh).</Text>
-      ) : (
-        state.snapshot.credentials.map((credential, index) => {
-          const active = index === listIndex;
-          const revealed = revealedName === credential.name;
-          return (
-            <Box key={credential.name} flexDirection="column">
-              <Text bold={active} {...tint(color, active ? 'green' : 'gray')}>
-                {active ? pointer : ' '} {safe(credential.name, ascii)}
-              </Text>
-              <Text {...tint(color, revealed ? 'red' : 'gray')}>
-                {'    '}
-                {revealed
-                  ? safe(`REVEAL: ${revealedValue ?? ''}`, ascii)
-                  : safe(credential.maskedValue || secretMask(ascii), ascii)}
-              </Text>
-            </Box>
-          );
-        })
-      )}
+    <Box flexDirection="column" flexGrow={1}>
+      <Panel title="Credentials" accent="green" ascii={ascii} color={color} paddingX={1}>
+        <Text {...tint(color, 'gray')}>
+          Values stay masked. n put · m rename · x remove · r then y REVEAL (15s).
+        </Text>
+        {state.snapshot.credentials.length === 0 ? (
+          <Text {...tint(color, 'yellow')}>No credentials (unlock or refresh).</Text>
+        ) : (
+          state.snapshot.credentials.map((credential, index) => {
+            const active = index === listIndex;
+            const revealed = revealedName === credential.name;
+            return (
+              <Box key={credential.name} flexDirection="column" marginTop={0}>
+                <CardRow
+                  active={active}
+                  title={credential.name}
+                  subtitle={
+                    revealed
+                      ? ''
+                      : credential.maskedValue || secretMask(ascii)
+                  }
+                  accent="green"
+                  color={color}
+                  ascii={ascii}
+                />
+                {revealed ? (
+                  <Panel accent="red" ascii={ascii} color={color} paddingX={1} kind="panel">
+                    <Text bold {...tint(color, 'red')}>
+                      {safe(`REVEAL: ${revealedValue ?? ''}`, ascii)}
+                    </Text>
+                  </Panel>
+                ) : null}
+              </Box>
+            );
+          })
+        )}
+      </Panel>
     </Box>
   );
 }
 
 export function DoctorScreen({ state }: Readonly<{ state: AppRouterState }>): ReactElement {
+  const { color, ascii, listIndex } = state;
+  const rows = state.snapshot.doctor;
   return (
-    <ListScreen
-      state={state}
-      title="Doctor"
-      accent="yellow"
-      empty="Press d to run doctor checks."
-      rows={state.snapshot.doctor.map((check) => ({
-        id: check.name,
-        primary: `${check.status.toUpperCase()} ${check.name}`,
-        secondary: check.detail,
-      }))}
-    />
+    <Panel title="Doctor" accent="yellow" ascii={ascii} color={color} paddingX={1} flexGrow={1}>
+      {rows.length === 0 ? (
+        <Text {...tint(color, 'yellow')}>
+          {safe('Press d to run doctor checks.', ascii)}
+        </Text>
+      ) : (
+        rows.map((check, index) => {
+          const active = index === listIndex;
+          const statusAccent = doctorStatusAccent(check.status);
+          return (
+            <SelectRow
+              key={check.name}
+              active={active}
+              label={`${check.status.toUpperCase()} ${check.name}`}
+              hint={check.detail}
+              accent={statusAccent}
+              color={color}
+              ascii={ascii}
+            />
+          );
+        })
+      )}
+    </Panel>
   );
 }
 
@@ -282,15 +540,12 @@ export function RecoveryScreen({ state }: Readonly<{ state: AppRouterState }>): 
 export function RunScreen({ state }: Readonly<{ state: AppRouterState }>): ReactElement {
   const { color, ascii, snapshot } = state;
   return (
-    <Box flexDirection="column" gap={1}>
-      <Text bold {...tint(color, 'cyan')}>
-        {sectionTitle('Run (dry preview)', ascii)}
-      </Text>
+    <Panel title="Run (dry preview)" accent="cyan" ascii={ascii} color={color} paddingX={1}>
       <Text {...tint(color, 'gray')}>
         Press p, type credential names, Enter. Secrets are never placed on argv.
       </Text>
       <Text>{safe(snapshot.runPreview, ascii)}</Text>
-    </Box>
+    </Panel>
   );
 }
 
@@ -313,13 +568,10 @@ export function PolicyScreen({ state }: Readonly<{ state: AppRouterState }>): Re
 export function AgentScreen({ state }: Readonly<{ state: AppRouterState }>): ReactElement {
   const { color, ascii, snapshot } = state;
   return (
-    <Box flexDirection="column" gap={1}>
-      <Text bold {...tint(color, 'magenta')}>
-        {sectionTitle('Agent', ascii)}
-      </Text>
+    <Panel title="Agent" accent="magenta" ascii={ascii} color={color} paddingX={1}>
       <Text {...tint(color, 'gray')}>Press g for an agent config dry-run.</Text>
       <Text>{safe(snapshot.agentStatus, ascii)}</Text>
-    </Box>
+    </Panel>
   );
 }
 
@@ -357,14 +609,11 @@ export function HelpScreen({ state }: Readonly<{ state: AppRouterState }>): Reac
     'Windows: ASCII borders default on win32; paths use node:path joins',
   ];
   return (
-    <Box flexDirection="column" gap={1}>
-      <Text bold {...tint(color, 'white')}>
-        {sectionTitle('Help / Keymap', ascii)}
-      </Text>
+    <Panel title="Help / Keymap" accent="white" ascii={ascii} color={color} paddingX={1}>
       {lines.map((line) => (
         <Text key={line}>{safe(line, ascii)}</Text>
       ))}
-    </Box>
+    </Panel>
   );
 }
 
@@ -382,28 +631,27 @@ function ListScreen({
   rows: readonly Readonly<{ id: string; primary: string; secondary: string }>[];
 }>): ReactElement {
   const { color, ascii, listIndex } = state;
-  const pointer = pointerGlyph(ascii);
   return (
-    <Box flexDirection="column" gap={1}>
-      <Text bold {...tint(color, accent)}>
-        {sectionTitle(title, ascii)}
-      </Text>
+    <Panel title={title} accent={accent} ascii={ascii} color={color} paddingX={1} flexGrow={1}>
       {rows.length === 0 ? (
         <Text {...tint(color, 'yellow')}>{safe(empty, ascii)}</Text>
       ) : (
         rows.map((row, index) => {
           const active = index === listIndex;
           return (
-            <Box key={row.id} flexDirection="column">
-              <Text bold={active} {...tint(color, active ? accent : 'gray')}>
-                {active ? pointer : ' '} {safe(row.primary, ascii)}
-              </Text>
-              <Text {...tint(color, 'gray')}>{'    '}{safe(row.secondary, ascii)}</Text>
-            </Box>
+            <SelectRow
+              key={row.id}
+              active={active}
+              label={row.primary}
+              hint={row.secondary}
+              accent={accent}
+              color={color}
+              ascii={ascii}
+            />
           );
         })
       )}
-    </Box>
+    </Panel>
   );
 }
 
@@ -433,14 +681,18 @@ export function renderActiveScreen(state: AppRouterState): ReactElement {
       return <HelpScreen state={state} />;
     case 'showcase':
       return (
-        <Box flexDirection="column">
-          <Text bold {...tint(state.color, 'yellow')}>
-            {sectionTitle('Storage showcase', state.ascii)}
-          </Text>
+        <Panel
+          title="Storage showcase"
+          accent="yellow"
+          ascii={state.ascii}
+          color={state.color}
+          paddingX={1}
+        >
           <Text {...tint(state.color, 'gray')}>
             Presentational init helper remains available via kavrix init flows.
           </Text>
-        </Box>
+        </Panel>
       );
   }
 }
+

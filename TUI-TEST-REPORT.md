@@ -23,17 +23,33 @@ agent-dry-run / browse actions via `createCliTuiBackend` (production).
 | `node scripts/tui-vault-smoke.mjs` | PASS (real HOME vault; recovery/policy/grant/doctor/preview/agent/browse) |
 | `MONGO_URL=…rs0` + vault-smoke | **PASS** including `create-mongodb-profile` (live replica set on 127.0.0.1:27017) |
 
+
+## UI enhancement (Ink + OpenTUI skill patterns)
+
+Presentation-only redesign (2026-09-18): OpenTUI skill layouts/containers/selects
+adapted to Ink for cross-OS Node CLI. See `UI-ENHANCEMENT.md`.
+
+| Check | Result |
+| --- | --- |
+| Full-screen header / content / footer | PASS |
+| Status pills + key chips footer | PASS |
+| Panels (`round` / `double` / ASCII `classic`) | PASS |
+| Home width≥80 split / narrow stack | PASS |
+| Overlay modals (passphrase / confirm) | PASS |
+| ASCII / win32 / NO_COLOR | PASS (68 unit tests + smoke render) |
+| `createCliTuiBackend` wiring unchanged | PASS (presentation-only) |
+
 ## Screens
 
 | Screen | Linux TTY color | ASCII mode | NO_COLOR | Windows path assumptions | Notes |
 | --- | --- | --- | --- | --- | --- |
-| Home / dashboard | PASS | PASS | PASS | PASS | Colorful banner + menu; `BrandBanner` shared |
+| Home / dashboard | PASS | PASS | PASS | PASS | Dual-tone banner + status pills; width≥80 split panels; `BrandBanner` shared |
 | Profiles | PASS | PASS | PASS | PASS | Enter = use-profile; `n` = file; `m` = mongodb |
 | Vaults | PASS | PASS | PASS | PASS | Selection + status from session |
-| Credentials (masked) | PASS | PASS | PASS | PASS | Masked by default |
-| Credentials (REVEAL) | PASS | PASS | PASS | PASS | Confirm overlay required; 15s clear |
+| Credentials (masked) | PASS | PASS | PASS | PASS | Card rows in green panel; mask `••••••••` / ASCII `********` |
+| Credentials (REVEAL) | PASS | PASS | PASS | PASS | Modal confirm + red inset reveal panel; 15s clear |
 | Credentials (put/rename/remove) | PASS | PASS | PASS | PASS | `n` put, `m` rename, `x` confirm-remove; stdin frames only |
-| Doctor | PASS | PASS | PASS | PASS | `d` / enter runs real `doctor` or `db doctor health`; rows from CLI JSON |
+| Doctor | PASS | PASS | PASS | PASS | Yellow panel; pass/warn/fail colorized SelectRows; real CLI doctor |
 | Recovery | PASS | PASS | PASS | PASS | `n` create, `v` verify, Enter/`x` revoke; last active slot blocked |
 | Run | PASS | PASS | PASS | PASS | `p` → list+has + `kavrix run --help` (no secret inject; no `--dry-run` on run) |
 | Policy / Grant / Audit | PASS | PASS | PASS | PASS | Enter refresh; `n`/`x` policy; `g`/`r` grant — real CLI |

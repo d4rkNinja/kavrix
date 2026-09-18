@@ -18,6 +18,7 @@ const SPINNER_FRAMES = [
 ];
 const ASCII_SPINNER_FRAMES = ['|', '/', '-', '\\'];
 const ACCENT_CYCLE = ['cyan', 'magenta', 'blue', 'green'] as const;
+const DUAL_TONE = ['cyan', 'magenta'] as const;
 type Accent = (typeof ACCENT_CYCLE)[number] | 'gray' | 'yellow';
 const ANIMATION_INTERVAL_MS = 120;
 
@@ -86,7 +87,7 @@ export function StorageSelectionShowcase({
 
   return (
     <Box flexDirection="column" gap={1}>
-      <BrandBanner color={color} ascii={ascii} />
+      <BrandBanner color={color} ascii={ascii} dualTone />
       <Text bold {...(color ? { color: 'cyan' as const } : {})}>
         STEP 2 / STORAGE
       </Text>
@@ -94,15 +95,34 @@ export function StorageSelectionShowcase({
         Both choices preserve client-side encryption. The datastore never receives a
         vault key.
       </Text>
-      <Box flexDirection="column">
+      <Box
+        flexDirection="column"
+        borderStyle={ascii ? 'classic' : 'round'}
+        {...(color ? { borderColor: 'cyan' as const } : {})}
+        paddingX={1}
+      >
         {options.map((option) => {
           const active = option.id === selected;
+          if (active) {
+            return (
+              <Box key={option.id} flexDirection="column">
+                <Text bold {...tint(color, accent)} inverse={color}>
+                  {` ${pointer} ${option.title} `}
+                </Text>
+                <Text {...tint(color, option.tint)}>
+                  {'  '}
+                  {option.description}
+                </Text>
+              </Box>
+            );
+          }
           return (
             <Box key={option.id} flexDirection="column">
-              <Text bold={active} {...tint(color, active ? accent : 'gray')}>
-                {active ? pointer : ' '} {option.title}
+              <Text dimColor {...tint(color, 'gray')}>
+                {' '}
+                {option.title}
               </Text>
-              <Text {...tint(color, active ? option.tint : 'gray')}>
+              <Text {...tint(color, 'gray')}>
                 {'  '}
                 {option.description}
               </Text>
@@ -120,31 +140,37 @@ export function StorageSelectionShowcase({
 }
 
 /**
- * Color-cycling brandmark shown while an interactive showcase is open. Letter
- * order stays stable so snapshots and screen readers remain deterministic.
+ * Dual-tone (cyan/magenta) brandmark for app chrome and showcases.
+ * Letter order stays stable so snapshots and screen readers remain deterministic.
+ * When `dualTone` is true, accents alternate cyan/magenta; otherwise the
+ * historic multi-accent animation is used.
  */
 export function BrandBanner({
   color = false,
   ascii = false,
-}: Readonly<{ color?: boolean; ascii?: boolean }>): ReactElement {
+  dualTone = false,
+}: Readonly<{ color?: boolean; ascii?: boolean; dualTone?: boolean }>): ReactElement {
   const frame = useShowcaseFrame();
   const title = sanitizeTerminalText('Kavrix', ascii).toUpperCase();
+  const palette = dualTone ? DUAL_TONE : ACCENT_CYCLE;
   return (
-    <Box flexDirection="row" columnGap={2}>
-      <Text bold>
-        {Array.from(title).map((letter, index) => (
-          <Text
-            key={`${letter}-${String(index)}`}
-            {...tint(
-              color,
-              ACCENT_CYCLE[(frame + index) % ACCENT_CYCLE.length] ?? 'cyan',
-            )}
-          >
-            {letter}
-          </Text>
-        ))}
-      </Text>
-      <Text {...tint(color, 'gray')}>zero-knowledge credential vault</Text>
+    <Box flexDirection="column">
+      <Box flexDirection="row" columnGap={2}>
+        <Text bold>
+          {Array.from(title).map((letter, index) => (
+            <Text
+              key={`${letter}-${String(index)}`}
+              {...tint(
+                color,
+                (palette[(frame + index) % palette.length] ?? 'cyan') as Accent,
+              )}
+            >
+              {letter}
+            </Text>
+          ))}
+        </Text>
+        <Text {...tint(color, 'gray')}>zero-knowledge credential vault</Text>
+      </Box>
     </Box>
   );
 }

@@ -10,6 +10,9 @@ export type AppAccent =
   | 'white'
   | 'gray';
 
+/** Ink `borderStyle` keys we use for OpenTUI-like panels. */
+export type PanelBorderStyle = 'round' | 'double' | 'single' | 'classic';
+
 export function resolveAppPresentation(options: Readonly<{
   color?: boolean;
   ascii?: boolean;
@@ -62,4 +65,66 @@ export function boxLine(ascii: boolean, width: number): string {
 
 export function sectionTitle(label: string, ascii: boolean): string {
   return ascii ? `[ ${label.toUpperCase()} ]` : `\u2500 ${label} \u2500`;
+}
+
+/**
+ * OpenTUI borderStyle mapping for Ink:
+ * - unicode panels → `round` (╭─╮)
+ * - unicode modals → `double` (╔═╗)
+ * - ascii / win32 / --ascii → `classic` (+-+|) — ASCII-safe single border
+ */
+export function panelBorderStyle(
+  ascii: boolean,
+  kind: 'panel' | 'modal' = 'panel',
+): PanelBorderStyle {
+  if (ascii) return 'classic';
+  return kind === 'modal' ? 'double' : 'round';
+}
+
+/** Per-screen border / accent colors (OpenTUI container accents). */
+export function screenAccent(screen: string): AppAccent {
+  switch (screen) {
+    case 'home':
+      return 'cyan';
+    case 'credentials':
+    case 'browse':
+      return 'green';
+    case 'doctor':
+      return 'yellow';
+    case 'recovery':
+      return 'red';
+    case 'vaults':
+    case 'agent':
+      return 'magenta';
+    case 'profiles':
+    case 'policy':
+      return 'blue';
+    case 'run':
+      return 'cyan';
+    case 'help':
+      return 'white';
+    case 'showcase':
+      return 'yellow';
+    default:
+      return 'cyan';
+  }
+}
+
+export function doctorStatusAccent(status: string): AppAccent {
+  const normalized = status.toLowerCase();
+  if (normalized === 'ok' || normalized === 'pass' || normalized === 'passed') {
+    return 'green';
+  }
+  if (normalized === 'warn' || normalized === 'warning') {
+    return 'yellow';
+  }
+  if (
+    normalized === 'fail' ||
+    normalized === 'failed' ||
+    normalized === 'error' ||
+    normalized === 'critical'
+  ) {
+    return 'red';
+  }
+  return 'gray';
 }
