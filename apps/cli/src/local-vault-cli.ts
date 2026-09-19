@@ -102,13 +102,22 @@ import {
 } from './init-onboarding.js';
 import {
   executeGuidedLocalOnboarding,
+  executeLocalDatabaseOnboarding,
   preflightGuidedLocalOnboarding,
+  preflightLocalDatabaseOnboarding,
 } from './local-database-onboarding.js';
 import {
   LocalSecretInput,
   LocalSecretInputError,
   type LocalSecretKind,
 } from './local-secrets.js';
+import {
+  INVALID_ROOT_DATASTORE_MESSAGE,
+  addRootDatastoreOption,
+  parseRootDatastore,
+  resolveRootDatastore,
+  type RootDatastore,
+} from './root-datastore.js';
 import { CLI_VERSION } from './version.js';
 import { applyStdinFrameHelp, registerFramesCommand } from './stdin-frames.js';
 import { registerExecutionCommands } from './execution/register.js';
@@ -186,6 +195,8 @@ export type LocalCliOptions = Readonly<{
   acceptCurrent?: boolean;
   reveal?: boolean;
   json?: boolean;
+  /** Explicit legacy version-2 single-vault init (migrate sources only). */
+  legacy?: boolean;
   /** Commander `--no-tui` sets `tui: false` (default true). */
   tui?: boolean;
   /** TUI presentation: `--ascii` / `--color` / `--no-color` / `--no-splash`. */
@@ -218,14 +229,15 @@ export function buildLocalCli(): Command {
   const init = program
     .command('init')
     .description(
-      'Create a vault interactively (Ink TUI on TTY by default). Explicit routing / stdin flags use non-interactive init; --no-tui uses classic guided prompts.',
+      'Create a bound local database vault (Ink TUI on TTY by default). Scripted/--json file init creates a selected datastore profile so put/run work immediately; --no-tui uses classic guided prompts; --legacy keeps version-2 single-vault migrate sources.',
     );
-  // Root init deliberately defaults to the local encrypted-file datastore;
-  // MongoDB requires an explicit `--datastore mongodb` choice outside the
-  // guided wizard as well.
-  init
-    .option('--datastore <type>', 'Encrypted datastore: file or mongodb.', 'file')
-    .option('--data-file <path>', 'Encrypted local vault file path.')
+  // Root init and CRUD share DEFAULT_ROOT_DATASTORE (file). MongoDB requires
+  // an explicit `--datastore mongodb` choice outside the guided wizard.
+  addRootDatastoreOption(init)
+    .option(
+      '--data-file <path>',
+      'Encrypted local database (or legacy vault) file path.',
+    )
     .option(
       '--allow-insecure-transport',
       'Explicitly permit unencrypted transport to a non-local MongoDB (isolated networks only).',
@@ -240,6 +252,14 @@ export function buildLocalCli(): Command {
   init.option(
     '--passphrase-stdin',
     'Read the key-file passphrase from standard input (never from an argument).',
+  );
+  init.option(
+    '--recovery-file <path>',
+    'Optional recovery-kit path for scripted file init (adds recovery passphrase frames).',
+  );
+  init.option(
+    '--legacy',
+    'Create a legacy version-2 single-vault (migrate sources only); skips database-container onboarding.',
   );
   init.option(
     '--no-tui',
@@ -387,7 +407,7 @@ export function buildLocalCli(): Command {
   const migrateDatabase = migrate
     .command('database')
     .description(
-      'Copy one legacy version 2 vault into an existing database. Prepare a legacy source profile (no databaseId; `kavrix init --passphrase-stdin` vault+key) and a bound destination (`db init`). Then: `kavrix migrate database --source-profile <legacy> --destination-profile <db> --source-vault <id> --secrets-stdin` with frames from `kavrix frames migrate database`.',
+      'Copy one legacy version 2 vault into an existing database. Prepare a legacy source profile (no databaseId; `kavrix init --legacy --passphrase-stdin` vault+key) and a bound destination (`db init`). Then: `kavrix migrate database --source-profile <legacy> --destination-profile <db> --source-vault <id> --secrets-stdin` with frames from `kavrix frames migrate database`.',
     );
   migrateDatabase
     .requiredOption('--source-profile <id>', 'Legacy version 2 datastore profile.')
@@ -1113,9 +1133,11 @@ function profileRoutingOverrides(
   };
 }
 
-function parseExplicitDatastore(value: string | undefined): 'mongodb' | 'file' {
-  if (value === 'mongodb' || value === 'file') return value;
-  throw new LocalCliError('--datastore must be mongodb or file.');
+function parseExplicitDatastore(value: string | undefined): RootDatastore {
+  if (value === undefined) {
+    throw new LocalCliError(INVALID_ROOT_DATASTORE_MESSAGE);
+  }
+  return parseRootDatastore(value);
 }
 
 async function resolveProfileForPing(
@@ -1170,8 +1192,7 @@ async function resolveProfileForPing(
 }
 
 function addDatabaseOnlyOptions(command: Command): void {
-  command
-    .option('--datastore <type>', 'Encrypted datastore: mongodb or file.', 'mongodb')
+  addRootDatastoreOption(command)
     .option('--data-file <path>', 'Encrypted local vault file path.')
     .option(
       '--allow-insecure-transport',
@@ -1764,6 +1785,154 @@ async function validateInitDestinations(options: LocalCliOptions): Promise<void>
 }
 
 async function handleInit(options: LocalCliOptions): Promise<void> {
+  if (options.legacy === true) {
+    await handleLegacyVaultInit(options);
+    return;
+  }
+  const datastore = datastoreFrom(options);
+  if (datastore === 'mongodb') {
+    throw new LocalCliError(
+      [
+        'Scripted MongoDB init no longer creates a legacy single-vault by default.',
+        'Use the database-container recipe:',
+        '  kavrix db profile add <id> --datastore mongodb --database <name> --key-file <path>',
+        '  kavrix db profile use <id>',
+        '  kavrix frames "db init"  # then pipe frames into: kavrix db init --profile <id> --passphrase-stdin',
+        '  kavrix db vault create --profile <id> --passphrase-stdin',
+        '  kavrix db vault use <vault-id> --profile <id> --passphrase-stdin',
+        'For legacy version-2 migrate sources only, pass --legacy.',
+      ].join('\n'),
+    );
+  }
+  await handleDatabaseContainerInit(options);
+}
+
+/**
+ * Scripted/non-interactive file init: one bound profile, initialized database,
+ * and default vault so `put` / `run` / policy work without a second onboarding
+ * path. Recovery is optional (`--recovery-file` + recovery passphrase frames).
+ */
+async function handleDatabaseContainerInit(options: LocalCliOptions): Promise<void> {
+  const { ensureKavrixConfig, getKavrixConfigPath } =
+    await import('./kavrix-config.js');
+  await ensureKavrixConfig();
+  const reservedPaths = [getKavrixConfigPath()];
+  const destinations = await resolveScriptedLocalOnboardingDestinations(
+    options,
+    reservedPaths,
+  );
+  await preflightLocalDatabaseOnboarding(destinations);
+
+  const includeRecovery = destinations.recoveryFile !== undefined;
+  const secretKinds = includeRecovery
+    ? ([
+        'passphrase',
+        'passphrase',
+        'recovery-passphrase',
+        'recovery-passphrase',
+      ] as const)
+    : (['passphrase', 'passphrase'] as const);
+  const values = await readSecrets([...secretKinds], {
+    ...options,
+    datastore: 'file',
+    dataFile: destinations.dataFile,
+  });
+  const ownerPassphraseValue = requiredSecret(values, 0);
+  const ownerConfirmation = requiredSecret(values, 1);
+  if (ownerPassphraseValue !== ownerConfirmation) {
+    throw new LocalCliError('Passphrases do not match.');
+  }
+  let recoveryPassphraseValue: string | undefined;
+  if (includeRecovery) {
+    recoveryPassphraseValue = requiredSecret(values, 2);
+    const recoveryConfirmation = requiredSecret(values, 3);
+    if (recoveryPassphraseValue !== recoveryConfirmation) {
+      throw new LocalCliError('Recovery passphrases do not match.');
+    }
+    if (ownerPassphraseValue === recoveryPassphraseValue) {
+      throw new LocalCliError('Use a different passphrase for the recovery kit.');
+    }
+  }
+
+  const ownerPassphrase = Buffer.from(ownerPassphraseValue, 'utf8');
+  const recoveryPassphrase =
+    recoveryPassphraseValue === undefined
+      ? undefined
+      : Buffer.from(recoveryPassphraseValue, 'utf8');
+  try {
+    const vaultLabel = options.vaultWasDefaulted === true ? 'default' : options.vault;
+    const receipt = await executeLocalDatabaseOnboarding({
+      ...destinations,
+      databaseLabel: 'default',
+      ownerPassphrase,
+      vaultLabel,
+      ...(recoveryPassphrase === undefined ? {} : { recoveryPassphrase }),
+    });
+    writeJson({
+      initialized: true,
+      kind: 'database-container',
+      profileId: receipt.profileId,
+      databaseId: receipt.databaseId,
+      vaultId: receipt.vaultId,
+      datastore: 'file',
+      dataFile: receipt.dataFile,
+      keyFile: receipt.keyFile,
+      ...(receipt.recoveryFile === undefined
+        ? {}
+        : { recoveryFile: receipt.recoveryFile }),
+      recoveryReady: receipt.recoveryReady,
+    });
+  } finally {
+    zeroize(ownerPassphrase);
+    if (recoveryPassphrase !== undefined) zeroize(recoveryPassphrase);
+  }
+}
+
+async function resolveScriptedLocalOnboardingDestinations(
+  options: LocalCliOptions,
+  reservedPaths: readonly string[],
+): Promise<{
+  profileId: string;
+  dataFile: string;
+  keyFile: string;
+  recoveryFile?: string;
+  registryOptions?: { configDirectory: string };
+  reservedPaths: readonly string[];
+}> {
+  const profileId = options.profile ?? 'default';
+  const usesDefaultDataFile =
+    options.dataFile === undefined || options.dataFile === DEFAULT_DATA_FILE;
+  const usesDefaultKeyFile = options.keyFile === DEFAULT_KEY_FILE;
+  const recoveryRequested = options.recoveryFile !== undefined;
+  const usesDefaultRecoveryFile =
+    recoveryRequested && options.recoveryFile === DEFAULT_RECOVERY_FILE;
+
+  let dataFile = options.dataFile ?? DEFAULT_DATA_FILE;
+  let keyFile = options.keyFile;
+  let recoveryFile = options.recoveryFile;
+  if (usesDefaultDataFile || usesDefaultKeyFile || usesDefaultRecoveryFile) {
+    const secureDirectory = await ensureSecureDirectory(join(homedir(), '.kavrix'));
+    if (usesDefaultDataFile) dataFile = join(secureDirectory, 'kavrix.vault');
+    if (usesDefaultKeyFile) keyFile = join(secureDirectory, 'kavrix.key');
+    if (usesDefaultRecoveryFile) {
+      recoveryFile = join(secureDirectory, 'kavrix.recovery');
+    }
+  }
+
+  return {
+    profileId,
+    dataFile,
+    keyFile,
+    reservedPaths,
+    ...(recoveryFile === undefined ? {} : { recoveryFile }),
+    ...(options.profileConfigDir === undefined
+      ? {}
+      : { registryOptions: { configDirectory: options.profileConfigDir } }),
+  };
+}
+
+/** Legacy version-2 single-vault init retained for migrate sources. */
+async function handleLegacyVaultInit(options: LocalCliOptions): Promise<void> {
   await validateInitDestinations(options);
   const values = await readSecrets(
     ['database-url', 'passphrase', 'passphrase'],
@@ -1809,6 +1978,7 @@ async function handleInit(options: LocalCliOptions): Promise<void> {
         'create',
       );
       successOutput = {
+        kind: 'legacy-v2',
         vaultId: document.id,
         ...storeLocation(options, target),
         keyFile: options.keyFile,
@@ -2147,7 +2317,9 @@ async function handlePing(
   overrides: DatastoreProfileRoutingOverrides & Readonly<{ collection?: string }> = {},
 ): Promise<void> {
   const resolved = await resolveProfileForPing(options, overrides);
-  if (datastoreFrom(resolved.options) !== 'mongodb') {
+  // Use shared resolution (not datastoreFrom) so a Commander file default plus
+  // --database-url-stdin yields the mongodb-only message instead of a conflicting-options error.
+  if (resolveRootDatastore(resolved.options.datastore) !== 'mongodb') {
     throw new LocalCliError('db ping supports only the MongoDB datastore.');
   }
   const values = await readSecrets(['database-url'], resolved.options);
@@ -2964,6 +3136,10 @@ async function handleDoctorHealth(options: LocalCliOptions): Promise<void> {
     Object.assign(result, storeLocation({ ...options, datastore }, storeTarget));
   }
   writeJson(result);
+  // Automation must observe unhealthy reports as non-zero; JSON already landed.
+  if (!healthy) {
+    process.exitCode = 16;
+  }
 }
 
 async function handleRecoveryCreate(options: LocalCliOptions): Promise<void> {
@@ -4244,11 +4420,9 @@ function storeLocation(
       };
 }
 
-function datastoreFrom(options: LocalCliOptions): 'mongodb' | 'file' {
-  const datastore = options.datastore ?? 'mongodb';
-  if (datastore !== 'mongodb' && datastore !== 'file') {
-    throw new LocalCliError('--datastore must be mongodb or file.');
-  }
+function datastoreFrom(options: LocalCliOptions): RootDatastore {
+  // Shared policy: omitted/undefined → DEFAULT_ROOT_DATASTORE; invalid → throw.
+  const datastore = resolveRootDatastore(options.datastore);
   if (datastore === 'mongodb' && options.dataFile !== undefined) {
     throw new LocalCliError('--data-file requires --datastore file.');
   }

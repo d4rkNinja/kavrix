@@ -130,7 +130,7 @@ async function runCli(args: readonly string[], input = ''): Promise<string> {
 
 async function initVault(value: Target): Promise<Record<string, unknown>> {
   const output = await runCli(
-    ['init', ...route(value), '--passphrase-stdin'],
+    ['init', '--legacy', ...route(value), '--passphrase-stdin'],
     `${PASSPHRASE}\n${PASSPHRASE}\n`,
   );
   return JSON.parse(output) as Record<string, unknown>;
@@ -605,7 +605,7 @@ describe(
 
         await expect(
           runCli(
-            ['init', ...route(value), '--passphrase-stdin'],
+            ['init', '--legacy', ...route(value), '--passphrase-stdin'],
             `${PASSPHRASE}\n${PASSPHRASE}\n`,
           ),
         ).rejects.toThrow(
@@ -622,7 +622,7 @@ describe(
 
       await expect(
         runCli(
-          ['init', ...route(value), '--passphrase-stdin'],
+          ['init', '--legacy', ...route(value), '--passphrase-stdin'],
           `${PASSPHRASE}\n${PASSPHRASE}\n`,
         ),
       ).rejects.toMatchObject({
@@ -697,6 +697,7 @@ describe(
         runCli(
           [
             'init',
+            '--legacy',
             '--datastore',
             'mongodb',
             '--database',
@@ -713,6 +714,7 @@ describe(
         runCli(
           [
             'init',
+            '--legacy',
             '--datastore',
             'mongodb',
             '--collection',
@@ -793,6 +795,7 @@ describe(
         runCli(
           [
             'init',
+            '--legacy',
             ...route({ ...value, key: join(value.directory, 'other.key') }),
             '--passphrase-stdin',
           ],
@@ -1392,7 +1395,15 @@ describe(
       expect(
         JSON.parse(
           await runCli(
-            ['db', 'ping', '--profile-config-dir', config, '--database-url-stdin'],
+            [
+              'db',
+              'ping',
+              '--datastore',
+              'mongodb',
+              '--profile-config-dir',
+              config,
+              '--database-url-stdin',
+            ],
             'mongodb://localhost/kavrix\n',
           ),
         ),
@@ -1637,7 +1648,7 @@ describe(
       );
       expect(
         await runReported(
-          ['init', ...route(portableTarget), '--passphrase-stdin'],
+          ['init', '--legacy', ...route(portableTarget), '--passphrase-stdin'],
           `${PASSPHRASE}\n${PASSPHRASE}\n`,
         ),
       ).toContain('portable key file already exists');
@@ -1680,6 +1691,8 @@ describe(
             [
               'db',
               'ping',
+              '--datastore',
+              'mongodb',
               '--profile-config-dir',
               pingProfileConfig,
               '--database-url-stdin',

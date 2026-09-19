@@ -4,6 +4,8 @@
 
 A local-first secrets firewall for developers, applications, and AI agents.
 
+Zero-knowledge local encryption: Kavrix never sees your passphrases or plaintext credentials.
+
 Give applications and AI agents access to credentials without handing them your
 `.env`. Kavrix decides which process may receive a secret, under which policy
 or grant, and records what happened — without shipping secrets to a Kavrix
@@ -125,6 +127,9 @@ npm install --global kavrix
 kavrix --version
 ```
 
+If npm fails with an engines/`EBADENGINE` error, your Node.js version
+is outside `>=24.12.0 <25` or `>=25.1.0` — upgrade or switch before retrying.
+
 If npm fails with `EACCES` (prefix often `/usr/local`):
 
 ```sh
@@ -180,21 +185,30 @@ printf '%s\n' "$PASS" 'secret-value' \
   | kavrix put github/token --profile work --passphrase-stdin --value-stdin
 
 printf '%s\n' "$PASS" | kavrix list --profile work --passphrase-stdin
+
+printf '%s\n' "$PASS" \
+  | kavrix run --profile work --passphrase-stdin \
+      --secret TOKEN=github/token -- printenv TOKEN
 ```
+
+`kavrix run` injects only requested env vars into the child after `--`.
 
 Stdin frame order (`kavrix frames "<command>"`): `db init` → label,
 passphrase, confirm; `db vault create` → passphrase, label; `db vault use` →
 passphrase; `put` → passphrase, value (MongoDB adds an optional leading
 `mongodb-url` frame).
 
-**Footgun:** without `--profile`, root `put` / `get` / `list` / … still default
-datastore to **mongodb** (`datastoreFrom` → `options.datastore ?? 'mongodb'`).
-Prefer `--profile` (or `--datastore file` for legacy paths) for local-file work.
+Without `--profile`, root `put` / `get` / `list` / … default `--datastore` to
+**file** (aligned with `kavrix init`). Pass `--datastore mongodb` explicitly for
+MongoDB, or prefer `--profile` after onboarding.
 
 Interactive TTY `kavrix init` opens Ink onboarding by default and stores under
-`~/.kavrix/`. Pass `--no-tui` for classic masked prompts. Non-TTY
-`kavrix init --passphrase-stdin` is legacy v2 and writes `./kavrix.vault` in the
-current directory — prefer the profile flow above for scripts.
+`~/.kavrix/`. Pass `--no-tui` for classic masked prompts. Scripted file init
+(`--json` / `--passphrase-stdin`) creates a bound database-container profile so
+`put` and `kavrix run` work immediately; add `--recovery-file` for a kit, or
+`--legacy` only for version-2 migrate sources.
+
+**Node.js engines (required):** `>=24.12.0 <25` or `>=25.1.0`.
 
 ## Interactive TUI
 
@@ -253,14 +267,14 @@ structured access or migration.
 
 ### Keys, recovery, and health
 
-| Command                | Purpose                                                                        |
-| ---------------------- | ------------------------------------------------------------------------------ |
-| `kavrix key ...`       | Verify, copy, replicate, assign, or rewrap key files.                          |
-| `kavrix recovery ...`  | Create, verify, inspect, revoke, or use recovery kits.                         |
-| `kavrix doctor`        | Authenticate and validate a vault without revealing values.                    |
-| `kavrix doctor health` | Diagnose and safely repair bounded transient state.                            |
-| `kavrix tui` / `ui`    | Full interactive Ink app against the real CLI.                                 |
-| `kavrix init`          | Ink TUI onboarding on TTY (`--no-tui` for classic); non-TTY remains legacy v2. |
+| Command                | Purpose                                                                             |
+| ---------------------- | ----------------------------------------------------------------------------------- |
+| `kavrix key ...`       | Verify, copy, replicate, assign, or rewrap key files.                               |
+| `kavrix recovery ...`  | Create, verify, inspect, revoke, or use recovery kits.                              |
+| `kavrix doctor`        | Authenticate and validate a vault without revealing values.                         |
+| `kavrix doctor health` | Diagnose and safely repair bounded transient state.                                 |
+| `kavrix tui` / `ui`    | Full interactive Ink app against the real CLI.                                      |
+| `kavrix init`          | TTY: Ink onboarding; scripted file init binds profile for put/run; `--legacy` = v2. |
 
 ## Quick start (MongoDB)
 
@@ -312,8 +326,9 @@ More detail: [Command guide](docs/cli-reference.md), [CONTRIBUTING.md](CONTRIBUT
 | `--overwrite`                       | Opt in to replacing something that already exists.                         |
 | `--allow-insecure-transport`        | Explicit opt-in to unencrypted MongoDB transport (isolated networks only). |
 
-Without `--profile`, root credential commands still default `--datastore` to
-**mongodb** (same `datastoreFrom` rule as above).
+Without `--profile`, root credential commands default `--datastore` to
+**file** (same `datastoreFrom` rule as Quick start above). Pass
+`--datastore mongodb` explicitly when you need MongoDB without a profile.
 
 `kavrix <command> --help` is authoritative for your installed version.
 

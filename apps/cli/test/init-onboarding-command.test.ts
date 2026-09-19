@@ -46,7 +46,9 @@ vi.mock('@kavrix/key-files', async (importOriginal) => {
 
 vi.mock('../src/local-database-onboarding.js', () => ({
   preflightGuidedLocalOnboarding: guidedMocks.preflight,
+  preflightLocalDatabaseOnboarding: guidedMocks.preflight,
   executeGuidedLocalOnboarding: guidedMocks.execute,
+  executeLocalDatabaseOnboarding: guidedMocks.execute,
 }));
 
 vi.mock('../src/kavrix-config.js', () => ({
@@ -252,12 +254,13 @@ describe('root init onboarding composition', () => {
     expectEveryInterfaceClosed();
   });
 
-  it('preserves explicit legacy init behavior without starting onboarding', async () => {
+  it('rejects unsafe key paths on scripted init without starting guided prompts', async () => {
     await expect(
       buildLocalCli().parseAsync([
         'node',
         'kavrix',
         'init',
+        '--legacy',
         '--key-file',
         'invalid\0key',
       ]),
@@ -268,22 +271,56 @@ describe('root init onboarding composition', () => {
     expect(guidedMocks.execute).not.toHaveBeenCalled();
   });
 
-  it.each([['--vault', 'custom'], ['--allow-insecure-transport']])(
+  it.each([['--vault', 'custom'], ['--json'], ['--passphrase-stdin']])(
     'does not enter guided setup when init receives explicit option %s',
     async (...explicitOptions) => {
-      vi.spyOn(LocalSecretInput.prototype, 'read').mockRejectedValueOnce(
-        new Error('legacy init reached protected input'),
-      );
-
+      guidedMocks.preflight.mockRejectedValueOnce(new Error('scripted preflight'));
+      // Provide explicit destinations so default-path secure-dir resolution is skipped.
       await expect(
-        buildLocalCli().parseAsync(['node', 'kavrix', 'init', ...explicitOptions]),
-      ).rejects.toThrow();
+        buildLocalCli().parseAsync([
+          'node',
+          'kavrix',
+          'init',
+          ...explicitOptions,
+          '--data-file',
+          join(homedir(), 'kavrix-scripted.vault'),
+          '--key-file',
+          join(homedir(), 'kavrix-scripted.key'),
+          '--profile-config-dir',
+          join(homedir(), 'kavrix-scripted-config'),
+        ]),
+      ).rejects.toThrow('scripted preflight');
 
       expect(readlineMocks.createInterface).not.toHaveBeenCalled();
-      expect(guidedMocks.preflight).not.toHaveBeenCalled();
+      expect(guidedMocks.preflight).toHaveBeenCalledOnce();
       expect(guidedMocks.execute).not.toHaveBeenCalled();
     },
   );
+
+  it('routes --legacy to legacy vault init without guided onboarding', async () => {
+    vi.spyOn(LocalSecretInput.prototype, 'read').mockRejectedValueOnce(
+      new Error('legacy init reached protected input'),
+    );
+
+    await expect(
+      buildLocalCli().parseAsync([
+        'node',
+        'kavrix',
+        'init',
+        '--legacy',
+        '--datastore',
+        'file',
+        '--data-file',
+        './x.vault',
+        '--key-file',
+        './x.key',
+      ]),
+    ).rejects.toThrow('legacy init reached protected input');
+
+    expect(readlineMocks.createInterface).not.toHaveBeenCalled();
+    expect(guidedMocks.preflight).not.toHaveBeenCalled();
+    expect(guidedMocks.execute).not.toHaveBeenCalled();
+  });
 
   it('routes TUI vs classic via shouldRunInitTuiOnboarding', () => {
     setTty(true);
@@ -456,7 +493,14 @@ describe('root init onboarding composition', () => {
     setTty(false);
     const stderr = vi.spyOn(process.stderr, 'write').mockReturnValue(true);
 
-    await runLocalCli(['node', 'kavrix', 'init', '--key-file', 'invalid\0key']);
+    await runLocalCli([
+      'node',
+      'kavrix',
+      'init',
+      '--legacy',
+      '--key-file',
+      'invalid\0key',
+    ]);
 
     const output = stderr.mock.calls.flat().join('');
     expect(output).toContain('portable key file path is invalid');

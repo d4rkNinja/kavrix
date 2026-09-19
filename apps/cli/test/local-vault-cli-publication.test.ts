@@ -83,6 +83,7 @@ async function paths(): Promise<
 function initArgs(data: string, key: string): string[] {
   return [
     'init',
+    '--legacy',
     '--datastore',
     'file',
     '--data-file',
@@ -102,7 +103,16 @@ describe('legacy local-vault publication boundaries', () => {
     async (option, value) => {
       const target = await paths();
       const failure = runWithStdin(
-        ['init', '--datastore', 'mongodb', option, value, '--key-file', target.key],
+        [
+          'init',
+          '--legacy',
+          '--datastore',
+          'mongodb',
+          option,
+          value,
+          '--key-file',
+          target.key,
+        ],
         '',
       );
 

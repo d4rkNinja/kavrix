@@ -53,8 +53,9 @@ function registerRun(program: Command): void {
   const run = program
     .command('run')
     .description(
-      'Execute a command with selected credentials injected into its environment only.',
+      'Execute a command with selected credentials injected into its environment only. Pass the child after `--` (example: kavrix run --secret ENV=name -- printenv ENV).',
     )
+    .usage('[options] -- <executable> [args...]')
     .allowUnknownOption(true)
     .allowExcessArguments(true)
     .option(
