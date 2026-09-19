@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, rm, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -37,15 +37,15 @@ describe('published version compare', () => {
 });
 
 describe('formatNpmInstallCommand', () => {
-  it('formats the default registry command', () => {
+  it('formats the default registry command with shell-safe quoting', () => {
     expect(formatNpmInstallCommand('0.2.16', 'https://registry.npmjs.org')).toBe(
-      'npm install --global kavrix@0.2.16',
+      "npm install --global 'kavrix@0.2.16'",
     );
   });
 
-  it('includes a custom registry', () => {
+  it('includes a custom registry with quoted args', () => {
     expect(formatNpmInstallCommand('0.2.16', 'https://example.test/npm/')).toBe(
-      'npm install --global kavrix@0.2.16 --registry https://example.test/npm',
+      "npm install --global 'kavrix@0.2.16' --registry 'https://example.test/npm'",
     );
   });
 });
@@ -59,15 +59,83 @@ describe('detectInstallKind', () => {
     );
   });
 
-  it('accepts a node_modules/kavrix layout', async () => {
+  async function fakeUnixGlobal(prefixName = 'prefix'): Promise<{
+    prefix: string;
+    packageRoot: string;
+    distBin: string;
+    binLink: string;
+  }> {
     const root = await mkdtemp(join(tmpdir(), 'kavrix-update-'));
     roots.push(root);
-    const packageRoot = join(root, 'node_modules', 'kavrix');
+    const prefix = join(root, prefixName);
+    const packageRoot = join(prefix, 'lib', 'node_modules', 'kavrix');
+    await mkdir(join(packageRoot, 'dist'), { recursive: true });
+    await mkdir(join(prefix, 'bin'), { recursive: true });
+    await writeFile(
+      join(packageRoot, 'package.json'),
+      '{"name":"kavrix","version":"0.2.16"}\n',
+    );
+    const distBin = join(packageRoot, 'dist', 'bin.js');
+    await writeFile(distBin, '');
+    const binLink = join(prefix, 'bin', 'kavrix');
+    await symlink(distBin, binLink);
+    return { prefix, packageRoot, distBin, binLink };
+  }
+
+  it('accepts a Unix lib/node_modules/kavrix global layout', async () => {
+    const { packageRoot, distBin } = await fakeUnixGlobal();
+    expect(detectInstallKind(distBin)).toEqual({
+      kind: 'npm-global',
+      method: 'npm-global',
+      packageRoot,
+    });
+  });
+
+  it('accepts a $PREFIX/bin/kavrix symlink to the global package (realpath)', async () => {
+    const { packageRoot, binLink } = await fakeUnixGlobal();
+    expect(detectInstallKind(binLink)).toEqual({
+      kind: 'npm-global',
+      method: 'npm-global',
+      packageRoot,
+    });
+  });
+
+  it('accepts Homebrew-Node npm-global under /opt/homebrew/lib/node_modules', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'kavrix-update-'));
+    roots.push(root);
+    // Simulate .../opt/homebrew/lib/node_modules/kavrix without Cellar.
+    const packageRoot = join(root, 'opt', 'homebrew', 'lib', 'node_modules', 'kavrix');
+    await mkdir(join(packageRoot, 'dist'), { recursive: true });
+    await writeFile(
+      join(packageRoot, 'package.json'),
+      '{"name":"kavrix","version":"0.2.16"}\n',
+    );
+    const bin = join(packageRoot, 'dist', 'bin.js');
+    await writeFile(bin, '');
+    expect(detectInstallKind(bin)).toEqual({
+      kind: 'npm-global',
+      method: 'npm-global',
+      packageRoot,
+    });
+  });
+
+  it('rejects project-local node_modules/kavrix (not a global prefix)', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'kavrix-update-'));
+    roots.push(root);
+    const packageRoot = join(root, 'my-app', 'node_modules', 'kavrix');
     await mkdir(join(packageRoot, 'dist'), { recursive: true });
     await writeFile(join(packageRoot, 'package.json'), '{"name":"kavrix"}\n');
     const bin = join(packageRoot, 'dist', 'bin.js');
     await writeFile(bin, '');
-    expect(detectInstallKind(bin)).toEqual({
+    expect(detectInstallKind(bin)).toMatchObject({
+      kind: 'unsupported',
+      method: 'unknown',
+    });
+  });
+
+  it('does not treat directories named kavrix-* as dev-checkout', async () => {
+    const { packageRoot, distBin } = await fakeUnixGlobal('kavrix-tools');
+    expect(detectInstallKind(distBin)).toEqual({
       kind: 'npm-global',
       method: 'npm-global',
       packageRoot,
@@ -100,8 +168,8 @@ describe('detectInstallKind', () => {
     expect(result).toMatchObject({ kind: 'unsupported', method: 'yarn' });
   });
 
-  it('rejects source trees outside node_modules/kavrix', () => {
-    const result = detectInstallKind('/workspace/kavrix-tui-dev/apps/cli/dist/bin.js');
+  it('rejects apps/cli workspace trees', () => {
+    const result = detectInstallKind('/workspace/kavrix/apps/cli/dist/bin.js');
     expect(result).toMatchObject({ kind: 'unsupported', method: 'dev-checkout' });
   });
 });
@@ -176,6 +244,7 @@ describe('executeSelfUpdate', () => {
       stdoutIsTTY: false,
       writeStdout: () => undefined,
       writeStderr: () => undefined,
+      readInstalledVersion: () => '0.2.16',
       ...partial,
     });
   }
@@ -245,6 +314,7 @@ describe('executeSelfUpdate', () => {
 
   it('refuses unsupported installs with a method-specific error and exact npm command', async () => {
     const runNpmInstall = vi.fn(async () => ({ status: 0, stdout: '', stderr: '' }));
+    const chunks: string[] = [];
     await expect(
       executeSelfUpdate(
         { json: true },
@@ -256,14 +326,22 @@ describe('executeSelfUpdate', () => {
             detail: 'This kavrix process was launched via npx.',
           }),
           runNpmInstall,
+          writeStdout: (text) => {
+            chunks.push(text);
+          },
         }),
       ),
-    ).rejects.toThrow(/npx/);
+    ).rejects.toMatchObject({ name: 'CodedCliError', exitCode: 14 });
     expect(runNpmInstall).not.toHaveBeenCalled();
+    expect(JSON.parse(chunks.join(''))).toMatchObject({
+      action: 'refused',
+      error: expect.stringMatching(/npx/),
+    });
   });
 
   it('refuses unsupported installs even when already at/ahead of the registry', async () => {
     const runNpmInstall = vi.fn(async () => ({ status: 0, stdout: '', stderr: '' }));
+    const chunks: string[] = [];
     await expect(
       executeSelfUpdate(
         { json: true },
@@ -276,10 +354,14 @@ describe('executeSelfUpdate', () => {
             detail: 'This kavrix binary looks like a workspace/dev checkout.',
           }),
           runNpmInstall,
+          writeStdout: (text) => {
+            chunks.push(text);
+          },
         }),
       ),
-    ).rejects.toThrow(/workspace\/dev checkout/);
+    ).rejects.toMatchObject({ name: 'CodedCliError', exitCode: 14 });
     expect(runNpmInstall).not.toHaveBeenCalled();
+    expect(JSON.parse(chunks.join('')).error).toMatch(/workspace\/dev checkout/);
   });
 
   it('check mode notes unsupported layouts instead of silent already-newest success', async () => {
@@ -307,6 +389,7 @@ describe('executeSelfUpdate', () => {
   });
 
   it('surfaces npm install failures with the exact command and EACCES tip', async () => {
+    const chunks: string[] = [];
     await expect(
       executeSelfUpdate(
         { json: true },
@@ -317,11 +400,59 @@ describe('executeSelfUpdate', () => {
             stdout: '',
             stderr: 'npm ERR! code EACCES\nnpm ERR! permission denied\n',
           }),
+          writeStdout: (text) => {
+            chunks.push(text);
+          },
         }),
       ),
-    ).rejects.toThrow(
-      /npm install --global kavrix@0\.2\.16[\s\S]*EACCES[\s\S]*~\/\.local/,
+    ).rejects.toBeInstanceOf(LocalCliError);
+    expect(chunks.join('')).toMatch(
+      /npm install --global 'kavrix@0\.2\.16'[\s\S]*EACCES[\s\S]*~\/\.local/,
     );
+  });
+
+  it('TTY check on unsupported layouts paints error status, not OK', async () => {
+    const chunks: string[] = [];
+    const report = await executeSelfUpdate(
+      { check: true },
+      deps({
+        currentVersion: '0.2.16',
+        fetchRegistry: async () => '0.2.15',
+        detectInstall: () => ({
+          kind: 'unsupported',
+          method: 'dev-checkout',
+          detail: 'This kavrix binary looks like a workspace/dev checkout.',
+        }),
+        stdoutIsTTY: true,
+        writeStdout: (text) => {
+          chunks.push(text);
+        },
+      }),
+    );
+    expect(report.error).toBeDefined();
+    expect(chunks.join('')).toMatch(/\[X\]/);
+    expect(chunks.join('')).not.toMatch(/\[OK\]/);
+  });
+
+  it('emits JSON on --json registry failures and exits 0 under --check', async () => {
+    const chunks: string[] = [];
+    const report = await executeSelfUpdate(
+      { check: true, json: true },
+      deps({
+        currentVersion: '0.2.15',
+        fetchRegistry: async () => {
+          throw new LocalCliError('Could not reach the npm registry (offline).');
+        },
+        writeStdout: (text) => {
+          chunks.push(text);
+        },
+      }),
+    );
+    expect(report.action).toBe('failed');
+    expect(JSON.parse(chunks.join(''))).toMatchObject({
+      action: 'failed',
+      error: expect.stringMatching(/offline/),
+    });
   });
 });
 

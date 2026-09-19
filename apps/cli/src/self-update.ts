@@ -3,10 +3,11 @@
  * for global npm installs only, replace the installed package.
  *
  * Fail-closed for Homebrew, pnpm, yarn, npx, and workspace/dev checkouts.
- * `--check` never installs and always exits 0 (pair with `--json` for CI).
+ * `--check` never installs. Successful checks and check-mode query failures exit 0;
+ * pair with `--json` for automation (JSON is always emitted when `--json` is set).
  */
 import { spawn } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { dirname, join, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -88,6 +89,8 @@ export type SelfUpdateDeps = Readonly<{
   stdoutIsTTY: boolean;
   writeStdout: (text: string) => void;
   writeStderr: (text: string) => void;
+  /** Optional override for post-install version verification (tests). */
+  readInstalledVersion?: (packageRoot: string) => string | undefined;
 }>;
 
 const HELP_DESCRIPTION =
@@ -135,11 +138,73 @@ export function parsePublishedVersion(version: string): Readonly<{
   );
 }
 
+/** POSIX-safe single-quote for pasteable shell commands (never unquoted). */
+export function shellSingleQuote(value: string): string {
+  return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
+/**
+ * Validate and normalize an npm registry URL for fetch + display.
+ * Requires https (http only for loopback). Rejects embedded credentials so
+ * pasteable commands cannot echo tokens; use npm config for auth instead.
+ */
+export function assertSafeNpmRegistry(raw: string): string {
+  const trimmed = raw.trim();
+  if (trimmed.length === 0 || /[\r\n\0]/.test(trimmed)) {
+    throw new LocalCliError(
+      'Invalid --registry; expected an http(s) npm registry URL.',
+    );
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    throw new LocalCliError(
+      'Invalid --registry; expected an http(s) npm registry URL.',
+    );
+  }
+  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+    throw new LocalCliError(
+      'Invalid --registry; expected an http(s) npm registry URL.',
+    );
+  }
+  const host = parsed.hostname.toLowerCase();
+  const loopback =
+    host === 'localhost' || host === '127.0.0.1' || host === '[::1]' || host === '::1';
+  if (parsed.protocol === 'http:' && !loopback) {
+    throw new LocalCliError(
+      'Invalid --registry; use an https:// registry URL (http is only allowed for localhost).',
+    );
+  }
+  if (parsed.username.length > 0 || parsed.password.length > 0) {
+    throw new LocalCliError(
+      'Invalid --registry; credentials in the URL are not allowed. Configure registry auth via npm config instead.',
+    );
+  }
+  if (parsed.hash.length > 0) {
+    throw new LocalCliError('Invalid --registry; URL fragments are not allowed.');
+  }
+  const path = parsed.pathname.replace(/\/+$/u, '');
+  const normalized = `${parsed.protocol}//${parsed.host}${path === '/' ? '' : path}`;
+  return normalized;
+}
+
+/** Registry string safe for human/error text (credentials never included). */
+export function displayNpmRegistry(registry: string): string {
+  try {
+    return assertSafeNpmRegistry(registry);
+  } catch {
+    return 'https://registry.npmjs.org';
+  }
+}
+
 export function formatNpmInstallCommand(version: string, registry: string): string {
-  const normalized = registry.replace(/\/+$/u, '');
-  const registryArg =
-    normalized === DEFAULT_NPM_REGISTRY ? '' : ` --registry ${normalized}`;
-  return `npm install --global ${NPM_PACKAGE_NAME}@${version}${registryArg}`;
+  const normalized = displayNpmRegistry(registry);
+  const pkg = `${NPM_PACKAGE_NAME}@${version}`;
+  if (normalized === DEFAULT_NPM_REGISTRY) {
+    return `npm install --global ${shellSingleQuote(pkg)}`;
+  }
+  return `npm install --global ${shellSingleQuote(pkg)} --registry ${shellSingleQuote(normalized)}`;
 }
 
 /** Fetch the version currently pointed at by an npm dist-tag. */
@@ -206,8 +271,13 @@ function unsupported(
 }
 
 /**
- * Classify how this process was launched. Only global npm installs under
- * `.../node_modules/kavrix/...` are eligible for automatic replacement.
+ * Classify how this process was launched. Only recognized global npm installs
+ * (`…/lib/node_modules/kavrix` or Windows `…/npm/node_modules/kavrix`) whose
+ * package.json name is exactly `kavrix` are eligible for automatic replacement.
+ *
+ * Resolves symlinks first so a typical `$PREFIX/bin/kavrix` npm-global bin is
+ * classified correctly. Homebrew-*Node* npm globals under `/opt/homebrew/lib/…`
+ * are accepted as npm-global; Homebrew *formula* Cellar paths are refused.
  */
 export function detectInstallKind(argv1: string | undefined): InstallKind {
   if (argv1 === undefined || argv1.length === 0) {
@@ -226,8 +296,21 @@ export function detectInstallKind(argv1: string | undefined): InstallKind {
     resolved = argv1;
   }
 
+  try {
+    resolved = realpathSync(resolved);
+  } catch {
+    // Keep the unresolved path; bin→node_modules fallback may still apply.
+  }
+
   const normalized = resolved.replaceAll('\\', '/');
   const lower = normalized.toLowerCase();
+
+  // npm-global first (before Homebrew substring checks) so Homebrew-Node
+  // prefixes like /opt/homebrew/lib/node_modules/kavrix classify correctly.
+  const npmGlobal = classifyNpmGlobalInstall(normalized);
+  if (npmGlobal !== undefined) {
+    return npmGlobal;
+  }
 
   if (
     lower.includes('/_npx/') ||
@@ -273,36 +356,109 @@ export function detectInstallKind(argv1: string | undefined): InstallKind {
     );
   }
 
-  if (
-    /\/apps\/cli\/(dist|src)\//u.test(normalized) ||
-    (normalized.includes('/kavrix-') && !normalized.includes('/node_modules/kavrix/'))
-  ) {
+  if (lower.includes('/.bun/') || lower.includes('/bun/install/global/')) {
+    return unsupported(
+      'unknown',
+      'This kavrix binary looks like a Bun install. `kavrix update` only manages global npm installs. Reinstall with `npm install --global kavrix`.',
+    );
+  }
+
+  // Narrow: only the monorepo apps/cli tree — not arbitrary directories named kavrix-*.
+  if (/\/apps\/cli\/(dist|src)\//u.test(normalized)) {
     return unsupported(
       'dev-checkout',
       'This kavrix binary looks like a workspace/dev checkout. `kavrix update` only manages global npm installs. Pull/build from git, or install a release with `npm install --global kavrix`.',
     );
   }
 
-  const marker = '/node_modules/kavrix/';
-  const index = normalized.lastIndexOf(marker);
-  if (index === -1) {
-    return unsupported(
-      'unknown',
-      'This kavrix binary is not a global npm package install. Homebrew, pnpm, yarn, npx, and workspace installs are unsupported. Reinstall with `npm install --global kavrix`.',
-    );
+  return unsupported(
+    'unknown',
+    'This kavrix binary is not a global npm package install. Homebrew, pnpm, yarn, npx, and workspace installs are unsupported. Reinstall with `npm install --global kavrix`.',
+  );
+}
+
+function readPackageName(manifestPath: string): string | undefined {
+  try {
+    const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as {
+      name?: unknown;
+    };
+    return typeof manifest.name === 'string' ? manifest.name : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export function readPackageVersion(packageRoot: string): string | undefined {
+  const manifestPath = join(packageRoot, 'package.json');
+  try {
+    const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as {
+      version?: unknown;
+    };
+    return typeof manifest.version === 'string' ? manifest.version : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Accept only recognized global npm layouts with package name `kavrix`.
+ * Also maps `$PREFIX/bin/kavrix` (pre-realpath or unbroken symlink target miss)
+ * to `$PREFIX/lib/node_modules/kavrix` / Windows `$PREFIX/node_modules/kavrix`.
+ */
+function classifyNpmGlobalInstall(normalized: string): InstallKind | undefined {
+  const marker = '/node_modules/kavrix';
+  let packageRootPosix: string | undefined;
+  const embedded = normalized.lastIndexOf(`${marker}/`);
+  const exactRoot = normalized.endsWith(marker) ? normalized : undefined;
+  if (embedded !== -1) {
+    packageRootPosix = normalized.slice(0, embedded + marker.length);
+  } else if (exactRoot !== undefined) {
+    packageRootPosix = exactRoot;
+  } else {
+    const binMatch = /\/bin\/kavrix(\.cmd|\.ps1)?$/iu.exec(normalized);
+    if (binMatch === null) {
+      return undefined;
+    }
+    const prefix = normalized.slice(0, binMatch.index);
+    const candidates = [
+      `${prefix}/lib/node_modules/kavrix`,
+      `${prefix}/node_modules/kavrix`,
+    ];
+    for (const candidate of candidates) {
+      if (existsSync(join(candidate.replaceAll('/', sep), 'package.json'))) {
+        packageRootPosix = candidate;
+        break;
+      }
+    }
+    if (packageRootPosix === undefined) {
+      return undefined;
+    }
   }
 
-  const packageRoot = normalized
-    .slice(0, index + marker.length - 1)
-    .replaceAll('/', sep);
+  const prefixBeforeNodeModules = packageRootPosix.slice(
+    0,
+    packageRootPosix.lastIndexOf('/node_modules/kavrix'),
+  );
+  if (prefixBeforeNodeModules.includes('/node_modules/')) {
+    return undefined;
+  }
+
+  const isUnixGlobal = prefixBeforeNodeModules.endsWith('/lib');
+  const isWindowsGlobal =
+    /\/npm$/iu.test(prefixBeforeNodeModules) ||
+    /\/AppData\/Roaming\/npm$/iu.test(prefixBeforeNodeModules);
+  if (!isUnixGlobal && !isWindowsGlobal) {
+    return undefined;
+  }
+
+  const packageRoot = packageRootPosix.replaceAll('/', sep);
   const manifestPath = join(packageRoot, 'package.json');
   if (!existsSync(manifestPath)) {
-    return unsupported(
-      'unknown',
-      'The installed package directory is missing package.json. Reinstall with `npm install --global kavrix`.',
-    );
+    return undefined;
   }
-
+  if (readPackageName(manifestPath) !== NPM_PACKAGE_NAME) {
+    return undefined;
+  }
   return { kind: 'npm-global', packageRoot, method: 'npm-global' };
 }
 
@@ -413,11 +569,14 @@ function emitReport(
     return;
   }
   const color = terminalColorEnabled(process.stdout);
+  // Never paint [OK] when an error/refuse is present (including --check notes).
   const kind =
-    report.action === 'updated'
-      ? 'success'
-      : report.action === 'refused' || report.action === 'failed'
-        ? 'error'
+    report.error !== undefined ||
+    report.action === 'refused' ||
+    report.action === 'failed'
+      ? 'error'
+      : report.action === 'updated'
+        ? 'success'
         : report.updateAvailable
           ? 'warning'
           : 'success';
@@ -453,49 +612,109 @@ function summarizeNpmFailure(text: string): string {
   if (engine !== undefined) {
     return `Node.js engines mismatch: kavrix requires ${NODE_ENGINES}. Upgrade or switch Node, then retry.`;
   }
-  const line = lines.find((entry) => !entry.startsWith('npm '));
+  const line =
+    lines.find((entry) => !entry.startsWith('npm ')) ??
+    lines.find((entry) => /^npm ERR!/iu.test(entry)) ??
+    lines[0];
   if (line === undefined) return '';
   return line.length > 200 ? `${line.slice(0, 197)}...` : line;
 }
 
 /**
  * Execute update/check. Throws LocalCliError / CodedCliError on hard failures.
- * `--check` never installs and always leaves exit code 0 for the caller.
+ * `--check` never installs; successful checks and check-mode query failures exit 0.
+ * When `--json` is set, failures emit `{ action:"failed", error }` before throwing
+ * (or returning under `--check`).
  */
 export async function executeSelfUpdate(
   options: SelfUpdateOptions,
   deps: SelfUpdateDeps = createDefaultSelfUpdateDeps(),
 ): Promise<SelfUpdateReport> {
+  const checkOnly = options.check === true;
+  const wantJson = options.json === true || !deps.stdoutIsTTY;
   const trimmedTag = options.tag?.trim();
   const channel =
     trimmedTag === undefined || trimmedTag.length === 0 ? DEFAULT_DIST_TAG : trimmedTag;
   const trimmedRegistry = options.registry?.trim();
   const envRegistry = deps.env['npm_config_registry']?.trim();
-  const registry =
+  const rawRegistry =
     trimmedRegistry !== undefined && trimmedRegistry.length > 0
       ? trimmedRegistry
       : envRegistry !== undefined && envRegistry.length > 0
         ? envRegistry
         : DEFAULT_NPM_REGISTRY;
+
+  const emitFailed = (
+    message: string,
+    channelName: string,
+    registryName: string,
+  ): SelfUpdateReport => {
+    const install = deps.detectInstall(deps.argv1);
+    const installMethod: InstallMethod =
+      install.kind === 'npm-global' ? 'npm-global' : install.method;
+    const report: SelfUpdateReport = {
+      package: NPM_PACKAGE_NAME,
+      installed: deps.currentVersion,
+      latest: '',
+      updateAvailable: false,
+      channel: channelName,
+      action: 'failed',
+      registry: registryName,
+      installMethod,
+      npmCommand: formatNpmInstallCommand('latest', registryName),
+      message,
+      error: message,
+    };
+    emitReport(report, options, deps);
+    return report;
+  };
+
   if (!/^[a-z0-9][a-z0-9._-]*$/iu.test(channel)) {
-    throw new LocalCliError(
-      'Invalid --tag; use an npm dist-tag such as latest or beta.',
-    );
-  }
-  if (!/^https?:\/\//iu.test(registry)) {
-    throw new LocalCliError(
-      'Invalid --registry; expected an http(s) npm registry URL.',
-    );
+    const message = 'Invalid --tag; use an npm dist-tag such as latest or beta.';
+    if (wantJson || checkOnly) {
+      const report = emitFailed(message, channel, DEFAULT_NPM_REGISTRY);
+      if (checkOnly) return report;
+      throw new LocalCliError('');
+    }
+    throw new LocalCliError(message);
   }
 
-  const latest = await deps.fetchRegistry({
-    packageName: NPM_PACKAGE_NAME,
-    distTag: channel,
-    registry,
-  });
+  let registry: string;
+  try {
+    registry = assertSafeNpmRegistry(rawRegistry);
+  } catch (error) {
+    const message =
+      error instanceof LocalCliError
+        ? error.message
+        : 'Invalid --registry; expected an http(s) npm registry URL.';
+    if (wantJson || checkOnly) {
+      const report = emitFailed(message, channel, DEFAULT_NPM_REGISTRY);
+      if (checkOnly) return report;
+      throw new LocalCliError('');
+    }
+    throw error instanceof LocalCliError ? error : new LocalCliError(message);
+  }
+
+  let latest: string;
+  try {
+    latest = await deps.fetchRegistry({
+      packageName: NPM_PACKAGE_NAME,
+      distTag: channel,
+      registry,
+    });
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : 'npm registry query failed.';
+    if (wantJson || checkOnly) {
+      const report = emitFailed(message, channel, registry);
+      if (checkOnly) return report;
+      throw new LocalCliError('');
+    }
+    throw error instanceof LocalCliError ? error : new LocalCliError(message);
+  }
+
   const updateAvailable = comparePublishedVersions(deps.currentVersion, latest) < 0;
   const install = deps.detectInstall(deps.argv1);
-  const checkOnly = options.check === true;
   const npmCommand = formatNpmInstallCommand(latest, registry);
   const installMethod: InstallMethod =
     install.kind === 'npm-global' ? 'npm-global' : install.method;
@@ -536,7 +755,8 @@ export async function executeSelfUpdate(
       error: message,
     };
     emitReport(report, options, deps);
-    throw invalidConfiguration(message);
+    // Message already presented (TTY [X] or JSON); suppress stderr duplicate.
+    throw invalidConfiguration('');
   }
 
   if (!updateAvailable) {
@@ -600,7 +820,35 @@ export async function executeSelfUpdate(
       error: message,
     };
     emitReport(report, options, deps);
-    throw new LocalCliError(message);
+    // Message already presented; suppress stderr duplicate.
+    throw new LocalCliError('');
+  }
+
+  const postInstall = deps.detectInstall(deps.argv1);
+  const packageRootForVerify =
+    postInstall.kind === 'npm-global' ? postInstall.packageRoot : install.packageRoot;
+  const installedAfter =
+    deps.readInstalledVersion?.(packageRootForVerify) ??
+    readPackageVersion(packageRootForVerify);
+  if (installedAfter !== latest) {
+    const message =
+      `npm reported success but kavrix is ${installedAfter ?? 'unknown'} (expected ${latest}). ` +
+      `Retry \`${npmCommand}\` and verify with \`kavrix --version\`.`;
+    const failed: SelfUpdateReport = {
+      package: NPM_PACKAGE_NAME,
+      installed: deps.currentVersion,
+      latest,
+      updateAvailable: true,
+      channel,
+      action: 'failed',
+      registry,
+      installMethod,
+      npmCommand,
+      message,
+      error: message,
+    };
+    emitReport(failed, options, deps);
+    throw new LocalCliError('');
   }
 
   const report: SelfUpdateReport = {
@@ -626,20 +874,16 @@ export function registerSelfUpdateCommand(program: Command): void {
     .description(HELP_DESCRIPTION)
     .option(
       '--check',
-      'Report whether a newer release is available without installing (always exits 0; use --json for automation).',
+      'Report whether a newer release is available without installing (exits 0 on success and on check-mode query failures; use --json for automation).',
     )
     .option(
       '--json',
-      'Emit machine-readable JSON ({ installed, latest, updateAvailable, channel, action, error? }).',
+      'Emit machine-readable JSON ({ installed, latest, updateAvailable, channel, action, error? }); always emitted when set, including failures.',
     )
-    .option(
-      '--tag <dist-tag>',
-      'npm dist-tag to follow (default: latest).',
-      DEFAULT_DIST_TAG,
-    )
+    .option('--tag <dist-tag>', 'npm dist-tag to follow.', DEFAULT_DIST_TAG)
     .option(
       '--registry <url>',
-      'npm registry URL (default: https://registry.npmjs.org or npm_config_registry).',
+      'https npm registry URL (http only for localhost; no credentials in URL).',
     )
     .addHelpText(
       'after',
@@ -654,7 +898,7 @@ Notes:
     .action(async (...args: unknown[]) => {
       const command = args.at(-1) as Command;
       const options: SelfUpdateOptions = command.opts();
-      // --check never mutates and always exits 0 (JSON already written).
+      // --check never mutates; query failures under --check exit 0 after JSON/status.
       await executeSelfUpdate(options);
     });
 }

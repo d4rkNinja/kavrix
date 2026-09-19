@@ -24,10 +24,11 @@ kavrix update --check
 ```
 
 `kavrix update` upgrades a **global npm** install of `kavrix` from the registry
-(`--check` never installs and always exits 0; `--json` emits
-`{ installed, latest, updateAvailable, channel, action, error? }`). Unsupported:
-Homebrew, pnpm, yarn, npx, workspace/dev checkouts. Non-TTY stdout is always
-JSON; use a TTY for the status line, or pass `--json` explicitly.
+(`--check` never installs; exits 0 on success and check-mode query failures;
+`--json` always emits `{ installed, latest, updateAvailable, channel, action, error? }`
+including failures). Unsupported: Homebrew, pnpm, yarn, npx, workspace/dev
+checkouts. Non-TTY stdout is always JSON; use a TTY for the status line, or pass
+`--json` explicitly.
 
 Requires Node.js `>=24.12.0 <25` or `>=25.1.0`. MongoDB is needed only if you
 select that datastore; database writes require a transaction-capable replica

@@ -159,7 +159,7 @@ npm install -g ./kavrix-*.tgz --prefix ~/.local
 After a global npm install, keep current with:
 
 ```sh
-kavrix update --check --json   # report only (exit 0); inspect updateAvailable
+kavrix update --check --json   # report only; inspect updateAvailable / error
 kavrix update                  # npm install --global kavrix@<newest>
 ```
 
