@@ -1,4 +1,5 @@
 import { mkdtemp, mkdir, writeFile, rm, symlink } from 'node:fs/promises';
+import { realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -87,7 +88,7 @@ describe('detectInstallKind', () => {
     expect(detectInstallKind(distBin)).toEqual({
       kind: 'npm-global',
       method: 'npm-global',
-      packageRoot,
+      packageRoot: realpathSync(packageRoot),
     });
   });
 
@@ -96,7 +97,7 @@ describe('detectInstallKind', () => {
     expect(detectInstallKind(binLink)).toEqual({
       kind: 'npm-global',
       method: 'npm-global',
-      packageRoot,
+      packageRoot: realpathSync(packageRoot),
     });
   });
 
@@ -115,7 +116,7 @@ describe('detectInstallKind', () => {
     expect(detectInstallKind(bin)).toEqual({
       kind: 'npm-global',
       method: 'npm-global',
-      packageRoot,
+      packageRoot: realpathSync(packageRoot),
     });
   });
 
@@ -138,7 +139,7 @@ describe('detectInstallKind', () => {
     expect(detectInstallKind(distBin)).toEqual({
       kind: 'npm-global',
       method: 'npm-global',
-      packageRoot,
+      packageRoot: realpathSync(packageRoot),
     });
   });
 
