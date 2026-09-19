@@ -697,6 +697,7 @@ describe(
         runCli(
           [
             'init',
+            '--legacy',
             '--datastore',
             'mongodb',
             '--database',
@@ -713,6 +714,7 @@ describe(
         runCli(
           [
             'init',
+            '--legacy',
             '--datastore',
             'mongodb',
             '--collection',
@@ -793,6 +795,7 @@ describe(
         runCli(
           [
             'init',
+            '--legacy',
             ...route({ ...value, key: join(value.directory, 'other.key') }),
             '--passphrase-stdin',
           ],
@@ -1392,7 +1395,15 @@ describe(
       expect(
         JSON.parse(
           await runCli(
-            ['db', 'ping', '--profile-config-dir', config, '--database-url-stdin'],
+            [
+              'db',
+              'ping',
+              '--datastore',
+              'mongodb',
+              '--profile-config-dir',
+              config,
+              '--database-url-stdin',
+            ],
             'mongodb://localhost/kavrix\n',
           ),
         ),
@@ -1680,6 +1691,8 @@ describe(
             [
               'db',
               'ping',
+              '--datastore',
+              'mongodb',
               '--profile-config-dir',
               pingProfileConfig,
               '--database-url-stdin',

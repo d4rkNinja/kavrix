@@ -17,8 +17,7 @@ export type RootDatastore = 'file' | 'mongodb';
 export const ROOT_DATASTORE_OPTION_DESCRIPTION =
   'Encrypted datastore: file or mongodb.';
 
-export const INVALID_ROOT_DATASTORE_MESSAGE =
-  '--datastore must be mongodb or file.';
+export const INVALID_ROOT_DATASTORE_MESSAGE = '--datastore must be mongodb or file.';
 
 /**
  * Parse an explicit `--datastore` value. Invalid values throw

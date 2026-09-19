@@ -62,12 +62,10 @@ describe('root datastore resolution error exits', () => {
     stderr: string;
   }> {
     const stderr: string[] = [];
-    const writeErr = vi
-      .spyOn(process.stderr, 'write')
-      .mockImplementation((chunk) => {
-        stderr.push(String(chunk));
-        return true;
-      });
+    const writeErr = vi.spyOn(process.stderr, 'write').mockImplementation((chunk) => {
+      stderr.push(String(chunk));
+      return true;
+    });
     const writeOut = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
     process.exitCode = undefined;
     try {
@@ -122,5 +120,11 @@ describe('root datastore resolution error exits', () => {
     ]);
     expect(result.exitCode).not.toBe(0);
     expect(result.stderr).toContain(INVALID_ROOT_DATASTORE_MESSAGE);
+  });
+
+  it('exits non-zero when db ping inherits the file default without an explicit mongodb datastore', async () => {
+    const result = await captureExit(['db', 'ping', '--database-url-stdin']);
+    expect(result.exitCode).not.toBe(0);
+    expect(result.stderr).toContain('db ping supports only the MongoDB datastore.');
   });
 });

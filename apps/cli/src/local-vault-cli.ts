@@ -234,7 +234,10 @@ export function buildLocalCli(): Command {
   // Root init and CRUD share DEFAULT_ROOT_DATASTORE (file). MongoDB requires
   // an explicit `--datastore mongodb` choice outside the guided wizard.
   addRootDatastoreOption(init)
-    .option('--data-file <path>', 'Encrypted local database (or legacy vault) file path.')
+    .option(
+      '--data-file <path>',
+      'Encrypted local database (or legacy vault) file path.',
+    )
     .option(
       '--allow-insecure-transport',
       'Explicitly permit unencrypted transport to a non-local MongoDB (isolated networks only).',
@@ -1810,7 +1813,8 @@ async function handleInit(options: LocalCliOptions): Promise<void> {
  * path. Recovery is optional (`--recovery-file` + recovery passphrase frames).
  */
 async function handleDatabaseContainerInit(options: LocalCliOptions): Promise<void> {
-  const { ensureKavrixConfig, getKavrixConfigPath } = await import('./kavrix-config.js');
+  const { ensureKavrixConfig, getKavrixConfigPath } =
+    await import('./kavrix-config.js');
   await ensureKavrixConfig();
   const reservedPaths = [getKavrixConfigPath()];
   const destinations = await resolveScriptedLocalOnboardingDestinations(
@@ -1821,7 +1825,12 @@ async function handleDatabaseContainerInit(options: LocalCliOptions): Promise<vo
 
   const includeRecovery = destinations.recoveryFile !== undefined;
   const secretKinds = includeRecovery
-    ? (['passphrase', 'passphrase', 'recovery-passphrase', 'recovery-passphrase'] as const)
+    ? ([
+        'passphrase',
+        'passphrase',
+        'recovery-passphrase',
+        'recovery-passphrase',
+      ] as const)
     : (['passphrase', 'passphrase'] as const);
   const values = await readSecrets([...secretKinds], {
     ...options,
@@ -1851,8 +1860,7 @@ async function handleDatabaseContainerInit(options: LocalCliOptions): Promise<vo
       ? undefined
       : Buffer.from(recoveryPassphraseValue, 'utf8');
   try {
-    const vaultLabel =
-      options.vaultWasDefaulted === true ? 'default' : options.vault;
+    const vaultLabel = options.vaultWasDefaulted === true ? 'default' : options.vault;
     const receipt = await executeLocalDatabaseOnboarding({
       ...destinations,
       databaseLabel: 'default',
@@ -2309,7 +2317,9 @@ async function handlePing(
   overrides: DatastoreProfileRoutingOverrides & Readonly<{ collection?: string }> = {},
 ): Promise<void> {
   const resolved = await resolveProfileForPing(options, overrides);
-  if (datastoreFrom(resolved.options) !== 'mongodb') {
+  // Use shared resolution (not datastoreFrom) so a Commander file default plus
+  // --database-url-stdin yields the mongodb-only message instead of a conflicting-options error.
+  if (resolveRootDatastore(resolved.options.datastore) !== 'mongodb') {
     throw new LocalCliError('db ping supports only the MongoDB datastore.');
   }
   const values = await readSecrets(['database-url'], resolved.options);
