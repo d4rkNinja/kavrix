@@ -125,6 +125,7 @@ import { CLI_VERSION } from './version.js';
 import { applyStdinFrameHelp, registerFramesCommand } from './stdin-frames.js';
 import { registerExecutionCommands } from './execution/register.js';
 import { registerTuiCommand } from './tui-command.js';
+import { registerSelfUpdateCommand } from './self-update.js';
 import {
   runInitTuiOnboarding,
   writeInitTuiOnboardingComplete,
@@ -729,6 +730,7 @@ export function buildLocalCli(): Command {
   registerTuiCommand(program);
   registerStructuredVaultCommands(program);
   registerFramesCommand(program);
+  registerSelfUpdateCommand(program);
   applyStdinFrameHelp(program);
 
   const status = program
