@@ -1,8 +1,8 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { existsSync } from 'node:fs';
+import { existsSync, realpathSync } from 'node:fs';
 import { realpath } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { isAbsolute, join, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { Readable } from 'node:stream';
 
@@ -1966,12 +1966,19 @@ async function resolveScriptedLocalOnboardingDestinations(
 }
 
 /**
- * Persist onboarding artifact paths as absolute paths resolved against cwd at
- * init time so later commands work after the operator changes directories.
+ * Persist onboarding artifact paths as absolute, symlink-resolved paths against
+ * cwd at init time so later commands work after chdir and across OS temp
+ * symlinks (e.g. macOS /var → /private/var).
  */
 function resolveOnboardingArtifactPath(path: string): string {
   if (path.length === 0) return path;
-  return isAbsolute(path) ? path : resolve(path);
+  const absolute = isAbsolute(path) ? path : resolve(path);
+  try {
+    return join(realpathSync(dirname(absolute)), basename(absolute));
+  } catch {
+    // Parent may not exist yet for brand-new nested destinations.
+    return absolute;
+  }
 }
 
 /** Legacy version-2 single-vault init retained for migrate sources. */

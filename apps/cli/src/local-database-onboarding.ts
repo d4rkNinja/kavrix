@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { realpathSync } from 'node:fs';
 import { lstat, realpath } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
@@ -351,7 +352,13 @@ function parseDestinations(
 }
 
 function resolveOnboardingPath(path: string): string {
-  return isAbsolute(path) ? path : resolve(path);
+  const absolute = isAbsolute(path) ? path : resolve(path);
+  try {
+    return join(realpathSync(dirname(absolute)), basename(absolute));
+  } catch {
+    // Parent may not exist yet for brand-new nested destinations.
+    return absolute;
+  }
 }
 
 async function validateArtifactDestinations(
