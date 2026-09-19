@@ -4,6 +4,7 @@
 
 - Unblock CI after 0.2.14: fix lint unnecessary conditionals in local database onboarding rollback/cause walking (`registry.get` never returns null).
 - Align packed-package smoke with P1 recovery help: top-level `recovery --help` expects legacy-vault wording and points users at `db recovery`; smoke also checks `db recovery --help`.
+- Windows CI flakes: compare init path assertions through `realpath` on both sides (8.3 short vs long names); skip POSIX `chmod`-based EACCES rollback probe on win32.
 
 ## 0.2.14
 
