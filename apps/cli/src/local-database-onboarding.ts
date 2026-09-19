@@ -273,7 +273,7 @@ export async function executeGuidedLocalOnboarding(
   request: GuidedLocalOnboardingRequest,
 ): Promise<GuidedLocalOnboardingReceipt> {
   const receipt = await executeLocalDatabaseOnboarding(request);
-  if (receipt.recoveryFile === undefined || receipt.recoveryReady !== true) {
+  if (receipt.recoveryFile === undefined || !receipt.recoveryReady) {
     throw new GuidedLocalOnboardingError('recovery-verified', receipt.profileId);
   }
   return {

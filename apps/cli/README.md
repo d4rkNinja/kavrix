@@ -4,7 +4,7 @@
 
 Local-first secrets firewall for developers, applications, and AI agents.
 
-Zero-knowledge local encryption: Kavrix never sees your passphrases or plaintext credentials.
+Kavrix provides zero-knowledge local encryption: it never sees your passphrases or plaintext credentials.
 
 Give applications and AI agents access to credentials without handing them your
 `.env`. `kavrix run` injects only the values a process needs; policies and
