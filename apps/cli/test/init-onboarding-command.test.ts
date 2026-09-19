@@ -1,7 +1,10 @@
-import { homedir } from 'node:os';
+import { rm } from 'node:fs/promises';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+import { createSecureTestDirectory } from '../../../packages/key-files/test/secure-temporary-directory.js';
 
 const readlineMocks = vi.hoisted(() => {
   const answers: string[] = [];
@@ -298,28 +301,36 @@ describe('root init onboarding composition', () => {
   );
 
   it('routes --legacy to legacy vault init without guided onboarding', async () => {
-    vi.spyOn(LocalSecretInput.prototype, 'read').mockRejectedValueOnce(
-      new Error('legacy init reached protected input'),
+    // Use a secure temp dir so Windows ACL checks pass before secret input.
+    const directory = await createSecureTestDirectory(
+      join(tmpdir(), 'kavrix-legacy-init-route-'),
     );
+    try {
+      vi.spyOn(LocalSecretInput.prototype, 'read').mockRejectedValueOnce(
+        new Error('legacy init reached protected input'),
+      );
 
-    await expect(
-      buildLocalCli().parseAsync([
-        'node',
-        'kavrix',
-        'init',
-        '--legacy',
-        '--datastore',
-        'file',
-        '--data-file',
-        './x.vault',
-        '--key-file',
-        './x.key',
-      ]),
-    ).rejects.toThrow('legacy init reached protected input');
+      await expect(
+        buildLocalCli().parseAsync([
+          'node',
+          'kavrix',
+          'init',
+          '--legacy',
+          '--datastore',
+          'file',
+          '--data-file',
+          join(directory, 'x.vault'),
+          '--key-file',
+          join(directory, 'x.key'),
+        ]),
+      ).rejects.toThrow('legacy init reached protected input');
 
-    expect(readlineMocks.createInterface).not.toHaveBeenCalled();
-    expect(guidedMocks.preflight).not.toHaveBeenCalled();
-    expect(guidedMocks.execute).not.toHaveBeenCalled();
+      expect(readlineMocks.createInterface).not.toHaveBeenCalled();
+      expect(guidedMocks.preflight).not.toHaveBeenCalled();
+      expect(guidedMocks.execute).not.toHaveBeenCalled();
+    } finally {
+      await rm(directory, { force: true, recursive: true });
+    }
   });
 
   it('routes TUI vs classic via shouldRunInitTuiOnboarding', () => {
