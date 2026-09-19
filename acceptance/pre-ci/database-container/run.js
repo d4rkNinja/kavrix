@@ -188,10 +188,11 @@ function parseJson(result, label) {
   }
 }
 
-function cliRunner(bin, installRoot) {
+function cliRunner(bin, installRoot, environment = process.env) {
   return async (args, frames = [], options = {}) => {
     const result = await runProcess(process.execPath, [bin, ...args], {
       cwd: installRoot,
+      environment,
       input: stdinFrames(frames),
       label: `packed kavrix ${args.slice(0, 3).join(' ')}`,
       allowFailure: options.allowFailure,
@@ -928,6 +929,7 @@ async function exerciseDatabaseContainer(run, paths) {
   await run(
     [
       'init',
+      '--legacy',
       ...legacyFileArgs(paths.legacyDataFile, paths.legacyKeyFile, 'legacy-v2'),
       '--passphrase-stdin',
     ],
@@ -1498,7 +1500,22 @@ async function main() {
     } else {
       await chmod(paths.configDirectory, 0o700);
     }
-    const run = cliRunner(bin, installRoot);
+    // Isolate HOME so any residual ~/.kavrix / ~/.config/kavrix touches use
+    // an ACL-safe parent on Windows (packed modern init, profile defaults).
+    const homeRoot = join(artifactRoot, 'home');
+    await mkdir(homeRoot, { recursive: true });
+    if (process.platform === 'win32') {
+      await setWindowsUserOnlyAcl(homeRoot);
+    } else {
+      await chmod(homeRoot, 0o700);
+    }
+    const packedEnv = {
+      ...process.env,
+      HOME: homeRoot,
+      USERPROFILE: homeRoot,
+      XDG_CONFIG_HOME: join(homeRoot, '.config'),
+    };
+    const run = cliRunner(bin, installRoot, packedEnv);
     const rootHelp = await run(['--help']);
     assert(!/^\s*destroy(?:\s|$)/mu.test(rootHelp.stdout), 'destroy leaked into help');
     await exerciseDatabaseContainer(run, paths);

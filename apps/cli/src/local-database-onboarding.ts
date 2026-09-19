@@ -410,7 +410,13 @@ async function assertDistinctDestinations(
 
 async function canonicalCollisionTarget(path: string): Promise<string> {
   const absolute = isAbsolute(path) ? path : resolve(path);
-  return join(await realpath(dirname(absolute)), basename(absolute));
+  try {
+    // Reserved paths (e.g. ~/.kavrix/config.toml) may not exist yet during
+    // scripted init with explicit destinations — still compare absolute form.
+    return join(await realpath(dirname(absolute)), basename(absolute));
+  } catch {
+    return absolute;
+  }
 }
 
 function secureFileLockPath(targetPath: string): string {

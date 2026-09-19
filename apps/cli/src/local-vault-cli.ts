@@ -1841,9 +1841,9 @@ async function handleInit(options: LocalCliOptions): Promise<void> {
  * path. Recovery is optional (`--recovery-file` + recovery passphrase frames).
  */
 async function handleDatabaseContainerInit(options: LocalCliOptions): Promise<void> {
-  const { ensureKavrixConfig, getKavrixConfigPath } =
-    await import('./kavrix-config.js');
-  await ensureKavrixConfig();
+  // Scripted init with explicit destinations must not require an ACL-safe
+  // ~/.kavrix parent — reserve the default config path without creating it.
+  const { getKavrixConfigPath } = await import('./kavrix-config.js');
   const reservedPaths = [getKavrixConfigPath()];
   const destinations = await resolveScriptedLocalOnboardingDestinations(
     options,
