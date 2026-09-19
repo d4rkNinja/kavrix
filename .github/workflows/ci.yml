@@ -40,8 +40,8 @@ jobs:
     # Skip full_ci_only cells on pull_request; main / workflow_dispatch keep the full matrix.
     if: ${{ github.event_name != 'pull_request' || matrix.full_ci_only != true }}
     runs-on: ${{ matrix.runner }}
-    # Windows shards run serially and are file-duration-skewed; retain enough
-    # headroom for the complete security suite instead of cancelling a valid run.
+    # Windows shards run serially (fileParallelism off) and remain duration-
+    # skewed by heavy files; keep headroom so a valid shard is not cancelled.
     timeout-minutes: 90
     strategy:
       fail-fast: false
@@ -62,26 +62,35 @@ jobs:
             runner: macos-15
             expected_arch: arm64
           # Windows executes the suite serially (fileParallelism is off for the
-          # process-boundary security tests), so it alone dominates the CI wall
-          # clock. The suite is split across shards; acceptance and the packed
-          # CLI smoke run once, on the first shard.
-          - label: Windows x64 · shard 1/4
+          # process-boundary / ACL security tests — see vitest.config.ts), so it
+          # alone dominates the CI wall clock. Split across more shards so heavy
+          # files (execution-run, report-regressions, launch-routing-guards) do
+          # not stretch a single job; acceptance + packed smoke live in the
+          # separate `windows-acceptance` job so verify shards finish sooner.
+          - label: Windows x64 · shard 1/6
             runner: windows-2025
             expected_arch: x64
-            shard: 1/4
-            runs_acceptance: true
-          - label: Windows x64 · shard 2/4
+            shard: 1/6
+          - label: Windows x64 · shard 2/6
             runner: windows-2025
             expected_arch: x64
-            shard: 2/4
-          - label: Windows x64 · shard 3/4
+            shard: 2/6
+          - label: Windows x64 · shard 3/6
             runner: windows-2025
             expected_arch: x64
-            shard: 3/4
-          - label: Windows x64 · shard 4/4
+            shard: 3/6
+          - label: Windows x64 · shard 4/6
             runner: windows-2025
             expected_arch: x64
-            shard: 4/4
+            shard: 4/6
+          - label: Windows x64 · shard 5/6
+            runner: windows-2025
+            expected_arch: x64
+            shard: 5/6
+          - label: Windows x64 · shard 6/6
+            runner: windows-2025
+            expected_arch: x64
+            shard: 6/6
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
@@ -114,14 +123,34 @@ jobs:
           else
             pnpm test
           fi
+
+  # Acceptance + packed CLI smoke used to ride on Windows verify shard 1,
+  # adding ~10–15m after vitest and stretching the critical path. Run them as
+  # their own Windows job (once per PR and on main) so verify shards can finish
+  # in parallel without waiting on acceptance.
+  windows-acceptance:
+    name: Windows acceptance + packed smoke
+    runs-on: windows-2025
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: 11.21.0
+          run_install: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: 24.19.0
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
       - name: Exercise packed database profiles, multi-vault storage, and migration
-        if: ${{ matrix.runs_acceptance == true }}
         run: pnpm acceptance:database-container
       - name: Exercise every applicable command through the packed local-file CLI
-        if: ${{ matrix.runs_acceptance == true }}
         run: pnpm acceptance:pre-ci
       - name: Install and smoke-test the packed public CLI
-        if: ${{ matrix.runs_acceptance == true }}
         run: pnpm --filter kavrix --fail-if-no-match package:smoke
 
   runtime-range:
