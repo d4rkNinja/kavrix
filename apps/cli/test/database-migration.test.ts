@@ -1126,6 +1126,7 @@ async function createLegacySource(
     'node',
     'kavrix',
     'init',
+    '--legacy',
     '--datastore',
     'file',
     '--data-file',
