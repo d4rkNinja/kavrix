@@ -18,7 +18,7 @@ on:
           commit on main can still publish after an explicit user demand.
           Tag on main, version/tag match, archive inspect/SBOM checks, and
           CodeQL remain required. When a newer stable is already npm latest,
-          publishes under a version-named dist-tag so latest is not demoted.
+          publishes under the non-semver `prior` dist-tag so latest is not demoted.
         required: false
         type: boolean
         default: false
@@ -428,8 +428,8 @@ jobs:
                 const cmp=(a[0]-b[0])||(a[1]-b[1])||(a[2]-b[2]);
                 process.exit(cmp>0?0:1);
               " "$current_latest" "$EXPECTED_PACKAGE_VERSION"; then
-                publish_tag="$EXPECTED_PACKAGE_VERSION"
-                echo "OPERATOR OVERRIDE: newer stable $current_latest is already latest; publishing kavrix@$EXPECTED_PACKAGE_VERSION with dist-tag $publish_tag (not latest)." >&2
+                publish_tag="prior"
+                echo "OPERATOR OVERRIDE: newer stable $current_latest is already latest; publishing kavrix@$EXPECTED_PACKAGE_VERSION with non-semver dist-tag $publish_tag (not latest)." >&2
               fi
             fi
           fi
