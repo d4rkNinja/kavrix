@@ -163,49 +163,49 @@ describe('launch P1 follow-ups', () => {
   it.skipIf(process.platform === 'win32')(
     'rolls back stuck default profile after EACCES init so retry succeeds',
     async () => {
-    const directory = await scratch('eacces');
-    const configDir = join(directory, 'config');
-    const readonly = await mkdtemp(join(tmpdir(), 'kavrix-p1-ro-'));
-    directories.push(readonly);
-    await chmod(readonly, 0o555);
-    const failed = await runCli(
-      [
-        'init',
-        '--json',
-        '--passphrase-stdin',
-        '--data-file',
-        join(readonly, 'v'),
-        '--key-file',
-        join(readonly, 'k'),
-        '--profile-config-dir',
-        configDir,
-      ],
-      `${PASSPHRASE}${PASSPHRASE}`,
-    );
-    expect(failed.exitCode).not.toBe(0);
-    expect(failed.stderr).toMatch(/removed so you can retry/i);
-    const listed = await runCli(
-      ['db', 'profile', 'list', '--profile-config-dir', configDir],
-      '',
-    );
-    expect(listed.stdout).toContain('"profiles":[]');
-    const retry = await runCli(
-      [
-        'init',
-        '--json',
-        '--passphrase-stdin',
-        '--data-file',
-        join(directory, 'ok.v'),
-        '--key-file',
-        join(directory, 'ok.k'),
-        '--profile-config-dir',
-        configDir,
-      ],
-      `${PASSPHRASE}${PASSPHRASE}`,
-    );
-    expect(retry.exitCode).toBe(0);
-    await chmod(readonly, 0o755);
-  },
+      const directory = await scratch('eacces');
+      const configDir = join(directory, 'config');
+      const readonly = await mkdtemp(join(tmpdir(), 'kavrix-p1-ro-'));
+      directories.push(readonly);
+      await chmod(readonly, 0o555);
+      const failed = await runCli(
+        [
+          'init',
+          '--json',
+          '--passphrase-stdin',
+          '--data-file',
+          join(readonly, 'v'),
+          '--key-file',
+          join(readonly, 'k'),
+          '--profile-config-dir',
+          configDir,
+        ],
+        `${PASSPHRASE}${PASSPHRASE}`,
+      );
+      expect(failed.exitCode).not.toBe(0);
+      expect(failed.stderr).toMatch(/removed so you can retry/i);
+      const listed = await runCli(
+        ['db', 'profile', 'list', '--profile-config-dir', configDir],
+        '',
+      );
+      expect(listed.stdout).toContain('"profiles":[]');
+      const retry = await runCli(
+        [
+          'init',
+          '--json',
+          '--passphrase-stdin',
+          '--data-file',
+          join(directory, 'ok.v'),
+          '--key-file',
+          join(directory, 'ok.k'),
+          '--profile-config-dir',
+          configDir,
+        ],
+        `${PASSPHRASE}${PASSPHRASE}`,
+      );
+      expect(retry.exitCode).toBe(0);
+      await chmod(readonly, 0o755);
+    },
   );
 
   it('rejects empty secrets at run with a clear message', async () => {

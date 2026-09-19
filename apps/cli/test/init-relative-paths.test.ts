@@ -114,8 +114,12 @@ describe('init relative path persistence', () => {
       expect(typeof initJson.keyFile).toBe('string');
       expect(isAbsolute(String(initJson.dataFile))).toBe(true);
       expect(isAbsolute(String(initJson.keyFile))).toBe(true);
-      expect(canon(String(initJson.dataFile))).toBe(canon(resolve(project, 'vault.kavrix')));
-      expect(canon(String(initJson.keyFile))).toBe(canon(resolve(project, 'custom.key')));
+      expect(canon(String(initJson.dataFile))).toBe(
+        canon(resolve(project, 'vault.kavrix')),
+      );
+      expect(canon(String(initJson.keyFile))).toBe(
+        canon(resolve(project, 'custom.key')),
+      );
       await expect(access(join(project, 'vault.kavrix'))).resolves.toBeUndefined();
       await expect(access(join(project, 'custom.key'))).resolves.toBeUndefined();
 
@@ -178,8 +182,12 @@ describe('init relative path persistence', () => {
       );
       expect(init.exitCode).toBe(0);
       const initJson = JSON.parse(init.stdout) as Record<string, unknown>;
-      expect(canon(String(initJson.keyFile))).toBe(canon(resolve(project, 'kavrix.key')));
-      expect(canon(String(initJson.dataFile))).toBe(canon(resolve(project, 'vault.kavrix')));
+      expect(canon(String(initJson.keyFile))).toBe(
+        canon(resolve(project, 'kavrix.key')),
+      );
+      expect(canon(String(initJson.dataFile))).toBe(
+        canon(resolve(project, 'vault.kavrix')),
+      );
       await expect(access(join(project, 'kavrix.key'))).resolves.toBeUndefined();
       await expect(access(join(project, 'vault.kavrix'))).resolves.toBeUndefined();
       await expect(
