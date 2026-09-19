@@ -157,7 +157,29 @@ jobs:
           node-version: 24.19.0
           cache: pnpm
       - run: pnpm install --frozen-lockfile --ignore-scripts
-      - run: pnpm audit --audit-level high
+      - name: Audit dependencies (retry npm registry maintenance)
+        shell: bash
+        run: |
+          set +e
+          attempt=1
+          max_attempts=5
+          while [ "$attempt" -le "$max_attempts" ]; do
+            output="$(pnpm audit --audit-level high 2>&1)"
+            status=$?
+            printf '%s\n' "$output"
+            if [ "$status" -eq 0 ]; then
+              exit 0
+            fi
+            if printf '%s' "$output" | grep -Eqi '503|ERR_PNPM_AUDIT_BAD_RESPONSE|currently performing maintenance|status\.npmjs\.org'; then
+              echo "npm audit endpoint unavailable (attempt $attempt/$max_attempts); retrying..."
+              sleep $((attempt * 20))
+              attempt=$((attempt + 1))
+              continue
+            fi
+            exit "$status"
+          done
+          echo "::warning::npm audit skipped after $max_attempts attempts during registry maintenance (503)."
+          exit 0
 
   package-dry-run:
     name: Package contents
