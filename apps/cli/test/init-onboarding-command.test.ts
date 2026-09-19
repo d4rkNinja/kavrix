@@ -260,28 +260,39 @@ describe('root init onboarding composition', () => {
         'node',
         'kavrix',
         'init',
+        '--legacy',
         '--key-file',
         'invalid\0key',
       ]),
     ).rejects.toMatchObject({ code: 'KEY_FILE_INVALID_PATH' });
 
     expect(readlineMocks.createInterface).not.toHaveBeenCalled();
+    expect(guidedMocks.preflight).not.toHaveBeenCalled();
     expect(guidedMocks.execute).not.toHaveBeenCalled();
   });
 
-  it.each([['--vault', 'custom'], ['--allow-insecure-transport']])(
+  it.each([['--vault', 'custom'], ['--json'], ['--passphrase-stdin']])(
     'does not enter guided setup when init receives explicit option %s',
     async (...explicitOptions) => {
-      vi.spyOn(LocalSecretInput.prototype, 'read').mockRejectedValueOnce(
-        new Error('scripted init reached protected input'),
-      );
-
+      guidedMocks.preflight.mockRejectedValueOnce(new Error('scripted preflight'));
+      // Provide explicit destinations so default-path secure-dir resolution is skipped.
       await expect(
-        buildLocalCli().parseAsync(['node', 'kavrix', 'init', ...explicitOptions]),
-      ).rejects.toThrow(/scripted init reached protected input|MongoDB/u);
+        buildLocalCli().parseAsync([
+          'node',
+          'kavrix',
+          'init',
+          ...explicitOptions,
+          '--data-file',
+          join(homedir(), 'kavrix-scripted.vault'),
+          '--key-file',
+          join(homedir(), 'kavrix-scripted.key'),
+          '--profile-config-dir',
+          join(homedir(), 'kavrix-scripted-config'),
+        ]),
+      ).rejects.toThrow('scripted preflight');
 
       expect(readlineMocks.createInterface).not.toHaveBeenCalled();
-      // Scripted file init uses shared local-database onboarding, not classic prompts.
+      expect(guidedMocks.preflight).toHaveBeenCalledOnce();
       expect(guidedMocks.execute).not.toHaveBeenCalled();
     },
   );
@@ -482,7 +493,7 @@ describe('root init onboarding composition', () => {
     setTty(false);
     const stderr = vi.spyOn(process.stderr, 'write').mockReturnValue(true);
 
-    await runLocalCli(['node', 'kavrix', 'init', '--key-file', 'invalid\0key']);
+    await runLocalCli(['node', 'kavrix', 'init', '--legacy', '--key-file', 'invalid\0key']);
 
     const output = stderr.mock.calls.flat().join('');
     expect(output).toContain('portable key file path is invalid');

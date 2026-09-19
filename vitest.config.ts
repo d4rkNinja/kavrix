@@ -29,6 +29,7 @@ export default defineConfig({
       'apps/cli/test/init-onboarding.test.ts',
       'apps/cli/test/init-onboarding-command.test.ts',
       'apps/cli/test/local-database-onboarding.test.ts',
+      'apps/cli/test/init-put-run-e2e.test.ts',
       'apps/cli/test/init-storage-selection.test.ts',
       'apps/cli/test/local-vault-cli-publication.test.ts',
       'apps/cli/test/local-vault-cli-coverage.test.ts',
