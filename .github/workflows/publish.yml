@@ -104,9 +104,9 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24.19.0
-          package-manager-cache: false
       - run: pnpm install --frozen-lockfile
-      - run: pnpm verify
+      # Exact-SHA CI already ran the full suite; rebuild here for pack/smoke.
+      - run: pnpm build
       - name: Match the package version, release type, tag, and npm channel
         id: release
         env:
@@ -296,7 +296,6 @@ jobs:
         with:
           node-version: 24.19.0
           registry-url: https://registry.npmjs.org
-          package-manager-cache: false
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: ${{ needs.validate.outputs.artifact_name }}
