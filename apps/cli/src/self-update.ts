@@ -468,9 +468,7 @@ export async function executeSelfUpdate(
 ): Promise<SelfUpdateReport> {
   const trimmedTag = options.tag?.trim();
   const channel =
-    trimmedTag === undefined || trimmedTag.length === 0
-      ? DEFAULT_DIST_TAG
-      : trimmedTag;
+    trimmedTag === undefined || trimmedTag.length === 0 ? DEFAULT_DIST_TAG : trimmedTag;
   const trimmedRegistry = options.registry?.trim();
   const envRegistry = deps.env['npm_config_registry']?.trim();
   const registry =

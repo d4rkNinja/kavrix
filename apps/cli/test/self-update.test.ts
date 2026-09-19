@@ -82,9 +82,7 @@ describe('detectInstallKind', () => {
   });
 
   it('rejects Homebrew Cellar paths', () => {
-    const result = detectInstallKind(
-      '/opt/homebrew/Cellar/kavrix/0.2.15/bin/kavrix',
-    );
+    const result = detectInstallKind('/opt/homebrew/Cellar/kavrix/0.2.15/bin/kavrix');
     expect(result).toMatchObject({ kind: 'unsupported', method: 'homebrew' });
   });
 
@@ -103,9 +101,7 @@ describe('detectInstallKind', () => {
   });
 
   it('rejects source trees outside node_modules/kavrix', () => {
-    const result = detectInstallKind(
-      '/workspace/kavrix-tui-dev/apps/cli/dist/bin.js',
-    );
+    const result = detectInstallKind('/workspace/kavrix-tui-dev/apps/cli/dist/bin.js');
     expect(result).toMatchObject({ kind: 'unsupported', method: 'dev-checkout' });
   });
 });
@@ -323,7 +319,9 @@ describe('executeSelfUpdate', () => {
           }),
         }),
       ),
-    ).rejects.toThrow(/npm install --global kavrix@0\.2\.16[\s\S]*EACCES[\s\S]*~\/\.local/);
+    ).rejects.toThrow(
+      /npm install --global kavrix@0\.2\.16[\s\S]*EACCES[\s\S]*~\/\.local/,
+    );
   });
 });
 
