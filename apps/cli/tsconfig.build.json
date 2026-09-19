@@ -53,6 +53,7 @@
     "src/tui-session.ts",
     "src/tui-clipboard.ts",
     "src/kavrix-config.ts",
+    "src/self-update.ts",
     "src/version.ts"
   ],
   "exclude": ["test/**/*.ts"],
