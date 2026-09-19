@@ -13,9 +13,12 @@ on:
       skip_ci_gate:
         description: >-
           Operator override (workflow_dispatch only). When true, skip the
-          exact-SHA successful CI push-run requirement so a tagged commit
-          on main can still publish after an explicit user demand. Tag on
-          main, version/tag match, and CodeQL remain required.
+          exact-SHA successful CI push-run requirement AND the packed-package
+          smoke (which mirrors the CI recovery --help failure) so a tagged
+          commit on main can still publish after an explicit user demand.
+          Tag on main, version/tag match, archive inspect/SBOM checks, and
+          CodeQL remain required. When a newer stable is already npm latest,
+          publishes under a version-named dist-tag so latest is not demoted.
         required: false
         type: boolean
         default: false
@@ -41,6 +44,7 @@ jobs:
       npm_dist_tag: ${{ steps.release.outputs.npm_dist_tag }}
       package_version: ${{ steps.package.outputs.package_version }}
       release_tag: ${{ steps.release_ref.outputs.release_tag }}
+      skip_ci_gate: ${{ github.event_name == 'workflow_dispatch' && inputs.skip_ci_gate || false }}
       tagged_commit: ${{ steps.release_gate.outputs.tagged_commit }}
     steps:
       - name: Resolve and validate the exact release tag
@@ -205,10 +209,15 @@ jobs:
       - name: Inspect and smoke-test the exact release archive
         env:
           PACKAGE_ARCHIVE: ${{ steps.package.outputs.archive }}
+          SKIP_CI_GATE: ${{ github.event_name == 'workflow_dispatch' && inputs.skip_ci_gate || false }}
         shell: bash
         run: |
           set -euo pipefail
-          node apps/cli/scripts/smoke-packed-package.js "$PACKAGE_ARCHIVE"
+          if [[ "$SKIP_CI_GATE" == 'true' ]]; then
+            echo "OPERATOR OVERRIDE: skip_ci_gate=true — skipping packed-package smoke; still inspecting archive/SBOM/canaries." >&2
+          else
+            node apps/cli/scripts/smoke-packed-package.js "$PACKAGE_ARCHIVE"
+          fi
           inspection="$(mktemp -d)"
           trap 'rm -rf -- "$inspection"' EXIT
           tar -xzf "$PACKAGE_ARCHIVE" -C "$inspection" \
@@ -390,6 +399,7 @@ jobs:
           EXPECTED_PACKAGE_VERSION: ${{ needs.validate.outputs.package_version }}
           NPM_DIST_TAG: ${{ needs.validate.outputs.npm_dist_tag }}
           PACKAGE_ARCHIVE: package-artifacts/${{ needs.validate.outputs.archive_name }}
+          SKIP_CI_GATE: ${{ needs.validate.outputs.skip_ci_gate }}
         shell: bash
         run: |
           set -euo pipefail
@@ -408,11 +418,27 @@ jobs:
             exit 0
           fi
 
+          publish_tag="$NPM_DIST_TAG"
+          if [[ "$SKIP_CI_GATE" == 'true' && "$NPM_DIST_TAG" == 'latest' ]]; then
+            current_latest="$(npm view kavrix version 2>/dev/null || true)"
+            if [[ -n "$current_latest" && "$current_latest" != "$EXPECTED_PACKAGE_VERSION" ]]; then
+              # Avoid demoting a newer already-published latest (e.g. ship 0.2.14 after 0.2.15).
+              if node --input-type=module -e "
+                const [a,b]=process.argv.slice(1).map(v=>v.split('.').map(Number));
+                const cmp=(a[0]-b[0])||(a[1]-b[1])||(a[2]-b[2]);
+                process.exit(cmp>0?0:1);
+              " "$current_latest" "$EXPECTED_PACKAGE_VERSION"; then
+                publish_tag="$EXPECTED_PACKAGE_VERSION"
+                echo "OPERATOR OVERRIDE: newer stable $current_latest is already latest; publishing kavrix@$EXPECTED_PACKAGE_VERSION with dist-tag $publish_tag (not latest)." >&2
+              fi
+            fi
+          fi
+
           publish_status=0
           npm publish "./$PACKAGE_ARCHIVE" \
             --ignore-scripts \
             --access public \
-            --tag "$NPM_DIST_TAG" \
+            --tag "$publish_tag" \
             --provenance || publish_status=$?
 
           for attempt in {1..12}; do
