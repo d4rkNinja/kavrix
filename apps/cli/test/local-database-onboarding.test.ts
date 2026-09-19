@@ -221,7 +221,7 @@ describe('guided local database onboarding', () => {
     });
   });
 
-  it('keeps an unselected route after a post-publication failure', async () => {
+  it('rolls back an unbound incomplete profile after a post-publication failure', async () => {
     const target = await createTarget('rollback');
     vi.spyOn(DatabaseSession, 'initialize').mockRejectedValueOnce(
       new DatabaseSessionError('operation'),
@@ -239,17 +239,13 @@ describe('guided local database onboarding', () => {
       phase: 'profile-added',
       profileId: 'default',
     });
-    expect((failure as Error).message).toContain('kavrix db profile list');
-    expect((failure as Error).message).not.toContain('database');
-    expect((failure as Error).message).not.toContain('vault');
+    expect((failure as Error).message).toContain('was removed so you can retry');
     expect((failure as Error).message).not.toContain(OWNER_PASSPHRASE.toString('utf8'));
 
     const registry = await DatastoreProfileRegistry.open({
       configDirectory: target.configDirectory,
     });
-    expect(await registry.list()).toEqual([
-      expect.objectContaining({ id: 'default', datastore: 'file' }),
-    ]);
+    expect(await registry.list()).toEqual([]);
     expect(await registry.current()).toBeNull();
   });
 

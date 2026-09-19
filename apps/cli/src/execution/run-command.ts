@@ -691,6 +691,11 @@ function buildInjections(
         `Credential '${secret}' was not found.`,
       );
     }
+    if (value.length === 0) {
+      throw invalidConfiguration(
+        `Credential '${secret}' has an empty value and cannot be injected into the environment. Store a non-empty secret with put, or omit this --secret mapping.`,
+      );
+    }
     injections.push([
       destination,
       { kind: 'secret', value: secretValueSchema.parse(value) },

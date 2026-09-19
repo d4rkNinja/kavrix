@@ -353,7 +353,9 @@ describe('stdin frame reference and status', () => {
     expect(all.stdout).toContain('destroy');
     const single = await runCli(['frames', 'put'], '');
     expect(single.exitCode).toBe(0);
-    expect(single.stdout).toContain('[mongodb-url,] passphrase, value');
+    expect(single.stdout).toContain(
+      '[mongodb-url with --database-url-stdin,] passphrase, value',
+    );
     const help = await runCli(['db', 'vault', 'create', '--help'], '');
     expect(help.exitCode).toBe(0);
     expect(help.stdout).toContain('Stdin frames: [mongodb-url,]');

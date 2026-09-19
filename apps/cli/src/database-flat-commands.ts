@@ -64,7 +64,29 @@ export async function usesDatabaseContainer(
  * Distinguishes a missing profile selection from an existing but unbound one
  * (created via `db profile add` but never bound via `db init`). Unbound
  * profiles have no databaseId and cannot open a database container.
+ *
+ * Shared automation contract: root CRUD (`list`/`put`/…) must match `run`
+ * with a clear init hint (exit 14), not a legacy "Vault is not initialized"
+ * (exit 15).
  */
+export function unboundDatabaseProfileMessage(commandHint: string): string {
+  return (
+    'The selected datastore profile is not bound to a database; run `kavrix db init` ' +
+    'for that profile before `kavrix ' +
+    commandHint +
+    '`.'
+  );
+}
+
+export async function rejectUnboundDatabaseProfile(
+  options: DatabaseFlatCommandOptions,
+  commandHint: string,
+): Promise<void> {
+  if ((await databaseProfileBindingState(options)) === 'unbound') {
+    throw new DatabaseFlatCommandError(unboundDatabaseProfileMessage(commandHint));
+  }
+}
+
 export async function databaseProfileBindingState(
   options: DatabaseFlatCommandOptions,
 ): Promise<'bound' | 'unbound' | 'missing'> {

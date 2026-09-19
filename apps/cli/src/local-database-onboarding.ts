@@ -257,6 +257,32 @@ export async function executeLocalDatabaseOnboarding(
         new AggregateError(closeErrors, 'Protected onboarding cleanup failed.'),
       );
     }
+    // Safe rollback: profile published but never bound (phase still profile-added)
+    // and the failure is not an ambiguous datastore commit. Clears EACCES / early
+    // init failures so retry is not blocked by PROFILE_DUPLICATE.
+    if (
+      failure !== undefined &&
+      profileAdded &&
+      phase === 'profile-added' &&
+      !isAmbiguousOnboardingFailure(failure)
+    ) {
+      const rolledBack = await rollbackIncompleteUnboundProfile(
+        registry,
+        parsed.profileId,
+      );
+      if (rolledBack) {
+        const priorFailure = failure;
+        failure = new GuidedLocalOnboardingError(
+          'profile-added',
+          parsed.profileId,
+          priorFailure,
+        );
+        Object.defineProperty(failure, 'message', {
+          configurable: true,
+          value: rolledBackIncompleteProfileMessage(parsed.profileId, priorFailure),
+        });
+      }
+    }
   }
 
   if (failure !== undefined) throw failure;
@@ -431,6 +457,73 @@ function canonicalCollisionPath(path: string): string {
   return path.toLocaleLowerCase('en-US');
 }
 
+async function rollbackIncompleteUnboundProfile(
+  registry: DatastoreProfileRegistry,
+  profileId: ProfileId,
+): Promise<boolean> {
+  try {
+    const profile = await registry.get(profileId);
+    if (profile === null) return true;
+    if (profile.databaseId !== undefined) return false;
+    await registry.remove(profileId);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function isAmbiguousOnboardingFailure(failure: unknown): boolean {
+  let current: unknown = failure;
+  const seen = new Set<unknown>();
+  while (current !== undefined && current !== null && !seen.has(current)) {
+    seen.add(current);
+    if (
+      current instanceof DatabaseSessionError &&
+      current.code === 'ambiguous-commit'
+    ) {
+      return true;
+    }
+    if (
+      typeof current === 'object' &&
+      current !== null &&
+      'cause' in current &&
+      (current as { cause?: unknown }).cause !== undefined
+    ) {
+      current = (current as { cause?: unknown }).cause;
+      continue;
+    }
+    break;
+  }
+  return false;
+}
+
+function rolledBackIncompleteProfileMessage(
+  profileId: ProfileId,
+  failure: unknown,
+): string {
+  let cause: unknown = failure;
+  if (
+    typeof failure === 'object' &&
+    failure !== null &&
+    'cause' in failure &&
+    (failure as { cause?: unknown }).cause instanceof Error
+  ) {
+    cause = (failure as { cause: Error }).cause;
+  }
+  const detail =
+    cause instanceof Error &&
+    cause.message.length > 0 &&
+    !cause.message.includes('Guided setup did not reach')
+      ? cause.message
+      : 'Init did not complete.';
+  return (
+    'Init failed before the database was bound; incomplete profile `' +
+    profileId +
+    '` was removed so you can retry. ' +
+    detail
+  );
+}
+
 function partialSetupMessage(
   phase: GuidedLocalOnboardingPhase,
   profileId: ProfileId,
@@ -442,7 +535,7 @@ function partialSetupMessage(
   if (phase === 'profile-added') {
     return (
       prefix +
-      'Inspect `kavrix db profile list`. To retry init for this id, remove the incomplete profile with `kavrix db profile remove ' +
+      'Inspect `kavrix db profile list`. If an incomplete unbound profile remains, remove it with `kavrix db profile remove ' +
       profileId +
       '` (or choose a new --profile), then run init again.'
     );
