@@ -45,3 +45,15 @@ export function addRootDatastoreOption(command: Command): Command {
     DEFAULT_ROOT_DATASTORE,
   );
 }
+
+/** Ping has no file endpoint; do not inherit the root file default in help. */
+export const PING_DATASTORE_OPTION_DESCRIPTION =
+  'Encrypted datastore for ping: must be mongodb (file has no network endpoint).';
+
+/**
+ * Attach `--datastore` for `db ping` without a file default so help matches the
+ * mongodb-only runtime contract.
+ */
+export function addMongoPingDatastoreOption(command: Command): Command {
+  return command.option('--datastore <type>', PING_DATASTORE_OPTION_DESCRIPTION);
+}

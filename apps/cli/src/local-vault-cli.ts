@@ -75,7 +75,9 @@ import { Command } from 'commander';
 import { addDatabaseOwnerCommands } from './database-commands.js';
 import {
   DatabaseFlatCommandError,
+  databaseProfileBindingState,
   readDatabaseFlatSecrets,
+  rejectUnboundDatabaseProfile,
   usesDatabaseContainer,
   withDatabaseFlatVault,
 } from './database-flat-commands.js';
@@ -113,6 +115,7 @@ import {
 } from './local-secrets.js';
 import {
   INVALID_ROOT_DATASTORE_MESSAGE,
+  addMongoPingDatastoreOption,
   addRootDatastoreOption,
   parseRootDatastore,
   resolveRootDatastore,
@@ -395,8 +398,10 @@ export function buildLocalCli(): Command {
   addDatabaseOwnerCommands(db);
   const ping = db
     .command('ping')
-    .description('Check direct MongoDB connectivity without unlocking a vault.');
-  addDatabaseOnlyOptions(ping);
+    .description(
+      'Check direct MongoDB connectivity without unlocking a vault (requires --datastore mongodb).',
+    );
+  addMongoPingOptions(ping);
   addDatastoreProfileSelectionOptions(ping);
   ping.action(async (...args: unknown[]) => {
     await handlePing(getOptions(args), profileRoutingOverrides(args));
@@ -440,7 +445,7 @@ export function buildLocalCli(): Command {
   );
   put.option(
     '--value-stdin-base64',
-    'Read one base64-encoded credential value frame from standard input; supports multi-line and empty values.',
+    'Read one base64-encoded credential value frame from standard input; supports multi-line values (empty values store but cannot be injected by run).',
   );
   put.option('--overwrite', 'Replace an existing credential explicitly.');
   put.option('--json', 'Emit machine-readable output (the default).');
@@ -568,7 +573,9 @@ export function buildLocalCli(): Command {
 
   const recovery = program
     .command('recovery')
-    .description('Create protected recovery kits and replace a lost key file.');
+    .description(
+      'Legacy-vault recovery kits. For database-container profiles (modern init), use `kavrix db recovery`.',
+    );
   const recoveryCreate = recovery
     .command('create')
     .description('Create an encrypted recovery kit for replacing a lost key file.');
@@ -592,6 +599,7 @@ export function buildLocalCli(): Command {
     .command('verify')
     .description('Verify a protected recovery kit against the current vault.');
   addDatabaseOnlyOptions(recoveryVerify);
+  addDatastoreProfileSelectionOptions(recoveryVerify);
   addVaultOption(recoveryVerify);
   recoveryVerify
     .option(
@@ -624,6 +632,7 @@ export function buildLocalCli(): Command {
     .command('status')
     .description('Show protected recovery-kit counts without revealing secrets.');
   addDatabaseOnlyOptions(recoveryStatus);
+  addDatastoreProfileSelectionOptions(recoveryStatus);
   addVaultOption(recoveryStatus);
   recoveryStatus.option('--json', 'Emit machine-readable output.');
   recoveryStatus.action(async (...args: unknown[]) => {
@@ -633,6 +642,7 @@ export function buildLocalCli(): Command {
     .command('use')
     .description('Use a protected recovery kit to create and bind new keys.');
   addDatabaseOnlyOptions(recoveryUse);
+  addDatastoreProfileSelectionOptions(recoveryUse);
   addVaultOption(recoveryUse);
   recoveryUse
     .option(
@@ -1121,23 +1131,25 @@ function profileRoutingOverrides(
   const command = args.at(-1);
   if (!(command instanceof Command)) return {};
   const options = getOptions(args);
-  const datastore =
-    command.getOptionValueSource('datastore') === 'default'
-      ? undefined
-      : parseExplicitDatastore(options.datastore);
+  const optionIsExplicit = (key: string): boolean => {
+    const source = command.getOptionValueSource(key);
+    return source !== undefined && source !== 'default';
+  };
+  // Unset options (no Commander default, e.g. db ping --datastore) must not be
+  // treated as explicit empty values — that previously threw a generic
+  // "--datastore must be mongodb or file" instead of the ping-specific hint.
+  const datastore = optionIsExplicit('datastore')
+    ? parseExplicitDatastore(options.datastore)
+    : undefined;
   return {
     ...(datastore === undefined ? {} : { datastore }),
-    ...(command.getOptionValueSource('dataFile') === 'default' ||
-    options.dataFile === undefined
+    ...(!optionIsExplicit('dataFile') || options.dataFile === undefined
       ? {}
       : { dataFile: options.dataFile }),
-    ...(command.getOptionValueSource('database') === 'default' ||
-    options.database === undefined
+    ...(!optionIsExplicit('database') || options.database === undefined
       ? {}
       : { database: options.database }),
-    ...(command.getOptionValueSource('collection') === 'default'
-      ? {}
-      : { collection: options.collection }),
+    ...(!optionIsExplicit('collection') ? {} : { collection: options.collection }),
   };
 }
 
@@ -1201,6 +1213,22 @@ async function resolveProfileForPing(
 
 function addDatabaseOnlyOptions(command: Command): void {
   addRootDatastoreOption(command)
+    .option('--data-file <path>', 'Encrypted local vault file path.')
+    .option(
+      '--allow-insecure-transport',
+      'Explicitly permit unencrypted transport to a non-local MongoDB (isolated networks only).',
+    )
+    .option(
+      '--database-url-stdin',
+      'Read the MongoDB connection string from standard input (never from an argument).',
+    )
+    .option('--database <name>', 'MongoDB database name when it is not in the URI.')
+    .option('--collection <name>', 'MongoDB collection name.', DEFAULT_COLLECTION);
+}
+
+/** Mongo-only ping options: no inherited file datastore default in `--help`. */
+function addMongoPingOptions(command: Command): void {
+  addMongoPingDatastoreOption(command)
     .option('--data-file <path>', 'Encrypted local vault file path.')
     .option(
       '--allow-insecure-transport',
@@ -2392,6 +2420,23 @@ async function handleMigrateDatabase(options: LocalCliOptions): Promise<void> {
   writeJson(await executeDatabaseMigrationCommand(options));
 }
 
+const DATABASE_CONTAINER_RECOVERY_MESSAGE =
+  'Top-level `recovery` applies to legacy vaults only. For database-container profiles (modern `kavrix init`), use `kavrix db recovery` (for example `kavrix db recovery status` or `kavrix db recovery verify --recovery-file <path>`).';
+
+async function rejectDatabaseContainerForLegacyRecovery(
+  options: LocalCliOptions,
+): Promise<void> {
+  if (await usesDatabaseContainer(options)) {
+    throw new LocalCliError(DATABASE_CONTAINER_RECOVERY_MESSAGE);
+  }
+  const state = await databaseProfileBindingState(options);
+  if (state === 'unbound') {
+    throw new DatabaseFlatCommandError(
+      'The selected datastore profile is not bound to a database; run `kavrix db init` for that profile, then use `kavrix db recovery`.',
+    );
+  }
+}
+
 async function handlePut(name: string, options: LocalCliOptions): Promise<void> {
   validateCredentialName(name);
   const valueKind: LocalSecretKind =
@@ -2401,6 +2446,7 @@ async function handlePut(name: string, options: LocalCliOptions): Promise<void> 
       'Use either --value-stdin or --value-stdin-base64, not both.',
     );
   }
+  await rejectUnboundDatabaseProfile(options, 'put');
   if (await usesDatabaseContainer(options)) {
     const values = await readDatabaseFlatSecrets(options, [valueKind]);
     const value = requiredSecret(values.extras, 0);
@@ -2453,6 +2499,7 @@ async function handlePut(name: string, options: LocalCliOptions): Promise<void> 
 
 async function handleGet(name: string, options: LocalCliOptions): Promise<void> {
   validateCredentialName(name);
+  await rejectUnboundDatabaseProfile(options, 'get');
   if (await usesDatabaseContainer(options)) {
     const values = await readDatabaseFlatSecrets(options, []);
     await withDatabaseFlatVault(options, values, async (session, vaultId, profile) => {
@@ -2504,6 +2551,7 @@ async function handleGet(name: string, options: LocalCliOptions): Promise<void> 
 }
 
 async function handleList(options: LocalCliOptions): Promise<void> {
+  await rejectUnboundDatabaseProfile(options, 'list');
   if (await usesDatabaseContainer(options)) {
     const values = await readDatabaseFlatSecrets(options, []);
     await withDatabaseFlatVault(options, values, async (session, vaultId) => {
@@ -2588,6 +2636,7 @@ async function handleView(
       'view --reveal requires an interactive terminal; use get --reveal for explicit scripted output.',
     );
   }
+  await rejectUnboundDatabaseProfile(options, 'view');
   if (await usesDatabaseContainer(options)) {
     const values = await readDatabaseFlatSecrets(options, []);
     await withDatabaseFlatVault(options, values, async (session, vaultId, profile) => {
@@ -2691,6 +2740,7 @@ async function handleSearch(term: string, options: LocalCliOptions): Promise<voi
   const limit = parseLimit(options.limit);
   const ignoreCase = options.caseSensitive !== true;
   const matchesName = buildSearchMatcher(normalizedTerm, ignoreCase);
+  await rejectUnboundDatabaseProfile(options, 'search');
   if (await usesDatabaseContainer(options)) {
     const values = await readDatabaseFlatSecrets(options, []);
     await withDatabaseFlatVault(options, values, async (session, vaultId) => {
@@ -2750,6 +2800,7 @@ async function handleSearch(term: string, options: LocalCliOptions): Promise<voi
 }
 
 async function handleStats(options: LocalCliOptions): Promise<void> {
+  await rejectUnboundDatabaseProfile(options, 'stats');
   if (await usesDatabaseContainer(options)) {
     const values = await readDatabaseFlatSecrets(options, []);
     await withDatabaseFlatVault(options, values, async (session, vaultId) => {
@@ -2806,6 +2857,7 @@ async function handleStats(options: LocalCliOptions): Promise<void> {
 
 async function handleRemove(name: string, options: LocalCliOptions): Promise<void> {
   validateCredentialName(name);
+  await rejectUnboundDatabaseProfile(options, 'remove');
   if (await usesDatabaseContainer(options)) {
     const values = await readDatabaseFlatSecrets(options, []);
     await withDatabaseFlatVault(options, values, async (session, vaultId) => {
@@ -2860,6 +2912,7 @@ async function handleHas(name: string, options: LocalCliOptions): Promise<void> 
       : exists
         ? `${sanitizeTerminalText(name)}: present`
         : `${sanitizeTerminalText(name)}: absent`;
+  await rejectUnboundDatabaseProfile(options, 'has');
   if (await usesDatabaseContainer(options)) {
     const values = await readDatabaseFlatSecrets(options, []);
     await withDatabaseFlatVault(options, values, async (session, vaultId) => {
@@ -2899,6 +2952,7 @@ async function handleRename(
   validateCredentialName(from);
   validateCredentialName(to);
   if (from === to) throw new LocalCliError('Credential names must be different.');
+  await rejectUnboundDatabaseProfile(options, 'rename');
   if (await usesDatabaseContainer(options)) {
     const values = await readDatabaseFlatSecrets(options, []);
     await withDatabaseFlatVault(options, values, async (session, vaultId) => {
@@ -2954,6 +3008,7 @@ async function handleRename(
 }
 
 async function handleDoctor(options: LocalCliOptions): Promise<void> {
+  await rejectUnboundDatabaseProfile(options, 'doctor');
   if (await usesDatabaseContainer(options)) {
     const values = await readDatabaseFlatSecrets(options, []);
     await withDatabaseFlatVault(options, values, async (session, vaultId, profile) => {
@@ -3004,32 +3059,58 @@ async function handleDoctorHealth(options: LocalCliOptions): Promise<void> {
     revokedRecoverySlots?: number;
   }
 
+  await rejectUnboundDatabaseProfile(options, 'doctor health');
   if (await usesDatabaseContainer(options)) {
     const values = await readDatabaseFlatSecrets(options, []);
-    await withDatabaseFlatVault(options, values, async (session, vaultId, profile) => {
-      let credentialCount = 0;
-      const document = await session.inspectVault(vaultId, (payload) => {
-        credentialCount = Object.keys(payload.records).length;
-      });
+    try {
+      await withDatabaseFlatVault(
+        options,
+        values,
+        async (session, vaultId, profile) => {
+          let credentialCount = 0;
+          const document = await session.inspectVault(vaultId, (payload) => {
+            credentialCount = Object.keys(payload.records).length;
+          });
+          writeJson({
+            healthy: true,
+            datastore: profile.datastore,
+            vaultId,
+            revision: document.revision,
+            checks: [
+              {
+                name: 'database-container',
+                status: 'ok',
+                detail:
+                  'The database binding, revision anchor, vault envelope, and payload authenticated.',
+                revision: document.revision,
+                credentialCount,
+              },
+            ],
+            autoHealed: [],
+            manualRecoveryRequired: [],
+          });
+        },
+      );
+    } catch (error) {
+      // Align automation contract with `db doctor health`: JSON + exit 15 on auth fail.
+      const detail =
+        error instanceof Error && error.message.length > 0
+          ? error.message
+          : 'Database authentication failed.';
       writeJson({
-        healthy: true,
-        datastore: profile.datastore,
-        vaultId,
-        revision: document.revision,
+        healthy: false,
         checks: [
           {
             name: 'database-container',
-            status: 'ok',
-            detail:
-              'The database binding, revision anchor, vault envelope, and payload authenticated.',
-            revision: document.revision,
-            credentialCount,
+            status: 'manual-recovery',
+            detail,
           },
         ],
         autoHealed: [],
-        manualRecoveryRequired: [],
+        manualRecoveryRequired: [detail],
       });
-    });
+      process.exitCode = 15;
+    }
     return;
   }
 
@@ -3192,6 +3273,7 @@ async function handleDoctorHealth(options: LocalCliOptions): Promise<void> {
 }
 
 async function handleRecoveryCreate(options: LocalCliOptions): Promise<void> {
+  await rejectDatabaseContainerForLegacyRecovery(options);
   const recoveryFile = requiredOption(options.recoveryFile, '--recovery-file');
   if (options.overwrite === true) {
     throw new LocalCliError(
@@ -3300,6 +3382,7 @@ async function handleRecoveryCreate(options: LocalCliOptions): Promise<void> {
 }
 
 async function handleRecoveryStatus(options: LocalCliOptions): Promise<void> {
+  await rejectDatabaseContainerForLegacyRecovery(options);
   const values = await readSecrets(['database-url'], options);
   const databaseUrl = requiredSecret(values, 0);
   await withStore(databaseUrl, options, async (store) => {
@@ -3332,6 +3415,7 @@ async function handleRecoveryRevoke(
   slotIdValue: string,
   options: LocalCliOptions,
 ): Promise<void> {
+  await rejectDatabaseContainerForLegacyRecovery(options);
   let slotId: ReturnType<typeof keySlotIdSchema.parse>;
   try {
     slotId = keySlotIdSchema.parse(slotIdValue);
@@ -3385,6 +3469,7 @@ async function handleRecoveryRevoke(
 }
 
 async function handleRecoveryVerify(options: LocalCliOptions): Promise<void> {
+  await rejectDatabaseContainerForLegacyRecovery(options);
   const recoveryFile = requiredOption(options.recoveryFile, '--recovery-file');
   const values = await readSecrets(['database-url', 'recovery-passphrase'], options);
   const databaseUrl = requiredSecret(values, 0);
@@ -3433,6 +3518,7 @@ async function handleRecoveryVerify(options: LocalCliOptions): Promise<void> {
 }
 
 async function handleRecoveryUse(options: LocalCliOptions): Promise<void> {
+  await rejectDatabaseContainerForLegacyRecovery(options);
   const recoveryFile = requiredOption(options.recoveryFile, '--recovery-file');
   const outputRecoveryFile = requiredOption(
     options.outputRecoveryFile,
