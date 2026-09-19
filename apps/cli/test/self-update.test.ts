@@ -12,9 +12,11 @@ import {
   detectInstallKind,
   executeSelfUpdate,
   fetchNpmDistTagVersion,
+  assertSafeNpmRegistry,
   formatNpmInstallCommand,
   parsePublishedVersion,
   resolveNpmInvoker,
+  shellSingleQuote,
   type SelfUpdateDeps,
 } from '../src/self-update.js';
 import { buildLocalCli } from '../src/local-vault-cli.js';
@@ -137,6 +139,42 @@ describe('detectInstallKind', () => {
   it('does not treat directories named kavrix-* as dev-checkout', async () => {
     const { packageRoot, distBin } = await fakeUnixGlobal('kavrix-tools');
     expect(detectInstallKind(distBin)).toEqual({
+      kind: 'npm-global',
+      method: 'npm-global',
+      packageRoot: realpathSync(packageRoot),
+    });
+  });
+
+  it('rejects node_modules packages not named kavrix', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'kavrix-update-'));
+    roots.push(root);
+    const packageRoot = join(root, 'lib', 'node_modules', 'kavrix');
+    await mkdir(join(packageRoot, 'dist'), { recursive: true });
+    await writeFile(join(packageRoot, 'package.json'), '{"name":"not-kavrix"}\n');
+    const bin = join(packageRoot, 'dist', 'bin.js');
+    await writeFile(bin, '');
+    expect(detectInstallKind(bin)).toMatchObject({
+      kind: 'unsupported',
+      method: 'unknown',
+    });
+  });
+
+  it('maps $PREFIX/bin/kavrix to lib/node_modules when the bin path is not a resolvable symlink', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'kavrix-update-'));
+    roots.push(root);
+    const prefix = join(root, 'prefix');
+    const packageRoot = join(prefix, 'lib', 'node_modules', 'kavrix');
+    await mkdir(join(packageRoot, 'dist'), { recursive: true });
+    await mkdir(join(prefix, 'bin'), { recursive: true });
+    await writeFile(
+      join(packageRoot, 'package.json'),
+      '{"name":"kavrix","version":"0.2.16"}\n',
+    );
+    await writeFile(join(packageRoot, 'dist', 'bin.js'), '');
+    // Plain file named kavrix in bin/ (not a symlink) — realpath stays on bin path.
+    const binPath = join(prefix, 'bin', 'kavrix');
+    await writeFile(binPath, '#!/usr/bin/env node\n');
+    expect(detectInstallKind(binPath)).toEqual({
       kind: 'npm-global',
       method: 'npm-global',
       packageRoot: realpathSync(packageRoot),
@@ -454,6 +492,94 @@ describe('executeSelfUpdate', () => {
       action: 'failed',
       error: expect.stringMatching(/offline/),
     });
+  });
+
+  it('rejects unsafe --registry with JSON when --json is set', async () => {
+    const chunks: string[] = [];
+    await expect(
+      executeSelfUpdate(
+        { json: true, registry: 'http://evil.example/npm' },
+        deps({
+          currentVersion: '0.2.15',
+          writeStdout: (text) => {
+            chunks.push(text);
+          },
+        }),
+      ),
+    ).rejects.toBeInstanceOf(LocalCliError);
+    expect(JSON.parse(chunks.join('')).action).toBe('failed');
+    expect(JSON.parse(chunks.join('')).error).toMatch(/https/);
+  });
+
+  it('fails when npm exits 0 but installed version does not match latest', async () => {
+    const chunks: string[] = [];
+    await expect(
+      executeSelfUpdate(
+        { json: true },
+        deps({
+          currentVersion: '0.2.15',
+          readInstalledVersion: () => '0.2.15',
+          writeStdout: (text) => {
+            chunks.push(text);
+          },
+        }),
+      ),
+    ).rejects.toBeInstanceOf(LocalCliError);
+    expect(JSON.parse(chunks.join(''))).toMatchObject({
+      action: 'failed',
+      error: expect.stringMatching(/expected 0\.2\.16/),
+    });
+  });
+
+  it('keeps generic npm ERR lines in failure JSON', async () => {
+    const chunks: string[] = [];
+    await expect(
+      executeSelfUpdate(
+        { json: true },
+        deps({
+          currentVersion: '0.2.15',
+          runNpmInstall: async () => ({
+            status: 1,
+            stdout: '',
+            stderr: 'npm ERR! something obscure broke\n',
+          }),
+          writeStdout: (text) => {
+            chunks.push(text);
+          },
+        }),
+      ),
+    ).rejects.toBeInstanceOf(LocalCliError);
+    expect(chunks.join('')).toMatch(/something obscure broke/);
+  });
+});
+
+describe('assertSafeNpmRegistry', () => {
+  it('accepts https registries and normalizes trailing slashes', () => {
+    expect(assertSafeNpmRegistry('https://example.test/npm/')).toBe(
+      'https://example.test/npm',
+    );
+  });
+
+  it('allows http only for localhost', () => {
+    expect(assertSafeNpmRegistry('http://127.0.0.1:4873/')).toBe(
+      'http://127.0.0.1:4873',
+    );
+    expect(() => assertSafeNpmRegistry('http://example.test/npm')).toThrow(/https/);
+  });
+
+  it('rejects embedded credentials and fragments', () => {
+    expect(() =>
+      assertSafeNpmRegistry('https://user:token@registry.npmjs.org/'),
+    ).toThrow(/credentials/);
+    expect(() => assertSafeNpmRegistry('https://registry.npmjs.org/#x')).toThrow(
+      /fragments/,
+    );
+  });
+});
+
+describe('shellSingleQuote', () => {
+  it('escapes embedded single quotes for POSIX paste safety', () => {
+    expect(shellSingleQuote("foo'bar")).toBe(`'foo'\\''bar'`);
   });
 });
 
