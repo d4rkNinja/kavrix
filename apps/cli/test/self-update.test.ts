@@ -266,6 +266,50 @@ describe('executeSelfUpdate', () => {
     expect(runNpmInstall).not.toHaveBeenCalled();
   });
 
+  it('refuses unsupported installs even when already at/ahead of the registry', async () => {
+    const runNpmInstall = vi.fn(async () => ({ status: 0, stdout: '', stderr: '' }));
+    await expect(
+      executeSelfUpdate(
+        { json: true },
+        deps({
+          currentVersion: '0.2.16',
+          fetchRegistry: async () => '0.2.15',
+          detectInstall: () => ({
+            kind: 'unsupported',
+            method: 'dev-checkout',
+            detail: 'This kavrix binary looks like a workspace/dev checkout.',
+          }),
+          runNpmInstall,
+        }),
+      ),
+    ).rejects.toThrow(/workspace\/dev checkout/);
+    expect(runNpmInstall).not.toHaveBeenCalled();
+  });
+
+  it('check mode notes unsupported layouts instead of silent already-newest success', async () => {
+    const chunks: string[] = [];
+    const report = await executeSelfUpdate(
+      { check: true, json: true },
+      deps({
+        currentVersion: '0.2.16',
+        fetchRegistry: async () => '0.2.15',
+        detectInstall: () => ({
+          kind: 'unsupported',
+          method: 'dev-checkout',
+          detail: 'This kavrix binary looks like a workspace/dev checkout.',
+        }),
+        writeStdout: (text) => {
+          chunks.push(text);
+        },
+      }),
+    );
+    expect(report.action).toBe('check');
+    expect(report.updateAvailable).toBe(false);
+    expect(report.installMethod).toBe('dev-checkout');
+    expect(report.error).toMatch(/workspace\/dev checkout/);
+    expect(JSON.parse(chunks.join('')).error).toMatch(/workspace\/dev checkout/);
+  });
+
   it('surfaces npm install failures with the exact command and EACCES tip', async () => {
     await expect(
       executeSelfUpdate(

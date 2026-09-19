@@ -247,7 +247,7 @@ export function detectInstallKind(argv1: string | undefined): InstallKind {
   ) {
     return unsupported(
       'homebrew',
-      'This kavrix binary looks like a Homebrew install. `kavrix update` only manages global npm installs. Upgrade with `brew upgrade kavrix` (or reinstall with `npm install --global kavrix`).',
+      'This kavrix binary looks like a Homebrew install. `kavrix update` only manages global npm installs. If you installed via Homebrew, upgrade with brew (or reinstall with `npm install --global kavrix`).',
     );
   }
 
@@ -502,6 +502,45 @@ export async function executeSelfUpdate(
   const installMethod: InstallMethod =
     install.kind === 'npm-global' ? 'npm-global' : install.method;
 
+  // Unsupported layouts must be refused (or clearly noted under --check) before
+  // the "already newest" early return — otherwise current Homebrew/pnpm/dev
+  // installs silently look successful.
+  if (install.kind === 'unsupported') {
+    const message = `${install.detail} Newest ${channel} is ${latest}. Manual command: \`${npmCommand}\`.`;
+    if (checkOnly) {
+      const report: SelfUpdateReport = {
+        package: NPM_PACKAGE_NAME,
+        installed: deps.currentVersion,
+        latest,
+        updateAvailable,
+        channel,
+        action: 'check',
+        registry,
+        installMethod,
+        npmCommand,
+        message,
+        error: message,
+      };
+      emitReport(report, options, deps);
+      return report;
+    }
+    const report: SelfUpdateReport = {
+      package: NPM_PACKAGE_NAME,
+      installed: deps.currentVersion,
+      latest,
+      updateAvailable,
+      channel,
+      action: 'refused',
+      registry,
+      installMethod,
+      npmCommand,
+      message,
+      error: message,
+    };
+    emitReport(report, options, deps);
+    throw invalidConfiguration(message);
+  }
+
   if (!updateAvailable) {
     const report: SelfUpdateReport = {
       package: NPM_PACKAGE_NAME,
@@ -534,25 +573,6 @@ export async function executeSelfUpdate(
     };
     emitReport(report, options, deps);
     return report;
-  }
-
-  if (install.kind === 'unsupported') {
-    const message = `${install.detail} Newest ${channel} is ${latest}. Manual command: \`${npmCommand}\`.`;
-    const report: SelfUpdateReport = {
-      package: NPM_PACKAGE_NAME,
-      installed: deps.currentVersion,
-      latest,
-      updateAvailable: true,
-      channel,
-      action: 'refused',
-      registry,
-      installMethod,
-      npmCommand,
-      message,
-      error: message,
-    };
-    emitReport(report, options, deps);
-    throw invalidConfiguration(message);
   }
 
   const npm = deps.resolveNpm();
