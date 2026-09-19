@@ -159,7 +159,10 @@ describe('launch P1 follow-ups', () => {
     expect(put.stderr).toContain('not bound to a database');
   });
 
-  it('rolls back stuck default profile after EACCES init so retry succeeds', async () => {
+  // chmod(0o555) does not make directories unwritable on Windows NTFS.
+  it.skipIf(process.platform === 'win32')(
+    'rolls back stuck default profile after EACCES init so retry succeeds',
+    async () => {
     const directory = await scratch('eacces');
     const configDir = join(directory, 'config');
     const readonly = await mkdtemp(join(tmpdir(), 'kavrix-p1-ro-'));
@@ -202,7 +205,8 @@ describe('launch P1 follow-ups', () => {
     );
     expect(retry.exitCode).toBe(0);
     await chmod(readonly, 0o755);
-  });
+  },
+  );
 
   it('rejects empty secrets at run with a clear message', async () => {
     fixture = await createExecutionFixture({});
