@@ -5,18 +5,18 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { LocalCliError } from '../src/cli-error.js';
-import { CodedCliError } from '../src/execution/exit-codes.js';
-import { buildLocalCli } from '../src/local-vault-cli.js';
 import {
   comparePublishedVersions,
   createDefaultSelfUpdateDeps,
   detectInstallKind,
   executeSelfUpdate,
   fetchNpmDistTagVersion,
+  formatNpmInstallCommand,
   parsePublishedVersion,
   resolveNpmInvoker,
   type SelfUpdateDeps,
 } from '../src/self-update.js';
+import { buildLocalCli } from '../src/local-vault-cli.js';
 
 describe('published version compare', () => {
   it('orders stable patches and minors', () => {
@@ -33,6 +33,20 @@ describe('published version compare', () => {
 
   it('rejects unsupported versions', () => {
     expect(() => parsePublishedVersion('1.0.0-rc.1')).toThrow(LocalCliError);
+  });
+});
+
+describe('formatNpmInstallCommand', () => {
+  it('formats the default registry command', () => {
+    expect(formatNpmInstallCommand('0.2.16', 'https://registry.npmjs.org')).toBe(
+      'npm install --global kavrix@0.2.16',
+    );
+  });
+
+  it('includes a custom registry', () => {
+    expect(formatNpmInstallCommand('0.2.16', 'https://example.test/npm/')).toBe(
+      'npm install --global kavrix@0.2.16 --registry https://example.test/npm',
+    );
   });
 });
 
@@ -60,16 +74,39 @@ describe('detectInstallKind', () => {
     });
   });
 
-  it('rejects source trees outside node_modules/kavrix', () => {
-    expect(
-      detectInstallKind('/workspace/kavrix-tui-dev/apps/cli/dist/bin.js').kind,
-    ).toBe('unsupported');
+  it('rejects npx caches', () => {
+    const result = detectInstallKind(
+      '/home/user/.npm/_npx/abc123/node_modules/kavrix/dist/bin.js',
+    );
+    expect(result).toMatchObject({ kind: 'unsupported', method: 'npx' });
   });
 
-  it('classifies npx cache paths', () => {
-    expect(
-      detectInstallKind('/home/user/.npm/_npx/abc/node_modules/kavrix/dist/bin.js'),
-    ).toMatchObject({ kind: 'unsupported', method: 'npx' });
+  it('rejects Homebrew Cellar paths', () => {
+    const result = detectInstallKind(
+      '/opt/homebrew/Cellar/kavrix/0.2.15/bin/kavrix',
+    );
+    expect(result).toMatchObject({ kind: 'unsupported', method: 'homebrew' });
+  });
+
+  it('rejects pnpm global stores', () => {
+    const result = detectInstallKind(
+      '/home/user/.local/share/pnpm/global/5/.pnpm/kavrix@0.2.15/node_modules/kavrix/dist/bin.js',
+    );
+    expect(result).toMatchObject({ kind: 'unsupported', method: 'pnpm' });
+  });
+
+  it('rejects yarn global paths', () => {
+    const result = detectInstallKind(
+      '/home/user/.yarn/global/node_modules/kavrix/dist/bin.js',
+    );
+    expect(result).toMatchObject({ kind: 'unsupported', method: 'yarn' });
+  });
+
+  it('rejects source trees outside node_modules/kavrix', () => {
+    const result = detectInstallKind(
+      '/workspace/kavrix-tui-dev/apps/cli/dist/bin.js',
+    );
+    expect(result).toMatchObject({ kind: 'unsupported', method: 'dev-checkout' });
   });
 });
 
@@ -108,7 +145,21 @@ describe('fetchNpmDistTagVersion', () => {
         registry: 'https://registry.npmjs.org',
         fetchImpl: fetchImpl as unknown as typeof fetch,
       }),
-    ).rejects.toThrow(/dist-tag/iu);
+    ).rejects.toThrow(/dist-tag/);
+  });
+
+  it('fails closed when the registry is unreachable', async () => {
+    const fetchImpl = vi.fn(async () => {
+      throw new TypeError('network down');
+    });
+    await expect(
+      fetchNpmDistTagVersion({
+        packageName: 'kavrix',
+        distTag: 'latest',
+        registry: 'https://registry.npmjs.org',
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+      }),
+    ).rejects.toThrow(/offline|blocked|reach/i);
   });
 });
 
@@ -150,14 +201,16 @@ describe('executeSelfUpdate', () => {
     expect(report.updateAvailable).toBe(false);
     expect(report.action).toBe('check');
     expect(runNpmInstall).not.toHaveBeenCalled();
-    expect(JSON.parse(chunks.join(''))).toMatchObject({
+    expect(JSON.parse(chunks.join(''))).toEqual({
       installed: '0.2.16',
       latest: '0.2.16',
       updateAvailable: false,
+      channel: 'latest',
+      action: 'check',
     });
   });
 
-  it('check mode reports available update without installing', async () => {
+  it('check mode reports available update without installing and stays exit-friendly', async () => {
     const runNpmInstall = vi.fn(async () => ({ status: 0, stdout: '', stderr: '' }));
     const report = await executeSelfUpdate(
       { check: true, json: true },
@@ -170,25 +223,31 @@ describe('executeSelfUpdate', () => {
     expect(report).toMatchObject({
       updateAvailable: true,
       action: 'check',
+      installed: '0.2.15',
       latest: '0.2.16',
     });
     expect(runNpmInstall).not.toHaveBeenCalled();
   });
 
-  it('installs when behind latest on an npm-global layout', async () => {
+  it('prints old → new and installs when behind latest on an npm-global layout', async () => {
     const runNpmInstall = vi.fn(async (input) => {
       expect(input.version).toBe('0.2.16');
       return { status: 0, stdout: 'added 1\n', stderr: '' };
     });
     const report = await executeSelfUpdate(
       { json: true },
-      deps({ currentVersion: '0.2.15', runNpmInstall }),
+      deps({
+        currentVersion: '0.2.15',
+        runNpmInstall,
+      }),
     );
     expect(report.action).toBe('updated');
+    expect(report.message).toContain('0.2.15');
+    expect(report.message).toContain('0.2.16');
     expect(runNpmInstall).toHaveBeenCalledOnce();
   });
 
-  it('refuses unsupported installs', async () => {
+  it('refuses unsupported installs with a method-specific error and exact npm command', async () => {
     const runNpmInstall = vi.fn(async () => ({ status: 0, stdout: '', stderr: '' }));
     await expect(
       executeSelfUpdate(
@@ -197,17 +256,17 @@ describe('executeSelfUpdate', () => {
           currentVersion: '0.2.15',
           detectInstall: () => ({
             kind: 'unsupported',
-            method: 'unknown',
-            detail: 'Not a global npm install.',
+            method: 'npx',
+            detail: 'This kavrix process was launched via npx.',
           }),
           runNpmInstall,
         }),
       ),
-    ).rejects.toBeInstanceOf(CodedCliError);
+    ).rejects.toThrow(/npx/);
     expect(runNpmInstall).not.toHaveBeenCalled();
   });
 
-  it('surfaces npm install failures', async () => {
+  it('surfaces npm install failures with the exact command and EACCES tip', async () => {
     await expect(
       executeSelfUpdate(
         { json: true },
@@ -216,20 +275,21 @@ describe('executeSelfUpdate', () => {
           runNpmInstall: async () => ({
             status: 1,
             stdout: '',
-            stderr: 'EACCES: permission denied\n',
+            stderr: 'npm ERR! code EACCES\nnpm ERR! permission denied\n',
           }),
         }),
       ),
-    ).rejects.toThrow(/EACCES|npm install/iu);
+    ).rejects.toThrow(/npm install --global kavrix@0\.2\.16[\s\S]*EACCES[\s\S]*~\/\.local/);
   });
 });
 
 describe('kavrix update command wiring', () => {
-  it('registers update on the root program', () => {
+  it('registers update on the root program with Jr help/flags', () => {
     const program = buildLocalCli();
     const update = program.commands.find((command) => command.name() === 'update');
     expect(update).toBeDefined();
-    expect(update?.description().toLowerCase()).toMatch(/npm|upgrade|global/u);
+    expect(update?.description()).toMatch(/global npm install of kavrix/i);
+    expect(update?.description()).toMatch(/Homebrew/i);
     const flags = new Set(
       (update?.options ?? [])
         .map((option) => option.long)
