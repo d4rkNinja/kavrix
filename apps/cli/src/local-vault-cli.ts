@@ -3148,15 +3148,12 @@ async function handleDoctorHealth(options: LocalCliOptions): Promise<void> {
           detail:
             activeRecoverySlots > 0
               ? 'At least one recovery slot is active.'
-              : 'No active recovery slot is configured; create one manually before losing the key.',
+              : 'No active recovery slot is configured; create one with `kavrix recovery create` (legacy) or `kavrix db recovery create` (database-container).',
           activeRecoverySlots,
           revokedRecoverySlots,
         });
-        if (activeRecoverySlots === 0) {
-          manualRecoveryRequired.push(
-            'No active recovery slot is available; create a new recovery kit manually.',
-          );
-        }
+        // Missing recovery is advisory only — matches database-container doctor
+        // health (healthy:true without a kit). Fail closed only on auth/integrity.
       } catch {
         addManualRecovery(
           'encrypted-payload',
@@ -3177,7 +3174,7 @@ async function handleDoctorHealth(options: LocalCliOptions): Promise<void> {
 
   const healthy =
     manualRecoveryRequired.length === 0 &&
-    checks.every((check) => check.status === 'ok');
+    checks.every((check) => check.status === 'ok' || check.status === 'warning');
   const result: Record<string, unknown> = {
     healthy,
     autoHealed,

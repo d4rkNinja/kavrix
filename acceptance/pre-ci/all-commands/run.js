@@ -115,7 +115,21 @@ async function runProcess(command, args, options = {}) {
         stderr: Buffer.concat(stderr).toString('utf8'),
       };
       if (code !== (options.expectedCode ?? 0) || signal !== null) {
-        finish(new Error(`${options.label ?? command} failed`));
+        const detail = [
+          `code=${String(code)}`,
+          signal === null ? undefined : `signal=${signal}`,
+          result.stdout.trim() === '' ? undefined : `stdout=${result.stdout.trim()}`,
+          result.stderr.trim() === '' ? undefined : `stderr=${result.stderr.trim()}`,
+        ]
+          .filter((part) => part !== undefined)
+          .join(' ');
+        finish(
+          new Error(
+            detail.length > 0
+              ? `${options.label ?? command} failed (${detail})`
+              : `${options.label ?? command} failed`,
+          ),
+        );
       } else {
         finish(undefined, result);
       }
