@@ -760,18 +760,20 @@ async function secureConfigDirectory(input: string): Promise<string> {
   }
   try {
     await mkdir(directory, { mode: 0o700, recursive: true });
-    if (!existed) {
-      if (process.platform === 'win32') {
-        await setWindowsUserOnlyAcl(directory);
-      } else {
-        await chmodOwnerOnly(directory);
-      }
-    }
     const direct = await lstat(directory, { bigint: true });
     if (direct.isSymbolicLink() || !direct.isDirectory()) {
       throw new DatastoreProfileError('PROFILE_UNSAFE');
     }
+    // Harden and verify against the canonical path so Windows short-name /
+    // junction forms cannot pass ACL write then fail ACL verify (exit 14).
     const canonical = await realpath(directory);
+    if (!existed) {
+      if (process.platform === 'win32') {
+        await setWindowsUserOnlyAcl(canonical);
+      } else {
+        await chmodOwnerOnly(canonical);
+      }
+    }
     const metadata = await stat(canonical, { bigint: true });
     if (!metadata.isDirectory()) throw new DatastoreProfileError('PROFILE_UNSAFE');
     if (process.platform === 'win32') {

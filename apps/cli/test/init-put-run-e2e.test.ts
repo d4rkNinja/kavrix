@@ -31,10 +31,11 @@ async function scratch(label: string): Promise<string> {
 async function runCli(
   args: readonly string[],
   input = '',
-): Promise<{ stdout: string; exitCode: number | undefined }> {
+): Promise<{ stdout: string; stderr: string; exitCode: number | undefined }> {
   const originalStdin = process.stdin;
   const originalExit = process.exitCode;
   const output: string[] = [];
+  const errors: string[] = [];
   Object.defineProperty(process, 'stdin', {
     configurable: true,
     value: Readable.from([input]),
@@ -43,11 +44,18 @@ async function runCli(
     output.push(String(chunk));
     return true;
   });
-  const writeErr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+  const writeErr = vi.spyOn(process.stderr, 'write').mockImplementation((chunk) => {
+    errors.push(String(chunk));
+    return true;
+  });
   process.exitCode = undefined;
   try {
     await runLocalCli(['node', 'kavrix', ...args]);
-    return { stdout: output.join(''), exitCode: process.exitCode ?? 0 };
+    return {
+      stdout: output.join(''),
+      stderr: errors.join(''),
+      exitCode: process.exitCode ?? 0,
+    };
   } finally {
     write.mockRestore();
     writeErr.mockRestore();
@@ -90,7 +98,7 @@ describe('scripted init → put → run', () => {
         ],
         `${PASSPHRASE}\n${PASSPHRASE}\n`,
       );
-      expect(init.exitCode).toBe(0);
+      expect(init.exitCode, init.stderr || init.stdout).toBe(0);
       const initJson = JSON.parse(init.stdout) as Record<string, unknown>;
       expect(initJson).toMatchObject({
         initialized: true,

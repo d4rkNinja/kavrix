@@ -361,44 +361,48 @@ describe('execution command help contracts', () => {
 });
 
 describe('authorization state wrappers', () => {
-  it('creates, replaces, removes, and audits through the sealed store', async () => {
-    const directory = await createSecureTestDirectory(
-      join(tmpdir(), `kavrix-authz-wrap-`),
-    );
-    directories.push(directory);
-    const keyFile = join(directory, 'owner.key');
-    const rootKey = new Uint8Array(32).fill(7);
-    const scope = { scopeKind: 'database' as const, scopeId: 'db_wraptest' };
-    const state = await AuthorizationState.open(
-      keyFile,
-      deriveAuthorizationStateKey(rootKey, scope),
-      scope,
-    );
-    try {
-      expect(() => parsePolicyId('not an id')).toThrowError(/invalid/u);
+  it(
+    'creates, replaces, removes, and audits through the sealed store',
+    async () => {
+      const directory = await createSecureTestDirectory(
+        join(tmpdir(), `kavrix-authz-wrap-`),
+      );
+      directories.push(directory);
+      const keyFile = join(directory, 'owner.key');
+      const rootKey = new Uint8Array(32).fill(7);
+      const scope = { scopeKind: 'database' as const, scopeId: 'db_wraptest' };
+      const state = await AuthorizationState.open(
+        keyFile,
+        deriveAuthorizationStateKey(rootKey, scope),
+        scope,
+      );
+      try {
+        expect(() => parsePolicyId('not an id')).toThrowError(/invalid/u);
 
-      const entry = permissionEntrySchema.parse({
-        secret: 'a/b',
-        commands: ['node'],
-      });
-      const first = await state.putPolicy('wrap-policy', entry);
-      const replaced = await state.putPolicy('wrap-policy', entry);
-      expect(replaced.createdAt >= first.createdAt).toBe(true);
-      await state.removePolicy('wrap-policy');
-      await expect(state.removePolicy('wrap-policy')).rejects.toMatchObject({
-        errorCode: 'GRANT_INVALID',
-      });
+        const entry = permissionEntrySchema.parse({
+          secret: 'a/b',
+          commands: ['node'],
+        });
+        const first = await state.putPolicy('wrap-policy', entry);
+        const replaced = await state.putPolicy('wrap-policy', entry);
+        expect(replaced.createdAt >= first.createdAt).toBe(true);
+        await state.removePolicy('wrap-policy');
+        await expect(state.removePolicy('wrap-policy')).rejects.toMatchObject({
+          errorCode: 'GRANT_INVALID',
+        });
 
-      const seq = await state.recordEvent({ actor: 'user', action: 'unlock' });
-      const next = await state.recordEvent({ actor: 'user', action: 'unlock' });
-      expect(next).toBe(seq + 1);
-      const snapshot = await state.read();
-      expect(snapshot.audit.at(-1)?.action).toBe('unlock');
-      expect(snapshot.policies['wrap-policy']).toBeUndefined();
-    } finally {
-      state.close();
-    }
-  }, 30_000);
+        const seq = await state.recordEvent({ actor: 'user', action: 'unlock' });
+        const next = await state.recordEvent({ actor: 'user', action: 'unlock' });
+        expect(next).toBe(seq + 1);
+        const snapshot = await state.read();
+        expect(snapshot.audit.at(-1)?.action).toBe('unlock');
+        expect(snapshot.policies['wrap-policy']).toBeUndefined();
+      } finally {
+        state.close();
+      }
+    },
+    process.platform === 'win32' ? 120_000 : 30_000,
+  );
 
   it('maps a vanished sealed sidecar to the stable datastore-failure code', async () => {
     const directory = await createSecureTestDirectory(

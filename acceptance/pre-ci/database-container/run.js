@@ -9,6 +9,7 @@ import {
   mkdtemp,
   readFile,
   readdir,
+  realpath,
   rm,
   writeFile,
 } from 'node:fs/promises';
@@ -1418,13 +1419,13 @@ async function main() {
     await exerciseSignalCleanupProbe('SIGINT', 'cleanup');
     await exerciseSignalCleanupProbe('SIGTERM', 'cleanup');
     packRoot = await registerRoot(
-      await mkdtemp(join(tmpdir(), 'kavrix-database-pack-')),
+      await realpath(await mkdtemp(join(tmpdir(), 'kavrix-database-pack-'))),
     );
     installRoot = await registerRoot(
-      await mkdtemp(join(tmpdir(), 'kavrix-database-install-')),
+      await realpath(await mkdtemp(join(tmpdir(), 'kavrix-database-install-'))),
     );
     npmCache = await registerRoot(
-      await mkdtemp(join(tmpdir(), 'kavrix-database-npm-cache-')),
+      await realpath(await mkdtemp(join(tmpdir(), 'kavrix-database-npm-cache-'))),
     );
     if (process.platform === 'win32') {
       await Promise.all(
@@ -1469,17 +1470,27 @@ async function main() {
     verifiedVersion = manifest.version;
     await scanPackage(packageRoot);
 
+    // Keep vault/key artifacts out of the npm-prefix tree: install can leave the
+    // install root's ACL in a state Windows rejects for portable key creation.
+    const artifactRoot = join(installRoot, 'artifacts');
+    await mkdir(artifactRoot, { recursive: true });
+    if (process.platform === 'win32') {
+      await setWindowsUserOnlyAcl(installRoot);
+      await setWindowsUserOnlyAcl(artifactRoot);
+    } else {
+      await chmod(artifactRoot, 0o700);
+    }
     const paths = {
-      configDirectory: join(installRoot, 'profiles'),
-      primaryDataFile: join(installRoot, 'primary.database'),
-      primaryKeyFile: join(installRoot, 'primary.database.key'),
-      databaseRecoveryFile: join(installRoot, 'primary.database.recovery'),
-      secondDataFile: join(installRoot, 'secondary.database'),
-      secondKeyFile: join(installRoot, 'secondary.database.key'),
-      legacyDataFile: join(installRoot, 'legacy.vault'),
-      legacyKeyFile: join(installRoot, 'legacy.key'),
-      migratedDataFile: join(installRoot, 'migrated.database'),
-      migratedKeyFile: join(installRoot, 'migrated.database.key'),
+      configDirectory: join(artifactRoot, 'profiles'),
+      primaryDataFile: join(artifactRoot, 'primary.database'),
+      primaryKeyFile: join(artifactRoot, 'primary.database.key'),
+      databaseRecoveryFile: join(artifactRoot, 'primary.database.recovery'),
+      secondDataFile: join(artifactRoot, 'secondary.database'),
+      secondKeyFile: join(artifactRoot, 'secondary.database.key'),
+      legacyDataFile: join(artifactRoot, 'legacy.vault'),
+      legacyKeyFile: join(artifactRoot, 'legacy.key'),
+      migratedDataFile: join(artifactRoot, 'migrated.database'),
+      migratedKeyFile: join(artifactRoot, 'migrated.database.key'),
     };
     await mkdir(paths.configDirectory, { recursive: true });
     if (process.platform === 'win32') {
