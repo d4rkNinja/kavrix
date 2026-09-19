@@ -463,11 +463,14 @@ async function rollbackIncompleteUnboundProfile(
 ): Promise<boolean> {
   try {
     const profile = await registry.get(profileId);
-    if (profile === null) return true;
     if (profile.databaseId !== undefined) return false;
     await registry.remove(profileId);
     return true;
-  } catch {
+  } catch (error) {
+    // get() throws when the profile is already gone; treat that as success.
+    if (error instanceof DatastoreProfileError && error.code === 'PROFILE_NOT_FOUND') {
+      return true;
+    }
     return false;
   }
 }
@@ -485,7 +488,6 @@ function isAmbiguousOnboardingFailure(failure: unknown): boolean {
     }
     if (
       typeof current === 'object' &&
-      current !== null &&
       'cause' in current &&
       (current as { cause?: unknown }).cause !== undefined
     ) {
