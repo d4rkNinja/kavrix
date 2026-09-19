@@ -10,6 +10,15 @@ on:
         description: Existing release tag to publish, for example v0.1.2
         required: true
         type: string
+      skip_ci_gate:
+        description: >-
+          Operator override (workflow_dispatch only). When true, skip the
+          exact-SHA successful CI push-run requirement so a tagged commit
+          on main can still publish after an explicit user demand. Tag on
+          main, version/tag match, and CodeQL remain required.
+        required: false
+        type: boolean
+        default: false
 
 permissions: {}
 
@@ -79,6 +88,7 @@ jobs:
           GITHUB_REPOSITORY: ${{ github.repository }}
           GITHUB_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ steps.release_ref.outputs.release_tag }}
+          SKIP_CI_GATE: ${{ github.event_name == 'workflow_dispatch' && inputs.skip_ci_gate || false }}
         shell: bash
         run: |
           set -euo pipefail
@@ -88,9 +98,17 @@ jobs:
           test "$(git rev-parse --verify 'HEAD^{commit}')" = "$tagged_commit"
           git merge-base --is-ancestor "$tagged_commit" "$main_commit"
           export TAGGED_COMMIT="$tagged_commit"
-          node apps/cli/scripts/require-workflow-runs.js \
-            .github/workflows/ci.yml \
-            .github/workflows/codeql.yml
+          # skip_ci_gate is only honored on workflow_dispatch (input gated above).
+          # Tag ancestry, version match (later step), and CodeQL still apply.
+          if [[ "$SKIP_CI_GATE" == 'true' ]]; then
+            echo "OPERATOR OVERRIDE: skip_ci_gate=true on workflow_dispatch — skipping exact-SHA CI gate; still requiring CodeQL." >&2
+            node apps/cli/scripts/require-workflow-runs.js \
+              .github/workflows/codeql.yml
+          else
+            node apps/cli/scripts/require-workflow-runs.js \
+              .github/workflows/ci.yml \
+              .github/workflows/codeql.yml
+          fi
           echo "tagged_commit=$tagged_commit" >> "$GITHUB_OUTPUT"
       # STOP: Do not add signature verification until the product decision names
       # the exact allowed signer fingerprint and rotation/revocation policy.
