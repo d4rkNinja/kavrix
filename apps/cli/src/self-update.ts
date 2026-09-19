@@ -345,10 +345,10 @@ export async function runGlobalNpmInstall(input: {
     });
     const stdoutChunks: Buffer[] = [];
     const stderrChunks: Buffer[] = [];
-    child.stdout?.on('data', (chunk: Buffer) => {
+    child.stdout.on('data', (chunk: Buffer) => {
       stdoutChunks.push(chunk);
     });
-    child.stderr?.on('data', (chunk: Buffer) => {
+    child.stderr.on('data', (chunk: Buffer) => {
       stderrChunks.push(chunk);
     });
     child.on('error', (error: Error) => {
