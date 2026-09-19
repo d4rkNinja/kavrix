@@ -130,7 +130,7 @@ async function runCli(args: readonly string[], input = ''): Promise<string> {
 
 async function initVault(value: Target): Promise<Record<string, unknown>> {
   const output = await runCli(
-    ['init', ...route(value), '--passphrase-stdin'],
+    ['init', '--legacy', ...route(value), '--passphrase-stdin'],
     `${PASSPHRASE}\n${PASSPHRASE}\n`,
   );
   return JSON.parse(output) as Record<string, unknown>;
@@ -605,7 +605,7 @@ describe(
 
         await expect(
           runCli(
-            ['init', ...route(value), '--passphrase-stdin'],
+            ['init', '--legacy', ...route(value), '--passphrase-stdin'],
             `${PASSPHRASE}\n${PASSPHRASE}\n`,
           ),
         ).rejects.toThrow(
@@ -622,7 +622,7 @@ describe(
 
       await expect(
         runCli(
-          ['init', ...route(value), '--passphrase-stdin'],
+          ['init', '--legacy', ...route(value), '--passphrase-stdin'],
           `${PASSPHRASE}\n${PASSPHRASE}\n`,
         ),
       ).rejects.toMatchObject({
@@ -1637,7 +1637,7 @@ describe(
       );
       expect(
         await runReported(
-          ['init', ...route(portableTarget), '--passphrase-stdin'],
+          ['init', '--legacy', ...route(portableTarget), '--passphrase-stdin'],
           `${PASSPHRASE}\n${PASSPHRASE}\n`,
         ),
       ).toContain('portable key file already exists');

@@ -5,9 +5,13 @@ import { promisify } from 'node:util';
 import { PortableKeyFileError } from './errors.js';
 
 const execFileAsync = promisify(execFile);
-const POWERSHELL_TIMEOUT_MS = 15_000;
+const POWERSHELL_TIMEOUT_MS = 30_000;
+const ACL_RETRY_ATTEMPTS = 3;
+const ACL_RETRY_BASE_DELAY_MS = 75;
 const MAX_POWERSHELL_OUTPUT_BYTES = 16_384;
 const TARGET_ENVIRONMENT_NAME = 'KAVRIX_ACL_TARGET';
+/** Serialize PowerShell ACL helpers so concurrent Windows tests do not stall. */
+let windowsAclQueue: Promise<void> = Promise.resolve();
 // The ACL helper receives the portable-key path and is therefore security
 // sensitive even though it never receives key bytes. Do not resolve it from
 // PATH, SystemRoot, WINDIR, or another caller-controlled environment value.
@@ -129,7 +133,7 @@ function encodedCommand(script: string): string {
   return Buffer.from(script, 'utf16le').toString('base64');
 }
 
-async function runAclCommand(script: string, targetPath: string): Promise<void> {
+async function runAclCommandOnce(script: string, targetPath: string): Promise<void> {
   try {
     await execFileAsync(
       POWERSHELL_EXECUTABLE,
@@ -159,20 +163,61 @@ async function runAclCommand(script: string, targetPath: string): Promise<void> 
   }
 }
 
-export async function setWindowsUserOnlyAcl(targetPath: string): Promise<void> {
-  try {
-    await verifyWindowsUserOnlyAcl(targetPath);
-    return;
-  } catch {
-    // An already-hardened ACL can reject a second owner-setting operation on
-    // Windows. Only rewrite the ACL when verification shows that it is needed.
+async function delay(ms: number): Promise<void> {
+  await new Promise<void>((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+async function runAclCommand(script: string, targetPath: string): Promise<void> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < ACL_RETRY_ATTEMPTS; attempt += 1) {
+    try {
+      await runAclCommandOnce(script, targetPath);
+      return;
+    } catch (error) {
+      lastError = error;
+      if (attempt + 1 < ACL_RETRY_ATTEMPTS) {
+        await delay(ACL_RETRY_BASE_DELAY_MS * (attempt + 1));
+      }
+    }
   }
-  await runAclCommand(SET_USER_ONLY_ACL, targetPath);
-  await verifyWindowsUserOnlyAcl(targetPath);
+  throw lastError instanceof Error
+    ? lastError
+    : new PortableKeyFileError('KEY_FILE_UNSAFE');
+}
+
+function withWindowsAclLock<T>(operation: () => Promise<T>): Promise<T> {
+  const run = windowsAclQueue.then(operation, operation);
+  windowsAclQueue = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  return run;
+}
+
+export async function setWindowsUserOnlyAcl(targetPath: string): Promise<void> {
+  await withWindowsAclLock(async () => {
+    try {
+      await verifyWindowsUserOnlyAclUnlocked(targetPath);
+      return;
+    } catch {
+      // An already-hardened ACL can reject a second owner-setting operation on
+      // Windows. Only rewrite the ACL when verification shows that it is needed.
+    }
+    await runAclCommand(SET_USER_ONLY_ACL, targetPath);
+    await verifyWindowsUserOnlyAclUnlocked(targetPath);
+  });
+}
+
+async function verifyWindowsUserOnlyAclUnlocked(targetPath: string): Promise<void> {
+  await runAclCommand(VERIFY_USER_ONLY_ACL, targetPath);
 }
 
 export async function verifyWindowsUserOnlyAcl(targetPath: string): Promise<void> {
-  await runAclCommand(VERIFY_USER_ONLY_ACL, targetPath);
+  await withWindowsAclLock(async () => {
+    await verifyWindowsUserOnlyAclUnlocked(targetPath);
+  });
 }
 
 /**
@@ -182,5 +227,7 @@ export async function verifyWindowsUserOnlyAcl(targetPath: string): Promise<void
  * Administrators.
  */
 export async function verifyWindowsDirectoryAcl(targetPath: string): Promise<void> {
-  await runAclCommand(VERIFY_DIRECTORY_ACL, targetPath);
+  await withWindowsAclLock(async () => {
+    await runAclCommand(VERIFY_DIRECTORY_ACL, targetPath);
+  });
 }

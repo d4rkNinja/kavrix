@@ -25,14 +25,37 @@ import {
   type DatastoreProfileRegistryOptions,
 } from './datastore-profiles.js';
 
-export type GuidedLocalOnboardingDestinations = Readonly<{
+export type LocalDatabaseOnboardingDestinations = Readonly<{
   profileId: string;
   dataFile: string;
   keyFile: string;
-  recoveryFile: string;
+  /** When set with a recovery passphrase, onboarding creates and verifies a kit. */
+  recoveryFile?: string;
   registryOptions?: DatastoreProfileRegistryOptions;
   reservedPaths?: readonly string[];
 }>;
+
+export type LocalDatabaseOnboardingRequest = LocalDatabaseOnboardingDestinations &
+  Readonly<{
+    databaseLabel: string;
+    ownerPassphrase: Uint8Array;
+    vaultLabel: string;
+    recoveryPassphrase?: Uint8Array;
+  }>;
+
+export type LocalDatabaseOnboardingReceipt = Readonly<{
+  profileId: ProfileId;
+  databaseId: DatabaseId;
+  vaultId: VaultId;
+  dataFile: string;
+  keyFile: string;
+  recoveryFile?: string;
+  recoveryReady: boolean;
+}>;
+
+/** Guided interactive setup always creates a verified recovery kit. */
+export type GuidedLocalOnboardingDestinations = LocalDatabaseOnboardingDestinations &
+  Readonly<{ recoveryFile: string }>;
 
 export type GuidedLocalOnboardingRequest = GuidedLocalOnboardingDestinations &
   Readonly<{
@@ -42,15 +65,8 @@ export type GuidedLocalOnboardingRequest = GuidedLocalOnboardingDestinations &
     recoveryPassphrase: Uint8Array;
   }>;
 
-export type GuidedLocalOnboardingReceipt = Readonly<{
-  profileId: ProfileId;
-  databaseId: DatabaseId;
-  vaultId: VaultId;
-  dataFile: string;
-  keyFile: string;
-  recoveryFile: string;
-  recoveryReady: true;
-}>;
+export type GuidedLocalOnboardingReceipt = LocalDatabaseOnboardingReceipt &
+  Readonly<{ recoveryFile: string; recoveryReady: true }>;
 
 export type GuidedLocalOnboardingPhase =
   | 'profile-added'
@@ -88,19 +104,21 @@ export class GuidedLocalOnboardingError extends LocalCliError {
 export async function preflightGuidedLocalOnboarding(
   destinations: GuidedLocalOnboardingDestinations,
 ): Promise<void> {
-  const parsed = parseDestinations(destinations);
-  const registry = await DatastoreProfileRegistry.open(parsed.registryOptions ?? {});
-  await validatePreflight(parsed, registry);
+  await preflightLocalDatabaseOnboarding(destinations);
 }
 
 /**
- * Creates one local encrypted database, one default vault, and one verified
- * recovery kit. The profile is selected only after every authenticated step
- * succeeds.
+ * Creates one local encrypted database and one default vault, binds the
+ * datastore profile, and optionally creates a verified recovery kit. The
+ * profile is selected only after every authenticated step succeeds.
+ *
+ * Interactive guided setup always supplies recovery material. Scripted
+ * `kavrix init` may omit recovery so `put` / `run` work immediately; operators
+ * should create a kit afterward with `kavrix db recovery create`.
  */
-export async function executeGuidedLocalOnboarding(
-  request: GuidedLocalOnboardingRequest,
-): Promise<GuidedLocalOnboardingReceipt> {
+export async function executeLocalDatabaseOnboarding(
+  request: LocalDatabaseOnboardingRequest,
+): Promise<LocalDatabaseOnboardingReceipt> {
   const parsed = parseDestinations(request);
   const registry = await DatastoreProfileRegistry.open(parsed.registryOptions ?? {});
   let ownerPassphrase: Uint8Array | undefined;
@@ -109,12 +127,14 @@ export async function executeGuidedLocalOnboarding(
   let session: DatabaseSession | undefined;
   let profileAdded = false;
   let phase: GuidedLocalOnboardingPhase = 'profile-added';
-  let receipt: GuidedLocalOnboardingReceipt | undefined;
+  let receipt: LocalDatabaseOnboardingReceipt | undefined;
   let failure: Error | undefined;
 
   try {
     ownerPassphrase = Uint8Array.from(request.ownerPassphrase);
-    recoveryPassphrase = Uint8Array.from(request.recoveryPassphrase);
+    if (request.recoveryPassphrase !== undefined) {
+      recoveryPassphrase = Uint8Array.from(request.recoveryPassphrase);
+    }
     await validatePreflight(parsed, registry);
     const unboundProfile = {
       id: parsed.profileId,
@@ -168,23 +188,30 @@ export async function executeGuidedLocalOnboarding(
     );
     phase = 'default-vault-selected';
 
-    const recovery = await session.createRecovery({
-      recoveryFile: parsed.recoveryFile,
-      passphrase: recoveryPassphrase,
-    });
-    phase = 'recovery-created';
-    const expectedBinding = await readDatabaseRecoveryKitFileBinding(
-      parsed.recoveryFile,
-    );
-    const verifiedSlotId = await session.verifyRecovery({
-      recoveryFile: parsed.recoveryFile,
-      passphrase: recoveryPassphrase,
-      expectedBinding,
-    });
-    if (verifiedSlotId !== recovery.slotId || session.recoveryStatus().active < 1) {
-      throw new DatabaseSessionError('authentication');
+    let recoveryReady = false;
+    if (parsed.recoveryFile !== undefined) {
+      if (recoveryPassphrase === undefined) {
+        throw new DatabaseSessionError('invalid');
+      }
+      const recovery = await session.createRecovery({
+        recoveryFile: parsed.recoveryFile,
+        passphrase: recoveryPassphrase,
+      });
+      phase = 'recovery-created';
+      const expectedBinding = await readDatabaseRecoveryKitFileBinding(
+        parsed.recoveryFile,
+      );
+      const verifiedSlotId = await session.verifyRecovery({
+        recoveryFile: parsed.recoveryFile,
+        passphrase: recoveryPassphrase,
+        expectedBinding,
+      });
+      if (verifiedSlotId !== recovery.slotId || session.recoveryStatus().active < 1) {
+        throw new DatabaseSessionError('authentication');
+      }
+      phase = 'recovery-verified';
+      recoveryReady = true;
     }
-    phase = 'recovery-verified';
 
     await registry.useExpected({
       id: parsed.profileId,
@@ -201,8 +228,10 @@ export async function executeGuidedLocalOnboarding(
       vaultId: vault.id,
       dataFile: parsed.dataFile,
       keyFile: parsed.keyFile,
-      recoveryFile: parsed.recoveryFile,
-      recoveryReady: true,
+      ...(parsed.recoveryFile === undefined
+        ? {}
+        : { recoveryFile: parsed.recoveryFile }),
+      recoveryReady,
     };
   } catch (error) {
     failure = profileAdded
@@ -236,6 +265,35 @@ export async function executeGuidedLocalOnboarding(
   return receipt;
 }
 
+/**
+ * Guided interactive path: recovery kit is required and verified before
+ * profile selection.
+ */
+export async function executeGuidedLocalOnboarding(
+  request: GuidedLocalOnboardingRequest,
+): Promise<GuidedLocalOnboardingReceipt> {
+  const receipt = await executeLocalDatabaseOnboarding(request);
+  if (
+    receipt.recoveryFile === undefined ||
+    receipt.recoveryReady !== true
+  ) {
+    throw new GuidedLocalOnboardingError('recovery-verified', receipt.profileId);
+  }
+  return {
+    ...receipt,
+    recoveryFile: receipt.recoveryFile,
+    recoveryReady: true,
+  };
+}
+
+export async function preflightLocalDatabaseOnboarding(
+  destinations: LocalDatabaseOnboardingDestinations,
+): Promise<void> {
+  const parsed = parseDestinations(destinations);
+  const registry = await DatastoreProfileRegistry.open(parsed.registryOptions ?? {});
+  await validatePreflight(parsed, registry);
+}
+
 async function validatePreflight(
   destinations: ParsedDestinations,
   registry: DatastoreProfileRegistry,
@@ -253,13 +311,13 @@ type ParsedDestinations = Readonly<{
   profileId: ProfileId;
   dataFile: string;
   keyFile: string;
-  recoveryFile: string;
+  recoveryFile?: string;
   registryOptions?: DatastoreProfileRegistryOptions;
   reservedPaths: readonly string[];
 }>;
 
 function parseDestinations(
-  input: GuidedLocalOnboardingDestinations,
+  input: LocalDatabaseOnboardingDestinations,
 ): ParsedDestinations {
   let profileId: ProfileId;
   try {
@@ -271,9 +329,13 @@ function parseDestinations(
     typeof input.dataFile !== 'string' ||
     input.dataFile.length === 0 ||
     typeof input.keyFile !== 'string' ||
-    input.keyFile.length === 0 ||
-    typeof input.recoveryFile !== 'string' ||
-    input.recoveryFile.length === 0
+    input.keyFile.length === 0
+  ) {
+    throw new DatabaseSessionError('invalid');
+  }
+  if (
+    input.recoveryFile !== undefined &&
+    (typeof input.recoveryFile !== 'string' || input.recoveryFile.length === 0)
   ) {
     throw new DatabaseSessionError('invalid');
   }
@@ -281,8 +343,8 @@ function parseDestinations(
     profileId,
     dataFile: input.dataFile,
     keyFile: input.keyFile,
-    recoveryFile: input.recoveryFile,
     reservedPaths: input.reservedPaths ?? [],
+    ...(input.recoveryFile === undefined ? {} : { recoveryFile: input.recoveryFile }),
     ...(input.registryOptions === undefined
       ? {}
       : { registryOptions: input.registryOptions }),
@@ -293,7 +355,9 @@ async function validateArtifactDestinations(
   destinations: ParsedDestinations,
 ): Promise<void> {
   await DatabaseSession.validateInitializationDestinations(destinations.keyFile);
-  await DatabaseSession.validateRecoveryDestinations(destinations.recoveryFile);
+  if (destinations.recoveryFile !== undefined) {
+    await DatabaseSession.validateRecoveryDestinations(destinations.recoveryFile);
+  }
   await FileEncryptedDatabaseStore.validatePath(destinations.dataFile);
   await requireVacantDataFile(destinations.dataFile);
 }
@@ -313,8 +377,12 @@ async function assertDistinctDestinations(
     [
       destinations.keyFile,
       databaseRevisionAnchorPath(destinations.keyFile),
-      destinations.recoveryFile,
-      databaseRevisionAnchorPath(destinations.recoveryFile),
+      ...(destinations.recoveryFile === undefined
+        ? []
+        : [
+            destinations.recoveryFile,
+            databaseRevisionAnchorPath(destinations.recoveryFile),
+          ]),
       registryPath,
       ...destinations.reservedPaths,
     ].map(canonicalCollisionTarget),

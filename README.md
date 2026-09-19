@@ -4,6 +4,8 @@
 
 A local-first secrets firewall for developers, applications, and AI agents.
 
+Zero-knowledge local encryption: Kavrix never sees your passphrases or plaintext credentials.
+
 Give applications and AI agents access to credentials without handing them your
 `.env`. Kavrix decides which process may receive a secret, under which policy
 or grant, and records what happened — without shipping secrets to a Kavrix
@@ -187,14 +189,17 @@ passphrase, confirm; `db vault create` → passphrase, label; `db vault use` →
 passphrase; `put` → passphrase, value (MongoDB adds an optional leading
 `mongodb-url` frame).
 
-**Footgun:** without `--profile`, root `put` / `get` / `list` / … still default
-datastore to **mongodb** (`datastoreFrom` → `options.datastore ?? 'mongodb'`).
-Prefer `--profile` (or `--datastore file` for legacy paths) for local-file work.
+Without `--profile`, root `put` / `get` / `list` / … default `--datastore` to
+**file** (aligned with `kavrix init`). Pass `--datastore mongodb` explicitly for
+MongoDB, or prefer `--profile` after onboarding.
 
 Interactive TTY `kavrix init` opens Ink onboarding by default and stores under
-`~/.kavrix/`. Pass `--no-tui` for classic masked prompts. Non-TTY
-`kavrix init --passphrase-stdin` is legacy v2 and writes `./kavrix.vault` in the
-current directory — prefer the profile flow above for scripts.
+`~/.kavrix/`. Pass `--no-tui` for classic masked prompts. Scripted file init
+(`--json` / `--passphrase-stdin`) creates a bound database-container profile so
+`put` and `kavrix run` work immediately; add `--recovery-file` for a kit, or
+`--legacy` only for version-2 migrate sources.
+
+**Node.js engines (required):** `>=24.12.0 <25` or `>=25.1.0`.
 
 ## Interactive TUI
 
@@ -260,7 +265,7 @@ structured access or migration.
 | `kavrix doctor`        | Authenticate and validate a vault without revealing values.                    |
 | `kavrix doctor health` | Diagnose and safely repair bounded transient state.                            |
 | `kavrix tui` / `ui`    | Full interactive Ink app against the real CLI.                                 |
-| `kavrix init`          | Ink TUI onboarding on TTY (`--no-tui` for classic); non-TTY remains legacy v2. |
+| `kavrix init`          | TTY: Ink onboarding; scripted file init binds profile for put/run; `--legacy` = v2. |
 
 ## Quick start (MongoDB)
 

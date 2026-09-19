@@ -4,6 +4,8 @@
 
 Local-first secrets firewall for developers, applications, and AI agents.
 
+Zero-knowledge local encryption: Kavrix never sees your passphrases or plaintext credentials.
+
 Give applications and AI agents access to credentials without handing them your
 `.env`. `kavrix run` injects only the values a process needs; policies and
 temporary grants bound what each executable may do; `kavrix agent run` brokers
@@ -78,6 +80,16 @@ On an interactive TTY, `kavrix init` opens Ink onboarding by default (pass
 `--no-tui` for classic masked line prompts). It preflights the profile and
 protected destinations, then creates an encrypted database, one default vault,
 and a separate recovery kit. It verifies recovery before selecting the profile.
+
+Scripted / non-TTY file init (`--json` / `--passphrase-stdin`) creates the same
+bound database-container profile so `put` and `kavrix run` work immediately
+after init. Add `--recovery-file` to create a verified recovery kit in the same
+invocation. Pass `--legacy` only when you need a version-2 single-vault migrate
+source. MongoDB scripted setup uses `db profile` / `db init` / `db vault`
+(see below), or `--legacy` for migrate sources.
+
+**Node.js engines (required):** `>=24.12.0 <25` or `>=25.1.0`.
+
 Protected labels and passphrases never enter argv, environment variables, or
 the generated non-secret config reference.
 
@@ -144,7 +156,7 @@ never store MongoDB credentials, passphrases, private labels, keys, or values.
 | `recovery create/verify/status/revoke/use`                                 | Manage recovery kits.                                                                 |
 | `doctor`, `doctor health`                                                  | Validate a vault; repair bounded transient state safely.                              |
 | `tui` / `ui`                                                               | Full interactive Ink app against the real CLI (TTY required).                         |
-| `init`, `vault`, `legacy v2 commands`                                      | Ink TUI onboarding on TTY (`--no-tui` classic); explicit/non-TTY init stays v2.       |
+| `init`, `vault`, `legacy v2 commands`                                      | TTY: Ink onboarding; scripted file init binds a profile for put/run; `--legacy` = v2. |
 
 Sensitive plaintext output is opt-in through `--reveal` or multiline-safe
 `--reveal-base64`; listing and dashboard commands never display field values.

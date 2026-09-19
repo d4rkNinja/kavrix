@@ -6,7 +6,8 @@ import { Command } from 'commander';
  * guess; the same summaries appear in per-command `--help` descriptions.
  */
 export const STDIN_FRAME_CONTRACTS: Readonly<Record<string, string>> = Object.freeze({
-  init: 'passphrase, passphrase-confirm',
+  init: 'passphrase, passphrase-confirm[, recovery-passphrase, recovery-passphrase-confirm when --recovery-file]',
+  'init --legacy': '[mongodb-url,] passphrase, passphrase-confirm',
   put: '[mongodb-url,] passphrase, value',
   get: '[mongodb-url,] passphrase',
   list: '[mongodb-url,] passphrase',
