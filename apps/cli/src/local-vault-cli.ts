@@ -137,6 +137,7 @@ import {
 import { enforceRevealPolicy } from './execution/reveal-policy.js';
 import { classifyCliFailure } from './cli-errors.js';
 import { LocalCliError } from './cli-error.js';
+import { resolveProfileConfigDirectory } from './profile-config-directory.js';
 import { terminalColorEnabled } from './terminal-presentation.js';
 
 const DEFAULT_KEY_FILE = './kavrix.key';
@@ -1004,7 +1005,10 @@ async function openDatastoreProfileRegistry(
   options: DatastoreProfileCommandOptions,
 ): Promise<DatastoreProfileRegistry> {
   // Both spellings select the same protected configuration directory.
-  const configDirectory = options.profileConfigDir ?? options.configDir;
+  const configDirectory = resolveProfileConfigDirectory(
+    options.profileConfigDir,
+    options.configDir,
+  );
   return DatastoreProfileRegistry.open(
     configDirectory === undefined ? {} : { configDirectory },
   );
@@ -1304,8 +1308,12 @@ function getOptions(args: readonly unknown[]): LocalCliOptions {
         }
       }
     }
-    const profileConfigDir = merged['profileConfigDir'] ?? merged['configDir'];
+    const profileConfigDir = resolveProfileConfigDirectory(
+      typeof merged['profileConfigDir'] === 'string' ? merged['profileConfigDir'] : undefined,
+      typeof merged['configDir'] === 'string' ? merged['configDir'] : undefined,
+    );
     if (profileConfigDir !== undefined) merged['profileConfigDir'] = profileConfigDir;
+    delete merged['configDir'];
     const sourceIsExplicit = (key: string): boolean =>
       hierarchy.some((command) => {
         const source = command.getOptionValueSource(key);
@@ -1784,8 +1792,18 @@ async function validateInitDestinations(options: LocalCliOptions): Promise<void>
   }
 }
 
+/** Legacy migrate-source init never publishes a profile registry entry. */
+function assertLegacyInitOmitsProfileRouting(options: LocalCliOptions): void {
+  if (options.profileConfigDir !== undefined || options.profile !== undefined) {
+    throw new LocalCliError(
+      'Legacy init (--legacy) does not create or bind a datastore profile. Omit --config-dir, --profile-config-dir, and --profile; use explicit --data-file/--key-file for migrate sources, or run modern `kavrix init` (without --legacy) to create a bound profile for put/run.',
+    );
+  }
+}
+
 async function handleInit(options: LocalCliOptions): Promise<void> {
   if (options.legacy === true) {
+    assertLegacyInitOmitsProfileRouting(options);
     await handleLegacyVaultInit(options);
     return;
   }
@@ -2320,7 +2338,9 @@ async function handlePing(
   // Use shared resolution (not datastoreFrom) so a Commander file default plus
   // --database-url-stdin yields the mongodb-only message instead of a conflicting-options error.
   if (resolveRootDatastore(resolved.options.datastore) !== 'mongodb') {
-    throw new LocalCliError('db ping supports only the MongoDB datastore.');
+    throw new LocalCliError(
+      'db ping requires --datastore mongodb (the file datastore has no network endpoint to ping).',
+    );
   }
   const values = await readSecrets(['database-url'], resolved.options);
   const databaseUrl = requiredSecret(values, 0);

@@ -553,7 +553,7 @@ describe(
       ).rejects.toThrow('--data-file requires --datastore file.');
       await expect(
         runCli(['db', 'ping', '--datastore', 'file', '--data-file', value.data]),
-      ).rejects.toThrow('db ping supports only the MongoDB datastore.');
+      ).rejects.toThrow('db ping requires --datastore mongodb');
       await expect(
         runCli(['list', '--datastore', 'unsupported', '--data-file', value.data]),
       ).rejects.toThrow('--datastore must be mongodb or file.');

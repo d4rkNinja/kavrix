@@ -30,6 +30,7 @@ import {
 } from './datastore-profiles.js';
 import { DatabaseSession, DatabaseSessionError } from './database-session.js';
 import { LocalSecretInput, type LocalSecretKind } from './local-secrets.js';
+import { resolveProfileConfigDirectory } from './profile-config-directory.js';
 
 const DEFAULT_KEY_FILE = './kavrix.database.key';
 const DEFAULT_DATA_FILE = './kavrix.database';
@@ -952,7 +953,10 @@ function optionsFrom(args: readonly unknown[]): DatabaseCommandOptions {
   const options = (command as Command).optsWithGlobals<
     DatabaseCommandOptions & { configDir?: string }
   >();
-  const profileConfigDir = options.profileConfigDir ?? options.configDir;
+  const profileConfigDir = resolveProfileConfigDirectory(
+    options.profileConfigDir,
+    options.configDir,
+  );
   return {
     ...options,
     ...(profileConfigDir === undefined ? {} : { profileConfigDir }),

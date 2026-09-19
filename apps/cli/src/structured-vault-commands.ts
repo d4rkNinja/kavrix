@@ -45,6 +45,7 @@ import {
 } from './database-flat-commands.js';
 import { enforceRevealPolicy } from './execution/reveal-policy.js';
 import { LocalCliError } from './cli-error.js';
+import { resolveProfileConfigDirectory } from './profile-config-directory.js';
 import {
   DEFAULT_PROJECT_CONTEXT_ID,
   DEFAULT_SERVICE_ID,
@@ -1100,8 +1101,10 @@ function commandOptions(command: Command): DatabaseFlatCommandOptions {
     throw new StructuredVaultCommandError('A vault is required.');
   const vaultSource = command.getOptionValueSource('vault');
   const profile = stringOption(options, 'profile');
-  const profileConfigDir =
-    stringOption(options, 'profileConfigDir') ?? stringOption(options, 'configDir');
+  const profileConfigDir = resolveProfileConfigDirectory(
+    stringOption(options, 'profileConfigDir'),
+    stringOption(options, 'configDir'),
+  );
   const datastore = stringOption(options, 'datastore');
   const dataFile = stringOption(options, 'dataFile');
   const database = stringOption(options, 'database');
