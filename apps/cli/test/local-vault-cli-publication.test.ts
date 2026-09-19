@@ -103,7 +103,16 @@ describe('legacy local-vault publication boundaries', () => {
     async (option, value) => {
       const target = await paths();
       const failure = runWithStdin(
-        ['init', '--legacy', '--datastore', 'mongodb', option, value, '--key-file', target.key],
+        [
+          'init',
+          '--legacy',
+          '--datastore',
+          'mongodb',
+          option,
+          value,
+          '--key-file',
+          target.key,
+        ],
         '',
       );
 

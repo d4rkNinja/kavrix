@@ -493,7 +493,14 @@ describe('root init onboarding composition', () => {
     setTty(false);
     const stderr = vi.spyOn(process.stderr, 'write').mockReturnValue(true);
 
-    await runLocalCli(['node', 'kavrix', 'init', '--legacy', '--key-file', 'invalid\0key']);
+    await runLocalCli([
+      'node',
+      'kavrix',
+      'init',
+      '--legacy',
+      '--key-file',
+      'invalid\0key',
+    ]);
 
     const output = stderr.mock.calls.flat().join('');
     expect(output).toContain('portable key file path is invalid');
