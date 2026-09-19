@@ -127,6 +127,9 @@ npm install --global kavrix
 kavrix --version
 ```
 
+If npm fails with an engines/`EBADENGINE` error, your Node.js version
+is outside `>=24.12.0 <25` or `>=25.1.0` — upgrade or switch before retrying.
+
 If npm fails with `EACCES` (prefix often `/usr/local`):
 
 ```sh
@@ -182,7 +185,13 @@ printf '%s\n' "$PASS" 'secret-value' \
   | kavrix put github/token --profile work --passphrase-stdin --value-stdin
 
 printf '%s\n' "$PASS" | kavrix list --profile work --passphrase-stdin
+
+printf '%s\n' "$PASS" \
+  | kavrix run --profile work --passphrase-stdin \
+      --secret TOKEN=github/token -- printenv TOKEN
 ```
+
+`kavrix run` injects only requested env vars into the child after `--`.
 
 Stdin frame order (`kavrix frames "<command>"`): `db init` → label,
 passphrase, confirm; `db vault create` → passphrase, label; `db vault use` →
@@ -317,8 +326,9 @@ More detail: [Command guide](docs/cli-reference.md), [CONTRIBUTING.md](CONTRIBUT
 | `--overwrite`                       | Opt in to replacing something that already exists.                         |
 | `--allow-insecure-transport`        | Explicit opt-in to unencrypted MongoDB transport (isolated networks only). |
 
-Without `--profile`, root credential commands still default `--datastore` to
-**mongodb** (same `datastoreFrom` rule as above).
+Without `--profile`, root credential commands default `--datastore` to
+**file** (same `datastoreFrom` rule as Quick start above). Pass
+`--datastore mongodb` explicitly when you need MongoDB without a profile.
 
 `kavrix <command> --help` is authoritative for your installed version.
 

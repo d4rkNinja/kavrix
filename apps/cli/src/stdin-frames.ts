@@ -78,6 +78,7 @@ export const STDIN_FRAME_CONTRACTS: Readonly<Record<string, string>> = Object.fr
   'grant show': '[mongodb-url,] passphrase',
   'grant revoke': '[mongodb-url,] passphrase',
   audit: '[mongodb-url,] passphrase',
+  run: '[mongodb-url,] passphrase',
   'migrate database | migrate database --secrets-stdin':
     '[mongodb-url,] source-passphrase, destination-passphrase, migrated-vault-label',
   'migrate database --initialize --secrets-stdin (file destination)':

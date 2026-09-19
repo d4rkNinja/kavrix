@@ -70,25 +70,41 @@ Full video on GitHub:
 
 ## Quick start
 
-For a new local-file setup, run:
+For a new local-file setup on an interactive TTY:
 
 ```sh
 kavrix init
 ```
 
-On an interactive TTY, `kavrix init` opens Ink onboarding by default (pass
-`--no-tui` for classic masked line prompts). It preflights the profile and
-protected destinations, then creates an encrypted database, one default vault,
-and a separate recovery kit. It verifies recovery before selecting the profile.
+TTY Ink onboarding (`kavrix init`, or `kavrix init --no-tui` for classic masked
+prompts) preflights destinations, creates an encrypted database-container,
+one default vault, a verified recovery kit, and selects the new profile so
+`put` / `get` / `kavrix run` work next.
 
-Scripted / non-TTY file init (`--json` / `--passphrase-stdin`) creates the same
-bound database-container profile so `put` and `kavrix run` work immediately
-after init. Add `--recovery-file` to create a verified recovery kit in the same
-invocation. Pass `--legacy` only when you need a version-2 single-vault migrate
-source. MongoDB scripted setup uses `db profile` / `db init` / `db vault`
-(see below), or `--legacy` for migrate sources.
+Scripted / non-TTY file init (`--json` / `--passphrase-stdin`) also creates a
+bound database-container profile so `put` and `kavrix run` work immediately.
+It does **not** create a recovery kit unless you pass `--recovery-file` (then
+it creates and verifies the kit in the same invocation). Pass `--legacy` only
+when you need a version-2 single-vault migrate source. MongoDB scripted setup
+uses `db profile` / `db init` / `db vault` (see below), or `--legacy` for
+migrate sources.
 
-**Node.js engines (required):** `>=24.12.0 <25` or `>=25.1.0`.
+**After init (interactive or scripted file), typical next commands:**
+
+```sh
+kavrix put github/token
+kavrix list
+kavrix get github/token --reveal
+kavrix run --secret TOKEN=github/token -- printenv TOKEN
+```
+
+`kavrix run` requires a command after `--` (the child executable and its args).
+Without `--profile`, root `put` / `get` / `list` default `--datastore` to
+**file** (aligned with `init`). Prefer `--profile` after onboarding; pass
+`--datastore mongodb` explicitly for MongoDB without a profile.
+
+**Node.js engines (required):** `>=24.12.0 <25` or `>=25.1.0`. If npm fails
+with an engines/`EBADENGINE` error, switch Node before retrying.
 
 Protected labels and passphrases never enter argv, environment variables, or
 the generated non-secret config reference.
