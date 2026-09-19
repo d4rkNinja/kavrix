@@ -345,6 +345,7 @@ async function main() {
         'Effective creation options inherited from `kavrix grant`',
       ],
       [['grant', 'show', '--help'], 'Inspect one grant'],
+      [['update', '--help'], 'global npm install'],
     ]) {
       const result = run(process.execPath, [bin, ...args], installRoot);
       assertSafeText(result.stdout + result.stderr, `kavrix ${args.join(' ')} output`);

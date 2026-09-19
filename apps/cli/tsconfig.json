@@ -43,6 +43,7 @@
     "src/tui-command.ts",
     "src/tui-session.ts",
     "src/tui-clipboard.ts",
+    "src/self-update.ts",
     "src/version.ts"
   ],
   "references": [

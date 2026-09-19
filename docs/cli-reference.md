@@ -613,7 +613,28 @@ shell re-parsing.
 - Kavrix uses versioned XChaCha20-Poly1305, Argon2id, HKDF-SHA-256, and SHA-256;
   it does not claim encryption is permanently unbreakable.
 
-## 13. Current limits
+## 13. Self-update
+
+Global npm installs can check and apply the newest published release:
+
+```sh
+kavrix update --check --json
+kavrix update
+kavrix update --tag latest
+```
+
+`--check` never installs; successful checks and check-mode registry/query
+failures exit `0`. Pair with `--json` (always emits the JSON shape, including
+`action:"failed"` + `error` on query failures) and read `updateAvailable` /
+`error`. Non-TTY stdout is always JSON; use a TTY for the status line, or pass
+`--json` explicitly. Only recognized global npm installs
+(`…/lib/node_modules/kavrix` or Windows `…/npm/node_modules/kavrix`) are replaced
+in place. Homebrew, pnpm, yarn, npx, and workspace/dev checkouts refuse with
+exit `14` and print a shell-quoted manual `npm install --global` command. The
+command never reads vault secrets. Registry URLs must be `https://` (http only
+for localhost) and must not embed credentials.
+
+## 14. Current limits
 
 The database container supports encrypted database/vault labels and structured
 project contexts, groups/services, credential items, and typed fields. Its root
