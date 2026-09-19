@@ -338,14 +338,20 @@ function parseDestinations(
   }
   return {
     profileId,
-    dataFile: input.dataFile,
-    keyFile: input.keyFile,
+    dataFile: resolveOnboardingPath(input.dataFile),
+    keyFile: resolveOnboardingPath(input.keyFile),
     reservedPaths: input.reservedPaths ?? [],
-    ...(input.recoveryFile === undefined ? {} : { recoveryFile: input.recoveryFile }),
+    ...(input.recoveryFile === undefined
+      ? {}
+      : { recoveryFile: resolveOnboardingPath(input.recoveryFile) }),
     ...(input.registryOptions === undefined
       ? {}
       : { registryOptions: input.registryOptions }),
   };
+}
+
+function resolveOnboardingPath(path: string): string {
+  return isAbsolute(path) ? path : resolve(path);
 }
 
 async function validateArtifactDestinations(
@@ -423,7 +429,9 @@ function partialSetupMessage(
   if (phase === 'profile-added') {
     return (
       prefix +
-      'Inspect `kavrix db profile list` before resuming initialization for this profile.'
+      'Inspect `kavrix db profile list`. To retry init for this id, remove the incomplete profile with `kavrix db profile remove ' +
+      profileId +
+      '` (or choose a new --profile), then run init again.'
     );
   }
   if (phase === 'recovery-created') {

@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { realpath } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { isAbsolute, join, resolve } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { Readable } from 'node:stream';
 
@@ -1023,7 +1023,9 @@ function profileFromCommand(
     options.databaseId === undefined
       ? undefined
       : parseCommandDatabaseId(options.databaseId);
-  const keyFile = requiredOption(options.keyFile, '--key-file');
+  const keyFile = resolveOnboardingArtifactPath(
+    requiredOption(options.keyFile, '--key-file'),
+  );
   if (options.datastore === 'mongodb') {
     if (options.dataFile !== undefined) {
       throw new LocalCliError('--data-file requires --datastore file.');
@@ -1050,7 +1052,9 @@ function profileFromCommand(
     return {
       id: profileId,
       datastore: 'file',
-      dataFile: requiredOption(options.dataFile, '--data-file'),
+      dataFile: resolveOnboardingArtifactPath(
+        requiredOption(options.dataFile, '--data-file'),
+      ),
       keyFile,
       ...(databaseId === undefined ? {} : { databaseId }),
     };
@@ -1280,7 +1284,7 @@ function addKeyRewrapOptions(command: Command): Command {
 function addKeyOptions(command: Command): void {
   command.option(
     '--key-file <path>',
-    'Protected portable-key file path.',
+    'Protected portable-key file path (init without --data-file/--key-file uses ~/.kavrix/; an explicit path including ./kavrix.key is honored).',
     DEFAULT_KEY_FILE,
   );
   addVaultOption(command);
@@ -1521,20 +1525,24 @@ async function resolveGuidedLocalOnboardingDestinations(
   const usesDefaultKeyFile = patch.keyFile === DEFAULT_KEY_FILE;
   const usesDefaultDataFile = patch.dataFile === DEFAULT_DATA_FILE;
   const usesDefaultRecoveryFile = patch.recoveryFile === DEFAULT_RECOVERY_FILE;
-  if (!usesDefaultKeyFile && !usesDefaultDataFile && !usesDefaultRecoveryFile) {
-    return patch;
+
+  let dataFile = patch.dataFile;
+  let keyFile = patch.keyFile;
+  let recoveryFile = patch.recoveryFile;
+  if (usesDefaultKeyFile || usesDefaultDataFile || usesDefaultRecoveryFile) {
+    const secureDirectory = await ensureSecureDirectory(join(homedir(), '.kavrix'));
+    if (usesDefaultDataFile) dataFile = join(secureDirectory, 'kavrix.vault');
+    if (usesDefaultKeyFile) keyFile = join(secureDirectory, 'kavrix.key');
+    if (usesDefaultRecoveryFile) {
+      recoveryFile = join(secureDirectory, 'kavrix.recovery');
+    }
   }
 
-  const secureDirectory = await ensureSecureDirectory(join(homedir(), '.kavrix'));
   return {
     ...patch,
-    dataFile: usesDefaultDataFile
-      ? join(secureDirectory, 'kavrix.vault')
-      : patch.dataFile,
-    keyFile: usesDefaultKeyFile ? join(secureDirectory, 'kavrix.key') : patch.keyFile,
-    recoveryFile: usesDefaultRecoveryFile
-      ? join(secureDirectory, 'kavrix.recovery')
-      : patch.recoveryFile,
+    dataFile: resolveOnboardingArtifactPath(dataFile),
+    keyFile: resolveOnboardingArtifactPath(keyFile),
+    recoveryFile: resolveOnboardingArtifactPath(recoveryFile),
   };
 }
 
@@ -1918,35 +1926,50 @@ async function resolveScriptedLocalOnboardingDestinations(
   reservedPaths: readonly string[];
 }> {
   const profileId = options.profile ?? 'default';
-  const usesDefaultDataFile =
-    options.dataFile === undefined || options.dataFile === DEFAULT_DATA_FILE;
-  const usesDefaultKeyFile = options.keyFile === DEFAULT_KEY_FILE;
+  // Commander always fills --key-file with DEFAULT_KEY_FILE. Treat a path as the
+  // secure ~/.kavrix default only when the operator did not pass it explicitly
+  // (routingOverrides tracks getOptionValueSource !== 'default').
+  const dataFileExplicit = options.routingOverrides?.dataFile !== undefined;
+  const keyFileExplicit = options.routingOverrides?.keyFile !== undefined;
+  const usesHomeDefaults = !dataFileExplicit && !keyFileExplicit;
   const recoveryRequested = options.recoveryFile !== undefined;
-  const usesDefaultRecoveryFile =
-    recoveryRequested && options.recoveryFile === DEFAULT_RECOVERY_FILE;
 
-  let dataFile = options.dataFile ?? DEFAULT_DATA_FILE;
-  let keyFile = options.keyFile;
+  let dataFile: string;
+  let keyFile: string;
   let recoveryFile = options.recoveryFile;
-  if (usesDefaultDataFile || usesDefaultKeyFile || usesDefaultRecoveryFile) {
+  if (usesHomeDefaults) {
     const secureDirectory = await ensureSecureDirectory(join(homedir(), '.kavrix'));
-    if (usesDefaultDataFile) dataFile = join(secureDirectory, 'kavrix.vault');
-    if (usesDefaultKeyFile) keyFile = join(secureDirectory, 'kavrix.key');
-    if (usesDefaultRecoveryFile) {
+    dataFile = join(secureDirectory, 'kavrix.vault');
+    keyFile = join(secureDirectory, 'kavrix.key');
+    if (recoveryRequested && options.recoveryFile === DEFAULT_RECOVERY_FILE) {
       recoveryFile = join(secureDirectory, 'kavrix.recovery');
     }
+  } else {
+    dataFile = options.dataFile ?? DEFAULT_DATA_FILE;
+    keyFile = options.keyFile;
   }
 
   return {
     profileId,
-    dataFile,
-    keyFile,
+    dataFile: resolveOnboardingArtifactPath(dataFile),
+    keyFile: resolveOnboardingArtifactPath(keyFile),
     reservedPaths,
-    ...(recoveryFile === undefined ? {} : { recoveryFile }),
+    ...(recoveryFile === undefined
+      ? {}
+      : { recoveryFile: resolveOnboardingArtifactPath(recoveryFile) }),
     ...(options.profileConfigDir === undefined
       ? {}
       : { registryOptions: { configDirectory: options.profileConfigDir } }),
   };
+}
+
+/**
+ * Persist onboarding artifact paths as absolute paths resolved against cwd at
+ * init time so later commands work after the operator changes directories.
+ */
+function resolveOnboardingArtifactPath(path: string): string {
+  if (path.length === 0) return path;
+  return isAbsolute(path) ? path : resolve(path);
 }
 
 /** Legacy version-2 single-vault init retained for migrate sources. */

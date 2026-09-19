@@ -68,6 +68,32 @@ describe('launch routing guards', () => {
     expect(result.stderr).toContain(CONFLICTING_PROFILE_CONFIG_DIR_MESSAGE);
   });
 
+  it('rejects conflicting --config-dir and --profile-config-dir on run', async () => {
+    fixture = await createExecutionFixture({ 'demo/token': 'value' });
+    const left = await mkdtemp(join(tmpdir(), 'kavrix-cfg-run-a-'));
+    const right = await mkdtemp(join(tmpdir(), 'kavrix-cfg-run-b-'));
+    const result = await runCli(
+      [
+        'run',
+        ...fixture.routingArgs,
+        '--config-dir',
+        left,
+        '--profile-config-dir',
+        right,
+        '--passphrase-stdin',
+        '--secret',
+        'DEMO=demo/token',
+        '--',
+        process.execPath,
+        '-e',
+        'process.exit(0)',
+      ],
+      PASSPHRASE,
+    );
+    expect(result.exitCode).not.toBe(0);
+    expect(result.stderr).toContain(CONFLICTING_PROFILE_CONFIG_DIR_MESSAGE);
+  });
+
   it('refuses init --legacy with --config-dir', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'kavrix-legacy-cfg-'));
     const data = join(directory, 'vault.data');

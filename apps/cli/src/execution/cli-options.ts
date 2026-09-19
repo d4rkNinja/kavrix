@@ -1,6 +1,7 @@
-﻿import type { Command } from 'commander';
+import type { Command } from 'commander';
 
 import type { DatabaseFlatCommandOptions } from '../database-flat-commands.js';
+import { resolveProfileConfigDirectory } from '../profile-config-directory.js';
 
 /** Options shape consumed by the execution-layer command handlers. */
 export type ExecutionCommandOptions = DatabaseFlatCommandOptions;
@@ -39,7 +40,10 @@ export function executionFlatOptions(
   merged: Readonly<Record<string, unknown>>,
 ): ExecutionCommandOptions {
   const vault = merged['vault'];
-  const profileConfigDir = merged['profileConfigDir'] ?? merged['configDir'];
+  const profileConfigDir = resolveProfileConfigDirectory(
+    typeof merged['profileConfigDir'] === 'string' ? merged['profileConfigDir'] : undefined,
+    typeof merged['configDir'] === 'string' ? merged['configDir'] : undefined,
+  );
   return {
     ...(typeof merged['profile'] === 'string' ? { profile: merged['profile'] } : {}),
     ...(typeof profileConfigDir === 'string' ? { profileConfigDir } : {}),
