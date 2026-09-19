@@ -167,7 +167,9 @@ describe('init relative path persistence', () => {
       expect(String(initJson.dataFile)).toBe(resolve(project, 'vault.kavrix'));
       await expect(access(join(project, 'kavrix.key'))).resolves.toBeUndefined();
       await expect(access(join(project, 'vault.kavrix'))).resolves.toBeUndefined();
-      await expect(access(join(fakeHome, '.kavrix', 'kavrix.key'))).rejects.toMatchObject({
+      await expect(
+        access(join(fakeHome, '.kavrix', 'kavrix.key')),
+      ).rejects.toMatchObject({
         code: 'ENOENT',
       });
     },

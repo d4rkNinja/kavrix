@@ -56,7 +56,7 @@ export default defineConfig({
       'apps/cli/test/execution-run.test.ts',
       'apps/cli/test/execution-run-grants.test.ts',
       'apps/cli/test/report-regressions.test.ts',
-        'apps/cli/test/launch-routing-guards.test.ts',
+      'apps/cli/test/launch-routing-guards.test.ts',
       'apps/cli/test/execution-executable.test.ts',
       'apps/cli/test/execution-engine.test.ts',
       'apps/cli/test/local-secrets.test.ts',

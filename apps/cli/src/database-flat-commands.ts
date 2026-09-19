@@ -340,7 +340,6 @@ async function rejectConflictingAmbientBoundProfile(
   );
 }
 
-
 /**
  * Explicit standalone routing (`--datastore` without `--profile`) selects the
  * legacy single-vault path; an ambient current profile must never adopt such

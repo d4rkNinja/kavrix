@@ -117,12 +117,17 @@ describe('launch routing guards', () => {
       `${PASSPHRASE}${PASSPHRASE}`,
     );
     expect(result.exitCode).not.toBe(0);
-    expect(result.stderr).toContain('Legacy init (--legacy) does not create or bind a datastore profile');
+    expect(result.stderr).toContain(
+      'Legacy init (--legacy) does not create or bind a datastore profile',
+    );
     expect(result.stderr).toContain('--config-dir');
   });
 
   it('refuses bare db ping without --datastore mongodb', async () => {
-    const result = await runCli(['db', 'ping', '--database-url-stdin'], 'mongodb://127.0.0.1/x\n');
+    const result = await runCli(
+      ['db', 'ping', '--database-url-stdin'],
+      'mongodb://127.0.0.1/x\n',
+    );
     expect(result.exitCode).not.toBe(0);
     expect(result.stderr).toContain('db ping requires --datastore mongodb');
   });
@@ -154,7 +159,9 @@ describe('launch routing guards', () => {
       `${passphraseFrame()}x\n`,
     );
     expect(result.exitCode).not.toBe(0);
-    expect(result.stderr).toMatch(/Explicit --datastore mongodb conflicts with the current bound profile/u);
+    expect(result.stderr).toMatch(
+      /Explicit --datastore mongodb conflicts with the current bound profile/u,
+    );
   });
 });
 
@@ -163,6 +170,8 @@ describe('run --no-config help', () => {
     const result = await runCli(['run', '--help'], '');
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toContain('--no-config');
-    expect(result.stdout.toLowerCase()).toMatch(/skip project configuration|ignore any project/u);
+    expect(result.stdout.toLowerCase()).toMatch(
+      /skip project configuration|ignore any project/u,
+    );
   });
 });

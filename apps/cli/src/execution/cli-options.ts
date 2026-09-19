@@ -41,7 +41,9 @@ export function executionFlatOptions(
 ): ExecutionCommandOptions {
   const vault = merged['vault'];
   const profileConfigDir = resolveProfileConfigDirectory(
-    typeof merged['profileConfigDir'] === 'string' ? merged['profileConfigDir'] : undefined,
+    typeof merged['profileConfigDir'] === 'string'
+      ? merged['profileConfigDir']
+      : undefined,
     typeof merged['configDir'] === 'string' ? merged['configDir'] : undefined,
   );
   return {

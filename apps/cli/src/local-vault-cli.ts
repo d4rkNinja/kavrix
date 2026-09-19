@@ -1313,7 +1313,9 @@ function getOptions(args: readonly unknown[]): LocalCliOptions {
       }
     }
     const profileConfigDir = resolveProfileConfigDirectory(
-      typeof merged['profileConfigDir'] === 'string' ? merged['profileConfigDir'] : undefined,
+      typeof merged['profileConfigDir'] === 'string'
+        ? merged['profileConfigDir']
+        : undefined,
       typeof merged['configDir'] === 'string' ? merged['configDir'] : undefined,
     );
     if (profileConfigDir !== undefined) merged['profileConfigDir'] = profileConfigDir;
