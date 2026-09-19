@@ -1,8 +1,8 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { existsSync } from 'node:fs';
+import { existsSync, realpathSync } from 'node:fs';
 import { realpath } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { Readable } from 'node:stream';
 
@@ -137,6 +137,7 @@ import {
 import { enforceRevealPolicy } from './execution/reveal-policy.js';
 import { classifyCliFailure } from './cli-errors.js';
 import { LocalCliError } from './cli-error.js';
+import { resolveProfileConfigDirectory } from './profile-config-directory.js';
 import { terminalColorEnabled } from './terminal-presentation.js';
 
 const DEFAULT_KEY_FILE = './kavrix.key';
@@ -1004,7 +1005,10 @@ async function openDatastoreProfileRegistry(
   options: DatastoreProfileCommandOptions,
 ): Promise<DatastoreProfileRegistry> {
   // Both spellings select the same protected configuration directory.
-  const configDirectory = options.profileConfigDir ?? options.configDir;
+  const configDirectory = resolveProfileConfigDirectory(
+    options.profileConfigDir,
+    options.configDir,
+  );
   return DatastoreProfileRegistry.open(
     configDirectory === undefined ? {} : { configDirectory },
   );
@@ -1019,7 +1023,9 @@ function profileFromCommand(
     options.databaseId === undefined
       ? undefined
       : parseCommandDatabaseId(options.databaseId);
-  const keyFile = requiredOption(options.keyFile, '--key-file');
+  const keyFile = resolveOnboardingArtifactPath(
+    requiredOption(options.keyFile, '--key-file'),
+  );
   if (options.datastore === 'mongodb') {
     if (options.dataFile !== undefined) {
       throw new LocalCliError('--data-file requires --datastore file.');
@@ -1046,7 +1052,9 @@ function profileFromCommand(
     return {
       id: profileId,
       datastore: 'file',
-      dataFile: requiredOption(options.dataFile, '--data-file'),
+      dataFile: resolveOnboardingArtifactPath(
+        requiredOption(options.dataFile, '--data-file'),
+      ),
       keyFile,
       ...(databaseId === undefined ? {} : { databaseId }),
     };
@@ -1276,7 +1284,7 @@ function addKeyRewrapOptions(command: Command): Command {
 function addKeyOptions(command: Command): void {
   command.option(
     '--key-file <path>',
-    'Protected portable-key file path.',
+    'Protected portable-key file path (init without --data-file/--key-file uses ~/.kavrix/; an explicit path including ./kavrix.key is honored).',
     DEFAULT_KEY_FILE,
   );
   addVaultOption(command);
@@ -1304,8 +1312,14 @@ function getOptions(args: readonly unknown[]): LocalCliOptions {
         }
       }
     }
-    const profileConfigDir = merged['profileConfigDir'] ?? merged['configDir'];
+    const profileConfigDir = resolveProfileConfigDirectory(
+      typeof merged['profileConfigDir'] === 'string'
+        ? merged['profileConfigDir']
+        : undefined,
+      typeof merged['configDir'] === 'string' ? merged['configDir'] : undefined,
+    );
     if (profileConfigDir !== undefined) merged['profileConfigDir'] = profileConfigDir;
+    delete merged['configDir'];
     const sourceIsExplicit = (key: string): boolean =>
       hierarchy.some((command) => {
         const source = command.getOptionValueSource(key);
@@ -1513,20 +1527,24 @@ async function resolveGuidedLocalOnboardingDestinations(
   const usesDefaultKeyFile = patch.keyFile === DEFAULT_KEY_FILE;
   const usesDefaultDataFile = patch.dataFile === DEFAULT_DATA_FILE;
   const usesDefaultRecoveryFile = patch.recoveryFile === DEFAULT_RECOVERY_FILE;
-  if (!usesDefaultKeyFile && !usesDefaultDataFile && !usesDefaultRecoveryFile) {
-    return patch;
+
+  let dataFile = patch.dataFile;
+  let keyFile = patch.keyFile;
+  let recoveryFile = patch.recoveryFile;
+  if (usesDefaultKeyFile || usesDefaultDataFile || usesDefaultRecoveryFile) {
+    const secureDirectory = await ensureSecureDirectory(join(homedir(), '.kavrix'));
+    if (usesDefaultDataFile) dataFile = join(secureDirectory, 'kavrix.vault');
+    if (usesDefaultKeyFile) keyFile = join(secureDirectory, 'kavrix.key');
+    if (usesDefaultRecoveryFile) {
+      recoveryFile = join(secureDirectory, 'kavrix.recovery');
+    }
   }
 
-  const secureDirectory = await ensureSecureDirectory(join(homedir(), '.kavrix'));
   return {
     ...patch,
-    dataFile: usesDefaultDataFile
-      ? join(secureDirectory, 'kavrix.vault')
-      : patch.dataFile,
-    keyFile: usesDefaultKeyFile ? join(secureDirectory, 'kavrix.key') : patch.keyFile,
-    recoveryFile: usesDefaultRecoveryFile
-      ? join(secureDirectory, 'kavrix.recovery')
-      : patch.recoveryFile,
+    dataFile: resolveOnboardingArtifactPath(dataFile),
+    keyFile: resolveOnboardingArtifactPath(keyFile),
+    recoveryFile: resolveOnboardingArtifactPath(recoveryFile),
   };
 }
 
@@ -1784,8 +1802,18 @@ async function validateInitDestinations(options: LocalCliOptions): Promise<void>
   }
 }
 
+/** Legacy migrate-source init never publishes a profile registry entry. */
+function assertLegacyInitOmitsProfileRouting(options: LocalCliOptions): void {
+  if (options.profileConfigDir !== undefined || options.profile !== undefined) {
+    throw new LocalCliError(
+      'Legacy init (--legacy) does not create or bind a datastore profile. Omit --config-dir, --profile-config-dir, and --profile; use explicit --data-file/--key-file for migrate sources, or run modern `kavrix init` (without --legacy) to create a bound profile for put/run.',
+    );
+  }
+}
+
 async function handleInit(options: LocalCliOptions): Promise<void> {
   if (options.legacy === true) {
+    assertLegacyInitOmitsProfileRouting(options);
     await handleLegacyVaultInit(options);
     return;
   }
@@ -1813,9 +1841,9 @@ async function handleInit(options: LocalCliOptions): Promise<void> {
  * path. Recovery is optional (`--recovery-file` + recovery passphrase frames).
  */
 async function handleDatabaseContainerInit(options: LocalCliOptions): Promise<void> {
-  const { ensureKavrixConfig, getKavrixConfigPath } =
-    await import('./kavrix-config.js');
-  await ensureKavrixConfig();
+  // Scripted init with explicit destinations must not require an ACL-safe
+  // ~/.kavrix parent — reserve the default config path without creating it.
+  const { getKavrixConfigPath } = await import('./kavrix-config.js');
   const reservedPaths = [getKavrixConfigPath()];
   const destinations = await resolveScriptedLocalOnboardingDestinations(
     options,
@@ -1900,35 +1928,57 @@ async function resolveScriptedLocalOnboardingDestinations(
   reservedPaths: readonly string[];
 }> {
   const profileId = options.profile ?? 'default';
-  const usesDefaultDataFile =
-    options.dataFile === undefined || options.dataFile === DEFAULT_DATA_FILE;
-  const usesDefaultKeyFile = options.keyFile === DEFAULT_KEY_FILE;
+  // Commander always fills --key-file with DEFAULT_KEY_FILE. Treat a path as the
+  // secure ~/.kavrix default only when the operator did not pass it explicitly
+  // (routingOverrides tracks getOptionValueSource !== 'default').
+  const dataFileExplicit = options.routingOverrides?.dataFile !== undefined;
+  const keyFileExplicit = options.routingOverrides?.keyFile !== undefined;
+  const usesHomeDefaults = !dataFileExplicit && !keyFileExplicit;
   const recoveryRequested = options.recoveryFile !== undefined;
-  const usesDefaultRecoveryFile =
-    recoveryRequested && options.recoveryFile === DEFAULT_RECOVERY_FILE;
 
-  let dataFile = options.dataFile ?? DEFAULT_DATA_FILE;
-  let keyFile = options.keyFile;
+  let dataFile: string;
+  let keyFile: string;
   let recoveryFile = options.recoveryFile;
-  if (usesDefaultDataFile || usesDefaultKeyFile || usesDefaultRecoveryFile) {
+  if (usesHomeDefaults) {
     const secureDirectory = await ensureSecureDirectory(join(homedir(), '.kavrix'));
-    if (usesDefaultDataFile) dataFile = join(secureDirectory, 'kavrix.vault');
-    if (usesDefaultKeyFile) keyFile = join(secureDirectory, 'kavrix.key');
-    if (usesDefaultRecoveryFile) {
+    dataFile = join(secureDirectory, 'kavrix.vault');
+    keyFile = join(secureDirectory, 'kavrix.key');
+    if (recoveryRequested && options.recoveryFile === DEFAULT_RECOVERY_FILE) {
       recoveryFile = join(secureDirectory, 'kavrix.recovery');
     }
+  } else {
+    dataFile = options.dataFile ?? DEFAULT_DATA_FILE;
+    keyFile = options.keyFile;
   }
 
   return {
     profileId,
-    dataFile,
-    keyFile,
+    dataFile: resolveOnboardingArtifactPath(dataFile),
+    keyFile: resolveOnboardingArtifactPath(keyFile),
     reservedPaths,
-    ...(recoveryFile === undefined ? {} : { recoveryFile }),
+    ...(recoveryFile === undefined
+      ? {}
+      : { recoveryFile: resolveOnboardingArtifactPath(recoveryFile) }),
     ...(options.profileConfigDir === undefined
       ? {}
       : { registryOptions: { configDirectory: options.profileConfigDir } }),
   };
+}
+
+/**
+ * Persist onboarding artifact paths as absolute, symlink-resolved paths against
+ * cwd at init time so later commands work after chdir and across OS temp
+ * symlinks (e.g. macOS /var → /private/var).
+ */
+function resolveOnboardingArtifactPath(path: string): string {
+  if (path.length === 0) return path;
+  const absolute = isAbsolute(path) ? path : resolve(path);
+  try {
+    return join(realpathSync(dirname(absolute)), basename(absolute));
+  } catch {
+    // Parent may not exist yet for brand-new nested destinations.
+    return absolute;
+  }
 }
 
 /** Legacy version-2 single-vault init retained for migrate sources. */
@@ -2320,7 +2370,9 @@ async function handlePing(
   // Use shared resolution (not datastoreFrom) so a Commander file default plus
   // --database-url-stdin yields the mongodb-only message instead of a conflicting-options error.
   if (resolveRootDatastore(resolved.options.datastore) !== 'mongodb') {
-    throw new LocalCliError('db ping supports only the MongoDB datastore.');
+    throw new LocalCliError(
+      'db ping requires --datastore mongodb (the file datastore has no network endpoint to ping).',
+    );
   }
   const values = await readSecrets(['database-url'], resolved.options);
   const databaseUrl = requiredSecret(values, 0);
@@ -3096,15 +3148,12 @@ async function handleDoctorHealth(options: LocalCliOptions): Promise<void> {
           detail:
             activeRecoverySlots > 0
               ? 'At least one recovery slot is active.'
-              : 'No active recovery slot is configured; create one manually before losing the key.',
+              : 'No active recovery slot is configured; create one with `kavrix recovery create` (legacy) or `kavrix db recovery create` (database-container).',
           activeRecoverySlots,
           revokedRecoverySlots,
         });
-        if (activeRecoverySlots === 0) {
-          manualRecoveryRequired.push(
-            'No active recovery slot is available; create a new recovery kit manually.',
-          );
-        }
+        // Missing recovery is advisory only — matches database-container doctor
+        // health (healthy:true without a kit). Fail closed only on auth/integrity.
       } catch {
         addManualRecovery(
           'encrypted-payload',
@@ -3125,7 +3174,7 @@ async function handleDoctorHealth(options: LocalCliOptions): Promise<void> {
 
   const healthy =
     manualRecoveryRequired.length === 0 &&
-    checks.every((check) => check.status === 'ok');
+    checks.every((check) => check.status === 'ok' || check.status === 'warning');
   const result: Record<string, unknown> = {
     healthy,
     autoHealed,

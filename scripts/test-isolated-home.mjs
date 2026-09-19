@@ -1,12 +1,19 @@
 /* global process */
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+
+import { setWindowsUserOnlyAcl } from '../packages/key-files/dist/windows-acl.js';
 
 const workerState = globalThis;
 
 if (workerState.__kavrixIsolatedTestHome__ === undefined) {
-  const isolatedHome = mkdtempSync(join(tmpdir(), 'kavrix-test-home-'));
+  // Resolve short-name/junction forms before ACL harden so ensureSecureDirectory
+  // and product realpath checks see the same canonical path (Windows exit 14).
+  const isolatedHome = realpathSync(mkdtempSync(join(tmpdir(), 'kavrix-test-home-')));
+  if (process.platform === 'win32') {
+    await setWindowsUserOnlyAcl(isolatedHome);
+  }
   process.env.USERPROFILE = isolatedHome;
   process.env.HOME = isolatedHome;
   process.env.XDG_CONFIG_HOME = join(isolatedHome, '.config');

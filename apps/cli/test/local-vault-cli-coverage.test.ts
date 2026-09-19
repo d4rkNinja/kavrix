@@ -341,7 +341,16 @@ describe(
             `${PASSPHRASE}\n`,
           ),
         ),
-      ).toMatchObject({ healthy: false, manualRecoveryRequired: expect.any(Array) });
+      ).toMatchObject({
+        healthy: true,
+        manualRecoveryRequired: [],
+        checks: expect.arrayContaining([
+          expect.objectContaining({
+            name: 'recovery-slots',
+            status: 'warning',
+          }),
+        ]),
+      });
 
       expect(
         JSON.parse(await runCli(['vault', 'list', ...databaseRoute(value)])),
@@ -553,7 +562,7 @@ describe(
       ).rejects.toThrow('--data-file requires --datastore file.');
       await expect(
         runCli(['db', 'ping', '--datastore', 'file', '--data-file', value.data]),
-      ).rejects.toThrow('db ping supports only the MongoDB datastore.');
+      ).rejects.toThrow('db ping requires --datastore mongodb');
       await expect(
         runCli(['list', '--datastore', 'unsupported', '--data-file', value.data]),
       ).rejects.toThrow('--datastore must be mongodb or file.');
@@ -1151,7 +1160,7 @@ describe(
           `${PASSPHRASE}\n`,
         ),
       ) as { healthy: boolean; autoHealed: string[] };
-      expect(accepted.healthy).toBe(false);
+      expect(accepted.healthy).toBe(true);
       expect(accepted.autoHealed).toContain('revision-anchor-initialized');
       expect(await access(`${value.key}.anchor`)).toBeUndefined();
     });

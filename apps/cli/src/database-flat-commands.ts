@@ -298,11 +298,13 @@ async function selectedDatabaseProfile(
     options.profileConfigDir === undefined
       ? {}
       : { configDirectory: options.profileConfigDir };
+  if (options.profile === undefined && hasExplicitStandaloneRouting(options)) {
+    await rejectConflictingAmbientBoundProfile(options, registryOptions);
+    return null;
+  }
   const registry =
     options.profile === undefined
-      ? hasExplicitStandaloneRouting(options)
-        ? null
-        : await DatastoreProfileRegistry.openIfPresent(registryOptions)
+      ? await DatastoreProfileRegistry.openIfPresent(registryOptions)
       : await DatastoreProfileRegistry.open(registryOptions);
   if (registry === null) return null;
   const profile =
@@ -314,6 +316,31 @@ async function selectedDatabaseProfile(
 }
 
 /**
+ * Explicit `--datastore` without `--profile` must not silently discard an
+ * ambient bound database-container profile (operators otherwise hit opaque
+ * "Vault is not initialized" on the legacy path).
+ */
+async function rejectConflictingAmbientBoundProfile(
+  options: DatabaseFlatCommandOptions,
+  registryOptions: Readonly<{ configDirectory?: string }>,
+): Promise<void> {
+  const overrides = options.routingOverrides ?? {};
+  if (overrides.datastore === undefined) return;
+  let registry: Awaited<ReturnType<typeof DatastoreProfileRegistry.openIfPresent>>;
+  try {
+    registry = await DatastoreProfileRegistry.openIfPresent(registryOptions);
+  } catch {
+    return;
+  }
+  if (registry === null) return;
+  const current = await registry.current();
+  if (current?.databaseId === undefined) return;
+  throw new DatabaseFlatCommandError(
+    `Explicit --datastore ${overrides.datastore} conflicts with the current bound profile '${current.id}' (${current.datastore}). Pass --profile ${current.id} to use that profile, or clear the current profile before using standalone --datastore routing.`,
+  );
+}
+
+/**
  * Explicit standalone routing (`--datastore` without `--profile`) selects the
  * legacy single-vault path; an ambient current profile must never adopt such
  * an invocation into database-container mode.
@@ -321,7 +348,13 @@ async function selectedDatabaseProfile(
 function hasExplicitStandaloneRouting(options: DatabaseFlatCommandOptions): boolean {
   if (options.profile !== undefined) return false;
   const overrides = options.routingOverrides;
-  if (overrides !== undefined) return overrides.datastore !== undefined;
+  if (overrides !== undefined) {
+    return (
+      overrides.datastore !== undefined ||
+      overrides.dataFile !== undefined ||
+      overrides.keyFile !== undefined
+    );
+  }
   return options.datastore !== undefined;
 }
 

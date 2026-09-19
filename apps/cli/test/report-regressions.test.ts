@@ -53,6 +53,7 @@ describe('documented exit codes', () => {
     const init = await runCli(
       [
         'init',
+        '--legacy',
         '--datastore',
         'file',
         '--data-file',
@@ -128,6 +129,7 @@ describe('multi-line and empty values via base64 frames', () => {
     const init = await runCli(
       [
         'init',
+        '--legacy',
         '--datastore',
         'file',
         '--data-file',
@@ -305,6 +307,7 @@ describe('reserved vault identifiers at init', () => {
       const result = await runCli(
         [
           'init',
+          '--legacy',
           '--datastore',
           'file',
           '--vault',
@@ -324,6 +327,7 @@ describe('reserved vault identifiers at init', () => {
     const invalid = await runCli(
       [
         'init',
+        '--legacy',
         '--datastore',
         'file',
         '--vault',

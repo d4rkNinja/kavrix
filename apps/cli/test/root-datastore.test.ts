@@ -125,6 +125,6 @@ describe('root datastore resolution error exits', () => {
   it('exits non-zero when db ping inherits the file default without an explicit mongodb datastore', async () => {
     const result = await captureExit(['db', 'ping', '--database-url-stdin']);
     expect(result.exitCode).not.toBe(0);
-    expect(result.stderr).toContain('db ping supports only the MongoDB datastore.');
+    expect(result.stderr).toContain('db ping requires --datastore mongodb');
   });
 });

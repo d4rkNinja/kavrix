@@ -1,4 +1,5 @@
 import { LocalCliError } from './cli-error.js';
+import { resolveProfileConfigDirectory } from './profile-config-directory.js';
 import { terminalColorEnabled } from './terminal-presentation.js';
 import { createCliTuiBackend } from './tui-session.js';
 import { CLI_VERSION } from './version.js';
@@ -56,7 +57,10 @@ export async function runInitTuiOnboarding(
     process.env['KAVRIX_TUI_NO_SPLASH'] === '1' ||
     process.env['KAVRIX_TUI_NO_SPLASH'] === 'true';
 
-  const profileConfigDir = options.profileConfigDir ?? options.configDir;
+  const profileConfigDir = resolveProfileConfigDirectory(
+    options.profileConfigDir,
+    options.configDir,
+  );
   const backend = createCliTuiBackend({
     ascii,
     ...(profileConfigDir === undefined ? {} : { profileConfigDir }),

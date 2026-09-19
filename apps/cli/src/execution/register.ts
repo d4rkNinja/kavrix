@@ -66,7 +66,10 @@ function registerRun(program: Command): void {
     )
     .option('--environment <name>', 'Apply one project-file environment mapping set.')
     .option('--config <path>', 'Non-secret project configuration file.')
-    .option('--no-config', 'Ignore any project configuration file.')
+    .option(
+      '--no-config',
+      'Skip project configuration (kavrix.yaml / --config); use only CLI flags and profiles.',
+    )
     .option(
       '--policy <id>',
       'Require this stored or project policy for the child.',
@@ -98,7 +101,9 @@ function registerRun(program: Command): void {
         ...(optString(merged['config']) === undefined
           ? {}
           : { config: optString(merged['config']) }),
-        noConfig: merged['noConfig'] === true,
+        // Commander treats `--no-config` as the negation of `--config <path>`,
+        // so the parse result is `{ config: false }` rather than `{ noConfig: true }`.
+        noConfig: merged['noConfig'] === true || merged['config'] === false,
         policyIds: asStrings(merged['policy']),
         grantRefs: asStrings(merged['grant']),
         json: merged['json'] === true,

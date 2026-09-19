@@ -1,9 +1,13 @@
+import { realpathSync } from 'node:fs';
 import { mkdtemp, writeFile } from 'node:fs/promises';
 
 import { setWindowsUserOnlyAcl } from '../src/windows-acl.js';
 
 export async function createSecureTestDirectory(prefix: string): Promise<string> {
-  const directory = await mkdtemp(prefix);
+  // Resolve OS temp symlinks/junctions (macOS /var → /private/var, Windows
+  // short names) *before* hardening ACLs so the ACL lands on the path callers
+  // and product realpath checks actually use.
+  const directory = realpathSync(await mkdtemp(prefix));
   if (process.platform === 'win32') {
     await setWindowsUserOnlyAcl(directory);
   }

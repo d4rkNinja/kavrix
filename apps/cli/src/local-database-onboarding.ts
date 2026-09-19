@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { realpathSync } from 'node:fs';
 import { lstat, realpath } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
@@ -273,7 +274,7 @@ export async function executeGuidedLocalOnboarding(
   request: GuidedLocalOnboardingRequest,
 ): Promise<GuidedLocalOnboardingReceipt> {
   const receipt = await executeLocalDatabaseOnboarding(request);
-  if (receipt.recoveryFile === undefined || receipt.recoveryReady !== true) {
+  if (receipt.recoveryFile === undefined || !receipt.recoveryReady) {
     throw new GuidedLocalOnboardingError('recovery-verified', receipt.profileId);
   }
   return {
@@ -338,14 +339,26 @@ function parseDestinations(
   }
   return {
     profileId,
-    dataFile: input.dataFile,
-    keyFile: input.keyFile,
+    dataFile: resolveOnboardingPath(input.dataFile),
+    keyFile: resolveOnboardingPath(input.keyFile),
     reservedPaths: input.reservedPaths ?? [],
-    ...(input.recoveryFile === undefined ? {} : { recoveryFile: input.recoveryFile }),
+    ...(input.recoveryFile === undefined
+      ? {}
+      : { recoveryFile: resolveOnboardingPath(input.recoveryFile) }),
     ...(input.registryOptions === undefined
       ? {}
       : { registryOptions: input.registryOptions }),
   };
+}
+
+function resolveOnboardingPath(path: string): string {
+  const absolute = isAbsolute(path) ? path : resolve(path);
+  try {
+    return join(realpathSync(dirname(absolute)), basename(absolute));
+  } catch {
+    // Parent may not exist yet for brand-new nested destinations.
+    return absolute;
+  }
 }
 
 async function validateArtifactDestinations(
@@ -397,7 +410,13 @@ async function assertDistinctDestinations(
 
 async function canonicalCollisionTarget(path: string): Promise<string> {
   const absolute = isAbsolute(path) ? path : resolve(path);
-  return join(await realpath(dirname(absolute)), basename(absolute));
+  try {
+    // Reserved paths (e.g. ~/.kavrix/config.toml) may not exist yet during
+    // scripted init with explicit destinations — still compare absolute form.
+    return join(await realpath(dirname(absolute)), basename(absolute));
+  } catch {
+    return absolute;
+  }
 }
 
 function secureFileLockPath(targetPath: string): string {
@@ -423,7 +442,9 @@ function partialSetupMessage(
   if (phase === 'profile-added') {
     return (
       prefix +
-      'Inspect `kavrix db profile list` before resuming initialization for this profile.'
+      'Inspect `kavrix db profile list`. To retry init for this id, remove the incomplete profile with `kavrix db profile remove ' +
+      profileId +
+      '` (or choose a new --profile), then run init again.'
     );
   }
   if (phase === 'recovery-created') {

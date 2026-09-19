@@ -18,6 +18,7 @@
     "src/database-session.ts",
     "src/datastore-profiles.ts",
     "src/root-datastore.ts",
+    "src/profile-config-directory.ts",
     "src/structured-vault-commands.ts",
     "src/structured-vault-projection.ts",
     "src/cli-error.ts",

@@ -1259,7 +1259,15 @@ describe('database owner command composition', () => {
       return JSON.parse(output.join('')) as Record<string, unknown>;
     };
     await expect(
-      execute('vault', 'list', '--database-url-stdin', '--database', 'legacy'),
+      execute(
+        'vault',
+        'list',
+        '--datastore',
+        'mongodb',
+        '--database-url-stdin',
+        '--database',
+        'legacy',
+      ),
     ).resolves.toEqual({
       database: 'legacy',
       collection: 'kavrix_vaults',
@@ -1271,6 +1279,8 @@ describe('database owner command composition', () => {
         'status',
         '--vault',
         'legacy',
+        '--datastore',
+        'mongodb',
         '--database-url-stdin',
         '--database',
         'legacy',

@@ -9,6 +9,7 @@ import {
   mkdtemp,
   readFile,
   readdir,
+  realpath,
   rm,
   writeFile,
 } from 'node:fs/promises';
@@ -187,10 +188,11 @@ function parseJson(result, label) {
   }
 }
 
-function cliRunner(bin, installRoot) {
+function cliRunner(bin, installRoot, environment = process.env) {
   return async (args, frames = [], options = {}) => {
     const result = await runProcess(process.execPath, [bin, ...args], {
       cwd: installRoot,
+      environment,
       input: stdinFrames(frames),
       label: `packed kavrix ${args.slice(0, 3).join(' ')}`,
       allowFailure: options.allowFailure,
@@ -927,6 +929,7 @@ async function exerciseDatabaseContainer(run, paths) {
   await run(
     [
       'init',
+      '--legacy',
       ...legacyFileArgs(paths.legacyDataFile, paths.legacyKeyFile, 'legacy-v2'),
       '--passphrase-stdin',
     ],
@@ -1418,13 +1421,13 @@ async function main() {
     await exerciseSignalCleanupProbe('SIGINT', 'cleanup');
     await exerciseSignalCleanupProbe('SIGTERM', 'cleanup');
     packRoot = await registerRoot(
-      await mkdtemp(join(tmpdir(), 'kavrix-database-pack-')),
+      await realpath(await mkdtemp(join(tmpdir(), 'kavrix-database-pack-'))),
     );
     installRoot = await registerRoot(
-      await mkdtemp(join(tmpdir(), 'kavrix-database-install-')),
+      await realpath(await mkdtemp(join(tmpdir(), 'kavrix-database-install-'))),
     );
     npmCache = await registerRoot(
-      await mkdtemp(join(tmpdir(), 'kavrix-database-npm-cache-')),
+      await realpath(await mkdtemp(join(tmpdir(), 'kavrix-database-npm-cache-'))),
     );
     if (process.platform === 'win32') {
       await Promise.all(
@@ -1469,17 +1472,27 @@ async function main() {
     verifiedVersion = manifest.version;
     await scanPackage(packageRoot);
 
+    // Keep vault/key artifacts out of the npm-prefix tree: install can leave the
+    // install root's ACL in a state Windows rejects for portable key creation.
+    const artifactRoot = join(installRoot, 'artifacts');
+    await mkdir(artifactRoot, { recursive: true });
+    if (process.platform === 'win32') {
+      await setWindowsUserOnlyAcl(installRoot);
+      await setWindowsUserOnlyAcl(artifactRoot);
+    } else {
+      await chmod(artifactRoot, 0o700);
+    }
     const paths = {
-      configDirectory: join(installRoot, 'profiles'),
-      primaryDataFile: join(installRoot, 'primary.database'),
-      primaryKeyFile: join(installRoot, 'primary.database.key'),
-      databaseRecoveryFile: join(installRoot, 'primary.database.recovery'),
-      secondDataFile: join(installRoot, 'secondary.database'),
-      secondKeyFile: join(installRoot, 'secondary.database.key'),
-      legacyDataFile: join(installRoot, 'legacy.vault'),
-      legacyKeyFile: join(installRoot, 'legacy.key'),
-      migratedDataFile: join(installRoot, 'migrated.database'),
-      migratedKeyFile: join(installRoot, 'migrated.database.key'),
+      configDirectory: join(artifactRoot, 'profiles'),
+      primaryDataFile: join(artifactRoot, 'primary.database'),
+      primaryKeyFile: join(artifactRoot, 'primary.database.key'),
+      databaseRecoveryFile: join(artifactRoot, 'primary.database.recovery'),
+      secondDataFile: join(artifactRoot, 'secondary.database'),
+      secondKeyFile: join(artifactRoot, 'secondary.database.key'),
+      legacyDataFile: join(artifactRoot, 'legacy.vault'),
+      legacyKeyFile: join(artifactRoot, 'legacy.key'),
+      migratedDataFile: join(artifactRoot, 'migrated.database'),
+      migratedKeyFile: join(artifactRoot, 'migrated.database.key'),
     };
     await mkdir(paths.configDirectory, { recursive: true });
     if (process.platform === 'win32') {
@@ -1487,7 +1500,22 @@ async function main() {
     } else {
       await chmod(paths.configDirectory, 0o700);
     }
-    const run = cliRunner(bin, installRoot);
+    // Isolate HOME so any residual ~/.kavrix / ~/.config/kavrix touches use
+    // an ACL-safe parent on Windows (packed modern init, profile defaults).
+    const homeRoot = join(artifactRoot, 'home');
+    await mkdir(homeRoot, { recursive: true });
+    if (process.platform === 'win32') {
+      await setWindowsUserOnlyAcl(homeRoot);
+    } else {
+      await chmod(homeRoot, 0o700);
+    }
+    const packedEnv = {
+      ...process.env,
+      HOME: homeRoot,
+      USERPROFILE: homeRoot,
+      XDG_CONFIG_HOME: join(homeRoot, '.config'),
+    };
+    const run = cliRunner(bin, installRoot, packedEnv);
     const rootHelp = await run(['--help']);
     assert(!/^\s*destroy(?:\s|$)/mu.test(rootHelp.stdout), 'destroy leaked into help');
     await exerciseDatabaseContainer(run, paths);

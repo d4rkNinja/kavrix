@@ -3,7 +3,7 @@
 import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { mkdir, mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -115,7 +115,21 @@ async function runProcess(command, args, options = {}) {
         stderr: Buffer.concat(stderr).toString('utf8'),
       };
       if (code !== (options.expectedCode ?? 0) || signal !== null) {
-        finish(new Error(`${options.label ?? command} failed`));
+        const detail = [
+          `code=${String(code)}`,
+          signal === null ? undefined : `signal=${signal}`,
+          result.stdout.trim() === '' ? undefined : `stdout=${result.stdout.trim()}`,
+          result.stderr.trim() === '' ? undefined : `stderr=${result.stderr.trim()}`,
+        ]
+          .filter((part) => part !== undefined)
+          .join(' ');
+        finish(
+          new Error(
+            detail.length > 0
+              ? `${options.label ?? command} failed (${detail})`
+              : `${options.label ?? command} failed`,
+          ),
+        );
       } else {
         finish(undefined, result);
       }
@@ -153,10 +167,11 @@ async function assertEncryptedArtifacts(root, secret) {
   }
 }
 
-function cliRunner(bin, cwd, secret) {
+function cliRunner(bin, cwd, secret, environment = process.env) {
   return async (args, frames = [], options = {}) => {
     const result = await runProcess(process.execPath, [bin, ...args], {
       cwd,
+      environment,
       input: secretFrames(frames),
       label: `kavrix ${args.join(' ')}`,
       expectedCode: options.expectedCode,
@@ -337,7 +352,10 @@ async function exerciseLifecycle(run, bin, installRoot, paths) {
   const key = keyArgs(paths);
   const passStdin = stdinFlags('passphrase');
 
-  await run(['init', ...file, ...key, ...passStdin], [passphrase, passphrase]);
+  await run(
+    ['init', '--legacy', ...file, ...key, ...passStdin],
+    [passphrase, passphrase],
+  );
   await run(['vault', 'list', '--datastore', 'file', '--data-file', paths.dataFile]);
   await run(['vault', 'status', ...file]);
   await run(['key', 'status', ...key, ...passStdin], [passphrase]);
@@ -540,7 +558,7 @@ async function main() {
   process.once('SIGINT', onSigint);
   process.once('SIGTERM', onSigterm);
   try {
-    temporaryRoot = await mkdtemp(join(tmpdir(), 'kavrix-pre-ci-'));
+    temporaryRoot = await realpath(await mkdtemp(join(tmpdir(), 'kavrix-pre-ci-')));
     if (process.platform === 'win32') {
       await setWindowsUserOnlyAcl(temporaryRoot);
     }
@@ -583,24 +601,43 @@ async function main() {
     );
     const bin = join(installRoot, 'node_modules', 'kavrix', 'dist', 'bin.js');
     assert(existsSync(bin), 'The packed CLI executable is missing');
+    // Keep vault/key artifacts out of the npm-prefix tree: install can leave the
+    // install root's ACL in a state Windows rejects for portable key creation.
+    const artifactRoot = join(installRoot, 'artifacts');
+    await mkdir(artifactRoot, { recursive: true });
+    if (process.platform === 'win32') {
+      await setWindowsUserOnlyAcl(installRoot);
+      await setWindowsUserOnlyAcl(artifactRoot);
+    }
     const paths = {
-      assignedKeyFile: join(installRoot, 'assigned.key'),
-      copyKeyFile: join(installRoot, 'copy.key'),
+      assignedKeyFile: join(artifactRoot, 'assigned.key'),
+      copyKeyFile: join(artifactRoot, 'copy.key'),
       credentialName: 'acceptance/item',
-      dataFile: join(installRoot, 'vault.kavrix'),
-      keyFile: join(installRoot, 'primary.key'),
-      primaryKeyFile: join(installRoot, 'primary.key'),
-      recoveryFile: join(installRoot, 'first.recovery'),
+      dataFile: join(artifactRoot, 'vault.kavrix'),
+      keyFile: join(artifactRoot, 'primary.key'),
+      primaryKeyFile: join(artifactRoot, 'primary.key'),
+      recoveryFile: join(artifactRoot, 'first.recovery'),
       renamedCredential: 'acceptance/renamed-item',
-      replacementKeyFile: join(installRoot, 'replacement.key'),
-      replacementRecoveryFile: join(installRoot, 'replacement.recovery'),
-      replicaKeyFile: join(installRoot, 'replica.key'),
-      secondRecoveryFile: join(installRoot, 'second.recovery'),
+      replacementKeyFile: join(artifactRoot, 'replacement.key'),
+      replacementRecoveryFile: join(artifactRoot, 'replacement.recovery'),
+      replicaKeyFile: join(artifactRoot, 'replica.key'),
+      secondRecoveryFile: join(artifactRoot, 'second.recovery'),
       secret: 'runtime-vault-secret-canary-pre-ci',
       temporaryCredential: 'acceptance/temporary',
       vaultId: 'acceptance-vault',
     };
-    const run = cliRunner(bin, installRoot, paths.secret);
+    const homeRoot = join(artifactRoot, 'home');
+    await mkdir(homeRoot, { recursive: true });
+    if (process.platform === 'win32') {
+      await setWindowsUserOnlyAcl(homeRoot);
+    }
+    const packedEnv = {
+      ...process.env,
+      HOME: homeRoot,
+      USERPROFILE: homeRoot,
+      XDG_CONFIG_HOME: join(homeRoot, '.config'),
+    };
+    const run = cliRunner(bin, installRoot, paths.secret, packedEnv);
     await run(['--version']);
     await exerciseHelp(run);
     await exerciseLifecycle(run, bin, installRoot, paths);
