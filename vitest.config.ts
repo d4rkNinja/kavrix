@@ -36,6 +36,7 @@ export default defineConfig({
       'apps/cli/test/local-vault-cli-publication.test.ts',
       'apps/cli/test/local-vault-cli-coverage.test.ts',
       'apps/cli/test/public-command-help.test.ts',
+      'apps/cli/test/self-update.test.ts',
       'apps/cli/test/local-vault-cli-view.test.ts',
       'apps/cli/test/execution-agent.test.ts',
       'apps/cli/test/execution-confirm.test.ts',

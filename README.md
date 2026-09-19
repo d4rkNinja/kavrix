@@ -156,6 +156,16 @@ cd apps/cli && pnpm pack
 npm install -g ./kavrix-*.tgz --prefix ~/.local
 ```
 
+After a global npm install, keep current with:
+
+```sh
+kavrix update --check --json   # report only (exit 0); inspect updateAvailable
+kavrix update                  # npm install --global kavrix@<newest>
+```
+
+`kavrix update` only replaces detected global npm installs. Homebrew, pnpm, yarn,
+npx, and workspace checkouts refuse with the exact manual upgrade command.
+
 ## Quick start (local file)
 
 Passphrases must be at least **16 bytes**. This non-interactive flow works

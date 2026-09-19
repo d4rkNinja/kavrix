@@ -52,6 +52,13 @@ packed CLI's encrypted multi-vault database lifecycle and migration boundary.
 4. Commit and push the reviewed change to `main`.
 5. Wait for CI and CodeQL to pass for the exact commit.
 
+**Never create or push a `v*` tag before those exact-SHA checks are green.**
+The publish workflow refuses tags whose commit lacks successful main CI/CodeQL,
+and npm versions are immutable — a premature tag (as with v0.2.14) permanently
+burns that version even though nothing reached the registry. Confirm
+`gh run list --branch main` (or the commit status) shows success for the
+release SHA, then tag.
+
 The release workflow independently requires those exact-SHA checks. It will not
 publish a tag whose commit has failing or missing CI/CodeQL evidence.
 

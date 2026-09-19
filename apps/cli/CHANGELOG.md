@@ -1,5 +1,10 @@
 # kavrix
 
+## 0.2.16
+
+- Add `kavrix update` to check npm for a newer release and install it globally (`npm install -g kavrix@<version>`). Supports `--check` (report only; always exit 0), `--json`, `--tag`, and `--registry`. Only global npm installs are upgraded; Homebrew/pnpm/yarn/npx/dev checkouts refuse with a manual command.
+- Docs: never create a `v*` release tag until exact-SHA main CI and CodeQL are green — publish already refuses otherwise, and tagging early permanently burns that version on npm.
+
 ## 0.2.15
 
 - Unblock CI after 0.2.14: fix lint unnecessary conditionals in local database onboarding rollback/cause walking (`registry.get` never returns null).
