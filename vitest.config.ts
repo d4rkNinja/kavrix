@@ -26,6 +26,7 @@ export default defineConfig({
       'apps/cli/test/structured-vault-projection.test.ts',
       'apps/cli/test/datastore-profile-publication.test.ts',
       'apps/cli/test/datastore-profiles.test.ts',
+      'apps/cli/test/root-datastore.test.ts',
       'apps/cli/test/init-onboarding.test.ts',
       'apps/cli/test/init-onboarding-command.test.ts',
       'apps/cli/test/local-database-onboarding.test.ts',

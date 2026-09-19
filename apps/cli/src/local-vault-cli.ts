@@ -111,6 +111,13 @@ import {
   LocalSecretInputError,
   type LocalSecretKind,
 } from './local-secrets.js';
+import {
+  INVALID_ROOT_DATASTORE_MESSAGE,
+  addRootDatastoreOption,
+  parseRootDatastore,
+  resolveRootDatastore,
+  type RootDatastore,
+} from './root-datastore.js';
 import { CLI_VERSION } from './version.js';
 import { applyStdinFrameHelp, registerFramesCommand } from './stdin-frames.js';
 import { registerExecutionCommands } from './execution/register.js';
@@ -224,11 +231,9 @@ export function buildLocalCli(): Command {
     .description(
       'Create a bound local database vault (Ink TUI on TTY by default). Scripted/--json file init creates a selected datastore profile so put/run work immediately; --no-tui uses classic guided prompts; --legacy keeps version-2 single-vault migrate sources.',
     );
-  // Root init deliberately defaults to the local encrypted-file datastore;
-  // MongoDB requires an explicit `--datastore mongodb` choice outside the
-  // guided wizard as well.
-  init
-    .option('--datastore <type>', 'Encrypted datastore: file or mongodb.', 'file')
+  // Root init and CRUD share DEFAULT_ROOT_DATASTORE (file). MongoDB requires
+  // an explicit `--datastore mongodb` choice outside the guided wizard.
+  addRootDatastoreOption(init)
     .option('--data-file <path>', 'Encrypted local database (or legacy vault) file path.')
     .option(
       '--allow-insecure-transport',
@@ -1125,9 +1130,11 @@ function profileRoutingOverrides(
   };
 }
 
-function parseExplicitDatastore(value: string | undefined): 'mongodb' | 'file' {
-  if (value === 'mongodb' || value === 'file') return value;
-  throw new LocalCliError('--datastore must be mongodb or file.');
+function parseExplicitDatastore(value: string | undefined): RootDatastore {
+  if (value === undefined) {
+    throw new LocalCliError(INVALID_ROOT_DATASTORE_MESSAGE);
+  }
+  return parseRootDatastore(value);
 }
 
 async function resolveProfileForPing(
@@ -1182,8 +1189,7 @@ async function resolveProfileForPing(
 }
 
 function addDatabaseOnlyOptions(command: Command): void {
-  command
-    .option('--datastore <type>', 'Encrypted datastore: file or mongodb.', 'file')
+  addRootDatastoreOption(command)
     .option('--data-file <path>', 'Encrypted local vault file path.')
     .option(
       '--allow-insecure-transport',
@@ -4404,11 +4410,9 @@ function storeLocation(
       };
 }
 
-function datastoreFrom(options: LocalCliOptions): 'mongodb' | 'file' {
-  const datastore = options.datastore ?? 'file';
-  if (datastore !== 'mongodb' && datastore !== 'file') {
-    throw new LocalCliError('--datastore must be mongodb or file.');
-  }
+function datastoreFrom(options: LocalCliOptions): RootDatastore {
+  // Shared policy: omitted/undefined → DEFAULT_ROOT_DATASTORE; invalid → throw.
+  const datastore = resolveRootDatastore(options.datastore);
   if (datastore === 'mongodb' && options.dataFile !== undefined) {
     throw new LocalCliError('--data-file requires --datastore file.');
   }

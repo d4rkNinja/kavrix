@@ -3,7 +3,7 @@
 ## 0.2.14
 
 - Scripted/`--json` file `kavrix init` creates a bound database-container profile (db + default vault) so `put`/`run` work immediately; `--legacy` retains version-2 single-vault migrate sources; MongoDB scripted init hard-fails with the `db profile`/`db init`/`db vault` recipe.
-- Align root CRUD `--datastore` default with init (`file`); require explicit `--datastore mongodb`.
+- Align root CRUD `--datastore` default with init (`file`) via a shared `root-datastore` resolution helper; require explicit `--datastore mongodb`; invalid datastore / failed resolution exits non-zero.
 - `doctor health` exits non-zero when `healthy: false` (after emitting JSON).
 - Windows: serialize/retry PowerShell ACL helpers to clear KEY_FILE_UNSAFE flake under concurrent secure temp dirs.
 - README honesty: Node engines, init→run path, recovery claims, secrets-firewall + zero-knowledge positioning.
