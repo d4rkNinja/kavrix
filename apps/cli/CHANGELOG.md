@@ -1,5 +1,10 @@
 # kavrix
 
+## 0.2.15
+
+- Unblock CI after 0.2.14: fix lint unnecessary conditionals in local database onboarding rollback/cause walking (`registry.get` never returns null).
+- Align packed-package smoke with P1 recovery help: top-level `recovery --help` expects legacy-vault wording and points users at `db recovery`; smoke also checks `db recovery --help`.
+
 ## 0.2.14
 
 - Scripted/`--json` file `kavrix init` creates a bound database-container profile (db + default vault) so `put`/`run` work immediately; `--legacy` retains version-2 single-vault migrate sources; MongoDB scripted init hard-fails with the `db profile`/`db init`/`db vault` recipe.
