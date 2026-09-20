@@ -223,17 +223,24 @@ describe('init relative path persistence', () => {
       );
       expect(init.exitCode).toBe(0);
       const initJson = JSON.parse(init.stdout) as Record<string, unknown>;
-      const expectedVault = join(fakeHome, '.kavrix', 'kavrix.vault');
-      const expectedKey = join(fakeHome, '.kavrix', 'kavrix.key');
-      const dataFile = canon(String(initJson.dataFile));
-      const keyFile = canon(String(initJson.keyFile));
-      const homeCanon = canon(fakeHome);
-      expect(dataFile.toLowerCase()).toBe(canon(expectedVault).toLowerCase());
-      expect(keyFile.toLowerCase()).toBe(canon(expectedKey).toLowerCase());
-      expect(dataFile.toLowerCase().startsWith(homeCanon.toLowerCase())).toBe(true);
-      expect(keyFile.toLowerCase().startsWith(homeCanon.toLowerCase())).toBe(true);
+      const dataFile = String(initJson.dataFile);
+      const keyFile = String(initJson.keyFile);
+      // Avoid full-path equality on Windows: GHA tmpdirs often mix 8.3 (RUNNER~1)
+      // and long forms that realpathSync does not unify.
+      expect(dataFile.replaceAll('\\', '/').toLowerCase()).toMatch(
+        /\/\.kavrix\/kavrix\.vault$/u,
+      );
+      expect(keyFile.replaceAll('\\', '/').toLowerCase()).toMatch(
+        /\/\.kavrix\/kavrix\.key$/u,
+      );
       await expect(access(dataFile)).resolves.toBeUndefined();
       await expect(access(keyFile)).resolves.toBeUndefined();
+      await expect(
+        access(join(fakeHome, '.kavrix', 'kavrix.vault')),
+      ).resolves.toBeUndefined();
+      await expect(
+        access(join(fakeHome, '.kavrix', 'kavrix.key')),
+      ).resolves.toBeUndefined();
     },
     process.platform === 'win32' ? 600_000 : 120_000,
   );
