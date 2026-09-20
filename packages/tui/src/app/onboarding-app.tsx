@@ -5,8 +5,10 @@ import { BrandBanner } from '../showcase.js';
 import { SplashGate } from '../splash-gate.js';
 import { sanitizeTerminalText } from '../terminal-text.js';
 import type { InteractiveAppBackend, AppBackendAction } from './backend.js';
+import { resolveTtySize } from './router.js';
 import {
   createInitialOnboardingState,
+  onboardingStepFocus,
   transitionOnboarding,
   type OnboardingKey,
   type OnboardingState,
@@ -86,14 +88,15 @@ export function KavrixOnboardingApp({
   // paintEpoch forces Ink to remount chrome after each step so transitions
   // cannot leave a blank/stale alternate frame on flaky TTYs.
   const [paintEpoch, setPaintEpoch] = useState(0);
-  const [state, setState] = useState(() =>
-    createInitialOnboardingState({
-      width: stdout.columns,
-      height: stdout.rows,
+  const [state, setState] = useState(() => {
+    const size = resolveTtySize(stdout);
+    return createInitialOnboardingState({
+      width: size.width,
+      height: size.height,
       ascii: presentation.ascii,
       color: presentation.color,
-    }),
-  );
+    });
+  });
   const stateRef = useRef(state);
   const backendRef = useRef(backend);
   const onCompleteRef = useRef(onComplete);
@@ -149,12 +152,15 @@ export function KavrixOnboardingApp({
 
   const dispatchKey = useCallback(
     (key: OnboardingKey): void => {
+      const previousStep = stateRef.current.step;
       const next = transitionOnboarding(stateRef.current, { type: 'key', key });
       stateRef.current = next.state;
       setState(next.state);
-      // Force a full chrome remount after every input so step transitions
-      // cannot leave a blank or stale frame on flaky TTYs.
-      setPaintEpoch((epoch) => epoch + 1);
+      // Remount only when the step changes. Remounting on every keystroke
+      // left stale Storage / Key-file frames while typing passphrases.
+      if (next.state.step !== previousStep) {
+        setPaintEpoch((epoch) => epoch + 1);
+      }
       if (next.effect.kind === 'backend') {
         void runBackend(next.effect.action);
       }
@@ -176,8 +182,8 @@ export function KavrixOnboardingApp({
     const resize = (): void => {
       const next = transitionOnboarding(stateRef.current, {
         type: 'resize',
-        width: stdout.columns,
-        height: stdout.rows,
+        width: resolveTtySize(stdout).width,
+        height: resolveTtySize(stdout).height,
       });
       stateRef.current = next.state;
       setState(next.state);
@@ -229,7 +235,7 @@ export function KavrixOnboardingApp({
       color={presentation.color}
       ascii={presentation.ascii}
       {...(version === undefined ? {} : { version })}
-      {...(noSplash === undefined ? {} : { noSplash })}
+      noSplash={noSplash !== false}
       width={state.width}
       height={state.height}
       ready={splashReady}
@@ -254,10 +260,16 @@ function sanitizePasteTextLocal(raw: string): string {
   return text;
 }
 
+/** Presentational onboarding chrome for first-paint tests (no Ink hooks). */
+export function renderOnboardingScreen(state: OnboardingState): ReactElement {
+  return <OnboardingChrome state={state} />;
+}
+
 function OnboardingChrome({
   state,
 }: Readonly<{ state: OnboardingState }>): ReactElement {
   const { color, ascii, width } = state;
+  const focus = onboardingStepFocus(state.step);
   const product = resolveProductIdentity();
   const accent: AppAccent =
     state.step === 'success'
@@ -288,7 +300,7 @@ function OnboardingChrome({
           />
           <StatusPill
             label="step"
-            value={state.step}
+            value={`${String(focus.index)}/${String(focus.total)} ${focus.title}`}
             accent={accent}
             color={color}
             ascii={ascii}
@@ -304,6 +316,12 @@ function OnboardingChrome({
       </Panel>
 
       <Box flexDirection="column" flexGrow={1} paddingX={1} paddingY={1}>
+        <Text bold {...accentColor(color, CHROME.warning)}>
+          {safe(
+            `ACTIVE ${String(focus.index)}/${String(focus.total)} - ${focus.title} - ${focus.cue}`,
+            ascii,
+          )}
+        </Text>
         {renderOnboardingBody(state)}
       </Box>
 
@@ -473,7 +491,7 @@ function renderOnboardingBody(state: OnboardingState): ReactElement {
     : `${title}: ${safe(query, ascii)}_`;
   return (
     <Panel
-      title="Input"
+      title={`ACTIVE · ${title}`}
       accent={CHROME.accent}
       ascii={ascii}
       color={color}
@@ -514,10 +532,10 @@ function inputTitle(step: OnboardingState['step']): string {
       return 'Confirm owner passphrase';
     case 'file-recovery-passphrase':
     case 'mongo-recovery-passphrase':
-      return 'Recovery passphrase';
+      return 'Recovery-kit passphrase';
     case 'file-recovery-passphrase-confirm':
     case 'mongo-recovery-passphrase-confirm':
-      return 'Confirm recovery passphrase';
+      return 'Confirm recovery-kit passphrase';
     case 'file-recovery-file':
     case 'mongo-recovery-file':
       return 'Recovery kit path';

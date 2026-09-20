@@ -20,9 +20,12 @@ both stdin and stdout are TTYs. Non-TTY sessions print a clear error and exit
 non-zero so automation keeps using numbered CLI commands. Every screen action
 runs the published CLI (no product mocks).
 
-Screens: Home, Profiles, Vaults, Credentials (masked / REVEAL), Doctor,
-Recovery, Run (dry preview), Policy/Grant/Audit, Agent, Context/Service/Item
-browse, Help, and the existing storage showcase destination.
+Screens: Home, Profiles, Vaults, Credentials (masked / REVEAL; Enter opens
+detail), Doctor / heal (local health, not key recovery), Recovery kit
+(key-material slots), Run preview (not `run --environment`),
+Policy/Grant/Audit, Agent, Vault context / service / item browse (vault
+hierarchy, not the CLI project-file `--environment` flag), Help, and the
+existing storage showcase destination.
 
 Security and presentation rules:
 
@@ -43,9 +46,14 @@ Flags: `--ascii`, `--color`, `--no-color`, `--no-splash`, `--profile-config-dir`
 / `--config-dir`. `KAVRIX_TUI_NO_SPLASH=1` also skips the startup splash.
 
 Chrome is content-sized (not pinned to the full TTY row count) and remounts after
-navigation/input so first paint and onboarding step transitions stay visible on
-flaky or maximized terminals. `kavrix tui` shows a Loading… state until vault
-hydrate completes (or an error/timeout banner if it fails).
+hydrate, resize, and screen/step changes so first paint stays visible without
+leaving stale Storage/Key-file frames. Onboarding shows an
+`ACTIVE n/m — <step>` cue so the focused field is obvious. `kavrix tui` shows a
+Loading… state until vault hydrate completes (or an error/timeout banner if it
+fails). Missing TTY columns/rows fall back to 80×24 so Mid-style fixtures still
+paint. Footer chips overflow on narrow terminals; Enter/detail, Esc, and q stay
+preferred. Large credential lists render a bounded window and `/` search filters
+client-side. Escape remasks a REVEAL and returns focus to the credentials list.
 
 ## Storage showcase
 

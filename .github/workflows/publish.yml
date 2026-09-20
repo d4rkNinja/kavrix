@@ -406,10 +406,22 @@ jobs:
           test -z "${NODE_AUTH_TOKEN:-}"
           test -z "${NPM_TOKEN:-}"
           registry_integrity() {
-            npm view "kavrix@$EXPECTED_PACKAGE_VERSION" dist.integrity 2>/dev/null || true
+            # Distinguish unpublished (empty) from a transient npm-view failure.
+            local out rc
+            set +e
+            out="$(npm view "kavrix@$EXPECTED_PACKAGE_VERSION" dist.integrity 2>/dev/null)"
+            rc=$?
+            set -e
+            if test "$rc" -ne 0; then
+              return 2
+            fi
+            printf '%s' "$out"
+            return 0
           }
-          published_integrity="$(registry_integrity)"
-          if test -n "$published_integrity"; then
+          published_integrity=""
+          view_rc=0
+          published_integrity="$(registry_integrity)" || view_rc=$?
+          if test "$view_rc" -eq 0 && test -n "$published_integrity"; then
             if test "$published_integrity" != "$EXPECTED_ARCHIVE_INTEGRITY"; then
               echo "kavrix@$EXPECTED_PACKAGE_VERSION already exists with different package bytes." >&2
               exit 1
@@ -441,12 +453,13 @@ jobs:
             --tag "$publish_tag" \
             --provenance || publish_status=$?
 
-          for attempt in {1..12}; do
-            published_integrity="$(registry_integrity)"
-            if test "$published_integrity" = "$EXPECTED_ARCHIVE_INTEGRITY"; then
+          for attempt in {1..24}; do
+            view_rc=0
+            published_integrity="$(registry_integrity)" || view_rc=$?
+            if test "$view_rc" -eq 0 && test "$published_integrity" = "$EXPECTED_ARCHIVE_INTEGRITY"; then
               exit 0
             fi
-            if test -n "$published_integrity"; then
+            if test "$view_rc" -eq 0 && test -n "$published_integrity"; then
               echo "The registry returned different package bytes for kavrix@$EXPECTED_PACKAGE_VERSION." >&2
               exit 1
             fi

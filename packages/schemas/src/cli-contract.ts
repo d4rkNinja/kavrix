@@ -16,6 +16,7 @@ export const CLI_EXIT_CODES = Object.freeze({
   datastoreFailure: 15,
   securityIntegrityFailure: 16,
   confirmationRequired: 17,
+  executionFailed: 18,
 } as const);
 
 export type CliExitCode = (typeof CLI_EXIT_CODES)[keyof typeof CLI_EXIT_CODES];
@@ -32,6 +33,7 @@ export const CLI_ERROR_CODES = [
   'DATASTORE_FAILURE',
   'SECURITY_INTEGRITY_FAILURE',
   'CONFIRMATION_REQUIRED',
+  'EXECUTION_FAILED',
 ] as const;
 
 export const cliErrorCodeSchema = z.enum(CLI_ERROR_CODES);
@@ -50,11 +52,35 @@ const CLI_ERROR_EXIT_CODES: Readonly<Record<CliErrorCode, number>> = Object.free
   DATASTORE_FAILURE: CLI_EXIT_CODES.datastoreFailure,
   SECURITY_INTEGRITY_FAILURE: CLI_EXIT_CODES.securityIntegrityFailure,
   CONFIRMATION_REQUIRED: CLI_EXIT_CODES.confirmationRequired,
+  EXECUTION_FAILED: CLI_EXIT_CODES.executionFailed,
 });
 
 /** Maps one stable error code to its stable process exit code. */
 export function exitCodeForCliError(code: CliErrorCode): number {
   return CLI_ERROR_EXIT_CODES[code];
+}
+
+/**
+ * CLI class for a child that never started (missing executable, spawn ENOENT,
+ * OS start failure). This is not AUTHORIZATION_DENIED: policy-check deny,
+ * including `executable-unresolved`, remains exit 12.
+ */
+export const SPAWN_FAILURE_CLI_ERROR_CODE = 'EXECUTION_FAILED' as const satisfies CliErrorCode;
+
+/**
+ * Maps a runner failure onto the stable CLI class. Spawn-miss is
+ * EXECUTION_FAILED; a reserved/conflicting environment is configuration.
+ * Other runner codes stay execution failures, never authorization denies.
+ */
+export function cliErrorCodeForRunnerFailure(code: string): CliErrorCode {
+  switch (code) {
+    case 'RUNNER_ENVIRONMENT_REJECTED':
+      return 'INVALID_CONFIGURATION';
+    case 'RUNNER_SPAWN_FAILED':
+      return SPAWN_FAILURE_CLI_ERROR_CODE;
+    default:
+      return 'EXECUTION_FAILED';
+  }
 }
 
 export const cliErrorEnvelopeSchema = z

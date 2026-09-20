@@ -10,6 +10,7 @@ import {
   authorizationStateDocumentSchema,
   authorizationStateDomainSchema,
   authorizationStateEnvelopeSchema,
+  cliErrorCodeForRunnerFailure,
   cliErrorCodeSchema,
   commandNameSchema,
   credentialReferenceSchema,
@@ -17,6 +18,7 @@ import {
   environmentVariableNameSchema,
   exitCodeForCliError,
   grantRecordSchema,
+  describeProjectConfigFailure,
   normalizePermissionEntryAliases,
   normalizeProjectConfigAliases,
   parseDurationToMs,
@@ -274,6 +276,27 @@ describe('project configuration documents', () => {
     expect(normalized.environments['dev']?.policies['two']?.['maxUses']).toBe(1);
     expect(() => projectConfigDocumentSchema.parse(normalized)).not.toThrow();
   });
+
+  it('describes a flat environment map as a missing secrets object', () => {
+    const input = {
+      version: 1,
+      environments: { staging: { A: 'alpha' } },
+    };
+    const result = projectConfigDocumentSchema.safeParse(input);
+    expect(result.success).toBe(false);
+    const message = describeProjectConfigFailure(input);
+    expect(message).toBe(
+      'Project configuration is invalid. An environment entry is missing a `secrets` map or is not a valid environment object.',
+    );
+    expect(message).not.toContain('alpha');
+    expect(message).not.toContain('A:');
+  });
+
+  it('keeps the version-only message when no environment shape is present', () => {
+    expect(describeProjectConfigFailure({ version: 2 })).toBe(
+      'Project configuration is invalid. Only version 1 documents with credential references are accepted.',
+    );
+  });
 });
 
 describe('grant records', () => {
@@ -521,5 +544,30 @@ describe('CLI contract', () => {
     expect(exitCodeForCliError('AUTHORIZATION_DENIED')).toBe(12);
     expect(exitCodeForCliError('SECURITY_INTEGRITY_FAILURE')).toBe(16);
     expect(exitCodeForCliError('CONFIRMATION_REQUIRED')).toBe(17);
+    expect(exitCodeForCliError('EXECUTION_FAILED')).toBe(18);
+  });
+
+  it('classifies spawn-miss as EXECUTION_FAILED, not AUTHORIZATION_DENIED', () => {
+    expect(cliErrorCodeForRunnerFailure('RUNNER_SPAWN_FAILED')).toBe(
+      'EXECUTION_FAILED',
+    );
+    expect(
+      exitCodeForCliError(cliErrorCodeForRunnerFailure('RUNNER_SPAWN_FAILED')),
+    ).toBe(18);
+    expect(cliErrorCodeForRunnerFailure('RUNNER_SPAWN_FAILED')).not.toBe(
+      'AUTHORIZATION_DENIED',
+    );
+  });
+
+  it('keeps policy-check unresolved on AUTHORIZATION_DENIED exit 12', () => {
+    expect(DENY_DECISION_REASONS).toContain('executable-unresolved');
+    expect(
+      authorizationDecisionSchema.parse({
+        outcome: 'deny',
+        reason: 'executable-unresolved',
+      }),
+    ).toMatchObject({ outcome: 'deny', reason: 'executable-unresolved' });
+    expect(exitCodeForCliError('AUTHORIZATION_DENIED')).toBe(12);
+    expect(exitCodeForCliError('EXECUTION_FAILED')).not.toBe(12);
   });
 });

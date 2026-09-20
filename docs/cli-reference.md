@@ -63,8 +63,12 @@ Never hand-edit the protected registry.
 
 Use `--profile-config-dir <path>` (alias `--config-dir <path>`) with
 `db profile`, database, and credential commands when the registry is not in its
-platform default location. Explicit `--profile-config-dir` takes precedence over
-`--config-dir` when both are set.
+platform default location. Supplying both spellings together is rejected so
+neither flag is silently preferred. The default directory is
+`$XDG_CONFIG_HOME/kavrix` when that variable is a non-empty path, otherwise
+`~/.config/kavrix`. An empty `XDG_CONFIG_HOME` is treated as unset. `kavrix
+status` always prints the resolved directory; a missing registry is
+`unconfigured`, not a silent legacy profile.
 
 ### MongoDB profile
 
@@ -284,8 +288,10 @@ observed snapshot authenticates with the database root key, it rewrites the
 local rollback anchor to match; datastore content is never modified. With
 `--heal`, Kavrix also applies safe local-state repairs: remove incomplete
 unbound profiles left by failed init, clear dangling profile selection (list/status/--profile soft-read a missing `current` as unset; `--heal` clears it on disk)
-pointers, and re-harden owner-only ACLs/modes on key-file parents and key
-files. `--heal --dry-run` lists planned repairs without applying them. Heal
+pointers, and re-harden owner-only ACLs/modes on the immediate parents of
+existing key/data files and on those key files. Heal does not chmod a
+`--config-dir` that is only a profile registry home (for example a project
+root). `--heal --dry-run` lists planned repairs without applying them. Heal
 never invents passphrase recovery and never deletes vault or key data files.
 See the troubleshooting section of `docs/local-database.md` before using
 `--accept-current` or `--heal`.
@@ -379,6 +385,15 @@ kavrix run \
   --secret DATABASE_URL=production/database \
   -- node server.js
 ```
+
+`run` accepts the child as remaining arguments. A literal `--` is recommended
+when the child has its own flags so Commander cannot swallow them; it is not
+required when the child has no option-like arguments. `policy check` and
+`policy explain` still require `--` before the executable. Use `--no-config`
+to ignore a cwd `kavrix.yaml` (including a broken one) and run with only
+`--secret` / profile flags. `--environment` applies a project-file mapping set
+and fails closed when no project file is available — it is not the vault
+context/environment hierarchy.
 
 Project files keep mappings and policy definitions out of the shell. A project
 file contains references only, never plaintext values, and strict parsing
@@ -556,8 +571,16 @@ Stable exit codes carry the outcome to automation: success `0`, generic `1`,
 usage `2`, authentication `10`, credential missing `11`, authorization denied
 `12`, grant invalid/expired/exhausted `13`, invalid configuration `14`,
 datastore failure `15`, security-integrity failure `16`, confirmation required
-or declined `17`. Commands accepting `--json` emit machine-readable envelopes;
-failures print one sanitized line to stderr.
+or declined `17`, execution/spawn failure `18`. Commands accepting `--json`
+emit a machine-readable envelope on stdout and do not duplicate the same human
+summary on stderr. Failures that cannot emit an envelope still print one
+sanitized line to stderr (the fail-closed channel). Unlock/run passphrase
+attempts that are too short still reach authentication (exit `10`) instead of
+failing length validation (exit `2`); new and recovery-kit passphrases keep
+the minimum-length policy. `kavrix status` reports `unconfigured` when no
+profile registry exists at the resolved `--profile-config-dir` / `--config-dir`
+or the default (`$XDG_CONFIG_HOME/kavrix` when set, otherwise `~/.config/kavrix`)
+— that is not a silent legacy profile.
 
 Every security-relevant action appends to an audit ring inside the sealed state;
 `kavrix audit [--json] [--limit N]` renders bounded metadata only, never

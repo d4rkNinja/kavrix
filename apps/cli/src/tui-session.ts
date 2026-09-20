@@ -327,7 +327,7 @@ class CliTuiSession {
               slotId: '(see CLI)',
               status: 'active' as const,
               detail:
-                'Open Recovery to load status from kavrix recovery / db recovery.',
+                'Open Recovery kit for key-material slots. Doctor / heal repairs local state — it is not recovery-kit use.',
             },
           ];
     return {

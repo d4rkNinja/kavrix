@@ -1,6 +1,17 @@
 import type { ChildProcess } from 'node:child_process';
 
-import type { FieldScalarValue } from '@kavrix/schemas';
+import {
+  SPAWN_FAILURE_CLI_ERROR_CODE,
+  type CliErrorCode,
+  type FieldScalarValue,
+} from '@kavrix/schemas';
+
+/**
+ * CLI class for `RUNNER_SPAWN_FAILED`. Missing executables and other child
+ * start failures are execution failures, not authorization denies.
+ */
+export const RUNNER_SPAWN_FAILED_CLI_ERROR_CODE: CliErrorCode =
+  SPAWN_FAILURE_CLI_ERROR_CODE;
 
 /** A destination variable and one canonical, already-decrypted field scalar. */
 export type EnvironmentMapping = readonly [
@@ -11,6 +22,10 @@ export type EnvironmentMapping = readonly [
 /**
  * The only parent variables a caller may deliberately forward. The default is
  * an empty list; secrets are never inherited implicitly.
+ *
+ * PATH/HOME (and the rest of this list) may be copied from the parent.
+ * USER/USERNAME/LOGNAME may also be inherited, but they are reserved
+ * destinations and cannot be secret overwrite targets.
  */
 export const INHERITABLE_ENVIRONMENT_NAMES = [
   'PATH',
@@ -26,6 +41,9 @@ export const INHERITABLE_ENVIRONMENT_NAMES = [
   'LC_ALL',
   'LC_CTYPE',
   'TZ',
+  'USER',
+  'USERNAME',
+  'LOGNAME',
 ] as const;
 
 export type InheritableEnvironmentName = (typeof INHERITABLE_ENVIRONMENT_NAMES)[number];
@@ -33,8 +51,11 @@ export type InheritableEnvironmentName = (typeof INHERITABLE_ENVIRONMENT_NAMES)[
 /** Destination names a mapping may target, before the reserved-name check. */
 export const ENVIRONMENT_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/u;
 
-/** Variables with runtime loader, language-runtime, or shell startup effects. */
-const RESERVED_ENVIRONMENT_NAMES = new Set([
+/**
+ * Names refused as mapping destinations. Identity names (USER/USERNAME/LOGNAME)
+ * are inheritable from the parent but never writable secret dests.
+ */
+export const RESERVED_ENVIRONMENT_NAMES = [
   'BASH_ENV',
   'BUNDLE_GEMFILE',
   'CDPATH',
@@ -77,10 +98,19 @@ const RESERVED_ENVIRONMENT_NAMES = new Set([
   'TEMP',
   'TMP',
   'TZ',
+  'USER',
+  'USERNAME',
+  'LOGNAME',
   'USERPROFILE',
   'WINDIR',
   '_JAVA_OPTIONS',
-]);
+] as const;
+
+export type ReservedEnvironmentName = (typeof RESERVED_ENVIRONMENT_NAMES)[number];
+
+const reservedEnvironmentNames = new Set<string>(
+  RESERVED_ENVIRONMENT_NAMES.map((name) => name.toUpperCase()),
+);
 
 /**
  * Reports whether a destination name is refused as a mapping target. Names are
@@ -88,7 +118,7 @@ const RESERVED_ENVIRONMENT_NAMES = new Set([
  * mapping on one platform cannot become an override on another.
  */
 export function isReservedEnvironmentName(name: string): boolean {
-  return RESERVED_ENVIRONMENT_NAMES.has(name.toUpperCase());
+  return reservedEnvironmentNames.has(name.toUpperCase());
 }
 
 /**

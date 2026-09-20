@@ -9,8 +9,10 @@ import {
   confirmationRequired,
   credentialMissing,
   datastoreFailure,
+  executionFailed,
   grantInvalid,
   invalidConfiguration,
+  runnerFailure,
   isCodedCliError,
   securityIntegrityFailure,
   toErrorEnvelope,
@@ -29,6 +31,10 @@ describe('coded CLI errors', () => {
       [datastoreFailure('x'), 'DATASTORE_FAILURE', 15],
       [securityIntegrityFailure('x'), 'SECURITY_INTEGRITY_FAILURE', 16],
       [confirmationRequired('x'), 'CONFIRMATION_REQUIRED', 17],
+      [executionFailed('x'), 'EXECUTION_FAILED', 18],
+      [runnerFailure('RUNNER_SPAWN_FAILED', 'x'), 'EXECUTION_FAILED', 18],
+      [runnerFailure('RUNNER_ENVIRONMENT_REJECTED', 'x'), 'INVALID_CONFIGURATION', 14],
+      [runnerFailure('RUNNER_TIMEOUT', 'x'), 'EXECUTION_FAILED', 18],
     ] as const;
     for (const [error, code, exit] of cases) {
       expect(isCodedCliError(error)).toBe(true);

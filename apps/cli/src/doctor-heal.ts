@@ -1,4 +1,5 @@
-import { lstat } from 'node:fs/promises';
+import { realpathSync } from 'node:fs';
+import { lstat, realpath } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, resolve } from 'node:path';
 
@@ -144,43 +145,20 @@ export async function runDoctorHeal(
       error instanceof DatastoreProfileError &&
       error.code === 'PROFILE_UNSAFE'
     ) {
-      const configDir =
-        options.profileConfigDir === undefined
-          ? undefined
-          : resolve(options.profileConfigDir);
-      if (configDir !== undefined) {
-        await maybeHardenDirectory(
-          configDir,
-          'config-directory-acl',
-          actions,
-          healed,
-          planned,
-          manualRecoveryRequired,
-          apply,
-          dryRun,
-          options.mode,
-        );
-        try {
-          registry = await DatastoreProfileRegistry.openIfPresent(registryOptions);
-        } catch {
-          const detail =
-            'The datastore profile registry directory remains unsafe after ACL inspection.';
-          actions.push({
-            id: 'profile-registry',
-            status: 'manual',
-            detail,
-            path: configDir,
-          });
-          manualRecoveryRequired.push(detail);
-          return { actions, healed, planned, manualRecoveryRequired };
-        }
-      } else {
-        const detail =
-          'The datastore profile registry is not safe to use; fix directory permissions or pass --profile-config-dir.';
-        actions.push({ id: 'profile-registry', status: 'manual', detail });
-        manualRecoveryRequired.push(detail);
-        return { actions, healed, planned, manualRecoveryRequired };
-      }
+      // Fail closed on the registry. Do not chmod --config-dir: it may be a
+      // project root (src/, package.json) that does not hold key/data files.
+      const detail =
+        'The datastore profile registry is not safe to use; fix directory permissions or pass --profile-config-dir.';
+      actions.push({
+        id: 'profile-registry',
+        status: 'manual',
+        detail,
+        ...(options.profileConfigDir === undefined
+          ? {}
+          : { path: canonicalizeExistingPathSync(options.profileConfigDir) }),
+      });
+      manualRecoveryRequired.push(detail);
+      registry = null;
     } else {
       throw error;
     }
@@ -224,25 +202,15 @@ export async function runDoctorHeal(
   }
 
   // ACL heal hardens ONLY the immediate parent of each resolved, existing
-  // active key/data artifact (plus the profile config directory itself). It
-  // never walks ancestors and never treats an unused Commander default
-  // `./kavrix.key` as an active key.
-  const pathsToHarden = new Set<string>();
-  for (const profile of scoped) {
-    await addImmediateParentIfArtifactExists(pathsToHarden, profile.keyFile);
-    if (profile.datastore === 'file') {
-      await addImmediateParentIfArtifactExists(pathsToHarden, profile.dataFile);
-    }
-  }
-  if (options.keyFile !== undefined) {
-    await addImmediateParentIfArtifactExists(pathsToHarden, options.keyFile);
-  }
-  if (options.dataFile !== undefined) {
-    await addImmediateParentIfArtifactExists(pathsToHarden, options.dataFile);
-  }
-  if (options.profileConfigDir !== undefined) {
-    pathsToHarden.add(resolve(options.profileConfigDir));
-  }
+  // active key/data artifact. It never walks ancestors, never treats an unused
+  // Commander default `./kavrix.key` as an active key, and never chmods a
+  // --config-dir / --profile-config-dir unless that directory actually holds
+  // those owned files (a project-root registry home must stay untouched).
+  const pathsToHarden = await collectOwnedSecretParentDirectories({
+    profiles: scoped,
+    ...(options.keyFile === undefined ? {} : { keyFile: options.keyFile }),
+    ...(options.dataFile === undefined ? {} : { dataFile: options.dataFile }),
+  });
 
   for (const directory of pathsToHarden) {
     await maybeHardenDirectory(
@@ -336,7 +304,7 @@ async function maybeHardenDirectory(
   if (isBroadFilesystemRoot(directory)) {
     const detail =
       `Refusing to change permissions on shared filesystem root ${directory}; ` +
-      'heal only hardens the immediate parent of an active key/data file (for example ~/.kavrix).';
+      'heal only hardens the immediate parent of an existing key/data file that Kavrix owns.';
     actions.push({
       id: actionId,
       status: 'skipped',
@@ -491,28 +459,69 @@ async function maybeHardenFile(
   }
 }
 
+/**
+ * Immediate parents of existing Kavrix-owned key/data files. A --config-dir
+ * is included only when it is that parent — never because it holds the
+ * profile registry.
+ */
+export async function collectOwnedSecretParentDirectories(input: {
+  readonly profiles?: readonly DatastoreProfile[];
+  readonly keyFile?: string;
+  readonly dataFile?: string;
+}): Promise<Set<string>> {
+  const pathsToHarden = new Set<string>();
+  for (const profile of input.profiles ?? []) {
+    await addImmediateParentIfArtifactExists(pathsToHarden, profile.keyFile);
+    if (profile.datastore === 'file') {
+      await addImmediateParentIfArtifactExists(pathsToHarden, profile.dataFile);
+    }
+  }
+  if (input.keyFile !== undefined) {
+    await addImmediateParentIfArtifactExists(pathsToHarden, input.keyFile);
+  }
+  if (input.dataFile !== undefined) {
+    await addImmediateParentIfArtifactExists(pathsToHarden, input.dataFile);
+  }
+  return pathsToHarden;
+}
+
 async function addImmediateParentIfArtifactExists(
   pathsToHarden: Set<string>,
   artifactPath: string,
 ): Promise<void> {
   const resolved = resolve(artifactPath);
   if (!(await pathExists(resolved))) return;
-  // Immediate parent only — never dirname(dirname(...)).
-  pathsToHarden.add(dirname(resolved));
+  // Immediate parent only — never dirname(dirname(...)). Canonicalize so
+  // Windows 8.3 / casing forms compare as the same owned directory.
+  const canonicalArtifact = await realpath(resolved);
+  pathsToHarden.add(await realpath(dirname(canonicalArtifact)));
+}
+
+function canonicalizeExistingPathSync(input: string): string {
+  const resolved = resolve(input);
+  try {
+    return realpathSync(resolved);
+  } catch {
+    return resolved;
+  }
 }
 
 /**
  * Refuse to chmod filesystem roots and other shared directories. Heal must
- * never lock down `/`, `/tmp`, `$HOME`, `/workspace`, or other top-level roots
- * even if a mis-resolved key path named them as its parent.
+ * never lock down `/`, `$TMPDIR` when it is a top-level root, `$HOME`,
+ * `/workspace`, or other top-level roots even if a mis-resolved key path
+ * named them as its parent.
  */
 function isBroadFilesystemRoot(directory: string): boolean {
-  const resolved = resolve(directory);
-  const home = resolve(homedir());
-  if (resolved === resolve('/') || resolved === home) return true;
+  const resolved = canonicalizeExistingPathSync(directory);
+  const home = canonicalizeExistingPathSync(homedir());
+  const fsRoot = canonicalizeExistingPathSync('/');
+  if (resolved === fsRoot || resolved === home) return true;
   const parent = dirname(resolved);
-  // Top-level dirs directly under `/` (and macOS `/private`): /tmp, /workspace, /home, …
-  if (parent === resolve('/') || parent === resolve('/private')) return true;
+  // Top-level dirs directly under `/` (and macOS `/private`): tmp, workspace, home, …
+  if (parent === fsRoot || parent === canonicalizeExistingPathSync('/private')) {
+    return true;
+  }
   return false;
 }
 

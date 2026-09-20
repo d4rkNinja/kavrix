@@ -1,5 +1,5 @@
 import { chmod, link, readFile, rm, symlink, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import {
@@ -18,6 +18,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   DatastoreProfileRegistry,
+  defaultProfileConfigDirectory,
   resolveDatastoreProfileRouting,
   resolveProfilePath,
   verifyDatastoreProfileDatabaseId,
@@ -902,5 +903,21 @@ describe('datastore profile heal helpers', () => {
     } finally {
       await rm(emptyDir, { force: true, recursive: true });
     }
+  });
+});
+
+describe('defaultProfileConfigDirectory', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('uses XDG_CONFIG_HOME/kavrix when that variable is a non-empty path', () => {
+    vi.stubEnv('XDG_CONFIG_HOME', join(directory, 'xdg-config'));
+    expect(defaultProfileConfigDirectory()).toBe(join(directory, 'xdg-config', 'kavrix'));
+  });
+
+  it('treats empty XDG_CONFIG_HOME as unset and falls back to ~/.config/kavrix', () => {
+    vi.stubEnv('XDG_CONFIG_HOME', '');
+    expect(defaultProfileConfigDirectory()).toBe(join(homedir(), '.config', 'kavrix'));
   });
 });

@@ -95,7 +95,9 @@ export class LocalSecretInput {
     }
     for (;;) {
       const first = await this.#readInteractiveField(kind, false);
+      assertCreatePassphraseLength(kind, first);
       const confirmation = await this.#readInteractiveField(kind, true);
+      assertCreatePassphraseLength(kind, confirmation);
       if (first === confirmation) return [first, confirmation];
       this.#writeStatus('error', mismatchMessage(kind));
     }
@@ -152,6 +154,8 @@ export class LocalSecretInput {
         }
       }
       if (finalFrames) await this.#requireStdinEnd();
+      assertCreatePairPassphraseLengths(kinds, frames);
+      assertUnlockPassphraseValueFrameOrder(kinds, frames);
       return frames;
     } catch (error) {
       this.#clearPending();
@@ -487,10 +491,11 @@ function validateSecret(value: string, kind?: LocalSecretKind): string {
       );
     }
   }
+  // Unlock/run attempts (`passphrase`) must reach authentication (exit 10)
+  // instead of failing schema/length first (exit 2). New and recovery-kit
+  // passphrases keep the minimum-length policy.
   if (
-    (kind === 'passphrase' ||
-      kind === 'new-passphrase' ||
-      kind === 'recovery-passphrase') &&
+    (kind === 'new-passphrase' || kind === 'recovery-passphrase') &&
     Buffer.byteLength(value, 'utf8') < MIN_PASSPHRASE_BYTES
   ) {
     throw new LocalSecretInputError(
@@ -521,6 +526,64 @@ function decodeFrame(bytes: Uint8Array, kind?: LocalSecretKind): string {
     throw new LocalSecretInputError('Secret input contains invalid bytes.');
   }
   return validateSecret(value, kind);
+}
+
+function assertCreatePassphraseLength(kind: LocalSecretKind, value: string): void {
+  if (
+    kind !== 'passphrase' &&
+    kind !== 'new-passphrase' &&
+    kind !== 'recovery-passphrase'
+  ) {
+    return;
+  }
+  if (kind === 'new-passphrase' || kind === 'recovery-passphrase') return;
+  if (Buffer.byteLength(value, 'utf8') < MIN_PASSPHRASE_BYTES) {
+    throw new LocalSecretInputError(
+      `Passphrases must contain at least ${String(MIN_PASSPHRASE_BYTES)} bytes.`,
+      true,
+    );
+  }
+}
+
+function assertCreatePairPassphraseLengths(
+  kinds: readonly LocalSecretKind[],
+  frames: readonly string[],
+): void {
+  for (const [index, kind] of kinds.entries()) {
+    if (kind !== 'passphrase') continue;
+    if (kinds[index - 1] === 'passphrase' || kinds[index + 1] === 'passphrase') {
+      const value = frames[index];
+      if (value !== undefined) assertCreatePassphraseLength(kind, value);
+    }
+  }
+}
+
+/**
+ * Put-style stdin (`passphrase` then `field-value`) must not treat a short
+ * first frame as a create-passphrase length failure. A short unlock slot next
+ * to a value frame is reported as a frames/order mistake instead.
+ */
+function assertUnlockPassphraseValueFrameOrder(
+  kinds: readonly LocalSecretKind[],
+  frames: readonly string[],
+): void {
+  const hasValueFrame = kinds.some(
+    (kind) => kind === 'field-value' || kind === 'field-value-base64',
+  );
+  if (!hasValueFrame) return;
+  for (const [index, kind] of kinds.entries()) {
+    if (kind !== 'passphrase') continue;
+    if (kinds[index - 1] === 'passphrase' || kinds[index + 1] === 'passphrase') {
+      continue;
+    }
+    const value = frames[index];
+    if (
+      value !== undefined &&
+      Buffer.byteLength(value, 'utf8') < MIN_PASSPHRASE_BYTES
+    ) {
+      throw new LocalSecretInputError('Secret input frames are in the wrong order.');
+    }
+  }
 }
 
 function zeroBytes(bytes: Uint8Array): void {

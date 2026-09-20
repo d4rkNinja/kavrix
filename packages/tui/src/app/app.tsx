@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState, type ReactElement } from 'rea
 import type { AppBackendAction, InteractiveAppBackend } from './backend.js';
 import {
   createInitialAppRouterState,
+  ensureTtySize,
   sanitizePasteText,
   transitionAppRouter,
   type AppKey,
@@ -43,14 +44,15 @@ export function KavrixApp({
   const [backendReady, setBackendReady] = useState(false);
   const [hydrateError, setHydrateError] = useState<string | null>(null);
   const [paintEpoch, setPaintEpoch] = useState(0);
-  const [state, setState] = useState(() =>
-    createInitialAppRouterState({
-      width: stdout.columns,
-      height: stdout.rows,
+  const [state, setState] = useState(() => {
+    const size = ensureTtySize(stdout);
+    return createInitialAppRouterState({
+      width: size.width,
+      height: size.height,
       ascii: presentation.ascii,
       color: presentation.color,
-    }),
-  );
+    });
+  });
   const stateRef = useRef(state);
   const backendRef = useRef(backend);
   const onQuitRef = useRef(onQuit);
@@ -89,15 +91,19 @@ export function KavrixApp({
 
   const dispatch = useCallback(
     (action: AppRouterAction): void => {
+      const previousScreen = stateRef.current.screen;
+      const previousOverlay = stateRef.current.overlay;
       const next = transitionAppRouter(stateRef.current, action);
       stateRef.current = next.state;
       setState(next.state);
-      // Remount chrome after navigation/input so flaky TTYs cannot keep a blank frame.
+      // Remount chrome after hydrate/resize/navigation — not every keystroke —
+      // so Mid fixtures and flaky TTYs cannot keep a blank or stale frame.
       if (
-        action.type === 'key' ||
         action.type === 'hydrate' ||
         action.type === 'backend-result' ||
-        action.type === 'resize'
+        action.type === 'resize' ||
+        next.state.screen !== previousScreen ||
+        next.state.overlay !== previousOverlay
       ) {
         setPaintEpoch((epoch) => epoch + 1);
       }
@@ -159,10 +165,11 @@ export function KavrixApp({
 
   useEffect(() => {
     const resize = (): void => {
+      const size = ensureTtySize(stdout);
       dispatch({
         type: 'resize',
-        width: stdout.columns,
-        height: stdout.rows,
+        width: size.width,
+        height: size.height,
       });
     };
     stdout.on('resize', resize);
@@ -258,6 +265,8 @@ export function mountKavrixApp(options: MountKavrixAppOptions): KavrixAppHandle 
     ...(options.ascii === undefined ? {} : { ascii: options.ascii }),
     ...(options.color === undefined ? {} : { color: options.color }),
   });
+  const stdout = options.stdout ?? process.stdout;
+  ensureTtySize(stdout);
   const instance = render(
     <KavrixApp
       backend={options.backend}
@@ -267,7 +276,7 @@ export function mountKavrixApp(options: MountKavrixAppOptions): KavrixAppHandle 
       {...(options.noSplash === undefined ? {} : { noSplash: options.noSplash })}
     />,
     {
-      stdout: options.stdout ?? process.stdout,
+      stdout,
       stdin: options.stdin ?? process.stdin,
       exitOnCtrlC: false,
       patchConsole: false,

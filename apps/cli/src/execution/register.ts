@@ -29,7 +29,9 @@ import {
   cliErrorCodeForSessionFailure,
   invalidConfiguration,
   isCodedCliError,
+  markJsonReported,
   toErrorEnvelope,
+  wasJsonReported,
 } from './exit-codes.js';
 import { executeRun } from './run-command.js';
 
@@ -55,7 +57,7 @@ function registerRun(program: Command): void {
   const run = program
     .command('run')
     .description(
-      'Execute a command with selected credentials injected into its environment only. Pass the child after `--` (example: kavrix run --secret MYSECRET=name -- printenv MYSECRET).',
+      'Execute a command with selected credentials injected into its environment only. The child may follow `--` or appear as remaining arguments (example: kavrix run --secret MYSECRET=name -- printenv MYSECRET). `--` is recommended when the child has its own flags.',
     )
     .usage('[options] -- <executable> [args...]')
     .allowUnknownOption(true)
@@ -70,7 +72,7 @@ function registerRun(program: Command): void {
     .option('--config <path>', 'Non-secret project configuration file.')
     .option(
       '--no-config',
-      'Ignore cwd kavrix.yaml / --config; use only CLI --secret flags and profiles.',
+      'Skip project configuration: ignore cwd kavrix.yaml / --config; use only CLI --secret flags and profiles.',
     )
     .option(
       '--policy <id>',
@@ -94,22 +96,33 @@ function registerRun(program: Command): void {
     const merged = extractMergedOptions(command);
     let outcome: { readonly exitCode: number | null } | undefined;
     await guard(merged['json'] === true, async () => {
+      // `allowUnknownOption` can leave `--no-config` / `--environment` in
+      // leftovers instead of option values; recover them fail-closed.
+      const recovered = recoverSwallowedRunOptions(command.args);
+      const environmentName =
+        optString(merged['environment']) ?? recovered.environmentName;
+      if (recovered.environmentRequested && environmentName === undefined) {
+        throw invalidConfiguration(
+          '--environment requires a project file and cannot be combined with --no-config.',
+        );
+      }
       const executed = await executeRun({
         ...executionFlatOptions(merged),
         secretMappings: asStrings(merged['secret']),
-        ...(optString(merged['environment']) === undefined
-          ? {}
-          : { environmentName: optString(merged['environment']) }),
+        ...(environmentName === undefined ? {} : { environmentName }),
         ...(optString(merged['config']) === undefined
           ? {}
           : { config: optString(merged['config']) }),
         // Commander treats `--no-config` as the negation of `--config <path>`,
         // so the parse result is `{ config: false }` rather than `{ noConfig: true }`.
-        noConfig: merged['noConfig'] === true || merged['config'] === false,
+        noConfig:
+          merged['noConfig'] === true ||
+          merged['config'] === false ||
+          recovered.noConfig,
         policyIds: asStrings(merged['policy']),
         grantRefs: asStrings(merged['grant']),
         json: merged['json'] === true,
-        executableAndArgs: [...command.args],
+        executableAndArgs: recovered.executableAndArgs,
       });
       outcome = executed;
       return executed;
@@ -651,20 +664,33 @@ async function guard(
     if (jsonRequested) emitJson(result);
     else renderHuman(result);
   } catch (error) {
-    if (jsonRequested) {
-      if (isCodedCliError(error)) {
-        emitJson(toErrorEnvelope(error.errorCode, singleLine(error.message)));
-      } else if (error instanceof DatabaseSessionError) {
-        emitJson(
-          toErrorEnvelope(
-            cliErrorCodeForSessionFailure(error.code),
-            singleLine(error.message),
-          ),
-        );
-      }
-    }
+    if (jsonRequested) reportJsonFailure(error);
     throw error;
   }
+}
+
+/**
+ * Writes the stable `--json` error envelope once and marks the failure so
+ * the top-level CLI does not also print a human duplicate on stderr.
+ */
+export function reportJsonFailure(error: unknown): boolean {
+  if (wasJsonReported(error)) return true;
+  if (isCodedCliError(error)) {
+    emitJson(toErrorEnvelope(error.errorCode, singleLine(error.message)));
+    markJsonReported(error);
+    return true;
+  }
+  if (error instanceof DatabaseSessionError) {
+    emitJson(
+      toErrorEnvelope(
+        cliErrorCodeForSessionFailure(error.code),
+        singleLine(error.message),
+      ),
+    );
+    markJsonReported(error);
+    return true;
+  }
+  return false;
 }
 
 async function guardOrRender(
@@ -931,6 +957,60 @@ export function named(name: string, value: unknown): string {
 
 function asStrings(value: unknown): readonly string[] {
   return Array.isArray(value) ? value.map((entry) => String(entry)) : [];
+}
+
+/**
+ * Pulls `--no-config` / `--environment` off leftover tokens that Commander
+ * treated as unknown, without stealing child arguments after `--` or the
+ * executable.
+ */
+function recoverSwallowedRunOptions(args: readonly string[]): {
+  noConfig: boolean;
+  environmentName: string | undefined;
+  environmentRequested: boolean;
+  executableAndArgs: string[];
+} {
+  let noConfig = false;
+  let environmentName: string | undefined;
+  let environmentRequested = false;
+  let index = 0;
+  while (index < args.length) {
+    const token = args[index] ?? '';
+    if (token === '--') {
+      index += 1;
+      break;
+    }
+    if (token === '--no-config') {
+      noConfig = true;
+      index += 1;
+      continue;
+    }
+    if (token === '--environment') {
+      environmentRequested = true;
+      const value = args[index + 1];
+      if (value !== undefined && value !== '--' && !value.startsWith('-')) {
+        environmentName = value;
+        index += 2;
+        continue;
+      }
+      index += 1;
+      continue;
+    }
+    if (token.startsWith('--environment=')) {
+      environmentRequested = true;
+      const value = token.slice('--environment='.length);
+      if (value.length > 0) environmentName = value;
+      index += 1;
+      continue;
+    }
+    break;
+  }
+  return {
+    noConfig,
+    environmentName,
+    environmentRequested,
+    executableAndArgs: args.slice(index),
+  };
 }
 
 function optString(value: unknown): string | undefined {

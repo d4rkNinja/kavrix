@@ -1,11 +1,17 @@
-import { chmod, mkdir, rm, writeFile } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import { chmod, mkdir, realpath, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { promisify } from 'node:util';
 
 import { databaseIdSchema, vaultIdSchema } from '@kavrix/schemas';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { deleteSecureFile, writeProtectedJsonDocument } from '@kavrix/key-files';
+import {
+  deleteSecureFile,
+  verifyWindowsUserOnlyAcl,
+  writeProtectedJsonDocument,
+} from '@kavrix/key-files';
 
 import { createSecureTestDirectory } from '../../../packages/key-files/test/secure-temporary-directory.js';
 import {
@@ -13,7 +19,11 @@ import {
   resolveProfilePath,
   type DatastoreProfile,
 } from '../src/datastore-profiles.js';
-import { doctorHealModeFromOptions, runDoctorHeal } from '../src/doctor-heal.js';
+import {
+  collectOwnedSecretParentDirectories,
+  doctorHealModeFromOptions,
+  runDoctorHeal,
+} from '../src/doctor-heal.js';
 import { runCli } from './execution-helpers.js';
 
 const directories: string[] = [];
@@ -307,6 +317,84 @@ describe('doctor --heal', () => {
     }
   });
 
+  it('does not chmod --config-dir when key/data files live elsewhere', async () => {
+    // Project root used only as a profile registry home (also holds src/).
+    // Same family as the unused-CWD chmod bug; 0.2.17 did not cover config-dir.
+    const directory = await scratch('no-config-dir-chmod');
+    const projectRoot = join(directory, 'project');
+    const registry = await DatastoreProfileRegistry.open({
+      configDirectory: projectRoot,
+    });
+    await mkdir(join(projectRoot, 'src'));
+    await writeFile(join(projectRoot, 'src', 'index.ts'), 'export {};\n');
+    const keyParent = join(directory, 'owned-keys');
+    await mkdir(keyParent);
+    const keyFile = join(keyParent, 'kavrix.key');
+    await writeFile(keyFile, 'placeholder');
+    const dataParent = join(directory, 'owned-data');
+    await mkdir(dataParent);
+    const dataFile = join(dataParent, 'kavrix.vault');
+    await writeFile(dataFile, 'placeholder');
+    await registry.add({
+      id: 'elsewhere' as DatastoreProfile['id'],
+      datastore: 'file',
+      dataFile,
+      keyFile,
+    });
+    await registry.use('elsewhere' as DatastoreProfile['id']);
+    await markAsProjectRootLike(projectRoot);
+    await markOwnedSecretParentUnsafe(keyParent);
+    await markOwnedSecretFileUnsafe(keyFile);
+    const beforeConfig = await captureAccessFingerprint(projectRoot);
+    const beforeSrc = await captureAccessFingerprint(join(projectRoot, 'src'));
+
+    const dryRun = await runCli(
+      [
+        'doctor',
+        'health',
+        '--heal',
+        '--dry-run',
+        '--json',
+        '--config-dir',
+        projectRoot,
+      ],
+      '',
+    );
+    expect(dryRun.exitCode).toBe(0);
+    const planned = JSON.parse(dryRun.stdout) as {
+      healActions: Array<{ id: string; path?: string }>;
+    };
+    expect(
+      await actionTargetsDirectory(planned.healActions, projectRoot, [
+        'key-parent-acl',
+        'config-directory-acl',
+      ]),
+    ).toBe(false);
+
+    const healed = await runCli(
+      ['doctor', 'health', '--heal', '--json', '--config-dir', projectRoot],
+      '',
+    );
+    expect(healed.exitCode).toBe(0);
+    const report = JSON.parse(healed.stdout) as {
+      autoHealed: string[];
+      healActions: Array<{ id: string; path?: string }>;
+    };
+    expect(
+      await actionTargetsDirectory(report.healActions, projectRoot, [
+        'key-parent-acl',
+        'config-directory-acl',
+      ]),
+    ).toBe(false);
+    expect(report.autoHealed).toEqual(
+      expect.arrayContaining(['key-parent-acl', 'key-file-acl']),
+    );
+    expect(await captureAccessFingerprint(projectRoot)).toBe(beforeConfig);
+    expect(await captureAccessFingerprint(join(projectRoot, 'src'))).toBe(beforeSrc);
+    await expectOwnerOnlyDirectory(keyParent);
+    await expectOwnerOnlyFile(keyFile);
+  });
+
   it('reports help for --heal on doctor health and db doctor health', async () => {
     const root = await runCli(['doctor', 'health', '--help'], '');
     expect(root.stdout).toMatch(/--heal/);
@@ -442,29 +530,32 @@ describe('runDoctorHeal unit', () => {
   });
 
   it('refuses to harden broad filesystem roots even if named as a key parent', async () => {
-    if (process.platform === 'win32') return;
-    const report = await runDoctorHeal({
-      mode: 'dry-run',
-      // Simulate a pathological key whose immediate parent is /tmp (top-level root).
-      keyFile: '/tmp/kavrix-heal-broad-root-sentinel.key',
-    });
-    // Missing artifact → no ACL plan. Plant the file then ensure /tmp is skipped.
-    const { writeFile, unlink, chmod: chmodFile } = await import('node:fs/promises');
-    await writeFile('/tmp/kavrix-heal-broad-root-sentinel.key', 'x', { mode: 0o600 });
+    const tmp = await realpath(tmpdir());
+    const fsRoot = await canonPath('/');
+    const tmpParent = dirname(tmp);
+    // Only when $TMPDIR is a top-level root (typical Linux /tmp). Nested
+    // macOS/Windows temp dirs are not broad roots and must not be used as /tmp.
+    if (tmpParent !== fsRoot && tmpParent !== (await canonPath('/private'))) {
+      return;
+    }
+    const sentinel = join(tmp, `kavrix-heal-broad-root-sentinel-${process.pid}.key`);
+    await writeFile(sentinel, 'x');
     try {
       const withFile = await runDoctorHeal({
         mode: 'dry-run',
-        keyFile: '/tmp/kavrix-heal-broad-root-sentinel.key',
+        keyFile: sentinel,
       });
       const tmpActions = withFile.actions.filter(
-        (action) => action.id === 'key-parent-acl' && action.path === resolve('/tmp'),
+        (action) =>
+          action.id === 'key-parent-acl' &&
+          action.path !== undefined &&
+          pathsEqual(action.path, tmp),
       );
       expect(tmpActions.length).toBe(1);
       expect(tmpActions[0]?.status).toBe('skipped');
       expect(withFile.planned).not.toContain('key-parent-acl');
     } finally {
-      await unlink('/tmp/kavrix-heal-broad-root-sentinel.key').catch(() => undefined);
-      void chmodFile;
+      await rm(sentinel, { force: true });
     }
   });
 
@@ -537,6 +628,47 @@ describe('runDoctorHeal unit', () => {
     } finally {
       process.chdir(previousCwd);
     }
+  });
+
+  it('collects only existing key/data parents, never a bare --config-dir', async () => {
+    const directory = await scratch('collect-parents');
+    const projectRoot = join(directory, 'project');
+    await mkdir(join(projectRoot, 'src'), { recursive: true });
+    const keyParent = join(directory, 'owned-keys');
+    await mkdir(keyParent, { recursive: true });
+    const keyFile = join(keyParent, 'kavrix.key');
+    await writeFile(keyFile, 'placeholder');
+    const dataParent = join(directory, 'owned-data');
+    await mkdir(dataParent, { recursive: true });
+    const dataFile = join(dataParent, 'kavrix.vault');
+    await writeFile(dataFile, 'placeholder');
+
+    const dirs = await collectOwnedSecretParentDirectories({
+      profiles: [
+        {
+          id: 'elsewhere' as DatastoreProfile['id'],
+          datastore: 'file',
+          dataFile,
+          keyFile,
+        },
+      ],
+    });
+    expect([...dirs].sort()).toEqual(
+      [(await realpath(dataParent)), (await realpath(keyParent))].sort(),
+    );
+    expect(dirs.has(await canonPath(projectRoot))).toBe(false);
+
+    const empty = await collectOwnedSecretParentDirectories({
+      profiles: [
+        {
+          id: 'missing' as DatastoreProfile['id'],
+          datastore: 'file',
+          dataFile: join(projectRoot, 'absent.vault'),
+          keyFile: join(projectRoot, 'absent.key'),
+        },
+      ],
+    });
+    expect([...empty]).toEqual([]);
   });
 
   it('maps doctorHealModeFromOptions correctly', () => {
@@ -642,21 +774,140 @@ describe('runDoctorHeal unit', () => {
     expect(report.healed).toEqual([]);
   });
 
+  it('does not plan/apply key-parent-acl on a project-root --config-dir', async () => {
+    const directory = await scratch('unit-config-dir');
+    const projectRoot = join(directory, 'repo');
+    const registry = await DatastoreProfileRegistry.open({
+      configDirectory: projectRoot,
+    });
+    await mkdir(join(projectRoot, 'src'));
+    const keyParent = join(directory, 'secrets');
+    await mkdir(keyParent);
+    const keyFile = join(keyParent, 'owner.key');
+    await writeFile(keyFile, 'placeholder');
+    await registry.add({
+      id: 'real' as DatastoreProfile['id'],
+      datastore: 'file',
+      databaseId: '11111111-1111-4111-8111-111111111111' as never,
+      dataFile: join(directory, 'vault.db'),
+      keyFile,
+    });
+    await markAsProjectRootLike(projectRoot);
+    const beforeConfig = await captureAccessFingerprint(projectRoot);
+
+    const dry = await runDoctorHeal({
+      mode: 'dry-run',
+      profileConfigDir: projectRoot,
+    });
+    expect(
+      await actionTargetsDirectory(dry.actions, projectRoot, [
+        'key-parent-acl',
+        'config-directory-acl',
+      ]),
+    ).toBe(false);
+
+    const healed = await runDoctorHeal({
+      mode: 'heal',
+      profileConfigDir: projectRoot,
+    });
+    expect(
+      await actionTargetsDirectory(healed.actions, projectRoot, [
+        'key-parent-acl',
+        'config-directory-acl',
+      ]),
+    ).toBe(false);
+    expect(await captureAccessFingerprint(projectRoot)).toBe(beforeConfig);
+  });
+
+  it('still hardens a --config-dir that is the parent of an existing key file', async () => {
+    const directory = await scratch('config-is-key-parent');
+    const configDir = join(directory, 'kavrix-home');
+    const registry = await DatastoreProfileRegistry.open({
+      configDirectory: configDir,
+    });
+    const keyFile = join(configDir, 'kavrix.key');
+    await writeFile(keyFile, 'placeholder');
+    await registry.add({
+      id: 'colocated' as DatastoreProfile['id'],
+      datastore: 'file',
+      dataFile: join(configDir, 'kavrix.vault'),
+      keyFile,
+    });
+    await markOwnedSecretParentUnsafe(configDir);
+    await markOwnedSecretFileUnsafe(keyFile);
+
+    const report = await runDoctorHeal({
+      mode: 'heal',
+      profileConfigDir: configDir,
+      keyFile,
+    });
+    expect(report.healed).toEqual(
+      expect.arrayContaining(['key-parent-acl', 'key-file-acl']),
+    );
+    expect(
+      await actionTargetsDirectory(report.actions, configDir, ['key-parent-acl']),
+    ).toBe(true);
+    await expectOwnerOnlyDirectory(configDir);
+    await expectOwnerOnlyFile(keyFile);
+  });
+
+  it('fails closed on an unsafe project-root --config-dir without chmodding it', async () => {
+    const directory = await scratch('unsafe-config-dir');
+    const projectRoot = join(directory, 'repo');
+    const registry = await DatastoreProfileRegistry.open({
+      configDirectory: projectRoot,
+    });
+    await mkdir(join(projectRoot, 'src'));
+    const keyParent = join(directory, 'secrets');
+    await mkdir(keyParent);
+    const keyFile = join(keyParent, 'owner.key');
+    await writeFile(keyFile, 'placeholder');
+    await registry.add({
+      id: 'unsafe-root' as DatastoreProfile['id'],
+      datastore: 'file',
+      dataFile: join(directory, 'vault.db'),
+      keyFile,
+    });
+    await markOwnedSecretParentUnsafe(keyParent);
+    await markOwnedSecretFileUnsafe(keyFile);
+    await markRegistryDirectoryUnreadable(projectRoot);
+    const beforeConfig = await captureAccessFingerprint(projectRoot);
+
+    const report = await runDoctorHeal({
+      mode: 'heal',
+      profileConfigDir: projectRoot,
+      keyFile,
+    });
+    expect(await captureAccessFingerprint(projectRoot)).toBe(beforeConfig);
+    expect(
+      await actionTargetsDirectory(report.actions, projectRoot, [
+        'key-parent-acl',
+        'config-directory-acl',
+      ]),
+    ).toBe(false);
+    expect(report.manualRecoveryRequired.join(' ')).toMatch(
+      /not safe to use|permissions/i,
+    );
+    expect(report.healed).toEqual(
+      expect.arrayContaining(['key-parent-acl', 'key-file-acl']),
+    );
+    await expectOwnerOnlyDirectory(keyParent);
+    await expectOwnerOnlyFile(keyFile);
+  });
+
   it('hardens explicit --data-file parents in heal mode', async () => {
-    if (process.platform === 'win32') return;
     const directory = await scratch('data-parent');
     const parent = join(directory, 'data');
-    await mkdir(parent, { mode: 0o755 });
-    await chmod(parent, 0o755);
+    await mkdir(parent);
     const dataFile = join(parent, 'vault.db');
-    await writeFile(dataFile, 'x', { mode: 0o600 });
+    await writeFile(dataFile, 'x');
+    await markOwnedSecretParentUnsafe(parent);
     const report = await runDoctorHeal({
       mode: 'heal',
       dataFile,
     });
     expect(report.healed).toContain('key-parent-acl');
-    const { stat } = await import('node:fs/promises');
-    expect((await stat(parent)).mode & 0o777).toBe(0o700);
+    await expectOwnerOnlyDirectory(parent);
   });
 });
 
@@ -691,4 +942,107 @@ async function createBoundFixture(directory: string): Promise<{
     passphrase,
     routingArgs: ['--profile-config-dir', configDir, '--passphrase-stdin'],
   };
+}
+
+const execFileAsync = promisify(execFile);
+const WINDOWS_ICACLS = 'C:\\Windows\\System32\\icacls.exe';
+
+async function canonPath(input: string): Promise<string> {
+  try {
+    return await realpath(input);
+  } catch {
+    return resolve(input);
+  }
+}
+
+function pathsEqual(left: string, right: string): boolean {
+  if (process.platform === 'win32') {
+    return left.toLowerCase() === right.toLowerCase();
+  }
+  return left === right;
+}
+
+async function actionTargetsDirectory(
+  actions: ReadonlyArray<{ id: string; path?: string }>,
+  directory: string,
+  ids: readonly string[],
+): Promise<boolean> {
+  const expected = await canonPath(directory);
+  return actions.some(
+    (action) =>
+      ids.includes(action.id) &&
+      action.path !== undefined &&
+      pathsEqual(action.path, expected),
+  );
+}
+
+async function captureAccessFingerprint(path: string): Promise<string> {
+  const canonical = await canonPath(path);
+  if (process.platform === 'win32') {
+    const { stdout } = await execFileAsync(WINDOWS_ICACLS, [canonical], {
+      env: { SystemRoot: 'C:\\Windows', WINDIR: 'C:\\Windows' },
+      timeout: 15_000,
+      windowsHide: true,
+    });
+    return String(stdout);
+  }
+  return String((await stat(canonical)).mode & 0o777);
+}
+
+async function grantWindowsEveryoneRead(path: string): Promise<void> {
+  const canonical = await canonPath(path);
+  await execFileAsync(WINDOWS_ICACLS, [canonical, '/grant', '*S-1-1-0:(R)'], {
+    env: { SystemRoot: 'C:\\Windows', WINDIR: 'C:\\Windows' },
+    timeout: 15_000,
+    windowsHide: true,
+  });
+}
+
+/** POSIX 755: registry still opens. Windows: leave the registry-hardened DACL. */
+async function markAsProjectRootLike(directory: string): Promise<void> {
+  if (process.platform === 'win32') return;
+  await chmod(directory, 0o755);
+}
+
+/** POSIX 777 / Windows Everyone read: registry open fail-closes. */
+async function markRegistryDirectoryUnreadable(directory: string): Promise<void> {
+  if (process.platform === 'win32') {
+    await grantWindowsEveryoneRead(directory);
+    return;
+  }
+  await chmod(directory, 0o777);
+}
+
+async function markOwnedSecretParentUnsafe(directory: string): Promise<void> {
+  if (process.platform === 'win32') {
+    await grantWindowsEveryoneRead(directory);
+    return;
+  }
+  await chmod(directory, 0o755);
+}
+
+async function markOwnedSecretFileUnsafe(filePath: string): Promise<void> {
+  if (process.platform === 'win32') {
+    await grantWindowsEveryoneRead(filePath);
+    return;
+  }
+  await chmod(filePath, 0o644);
+}
+
+async function expectOwnerOnlyDirectory(directory: string): Promise<void> {
+  const canonical = await canonPath(directory);
+  if (process.platform === 'win32') {
+    await expect(verifyWindowsUserOnlyAcl(canonical)).resolves.toBeUndefined();
+    return;
+  }
+  expect((await stat(canonical)).mode & 0o777).toBe(0o700);
+}
+
+async function expectOwnerOnlyFile(filePath: string): Promise<void> {
+  const canonical = await canonPath(filePath);
+  if (process.platform === 'win32') {
+    await expect(verifyWindowsUserOnlyAcl(canonical)).resolves.toBeUndefined();
+    return;
+  }
+  expect((await stat(canonical)).mode & 0o777).toBe(0o600);
 }

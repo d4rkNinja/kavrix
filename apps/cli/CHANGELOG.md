@@ -5,8 +5,16 @@
 - Ship classic-premium TUI chrome (unified gold accent, shared empty/error/loading states, quiet reduced-motion-aware enter/stagger/pulse) already on main.
 - Fix TUI / `kavrix init` onboarding blank or stale frames on some TTYs: content-sized chrome (no full-row height pin), force redraw after each step/input, hydrate Loading… gate with timeout/error banner, reliable first paint kick.
 - Fix `run --json` authentication failures to emit a JSON `AUTHENTICATION_FAILED` envelope (exit 10) instead of empty stdout.
-- Fail closed when `--environment` is set without a project file; pure `--secret` no longer fails on a broken cwd `kavrix.yaml` unless project features are requested (help documents `--no-config`).
+- Vault-read `--json` (`list` / `get` / `has` / `search`) now emit the same authentication error envelope instead of empty stdout plus human stderr.
+- Fail closed when `--environment` is set without a project file; `--no-config --environment` is rejected (environment requires project config). Pure `--secret` no longer fails on a broken cwd `kavrix.yaml` unless project features are requested (help documents `--no-config`).
 - `put` mixed-stdin errors now name the missing flag (e.g. `Missing --value-stdin`).
+- `--json` failures emit the machine envelope on stdout only (no duplicate human stderr).
+- Missing child executables are `EXECUTION_FAILED` (exit 18), not authorization denied.
+- `--secret USER=...` (and USERNAME/LOGNAME) fail closed; those names are inherited and reserved.
+- Short unlock/run passphrase attempts reach authentication (exit 10) instead of length usage (exit 2).
+- `status` reports `unconfigured` plus the resolved config directory instead of a silent `legacy-v2` when no registry exists.
+- TUI: obvious onboarding focus, Recovery kit vs Doctor/heal naming, Enter opens credential detail, remask/Escape after REVEAL, bounded large-list search, and a prioritized footer.
+- Fix: `doctor --heal` no longer chmods `--config-dir` / `--profile-config-dir` when that path is only a profile registry home (for example a project root that also holds `src/`). Heal still fail-closes into owner-only ACL repair for existing key/data file parents.
 
 ## 0.2.19
 

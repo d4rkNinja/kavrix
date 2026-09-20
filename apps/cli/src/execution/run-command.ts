@@ -10,7 +10,12 @@ import {
   type GrantRecord,
   type PermissionEntry,
 } from '@kavrix/schemas';
-import { RunnerError, runSecureCommand, type EnvironmentMapping } from '@kavrix/runner';
+import {
+  INHERITABLE_ENVIRONMENT_NAMES,
+  RunnerError,
+  runSecureCommand,
+  type EnvironmentMapping,
+} from '@kavrix/runner';
 
 import {
   closeDatabaseFlatVault,
@@ -24,8 +29,10 @@ import {
   CodedCliError,
   authorizationDenied,
   confirmationRequired,
+  executionFailed,
   grantInvalid,
   invalidConfiguration,
+  runnerFailure,
 } from './exit-codes.js';
 import { resolveExecutable } from './executable.js';
 import {
@@ -70,17 +77,10 @@ export interface RunOutcome {
   readonly outputTruncated?: boolean;
 }
 
-const INHERITED_ENVIRONMENT_NAMES = [
-  'PATH',
-  'PATHEXT',
-  'SystemRoot',
-  'WINDIR',
-  'COMSPEC',
-  'TEMP',
-  'TMP',
-  'HOME',
-  'USERPROFILE',
-] as const;
+// Forward only names the runner currently accepts. Identity names
+// (USER/USERNAME/LOGNAME) stay reserved as destinations in run-options;
+// they join inherit when the runner lists them as inheritable.
+const INHERITED_ENVIRONMENT_NAMES = INHERITABLE_ENVIRONMENT_NAMES;
 
 const JSON_CAPTURE_MAX_BYTES = 64 * 1024;
 
@@ -314,13 +314,7 @@ async function authorizeAndSpawn(
 
   const resolution = await resolveExecutable(target.request);
   if (resolution.status === 'unresolved') {
-    return await denyExecution(
-      state,
-      'user',
-      'executable-unresolved',
-      undefined,
-      authorizationDenied(`'${target.request}' could not be resolved on PATH.`),
-    );
+    throw executionFailed(`'${target.request}' could not be resolved on PATH.`);
   }
   if (resolution.status === 'refused') {
     return await denyExecution(
@@ -552,12 +546,15 @@ async function authorizeAndSpawn(
       },
     });
   } catch (error) {
-    if (error instanceof RunnerError && error.code === 'RUNNER_ENVIRONMENT_REJECTED') {
-      throw invalidConfiguration(
-        'A destination variable conflicts with a protected runtime variable.',
+    if (error instanceof RunnerError) {
+      throw runnerFailure(
+        error.code,
+        error.code === 'RUNNER_ENVIRONMENT_REJECTED'
+          ? 'A destination variable conflicts with a protected runtime variable.'
+          : 'The executable could not be started.',
       );
     }
-    throw authorizationDenied('The authorized executable could not be started.');
+    throw executionFailed('The executable could not be started.');
   } finally {
     for (const [signalName, handler] of handlers) {
       process.off(signalName, handler);

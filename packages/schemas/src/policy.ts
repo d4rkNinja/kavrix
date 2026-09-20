@@ -454,6 +454,48 @@ export type ProjectEnvironment = z.infer<typeof projectEnvironmentSchema>;
 export type ProjectAgent = z.infer<typeof projectAgentSchema>;
 export type ProjectConfigDocument = z.infer<typeof projectConfigDocumentSchema>;
 
+const PROJECT_CONFIG_VERSION_MESSAGE =
+  'Project configuration is invalid. Only version 1 documents with credential references are accepted.';
+const PROJECT_CONFIG_ENVIRONMENT_MESSAGE =
+  'Project configuration is invalid. An environment entry is missing a `secrets` map or is not a valid environment object.';
+
+/**
+ * Maps a failed project-file parse onto a safe operator message. Reports
+ * structural mistakes (missing `secrets`, invalid environment objects) without
+ * echoing destination values or other file contents that can look like secrets.
+ */
+export function describeProjectConfigFailure(input: unknown): string {
+  if (hasInvalidProjectEnvironmentEntries(input)) {
+    return PROJECT_CONFIG_ENVIRONMENT_MESSAGE;
+  }
+  return PROJECT_CONFIG_VERSION_MESSAGE;
+}
+
+function hasInvalidProjectEnvironmentEntries(input: unknown): boolean {
+  if (!isPlainObject(input) || !Object.hasOwn(input, 'environments')) return false;
+  const environments = input['environments'];
+  if (!isPlainObject(environments)) return true;
+  for (const environment of Object.values(environments)) {
+    if (!isPlainObject(environment)) return true;
+    for (const key of Object.keys(environment)) {
+      if (key !== 'secrets' && key !== 'policies') return true;
+    }
+    if (
+      environment['secrets'] !== undefined &&
+      !isPlainObject(environment['secrets'])
+    ) {
+      return true;
+    }
+    if (
+      environment['policies'] !== undefined &&
+      !isPlainObject(environment['policies'])
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
 export const grantActorSchema = z.enum(['user', 'agent']);
 
 /** One temporary, consumable authorization for one credential. */

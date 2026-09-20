@@ -1,6 +1,7 @@
 export * from './ids.js';
 export * from './backend.js';
 export * from './router.js';
+export { prioritizeFooterChips } from './screens.js';
 export {
   CHROME,
   accentColor,
@@ -59,6 +60,7 @@ export {
   createInitialOnboardingState,
   transitionOnboarding,
   describeOnboardingScreen,
+  onboardingStepFocus,
   type OnboardingState,
   type OnboardingStep,
   type OnboardingStorage,
@@ -70,6 +72,7 @@ export {
 export {
   KavrixOnboardingApp,
   mountOnboardingApp,
+  renderOnboardingScreen,
   type KavrixOnboardingAppProps,
   type MountOnboardingAppOptions,
   type OnboardingAppHandle,
