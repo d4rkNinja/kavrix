@@ -260,9 +260,9 @@ describe('runDoctorHeal unit', () => {
       '',
     );
     expect(listed.exitCode).toBe(0);
-    expect(JSON.parse(listed.stdout).profiles.map((p: { id: string }) => p.id)).toEqual([
-      'alive',
-    ]);
+    expect(JSON.parse(listed.stdout).profiles.map((p: { id: string }) => p.id)).toEqual(
+      ['alive'],
+    );
 
     const reportMode = await runDoctorHeal({
       mode: 'report',

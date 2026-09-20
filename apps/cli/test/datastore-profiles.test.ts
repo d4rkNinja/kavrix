@@ -761,22 +761,17 @@ describe('datastore profile dangling current soft-read', () => {
     };
     onDisk.current = 'does-not-exist';
     await deleteSecureFile(registryPath);
-    await writeProtectedJsonDocument(
-      registryPath,
-      onDisk,
-      'create',
-      {
-        maximumBytes: 128 * 1024,
-        schema: {
-          parse: (value: unknown) =>
-            value as {
-              version: 2;
-              current: string | null;
-              profiles: DatastoreProfile[];
-            },
-        },
+    await writeProtectedJsonDocument(registryPath, onDisk, 'create', {
+      maximumBytes: 128 * 1024,
+      schema: {
+        parse: (value: unknown) =>
+          value as {
+            version: 2;
+            current: string | null;
+            profiles: DatastoreProfile[];
+          },
       },
-    );
+    });
 
     expect(
       await DatastoreProfileRegistry.hasDanglingCurrentPointerAt({
