@@ -3,6 +3,7 @@
 ## 0.2.17
 
 - Add `kavrix doctor --heal` / `doctor health --heal` and `kavrix db doctor health --heal` to safely auto-repair broken local state: remove incomplete unbound profiles (PROFILE_DUPLICATE leftovers), clear dangling profile selection pointers, and re-harden owner-only ACLs/modes on key-file parents and key files. Supports `--heal --dry-run` to list planned actions without applying them. Never invents passphrase recovery and never deletes vault/key data files.
+- Fix: `doctor --heal` no longer chmods unrelated directories (CWD, `/workspace`, `$HOME`, `/tmp`, …) via the unused Commander default `--key-file ./kavrix.key`. Heal hardens only the immediate parent of an existing active profile/explicit key or data file (e.g. `~/.kavrix/`); missing/unused defaults are skipped and broad filesystem roots are refused.
 - Docs: document heal capabilities and explicit non-goals (wrong passphrase, corrupt vault, operator decisions).
 
 ## 0.2.16

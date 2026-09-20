@@ -1,4 +1,5 @@
 import { lstat } from 'node:fs/promises';
+import { homedir } from 'node:os';
 import { dirname, resolve } from 'node:path';
 
 import {
@@ -205,18 +206,22 @@ export async function runDoctorHeal(
     }
   }
 
+  // ACL heal hardens ONLY the immediate parent of each resolved, existing
+  // active key/data artifact (plus the profile config directory itself). It
+  // never walks ancestors and never treats an unused Commander default
+  // `./kavrix.key` as an active key.
   const pathsToHarden = new Set<string>();
   for (const profile of scoped) {
-    pathsToHarden.add(dirname(resolve(profile.keyFile)));
+    await addImmediateParentIfArtifactExists(pathsToHarden, profile.keyFile);
     if (profile.datastore === 'file') {
-      pathsToHarden.add(dirname(resolve(profile.dataFile)));
+      await addImmediateParentIfArtifactExists(pathsToHarden, profile.dataFile);
     }
   }
   if (options.keyFile !== undefined) {
-    pathsToHarden.add(dirname(resolve(options.keyFile)));
+    await addImmediateParentIfArtifactExists(pathsToHarden, options.keyFile);
   }
   if (options.dataFile !== undefined) {
-    pathsToHarden.add(dirname(resolve(options.dataFile)));
+    await addImmediateParentIfArtifactExists(pathsToHarden, options.dataFile);
   }
   if (options.profileConfigDir !== undefined) {
     pathsToHarden.add(resolve(options.profileConfigDir));
@@ -238,10 +243,12 @@ export async function runDoctorHeal(
 
   const filesToHarden = new Set<string>();
   for (const profile of scoped) {
-    filesToHarden.add(resolve(profile.keyFile));
+    const resolvedKey = resolve(profile.keyFile);
+    if (await pathExists(resolvedKey)) filesToHarden.add(resolvedKey);
   }
   if (options.keyFile !== undefined) {
-    filesToHarden.add(resolve(options.keyFile));
+    const resolvedKey = resolve(options.keyFile);
+    if (await pathExists(resolvedKey)) filesToHarden.add(resolvedKey);
   }
   for (const filePath of filesToHarden) {
     await maybeHardenFile(
@@ -309,6 +316,18 @@ async function maybeHardenDirectory(
   dryRun: boolean,
   mode: DoctorHealMode,
 ): Promise<void> {
+  if (isBroadFilesystemRoot(directory)) {
+    const detail =
+      `Refusing to change permissions on shared filesystem root ${directory}; ` +
+      'heal only hardens the immediate parent of an active key/data file (for example ~/.kavrix).';
+    actions.push({
+      id: actionId,
+      status: 'skipped',
+      detail,
+      path: directory,
+    });
+    return;
+  }
   const state = await inspectDirectoryAcl(directory);
   if (state === 'missing' || state === 'ok') return;
   if (state === 'foreign-owner') {
@@ -453,6 +472,31 @@ async function maybeHardenFile(
     });
     manualRecoveryRequired.push(detail);
   }
+}
+
+async function addImmediateParentIfArtifactExists(
+  pathsToHarden: Set<string>,
+  artifactPath: string,
+): Promise<void> {
+  const resolved = resolve(artifactPath);
+  if (!(await pathExists(resolved))) return;
+  // Immediate parent only — never dirname(dirname(...)).
+  pathsToHarden.add(dirname(resolved));
+}
+
+/**
+ * Refuse to chmod filesystem roots and other shared directories. Heal must
+ * never lock down `/`, `/tmp`, `$HOME`, `/workspace`, or other top-level roots
+ * even if a mis-resolved key path named them as its parent.
+ */
+function isBroadFilesystemRoot(directory: string): boolean {
+  const resolved = resolve(directory);
+  const home = resolve(homedir());
+  if (resolved === resolve('/') || resolved === home) return true;
+  const parent = dirname(resolved);
+  // Top-level dirs directly under `/` (and macOS `/private`): /tmp, /workspace, /home, …
+  if (parent === resolve('/') || parent === resolve('/private')) return true;
+  return false;
 }
 
 async function pathExists(path: string): Promise<boolean> {
