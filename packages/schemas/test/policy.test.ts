@@ -559,6 +559,16 @@ describe('CLI contract', () => {
     );
   });
 
+  it('maps environment rejection and other runner codes for JSON auth paths', () => {
+    expect(cliErrorCodeForRunnerFailure('RUNNER_ENVIRONMENT_REJECTED')).toBe(
+      'INVALID_CONFIGURATION',
+    );
+    expect(cliErrorCodeForRunnerFailure('RUNNER_TIMEOUT')).toBe('EXECUTION_FAILED');
+    expect(exitCodeForCliError('INVALID_CONFIGURATION')).toBe(14);
+    expect(exitCodeForCliError('EXECUTION_FAILED')).toBe(18);
+  });
+
+
   it('keeps policy-check unresolved on AUTHORIZATION_DENIED exit 12', () => {
     expect(DENY_DECISION_REASONS).toContain('executable-unresolved');
     expect(

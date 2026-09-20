@@ -16,6 +16,9 @@ import {
   isCodedCliError,
   securityIntegrityFailure,
   toErrorEnvelope,
+  markJsonReported,
+  wasJsonReported,
+  cliErrorCodeForSessionFailure,
 } from '../src/execution/exit-codes.js';
 
 describe('coded CLI errors', () => {
@@ -54,5 +57,27 @@ describe('coded CLI errors', () => {
       exitCode: 12,
       message: 'denied',
     });
+  });
+
+  it('maps session failures onto stable JSON auth codes', () => {
+    expect(cliErrorCodeForSessionFailure('authentication')).toBe('AUTHENTICATION_FAILED');
+    expect(cliErrorCodeForSessionFailure('not-found')).toBe('CREDENTIAL_MISSING');
+    expect(cliErrorCodeForSessionFailure('duplicate')).toBe('INVALID_CONFIGURATION');
+    expect(cliErrorCodeForSessionFailure('invalid')).toBe('INVALID_CONFIGURATION');
+    expect(cliErrorCodeForSessionFailure('binding')).toBe('SECURITY_INTEGRITY_FAILURE');
+    expect(cliErrorCodeForSessionFailure('rollback')).toBe('SECURITY_INTEGRITY_FAILURE');
+    expect(cliErrorCodeForSessionFailure('unknown-session')).toBe('DATASTORE_FAILURE');
+  });
+
+  it('tracks JSON-reported markers without throwing on primitives', () => {
+    expect(wasJsonReported(null)).toBe(false);
+    expect(wasJsonReported('x')).toBe(false);
+    expect(wasJsonReported(undefined)).toBe(false);
+    markJsonReported(null);
+    markJsonReported('skip');
+    const error = authenticationFailure('json path');
+    expect(wasJsonReported(error)).toBe(false);
+    markJsonReported(error);
+    expect(wasJsonReported(error)).toBe(true);
   });
 });

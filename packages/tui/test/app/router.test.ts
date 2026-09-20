@@ -418,6 +418,17 @@ describe('ASCII and NO_COLOR presentation', () => {
     expect(fileDefaults.keyFile.includes(join('.local', 'share'))).toBe(false);
   });
 
+  it('resolves named-profile mongo and recovery under ~/.kavrix', () => {
+    const home = join('tmp', 'named-home');
+    expect(defaultMongoProfilePaths('demo', home).keyFile).toBe(
+      join(home, '.kavrix', 'demo.key'),
+    );
+    expect(defaultRecoveryFilePath('demo', home)).toBe(
+      join(home, '.kavrix', 'demo.recovery'),
+    );
+  });
+
+
   it('snapshots home and credentials in ASCII and NO_COLOR modes', () => {
     const asciiHome = frame(navigateToScreen(hydrate(true, false), 'home'));
     const asciiCreds = frame(navigateToScreen(hydrate(true, false), 'credentials'));

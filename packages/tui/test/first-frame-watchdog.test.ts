@@ -142,4 +142,39 @@ describe('armFirstFrameWatchdog', () => {
     vi.advanceTimersByTime(1);
     expect(onTimeout).toHaveBeenCalledTimes(1);
   });
+
+  it('treats non-Buffer Uint8Array as size 0 and accepts encoding overload', () => {
+    const stdout = new TestStdout();
+    const watchdog = armFirstFrameWatchdog({
+      stdout,
+      label: 'test-uint8',
+      timeoutMs: 5_000,
+    });
+    handles.push(watchdog);
+    const probe = new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]);
+    // Not a Buffer — size branch counts as 0 so the frame is ignored.
+    stdout.write(probe);
+    expect(watchdog.sawFrame()).toBe(false);
+    stdout.write('PAINTED', 'utf8');
+    expect(watchdog.sawFrame()).toBe(true);
+  });
+
+  it('swallows stderr write failures when onTimeout is omitted', () => {
+    vi.useFakeTimers();
+    const stdout = new TestStdout();
+    const writeErr = vi
+      .spyOn(process.stderr, 'write')
+      .mockImplementation(() => {
+        throw new Error('stderr closed');
+      });
+    const watchdog = armFirstFrameWatchdog({
+      stdout,
+      label: 'test-stderr-throw',
+      timeoutMs: 20,
+    });
+    handles.push(watchdog);
+    expect(() => vi.advanceTimersByTime(20)).not.toThrow();
+    expect(writeErr).toHaveBeenCalled();
+    writeErr.mockRestore();
+  });
 });

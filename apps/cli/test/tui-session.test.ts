@@ -1,4 +1,4 @@
-import { rm } from 'node:fs/promises';
+import { rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -828,5 +828,32 @@ describe('CliTuiSession mutations (mocked spawn)', () => {
     expect(result.snapshot.noticeTone).toBe('success');
     expect(defaults.keyFile).toContain(join('.kavrix', 'kavrix.key'));
     expect(defaults.keyFile.includes(join('.local', 'share'))).toBe(false);
+  });
+
+  it('surfaces ensureSecureArtifactParents when parent path is a file', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'kavrix-tui-bad-parent-'));
+    dirs.push(home);
+    const configDir = join(home, 'config');
+    // Place a file where ~/.kavrix should be so parent creation cannot mkdir.
+    const blocked = join(home, '.kavrix');
+    await writeFile(blocked, 'not-a-directory');
+    const dataFile = join(blocked, 'kavrix.vault');
+    const keyFile = join(blocked, 'kavrix.key');
+    const backend = createCliTuiBackend({
+      profileConfigDir: configDir,
+      ascii: true,
+      commandRunner: async () => {
+        throw new Error('commandRunner must not run when parents are invalid');
+      },
+    });
+    const result = await backend.dispatch({
+      type: 'create-file-profile',
+      profileId: 'default',
+      dataFile,
+      keyFile,
+      passphrase: 'FreshQaPassphrase16!',
+    });
+    expect(result.snapshot.noticeTone).toBe('error');
+    expect(result.snapshot.notice).toMatch(/not a directory/i);
   });
 });
