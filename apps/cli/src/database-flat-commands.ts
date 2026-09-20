@@ -469,7 +469,7 @@ export async function resolveLegacyFileProfileRouting<
       datastore: 'file',
       dataFile: routing.dataFile,
       keyFile: routing.keyFile,
-    } as T;
+    };
   }
   return {
     ...options,
@@ -477,7 +477,7 @@ export async function resolveLegacyFileProfileRouting<
     database: routing.database,
     collection: routing.vaultCollection,
     keyFile: routing.keyFile,
-  } as T;
+  };
 }
 
 function hasExplicitStandaloneRouting(options: DatabaseFlatCommandOptions): boolean {
