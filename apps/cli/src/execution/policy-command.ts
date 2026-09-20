@@ -349,6 +349,12 @@ export function assembleEntry(options: PolicyCreateOptions): PermissionEntry {
   }
   const parsed = permissionEntrySchema.safeParse(raw);
   if (!parsed.success) {
+    const commands = options.commands ?? [];
+    if (commands.some((command) => command.includes('/') || command.includes('\\'))) {
+      throw invalidConfiguration(
+        'Policy --command values must be basename-only executable names (for example `echo`), not absolute or relative paths.',
+      );
+    }
     throw invalidConfiguration('The policy definition is incomplete or invalid.');
   }
   return parsed.data;

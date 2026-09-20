@@ -96,13 +96,24 @@ export async function databaseProfileBindingState(
       : { configDirectory: options.profileConfigDir };
   let registry: Awaited<ReturnType<typeof DatastoreProfileRegistry.openIfPresent>>;
   try {
-    registry =
-      options.profile === undefined
-        ? hasExplicitStandaloneRouting(options)
-          ? null
-          : await DatastoreProfileRegistry.openIfPresent(registryOptions)
-        : await DatastoreProfileRegistry.open(registryOptions);
-  } catch {
+    if (options.profile === undefined && hasExplicitStandaloneRouting(options)) {
+      const matched = await matchExplicitPathsToAmbientBoundProfile(
+        options,
+        registryOptions,
+      );
+      if (matched === null) {
+        registry = null;
+      } else {
+        registry = await DatastoreProfileRegistry.openIfPresent(registryOptions);
+      }
+    } else {
+      registry =
+        options.profile === undefined
+          ? await DatastoreProfileRegistry.openIfPresent(registryOptions)
+          : await DatastoreProfileRegistry.open(registryOptions);
+    }
+  } catch (error) {
+    if (error instanceof DatabaseFlatCommandError) throw error;
     return 'missing';
   }
   if (registry === null) return 'missing';
@@ -321,6 +332,11 @@ async function selectedDatabaseProfile(
       ? {}
       : { configDirectory: options.profileConfigDir };
   if (options.profile === undefined && hasExplicitStandaloneRouting(options)) {
+    const matched = await matchExplicitPathsToAmbientBoundProfile(
+      options,
+      registryOptions,
+    );
+    if (matched !== null) return resolveSelectedProfileRouting(matched, options);
     await rejectConflictingAmbientBoundProfile(options, registryOptions);
     return null;
   }
@@ -342,6 +358,50 @@ async function selectedDatabaseProfile(
  * ambient bound database-container profile (operators otherwise hit opaque
  * "Vault is not initialized" on the legacy path).
  */
+
+/**
+ * When operators restate the bound profile's absolute --data-file/--key-file,
+ * treat that as profile routing (not legacy standalone). Mismatched paths get
+ * a clear error instead of the opaque legacy "invalid or unsafe" message.
+ */
+async function matchExplicitPathsToAmbientBoundProfile(
+  options: DatabaseFlatCommandOptions,
+  registryOptions: Readonly<{ configDirectory?: string }>,
+): Promise<DatastoreProfile | null> {
+  const overrides = options.routingOverrides ?? {};
+  if (overrides.datastore !== undefined) return null;
+  if (overrides.dataFile === undefined && overrides.keyFile === undefined) return null;
+  let registry: Awaited<ReturnType<typeof DatastoreProfileRegistry.openIfPresent>>;
+  try {
+    registry = await DatastoreProfileRegistry.openIfPresent(registryOptions);
+  } catch {
+    return null;
+  }
+  if (registry === null) return null;
+  const current = await registry.current();
+  if (current?.databaseId === undefined) return null;
+  if (current.datastore !== 'file') {
+    throw new DatabaseFlatCommandError(
+      `Explicit --data-file/--key-file cannot override the bound database-container profile '${current.id}'. Omit those flags to use the profile.`,
+    );
+  }
+  const { resolve } = await import('node:path');
+  const expectedData = resolve(current.dataFile);
+  const expectedKey = resolve(current.keyFile);
+  const providedData =
+    overrides.dataFile === undefined ? undefined : resolve(overrides.dataFile);
+  const providedKey =
+    overrides.keyFile === undefined ? undefined : resolve(overrides.keyFile);
+  const dataMatches =
+    providedData === undefined ||
+    (expectedData !== undefined && providedData === expectedData);
+  const keyMatches = providedKey === undefined || providedKey === expectedKey;
+  if (dataMatches && keyMatches) return current;
+  throw new DatabaseFlatCommandError(
+    `Explicit --data-file/--key-file do not match the bound database-container profile '${current.id}'. Omit those flags to use the profile, or pass paths that exactly match the profile binding.`,
+  );
+}
+
 async function rejectConflictingAmbientBoundProfile(
   options: DatabaseFlatCommandOptions,
   registryOptions: Readonly<{ configDirectory?: string }>,

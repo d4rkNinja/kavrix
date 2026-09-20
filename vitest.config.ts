@@ -35,6 +35,7 @@ export default defineConfig({
       'apps/cli/test/init-relative-paths.test.ts',
       'apps/cli/test/init-storage-selection.test.ts',
       'apps/cli/test/local-vault-cli-publication.test.ts',
+      'apps/cli/test/live-qa-p2-ux.test.ts',
       'apps/cli/test/local-vault-cli-coverage.test.ts',
       'apps/cli/test/public-command-help.test.ts',
       'apps/cli/test/self-update.test.ts',

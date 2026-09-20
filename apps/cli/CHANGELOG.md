@@ -1,5 +1,16 @@
 # kavrix
 
+## 0.2.20
+
+- Differentiate missing key-file vs wrong-passphrase failures (preserve `KEY_FILE_NOT_FOUND` instead of collapsing missing keys to authentication).
+- Surface unsafe key/data parent permissions (e.g. mode 777) with doctor/heal guidance instead of opaque "database operation is invalid".
+- Accept `--json` on commands that already emit JSON by default (`vault list`, `db init`, `db recovery create|verify`, `db key create`).
+- `recovery verify` without a matching `--key-file` now reports a clear key-path/mismatch error instead of an opaque revision-anchor integrity failure.
+- `policy create --command /bin/echo` explains basename-only command names.
+- `agent exec --dry-run` fails closed on unknown permissions (requires project config).
+- `recovery use --overwrite` / `recovery create --overwrite` honor the flag (replace destinations) instead of refusing overwrite.
+- After database-container init, explicit `--data-file`/`--key-file` that match the bound profile are accepted; mismatched paths get a clear profile-routing error.
+
 ## 0.2.17
 
 - Add `kavrix doctor --heal` / `doctor health --heal` and `kavrix db doctor health --heal` to safely auto-repair broken local state: remove incomplete unbound profiles (PROFILE_DUPLICATE leftovers), clear dangling profile selection pointers, and re-harden owner-only ACLs/modes on key-file parents and key files. Supports `--heal --dry-run` to list planned actions without applying them. Never invents passphrase recovery and never deletes vault/key data files.

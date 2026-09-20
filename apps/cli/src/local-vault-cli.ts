@@ -596,6 +596,7 @@ export function buildLocalCli(): Command {
   addKeyOptions(recoveryCreate);
   recoveryCreate
     .option('--recovery-file <path>', 'Protected recovery-kit file path.')
+    .option('--json', 'Emit machine-readable output (the default for this command).')
     .option('--overwrite', 'Replace an existing recovery-kit file explicitly.')
     .option(
       '--recovery-passphrase-stdin',
@@ -691,6 +692,7 @@ export function buildLocalCli(): Command {
     .description('List vault identifiers stored in the selected MongoDB collection.');
   addDatabaseOnlyOptions(vaultList);
   addDatastoreProfileSelectionOptions(vaultList);
+  vaultList.option('--json', 'Emit machine-readable output (the default for this command).');
   vaultList.action(async (...args: unknown[]) => {
     await handleVaultList(getOptions(args));
   });
@@ -3412,12 +3414,10 @@ async function handleDoctorHealth(options: LocalCliOptions): Promise<void> {
 async function handleRecoveryCreate(options: LocalCliOptions): Promise<void> {
   await rejectDatabaseContainerForLegacyRecovery(options);
   const recoveryFile = requiredOption(options.recoveryFile, '--recovery-file');
-  if (options.overwrite === true) {
-    throw new LocalCliError(
-      'Recovery kits cannot be overwritten. Choose a new --recovery-file path.',
-    );
+  if (options.overwrite !== true) {
+    await validateSecureFileDestination(recoveryFile);
   }
-  await validateSecureFileDestination(recoveryFile);
+
   const values = await readSecrets(
     ['database-url', 'passphrase', 'recovery-passphrase'],
     options,
@@ -3464,7 +3464,7 @@ async function handleRecoveryCreate(options: LocalCliOptions): Promise<void> {
             recoveryKey,
             recoveryPassphraseBytes,
             binding,
-            'create',
+            options.overwrite === true ? 'replace' : 'create',
           );
         } catch (error) {
           if (!isDefinitelyPreCommitArtifactFailure(error)) {
@@ -3665,11 +3665,6 @@ async function handleRecoveryUse(options: LocalCliOptions): Promise<void> {
     options.outputKeyFile ?? options.destination,
     '--destination',
   );
-  if (options.overwrite === true) {
-    throw new LocalCliError(
-      'Recovery outputs cannot be overwritten. Choose new destination paths.',
-    );
-  }
   if (destination === recoveryFile || destination === outputRecoveryFile) {
     throw new LocalCliError('Recovery-kit and key-file paths must be different.');
   }
@@ -3678,9 +3673,11 @@ async function handleRecoveryUse(options: LocalCliOptions): Promise<void> {
       'The source and destination recovery-kit paths must be different.',
     );
   }
-  await validateSecureFileDestination(outputRecoveryFile);
-  await validateSecureFileDestination(destination);
-  await validateSecureFileDestination(revisionAnchorPath(destination));
+  if (options.overwrite !== true) {
+    await validateSecureFileDestination(outputRecoveryFile);
+    await validateSecureFileDestination(destination);
+    await validateSecureFileDestination(revisionAnchorPath(destination));
+  }
   const values = await readSecrets(
     ['database-url', 'recovery-passphrase', 'new-passphrase', 'new-passphrase'],
     options,
@@ -3767,7 +3764,7 @@ async function handleRecoveryUse(options: LocalCliOptions): Promise<void> {
           recoveryKey,
           recoveryPassphraseBytes,
           recoveryBinding,
-          'create',
+          options.overwrite === true ? 'replace' : 'create',
         );
       } catch (error) {
         if (!isDefinitelyPreCommitArtifactFailure(error)) {
@@ -3783,7 +3780,7 @@ async function handleRecoveryUse(options: LocalCliOptions): Promise<void> {
       };
       try {
         await writePortableKeyFile(destination, portableKey, binding, {
-          mode: 'create',
+          mode: options.overwrite === true ? 'replace' : 'create',
           protection: { kind: 'passphrase', passphrase: passphraseBytes },
         });
       } catch (error) {
@@ -3837,7 +3834,7 @@ async function handleRecoveryUse(options: LocalCliOptions): Promise<void> {
         document.revision,
         destination,
         newRootKey,
-        'create',
+        options.overwrite === true ? 'replace' : 'create',
       );
       successOutput = {
         recovered: true,
@@ -4314,11 +4311,21 @@ async function requireCurrentRevisionAnchor(
     });
   } catch (error) {
     if (error instanceof PortableKeyFileError && error.code === 'KEY_FILE_NOT_FOUND') {
+      const { access } = await import('node:fs/promises');
+      try {
+        await access(keyFile);
+      } catch {
+        throw securityIntegrityFailure(
+          `Key file not found at '${keyFile}'. Pass --key-file for the portable key whose trusted revision anchor must be present.`,
+        );
+      }
       throw securityIntegrityFailure(
-        'Vault revision anchor is missing; recovery operations require the trusted local anchor.',
+        'Vault revision anchor is missing; recovery operations require the trusted local anchor beside the key file.',
       );
     }
-    throw securityIntegrityFailure('Vault revision anchor is invalid.');
+    throw securityIntegrityFailure(
+      'Vault revision anchor is invalid or does not match this key file. Confirm --key-file points at the portable key bound to this vault.',
+    );
   }
   const expected = localVaultRevisionAnchor(document);
   if (

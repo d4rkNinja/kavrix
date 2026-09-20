@@ -617,8 +617,9 @@ function registerAgent(program: Command): void {
     .argument('<permission>', 'Permission key from the agent configuration.')
     .option(
       '--dry-run',
-      'Validate the permission argument without contacting an agent broker.',
+      'Validate the permission against project agent config without contacting a broker (fails closed on unknown permissions).',
     )
+    .option('--config <path>', 'Non-secret project configuration file.')
     .option('--json', 'Emit a machine-readable envelope.');
   agentExec.action(async (...args: unknown[]) => {
     const command = args.at(-1) as Command;
@@ -628,6 +629,9 @@ function registerAgent(program: Command): void {
       executeAgentExec({
         permission,
         dryRun: merged['dryRun'] === true,
+        ...(optString(merged['config']) === undefined
+          ? {}
+          : { config: optString(merged['config']) }),
         executableAndArgs: command.args.slice(1),
       }),
     );
