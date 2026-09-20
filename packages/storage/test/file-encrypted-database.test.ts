@@ -204,7 +204,7 @@ describe('FileEncryptedDatabaseStore', () => {
       await chmod(directory, 0o770);
       await expect(
         FileEncryptedDatabaseStore.open(join(directory, 'database.json')),
-      ).rejects.toMatchObject({ code: 'invalid' });
+      ).rejects.toMatchObject({ code: 'unsafe' });
       expect(await readdir(directory)).toEqual([]);
     },
   );

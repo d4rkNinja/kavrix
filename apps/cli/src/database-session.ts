@@ -161,6 +161,7 @@ export type DatabaseSessionErrorCode =
   | 'not-found'
   | 'operation'
   | 'rollback'
+  | 'unsafe'
   | 'unsupported';
 
 /** Stable documented exit codes for each session failure class. */
@@ -177,6 +178,7 @@ const SESSION_EXIT_CODES: Readonly<Record<DatabaseSessionErrorCode, number>> =
     'not-found': 11,
     operation: 15,
     rollback: 16,
+    unsafe: 15,
     unsupported: 15,
   });
 
@@ -2352,12 +2354,17 @@ function mapError(error: unknown): Error {
       return new DatabaseSessionError('conflict');
     if (error.code === 'busy') return new DatabaseSessionError('busy');
     if (error.code === 'unsupported') return new DatabaseSessionError('unsupported');
+    if (error.code === 'unsafe') return new DatabaseSessionError('unsafe');
     if (error.code === 'invalid') return new DatabaseSessionError('invalid');
     return new DatabaseSessionError('operation');
   }
   if (error instanceof ZodError) return new DatabaseSessionError('invalid');
-  if (error instanceof PortableKeyFileError && error.code === 'KEY_FILE_NOT_FOUND')
+  if (error instanceof PortableKeyFileError && error.code === 'KEY_FILE_NOT_FOUND') {
     return error;
+  }
+  // KEY_FILE_UNSAFE from decrypt/parse catch-alls must stay authentication so
+  // wrong-passphrase cannot be distinguished from other unlock failures beyond
+  // the already-leaked NOT_FOUND exit code.
   return new DatabaseSessionError('authentication');
 }
 
@@ -2457,6 +2464,8 @@ function messageFor(code: DatabaseSessionErrorCode): string {
     'not-found': 'The requested vault was not found.',
     operation: 'The database operation failed.',
     rollback: 'The database snapshot was rejected as stale or forked.',
+    unsafe:
+      'Database path permissions are unsafe; harden the key/data parent directory to owner-only mode 700 (or run `kavrix doctor health --heal`).',
     unsupported:
       'MongoDB deployments without replica sets or sharding are not supported for database writes; initialize against a replica set or sharded cluster.',
   };

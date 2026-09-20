@@ -51,6 +51,7 @@ import {
   tokensMatch,
 } from './broker-protocol.js';
 import { loadProjectConfig } from './project-config.js';
+import type { ProjectConfigDocument } from '@kavrix/schemas';
 import { effectiveExitCode, forwardableSignals, signalExitCode } from './signals.js';
 
 export const AGENT_BROKER_ENV = 'KAVRIX_AGENT_BROKER';
@@ -106,6 +107,7 @@ export interface AgentRunOptions extends DatabaseFlatCommandOptions {
 export interface AgentExecOptions {
   readonly permission: string;
   readonly dryRun?: boolean | undefined;
+  readonly config?: string | undefined;
   readonly executableAndArgs: readonly string[];
 }
 
@@ -273,11 +275,23 @@ export async function executeAgentRun(options: AgentRunOptions): Promise<unknown
 export async function executeAgentExec(options: AgentExecOptions): Promise<unknown> {
   const permission = validatedPermission(options.permission);
   if (options.dryRun === true) {
+    // Fail closed: dry-run must not report ok for an unknown permission string.
+    // Without a live broker session, only a project config can confirm the name.
+    const configDocument = await loadAgentProjectConfig(options.config);
+    const known = new Set<string>();
+    for (const agent of Object.values(configDocument.document.agents ?? {})) {
+      for (const name of Object.keys(agent.permissions)) known.add(name);
+    }
+    if (!known.has(permission)) {
+      throw invalidConfiguration(
+        `Unknown agent permission '${permission}'. Dry-run refuses unknown permissions (fail closed).`,
+      );
+    }
     return {
       dryRun: true,
       ok: true,
       permission,
-      note: 'Self-test only; no broker session required.',
+      note: 'Dry-run validated against project agent permissions; no broker session required.',
       exitCode: 0,
     };
   }
@@ -444,6 +458,28 @@ const INHERITED_ENVIRONMENT = [
   'HOME',
   'USERPROFILE',
 ] as const;
+
+const DEFAULT_AGENT_CONFIG_CANDIDATES = [
+  'kavrix.yaml',
+  'kavrix.yml',
+  'kavrix.json',
+] as const;
+
+async function loadAgentProjectConfig(
+  explicitPath: string | undefined,
+): Promise<Readonly<{ document: ProjectConfigDocument }>> {
+  if (explicitPath !== undefined) return loadProjectConfig(explicitPath);
+  for (const candidate of DEFAULT_AGENT_CONFIG_CANDIDATES) {
+    try {
+      return await loadProjectConfig(candidate);
+    } catch {
+      // try next default
+    }
+  }
+  throw invalidConfiguration(
+    'agent exec --dry-run requires a project config (pass --config or create kavrix.yaml) so unknown permissions cannot report ok:true.',
+  );
+}
 
 function validatedPermission(value: string): string {
   if (!/^[A-Za-z0-9][A-Za-z0-9._~-]*$/u.test(value)) {

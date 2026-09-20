@@ -132,7 +132,12 @@ export async function readDatabaseKeyFileBinding(
     file = await readSecureFile(path, MAX_FILE_BYTES);
     const binding = parseFile(file).binding;
     return { databaseId: binding.databaseId, keySlotId: binding.keySlotId };
-  } catch {
+  } catch (error) {
+    // Preserve missing-key diagnostics so CLI can differentiate them from
+    // wrong-passphrase authentication failures (exit codes already differ).
+    if (error instanceof PortableKeyFileError && error.code === 'KEY_FILE_NOT_FOUND') {
+      throw error;
+    }
     throw invalid();
   } finally {
     zeroize(file);

@@ -30,6 +30,7 @@ import {
 } from './datastore-profiles.js';
 import { DatabaseSession, DatabaseSessionError } from './database-session.js';
 import { LocalSecretInput, type LocalSecretKind } from './local-secrets.js';
+import { databaseProfileBindingState } from './database-flat-commands.js';
 import { doctorHealModeFromOptions, runDoctorHeal } from './doctor-heal.js';
 import { resolveProfileConfigDirectory } from './profile-config-directory.js';
 
@@ -68,6 +69,7 @@ export function addDatabaseOwnerCommands(db: Command): void {
     .description('Initialize one encrypted multi-vault database.');
   addRoutingOptions(init);
   addSecretOption(init);
+  init.option('--json', 'Emit machine-readable output (the default for this command).');
   init.action(async (...args: unknown[]) => handleDatabaseInit(optionsFrom(args)));
 
   const status = db
@@ -96,6 +98,10 @@ export function addDatabaseOwnerCommands(db: Command): void {
   keyCreate.requiredOption(
     '--output-key-file <path>',
     'Fresh protected local-share database-key destination.',
+  );
+  keyCreate.option(
+    '--json',
+    'Emit machine-readable output (the default for this command).',
   );
   keyCreate.action(async (...args: unknown[]) =>
     handleDatabaseKeyCreate(optionsFrom(args)),
@@ -138,6 +144,10 @@ export function addDatabaseOwnerCommands(db: Command): void {
     '--recovery-file <path>',
     'Protected database recovery-kit destination.',
   );
+  create.option(
+    '--json',
+    'Emit machine-readable output (the default for this command).',
+  );
   create.action(async (...args: unknown[]) => handleRecoveryCreate(optionsFrom(args)));
 
   const verify = recovery
@@ -148,6 +158,10 @@ export function addDatabaseOwnerCommands(db: Command): void {
   verify.requiredOption(
     '--recovery-file <path>',
     'Protected database recovery-kit source.',
+  );
+  verify.option(
+    '--json',
+    'Emit machine-readable output (the default for this command).',
   );
   verify.action(async (...args: unknown[]) => handleRecoveryVerify(optionsFrom(args)));
 
@@ -382,23 +396,38 @@ async function handleDatabaseDoctorHealth(
         })
       : emptyHeal;
 
+  // Dry-run must not report healthy without validating a bound vault target.
+  // Heal-only unbound cases still emit the plan without unlocking. Omit path
+  // overrides here so ambient current remains visible for binding detection.
   if (healMode === 'dry-run') {
-    writeOutput({
-      healthy: healReport.manualRecoveryRequired.length === 0,
-      dryRun: true,
-      datastore: options.datastore === 'mongodb' ? 'mongodb' : 'file',
-      checks: healReport.actions.map((action) => ({
-        name: action.id,
-        status: action.status === 'planned' ? 'ok' : 'manual-recovery',
-        detail: action.detail,
-      })),
-      autoHealed: [],
-      planned: healReport.planned,
-      healActions: healReport.actions,
-      manualRecoveryRequired: healReport.manualRecoveryRequired,
+    const binding = await databaseProfileBindingState({
+      // vault is unused for binding detection; satisfy the shared options type.
+      vault: 'default',
+      ...(options.profile === undefined ? {} : { profile: options.profile }),
+      ...(options.profileConfigDir === undefined
+        ? {}
+        : { profileConfigDir: options.profileConfigDir }),
     });
-    if (healReport.manualRecoveryRequired.length > 0) process.exitCode = 15;
-    return;
+    const hasExplicitVaultTarget =
+      options.dataFile !== undefined || options.keyFile !== undefined;
+    if (binding === 'unbound' || (binding === 'missing' && !hasExplicitVaultTarget)) {
+      writeOutput({
+        healthy: healReport.manualRecoveryRequired.length === 0,
+        dryRun: true,
+        datastore: options.datastore === 'mongodb' ? 'mongodb' : 'file',
+        checks: healReport.actions.map((action) => ({
+          name: action.id,
+          status: action.status === 'planned' ? 'ok' : 'manual-recovery',
+          detail: action.detail,
+        })),
+        autoHealed: [],
+        planned: healReport.planned,
+        healActions: healReport.actions,
+        manualRecoveryRequired: healReport.manualRecoveryRequired,
+      });
+      if (healReport.manualRecoveryRequired.length > 0) process.exitCode = 15;
+      return;
+    }
   }
 
   // Local heal that cleared incomplete unbound state may leave no selectable

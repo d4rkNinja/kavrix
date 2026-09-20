@@ -15,6 +15,7 @@ export type EncryptedDatabaseStoreErrorCode =
   | 'exists'
   | 'invalid'
   | 'operation'
+  | 'unsafe'
   | 'unsupported';
 
 const ERROR_MESSAGES: Readonly<Record<EncryptedDatabaseStoreErrorCode, string>> = {
@@ -25,6 +26,8 @@ const ERROR_MESSAGES: Readonly<Record<EncryptedDatabaseStoreErrorCode, string>> 
   exists: 'A database record already exists.',
   invalid: 'The database operation is invalid.',
   operation: 'The database operation failed.',
+  unsafe:
+    'Database path permissions are unsafe; harden the key/data parent directory to owner-only mode 700 (or run `kavrix doctor health --heal`).',
   unsupported:
     'MongoDB deployments without replica sets or sharding are not supported for database writes; initialize against a replica set or sharded cluster.',
 };

@@ -118,7 +118,13 @@ export function classifyCliFailure(error: unknown): Readonly<{
     return { message: error.message, exitCode: 15 };
   }
   if (error instanceof PortableKeyFileError) {
-    return { message: error.message, exitCode: portableKeyFileExitCode(error) };
+    const message =
+      error.code === 'KEY_FILE_NOT_FOUND'
+        ? 'The portable key file was not found.'
+        : error.code === 'KEY_FILE_UNSAFE'
+          ? 'The portable key file or its parent directory is not safe to use; harden parent permissions to mode 700 (or run `kavrix doctor health --heal`).'
+          : error.message;
+    return { message, exitCode: portableKeyFileExitCode(error) };
   }
   // Secret-input framing problems are operator usage mistakes.
   if (

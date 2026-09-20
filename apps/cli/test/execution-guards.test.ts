@@ -260,7 +260,10 @@ describe('agent dry-run self-tests', () => {
   });
 
   it('agent exec --dry-run validates the permission without a broker session', async () => {
-    const result = await runCli(['agent', 'exec', 'ping', '--dry-run', '--json'], '');
+    const result = await runCli(
+      ['agent', 'exec', 'ping', '--dry-run', '--config', NOOP_AGENT_CONFIG, '--json'],
+      '',
+    );
     expect(result.exitCode).toBe(0);
     const parsed = JSON.parse(result.stdout) as {
       dryRun: boolean;

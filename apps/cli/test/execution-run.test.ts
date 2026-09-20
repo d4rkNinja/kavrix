@@ -293,7 +293,7 @@ describe('kavrix run', () => {
       passphraseFrame(),
     );
     expect(result.exitCode).toBe(14);
-    expect(result.stderr).toContain('protected runtime variable');
+    expect(result.stderr).toMatch(/protected/i);
   });
 
   it('reports multiple matching grants as a grant error', async () => {

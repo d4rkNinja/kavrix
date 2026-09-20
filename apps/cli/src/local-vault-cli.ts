@@ -79,6 +79,7 @@ import {
   readDatabaseFlatSecrets,
   rejectUnboundDatabaseProfile,
   usesDatabaseContainer,
+  resolveLegacyFileProfileRouting,
   withDatabaseFlatVault,
 } from './database-flat-commands.js';
 import { doctorHealModeFromOptions, runDoctorHeal } from './doctor-heal.js';
@@ -596,6 +597,7 @@ export function buildLocalCli(): Command {
   addKeyOptions(recoveryCreate);
   recoveryCreate
     .option('--recovery-file <path>', 'Protected recovery-kit file path.')
+    .option('--json', 'Emit machine-readable output (the default for this command).')
     .option('--overwrite', 'Replace an existing recovery-kit file explicitly.')
     .option(
       '--recovery-passphrase-stdin',
@@ -691,6 +693,10 @@ export function buildLocalCli(): Command {
     .description('List vault identifiers stored in the selected MongoDB collection.');
   addDatabaseOnlyOptions(vaultList);
   addDatastoreProfileSelectionOptions(vaultList);
+  vaultList.option(
+    '--json',
+    'Emit machine-readable output (the default for this command).',
+  );
   vaultList.action(async (...args: unknown[]) => {
     await handleVaultList(getOptions(args));
   });
@@ -3119,6 +3125,7 @@ async function handleDoctorHealth(options: LocalCliOptions): Promise<void> {
     const healthy = healReport.manualRecoveryRequired.length === 0;
     writeJson({
       healthy,
+      ...(healMode === 'dry-run' ? { dryRun: true } : {}),
       checks: healReport.actions.map((action) => ({
         name: action.id,
         status:
@@ -3129,7 +3136,7 @@ async function handleDoctorHealth(options: LocalCliOptions): Promise<void> {
               : 'warning',
         detail: action.detail,
       })),
-      autoHealed: healReport.healed,
+      autoHealed: healMode === 'dry-run' ? [] : healReport.healed,
       planned: healReport.planned,
       healActions: healReport.actions,
       manualRecoveryRequired: healReport.manualRecoveryRequired,
@@ -3138,23 +3145,10 @@ async function handleDoctorHealth(options: LocalCliOptions): Promise<void> {
     return;
   }
 
-  if (healMode === 'dry-run') {
-    writeJson({
-      healthy: healReport.manualRecoveryRequired.length === 0,
-      dryRun: true,
-      checks: healReport.actions.map((action) => ({
-        name: action.id,
-        status: action.status === 'planned' ? 'ok' : 'manual-recovery',
-        detail: action.detail,
-      })),
-      autoHealed: [],
-      planned: healReport.planned,
-      healActions: healReport.actions,
-      manualRecoveryRequired: healReport.manualRecoveryRequired,
-    });
-    if (healReport.manualRecoveryRequired.length > 0) process.exitCode = 16;
-    return;
-  }
+  // Dry-run must not short-circuit past vault validation: operators rely on it
+  // as the safety rail for --heal. Unbound/heal-only cases already returned
+  // above; bound or explicit vault targets fall through and fail closed the
+  // same way as apply / plain doctor.
 
   await rejectUnboundDatabaseProfile(options, 'doctor health');
   if (await usesDatabaseContainer(options)) {
@@ -3179,6 +3173,7 @@ async function handleDoctorHealth(options: LocalCliOptions): Promise<void> {
           const manual = [...healReport.manualRecoveryRequired];
           writeJson({
             healthy: manual.length === 0,
+            ...(healMode === 'dry-run' ? { dryRun: true } : {}),
             datastore: profile.datastore,
             vaultId,
             revision: document.revision,
@@ -3193,7 +3188,7 @@ async function handleDoctorHealth(options: LocalCliOptions): Promise<void> {
               },
               ...healChecks,
             ],
-            autoHealed: [...healReport.healed],
+            autoHealed: healMode === 'dry-run' ? [] : [...healReport.healed],
             planned: healReport.planned,
             healActions: healReport.actions,
             manualRecoveryRequired: manual,
@@ -3209,6 +3204,7 @@ async function handleDoctorHealth(options: LocalCliOptions): Promise<void> {
           : 'Database authentication failed.';
       writeJson({
         healthy: false,
+        ...(healMode === 'dry-run' ? { dryRun: true } : {}),
         checks: [
           {
             name: 'database-container',
@@ -3224,7 +3220,7 @@ async function handleDoctorHealth(options: LocalCliOptions): Promise<void> {
             detail: action.detail,
           })),
         ],
-        autoHealed: [...healReport.healed],
+        autoHealed: healMode === 'dry-run' ? [] : [...healReport.healed],
         planned: healReport.planned,
         healActions: healReport.actions,
         manualRecoveryRequired: [detail, ...healReport.manualRecoveryRequired],
@@ -3398,7 +3394,8 @@ async function handleDoctorHealth(options: LocalCliOptions): Promise<void> {
     checks.every((check) => check.status === 'ok' || check.status === 'warning');
   const result: Record<string, unknown> = {
     healthy,
-    autoHealed,
+    ...(healMode === 'dry-run' ? { dryRun: true } : {}),
+    autoHealed: healMode === 'dry-run' ? [] : autoHealed,
     checks,
     manualRecoveryRequired,
     healActions: healReport.actions,
@@ -3417,12 +3414,10 @@ async function handleDoctorHealth(options: LocalCliOptions): Promise<void> {
 async function handleRecoveryCreate(options: LocalCliOptions): Promise<void> {
   await rejectDatabaseContainerForLegacyRecovery(options);
   const recoveryFile = requiredOption(options.recoveryFile, '--recovery-file');
-  if (options.overwrite === true) {
-    throw new LocalCliError(
-      'Recovery kits cannot be overwritten. Choose a new --recovery-file path.',
-    );
+  if (options.overwrite !== true) {
+    await validateSecureFileDestination(recoveryFile);
   }
-  await validateSecureFileDestination(recoveryFile);
+
   const values = await readSecrets(
     ['database-url', 'passphrase', 'recovery-passphrase'],
     options,
@@ -3469,7 +3464,7 @@ async function handleRecoveryCreate(options: LocalCliOptions): Promise<void> {
             recoveryKey,
             recoveryPassphraseBytes,
             binding,
-            'create',
+            options.overwrite === true ? 'replace' : 'create',
           );
         } catch (error) {
           if (!isDefinitelyPreCommitArtifactFailure(error)) {
@@ -3670,11 +3665,6 @@ async function handleRecoveryUse(options: LocalCliOptions): Promise<void> {
     options.outputKeyFile ?? options.destination,
     '--destination',
   );
-  if (options.overwrite === true) {
-    throw new LocalCliError(
-      'Recovery outputs cannot be overwritten. Choose new destination paths.',
-    );
-  }
   if (destination === recoveryFile || destination === outputRecoveryFile) {
     throw new LocalCliError('Recovery-kit and key-file paths must be different.');
   }
@@ -3683,9 +3673,11 @@ async function handleRecoveryUse(options: LocalCliOptions): Promise<void> {
       'The source and destination recovery-kit paths must be different.',
     );
   }
-  await validateSecureFileDestination(outputRecoveryFile);
-  await validateSecureFileDestination(destination);
-  await validateSecureFileDestination(revisionAnchorPath(destination));
+  if (options.overwrite !== true) {
+    await validateSecureFileDestination(outputRecoveryFile);
+    await validateSecureFileDestination(destination);
+    await validateSecureFileDestination(revisionAnchorPath(destination));
+  }
   const values = await readSecrets(
     ['database-url', 'recovery-passphrase', 'new-passphrase', 'new-passphrase'],
     options,
@@ -3772,7 +3764,7 @@ async function handleRecoveryUse(options: LocalCliOptions): Promise<void> {
           recoveryKey,
           recoveryPassphraseBytes,
           recoveryBinding,
-          'create',
+          options.overwrite === true ? 'replace' : 'create',
         );
       } catch (error) {
         if (!isDefinitelyPreCommitArtifactFailure(error)) {
@@ -3788,7 +3780,7 @@ async function handleRecoveryUse(options: LocalCliOptions): Promise<void> {
       };
       try {
         await writePortableKeyFile(destination, portableKey, binding, {
-          mode: 'create',
+          mode: options.overwrite === true ? 'replace' : 'create',
           protection: { kind: 'passphrase', passphrase: passphraseBytes },
         });
       } catch (error) {
@@ -3842,7 +3834,7 @@ async function handleRecoveryUse(options: LocalCliOptions): Promise<void> {
         document.revision,
         destination,
         newRootKey,
-        'create',
+        options.overwrite === true ? 'replace' : 'create',
       );
       successOutput = {
         recovered: true,
@@ -3881,11 +3873,12 @@ async function handleVaultList(options: LocalCliOptions): Promise<void> {
       'This profile is a database container. Use `kavrix db vault list` (not legacy `vault list`).',
     );
   }
-  const values = await readSecrets(['database-url'], options);
+  const routed = await resolveLegacyFileProfileRouting(options);
+  const values = await readSecrets(['database-url'], routed);
   const databaseUrl = requiredSecret(values, 0);
-  await withStore(databaseUrl, options, async (store, target) => {
+  await withStore(databaseUrl, routed, async (store, target) => {
     const vaults = await store.listVaultIds();
-    writeJson({ ...storeLocation(options, target), vaults });
+    writeJson({ ...storeLocation(routed, target), vaults });
   });
 }
 
@@ -3895,12 +3888,13 @@ async function handleVaultStatus(options: LocalCliOptions): Promise<void> {
       'This profile is a database container. Use `kavrix db vault status` (not legacy `vault status`).',
     );
   }
-  const values = await readSecrets(['database-url'], options);
+  const routed = await resolveLegacyFileProfileRouting(options);
+  const values = await readSecrets(['database-url'], routed);
   const databaseUrl = requiredSecret(values, 0);
-  await withStore(databaseUrl, options, async (store, target) => {
-    const document = await requireVault(store, options.vault);
+  await withStore(databaseUrl, routed, async (store, target) => {
+    const document = await requireVault(store, routed.vault);
     writeJson({
-      ...storeLocation(options, target),
+      ...storeLocation(routed, target),
       vaultId: document.id,
       revision: document.revision,
       currentKeyVersion: document.currentKeyVersion,
@@ -4319,11 +4313,21 @@ async function requireCurrentRevisionAnchor(
     });
   } catch (error) {
     if (error instanceof PortableKeyFileError && error.code === 'KEY_FILE_NOT_FOUND') {
+      const { access } = await import('node:fs/promises');
+      try {
+        await access(keyFile);
+      } catch {
+        throw securityIntegrityFailure(
+          `Key file not found at '${keyFile}'. Pass --key-file for the portable key whose trusted revision anchor must be present.`,
+        );
+      }
       throw securityIntegrityFailure(
-        'Vault revision anchor is missing; recovery operations require the trusted local anchor.',
+        'Vault revision anchor is missing; recovery operations require the trusted local anchor beside the key file.',
       );
     }
-    throw securityIntegrityFailure('Vault revision anchor is invalid.');
+    throw securityIntegrityFailure(
+      'Vault revision anchor is invalid or does not match this key file. Confirm --key-file points at the portable key bound to this vault.',
+    );
   }
   const expected = localVaultRevisionAnchor(document);
   if (

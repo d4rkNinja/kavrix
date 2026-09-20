@@ -410,6 +410,81 @@ describe('flat database command routing', () => {
     ).rejects.toThrow('Secret input is incomplete.');
   });
 
+  it('covers ambient path matching across bound, unbound, and Mongo profiles', async () => {
+    const boundDataFile = join(directory, 'ambient.database');
+    const boundKeyFile = join(directory, 'ambient.key');
+    await addCurrentProfile(fileProfile(boundDataFile, boundKeyFile));
+
+    const store = { close: vi.fn(async () => undefined) } as never;
+    const session = { close: vi.fn(async () => undefined) } as never;
+    const openStore = vi
+      .spyOn(FileEncryptedDatabaseStore, 'open')
+      .mockResolvedValue(store);
+    vi.spyOn(DatabaseSession, 'open').mockResolvedValue(session);
+
+    await withDatabaseFlatVault(
+      {
+        profileConfigDir: directory,
+        vault: 'vault_project',
+        dataFile: boundDataFile,
+        routingOverrides: { dataFile: boundDataFile },
+      },
+      { passphrase: 'correct horse battery staple', extras: [] },
+      async () => undefined,
+    );
+    expect(openStore).toHaveBeenCalledWith(boundDataFile);
+
+    await withDatabaseFlatVault(
+      {
+        profileConfigDir: directory,
+        vault: 'vault_project',
+        keyFile: boundKeyFile,
+        routingOverrides: { keyFile: boundKeyFile },
+      },
+      { passphrase: 'correct horse battery staple', extras: [] },
+      async () => undefined,
+    );
+
+    const registry = await DatastoreProfileRegistry.open({
+      configDirectory: directory,
+    });
+    const unboundDataFile = join(directory, 'ambient-unbound.vault');
+    const unboundKeyFile = join(directory, 'ambient-unbound.key');
+    const unbound = fileProfile(unboundDataFile, unboundKeyFile);
+    const { databaseId: _databaseId, ...unboundProfile } = unbound;
+    await registry.remove(unbound.id);
+    await registry.add(unboundProfile);
+    await registry.use(unbound.id);
+    await expect(
+      withDatabaseFlatVault(
+        {
+          profileConfigDir: directory,
+          vault: 'vault_project',
+          dataFile: unboundDataFile,
+          routingOverrides: { dataFile: unboundDataFile },
+        },
+        { passphrase: 'correct horse battery staple', extras: [] },
+        async () => undefined,
+      ),
+    ).rejects.toThrow('A database profile is required.');
+
+    const mongo = mongoProfile();
+    await registry.add(mongo);
+    await registry.use(mongo.id);
+    await expect(
+      withDatabaseFlatVault(
+        {
+          profileConfigDir: directory,
+          vault: 'vault_project',
+          dataFile: join(directory, 'wrong.database'),
+          routingOverrides: { dataFile: join(directory, 'wrong.database') },
+        },
+        { passphrase: 'correct horse battery staple', extras: [] },
+        async () => undefined,
+      ),
+    ).rejects.toThrow(/bound(?: database-container)? profile/i);
+  });
+
   it('closes a store when session opening fails and validates cross-datastore overrides', async () => {
     const profile = fileProfile(
       join(directory, 'failure.database'),
