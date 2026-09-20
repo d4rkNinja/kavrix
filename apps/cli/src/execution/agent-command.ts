@@ -35,7 +35,12 @@ import {
 } from '../database-flat-commands.js';
 import { AuthorizationState, nowIso } from './authorization-state.js';
 import { requestApproval } from './confirm.js';
-import { CodedCliError, invalidConfiguration } from './exit-codes.js';
+import {
+  CodedCliError,
+  executionFailed,
+  invalidConfiguration,
+  runnerFailure,
+} from './exit-codes.js';
 import { resolveExecutable } from './executable.js';
 import {
   canonicalizeDirectory,
@@ -216,7 +221,7 @@ export async function executeAgentRun(options: AgentRunOptions): Promise<unknown
   if (resolution.status !== 'resolved') {
     await broker.cleanup();
     state.close();
-    throw invalidConfiguration('The agent executable could not be resolved.');
+    throw executionFailed('The agent executable could not be resolved.');
   }
 
   const childRef: { current: ChildProcess | null } = { current: null };
@@ -243,10 +248,12 @@ export async function executeAgentRun(options: AgentRunOptions): Promise<unknown
       },
     });
   } catch (error) {
-    if (error instanceof RunnerError && error.code === 'RUNNER_SPAWN_FAILED') {
-      throw new CodedCliError(
-        'USAGE_ERROR',
-        'The agent executable could not be started.',
+    if (error instanceof RunnerError) {
+      throw runnerFailure(
+        error.code,
+        error.code === 'RUNNER_ENVIRONMENT_REJECTED'
+          ? 'A destination variable conflicts with a protected runtime variable.'
+          : 'The agent executable could not be started.',
       );
     }
     throw error;

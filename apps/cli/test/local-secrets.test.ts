@@ -2,7 +2,9 @@ import { Readable, Writable } from 'node:stream';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { classifyCliFailure } from '../src/cli-errors.js';
 import { LocalSecretInput } from '../src/local-secrets.js';
+import { EXEC_PASSPHRASE, passphraseFrame } from './execution-helpers.js';
 
 class TestTerminalInput extends Readable {
   public isRaw: boolean;
@@ -78,10 +80,54 @@ afterEach(() => {
 });
 
 describe('local secret input policy', () => {
-  it('rejects short passphrases before key derivation', async () => {
-    await expect(secretInput('too-short\n').read(['passphrase'], true)).rejects.toThrow(
-      'Passphrases must contain at least 16 bytes.',
-    );
+  it('rejects short create-passphrase pairs before key derivation', async () => {
+    await expect(
+      secretInput('too-short\ntoo-short\n').read(['passphrase', 'passphrase'], true),
+    ).rejects.toThrow('Passphrases must contain at least 16 bytes.');
+  });
+
+  it('keeps the minimum-length policy for new-passphrase stdin', async () => {
+    await expect(
+      secretInput('too-short\n').read(['new-passphrase'], true),
+    ).rejects.toThrow('Passphrases must contain at least 16 bytes.');
+  });
+
+  it('accepts a short unlock passphrase so authentication can fail closed', async () => {
+    await expect(
+      secretInput('too-short\n').read(['passphrase'], true),
+    ).resolves.toEqual(['too-short']);
+  });
+
+  it('rejects swapped passphrase/value stdin frames without a length check', async () => {
+    const lf = `alpha\n${passphraseFrame()}`;
+    const crlf = lf.replace(/\n/gu, '\r\n');
+    for (const [label, payload] of [
+      ['lf', lf],
+      ['crlf', crlf],
+    ] as const) {
+      const error = await secretInput(payload)
+        .read(['passphrase', 'field-value'], true)
+        .catch((caught: unknown) => caught);
+      expect(error, label).toBeInstanceOf(Error);
+      const classified = classifyCliFailure(error);
+      expect(classified.exitCode, label).toBe(2);
+      expect(classified.message, label).toBe(
+        'Secret input frames are in the wrong order.',
+      );
+      expect(classified.message, label).not.toContain('16 bytes');
+      expect(classified.message, label).not.toContain('alpha');
+      expect(classified.message, label).not.toContain(EXEC_PASSPHRASE);
+    }
+  });
+
+  it('accepts passphrase-then-value stdin frames', async () => {
+    const lf = `${passphraseFrame()}alpha\n`;
+    await expect(
+      secretInput(lf).read(['passphrase', 'field-value'], true),
+    ).resolves.toEqual([EXEC_PASSPHRASE, 'alpha']);
+    await expect(
+      secretInput(lf.replace(/\n/gu, '\r\n')).read(['passphrase', 'field-value'], true),
+    ).resolves.toEqual([EXEC_PASSPHRASE, 'alpha']);
   });
 
   it('keeps non-passphrase stdin values governed by their own validation', async () => {

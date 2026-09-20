@@ -170,8 +170,6 @@ describe('run --no-config help', () => {
     const result = await runCli(['run', '--help'], '');
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toContain('--no-config');
-    expect(result.stdout.toLowerCase()).toMatch(
-      /skip project configuration|ignore any project/u,
-    );
+    expect(result.stdout).toMatch(/--no-config\s+Skip project configuration:/);
   });
 });

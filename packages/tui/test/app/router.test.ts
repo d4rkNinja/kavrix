@@ -25,6 +25,8 @@ import {
   resolveAppPresentation,
   listScreenInventory,
   defaultFileProfilePaths,
+  defaultMongoProfilePaths,
+  defaultRecoveryFilePath,
   pathSeparator,
   type AppRouterState,
   type AppSnapshot,
@@ -97,6 +99,25 @@ describe('app router navigation', () => {
     expect(listScreenInventory()).toEqual([...APP_SCREEN_IDS]);
   });
 
+  it('hydrate marks sessionReady and keeps credentialFilter on spread', () => {
+    const initial = createInitialAppRouterState({ width: 100, height: 30 });
+    expect(initial.sessionReady).toBe(false);
+    expect(initial.credentialFilter).toBe('');
+    const ready = transitionAppRouter(initial, {
+      type: 'hydrate',
+      snapshot: sampleSnapshot(),
+    }).state;
+    expect(ready.sessionReady).toBe(true);
+    expect(ready.credentialFilter).toBe('');
+    expect(ready.snapshot.credentials).toHaveLength(2);
+    const filtered = {
+      ...ready,
+      credentialFilter: 'api',
+    };
+    expect(filtered.sessionReady).toBe(true);
+    expect(filtered.credentialFilter).toBe('api');
+  });
+
   it('moves the home menu and opens screens', () => {
     let state = hydrate();
     state = transitionAppRouter(state, {
@@ -126,6 +147,138 @@ describe('app router navigation', () => {
       nowMs: 0,
     }).state;
     expect(state.quit).toBe(true);
+  });
+
+  it('opens credential detail on Enter and remasks after Escape', () => {
+    const state = navigateToScreen(hydrate(), 'credentials');
+    const opened = transitionAppRouter(state, {
+      type: 'key',
+      key: { name: 'return' },
+      nowMs: 0,
+    });
+    expect(opened.state.overlay).toBe('credential-detail');
+    expect(opened.state.pendingName).toBe('api-key');
+    const revealed = {
+      ...opened.state,
+      overlay: 'none' as const,
+      revealedName: 'api-key',
+      revealedValue: 'temporary',
+      revealedUntilMs: 15_000,
+    };
+    const remasked = transitionAppRouter(revealed, {
+      type: 'key',
+      key: { name: 'escape' },
+      nowMs: 16_000,
+    });
+    expect(remasked.state.overlay).toBe('none');
+    expect(remasked.state.revealedName).toBeNull();
+    expect(remasked.state.revealedValue).toBeNull();
+    expect(remasked.state.screen).toBe('credentials');
+    const home = transitionAppRouter(remasked.state, {
+      type: 'key',
+      key: { name: 'escape' },
+      nowMs: 16_001,
+    });
+    expect(home.state.screen).toBe('home');
+  });
+
+  it('clears a REVEAL on tick expiry', () => {
+    const state = {
+      ...navigateToScreen(hydrate(), 'credentials'),
+      revealedName: 'api-key',
+      revealedValue: 'temporary',
+      revealedUntilMs: 10,
+    };
+    const expired = transitionAppRouter(state, { type: 'tick', nowMs: 11 });
+    expect(expired.state.revealedName).toBeNull();
+    expect(expired.state.revealedValue).toBeNull();
+  });
+
+  it('remasks after a hydrate REVEAL result and copy never paints plaintext', () => {
+    let state = navigateToScreen(hydrate(), 'credentials');
+    const copied = transitionAppRouter(state, {
+      type: 'key',
+      key: { text: 'c' },
+      nowMs: 0,
+    });
+    expect(copied.state.overlay).toBe('none');
+    expect(copied.state.revealedValue).toBeNull();
+    expect(copied.effect).toEqual({
+      kind: 'backend',
+      action: { type: 'copy-credential', name: 'api-key' },
+    });
+    state = transitionAppRouter(state, {
+      type: 'key',
+      key: { text: 'r' },
+      nowMs: 1,
+    }).state;
+    state = transitionAppRouter(state, {
+      type: 'key',
+      key: { text: 'y' },
+      nowMs: 2,
+    }).state;
+    const revealed = transitionAppRouter(state, {
+      type: 'backend-result',
+      snapshot: state.snapshot,
+      revealedSecret: 'temporary',
+      nowMs: 10,
+    }).state;
+    expect(revealed.overlay).toBe('none');
+    expect(revealed.revealedName).toBe('api-key');
+    expect(revealed.revealedValue).toBe('temporary');
+    expect(revealed.screen).toBe('credentials');
+    const shown = frame({ ...revealed, ascii: true, color: false });
+    expect(shown).toContain('REVEAL:');
+    expect(shown).toContain('temporary');
+    const remasked = transitionAppRouter(revealed, {
+      type: 'tick',
+      nowMs: 15_011,
+    }).state;
+    expect(remasked.revealedName).toBeNull();
+    expect(remasked.revealedValue).toBeNull();
+    expect(remasked.screen).toBe('credentials');
+    const remaskedFrame = frame({ ...remasked, ascii: true, color: false });
+    expect(remaskedFrame).not.toContain('temporary');
+    expect(remaskedFrame).toContain('********');
+  });
+
+  it('returns focus to the credentials list after REVEAL cancel and remask Escape', () => {
+    let state = navigateToScreen(hydrate(), 'credentials');
+    state = transitionAppRouter(state, {
+      type: 'key',
+      key: { text: 'r' },
+      nowMs: 0,
+    }).state;
+    expect(state.overlay).toBe('confirm-reveal');
+    const cancelled = transitionAppRouter(state, {
+      type: 'key',
+      key: { name: 'escape' },
+      nowMs: 1,
+    }).state;
+    expect(cancelled.overlay).toBe('none');
+    expect(cancelled.screen).toBe('credentials');
+    expect(cancelled.revealedValue).toBeNull();
+    const revealed = {
+      ...cancelled,
+      revealedName: 'api-key',
+      revealedValue: 'temporary',
+      revealedUntilMs: 15_000,
+    };
+    const remasked = transitionAppRouter(revealed, {
+      type: 'key',
+      key: { name: 'escape' },
+      nowMs: 20,
+    }).state;
+    expect(remasked.overlay).toBe('none');
+    expect(remasked.revealedName).toBeNull();
+    expect(remasked.revealedValue).toBeNull();
+    expect(remasked.screen).toBe('credentials');
+    const home = transitionAppRouter(remasked, {
+      type: 'key',
+      key: { name: 'escape' },
+      nowMs: 21,
+    }).state;
+    expect(home.screen).toBe('home');
   });
 
   it('requires REVEAL confirmation before backend reveal', () => {
@@ -242,18 +395,37 @@ describe('ASCII and NO_COLOR presentation', () => {
     expect(pathSeparator()).toBe(sep);
     const home = join('Users', 'demo');
     const paths = defaultFileProfilePaths('demo', home);
-    expect(paths.dataFile).toBe(
-      join(home, '.local', 'share', 'kavrix', 'demo', 'db.kavrix'),
-    );
-    expect(paths.keyFile).toBe(
-      join(home, '.local', 'share', 'kavrix', 'demo', 'owner.key'),
-    );
+    expect(paths.dataFile).toBe(join(home, '.kavrix', 'demo.vault'));
+    expect(paths.keyFile).toBe(join(home, '.kavrix', 'demo.key'));
     // No bashisms: removing path.sep leaves no other directory separators.
     for (const candidate of [paths.dataFile, paths.keyFile]) {
       const withoutSep = candidate.split(sep).join('');
       expect(withoutSep.includes('/')).toBe(false);
       expect(withoutSep.includes('\\')).toBe(false);
     }
+  });
+
+  it('keeps default vault/key/recovery under ~/.kavrix (not XDG share)', () => {
+    const home = join('tmp', 'empty-home');
+    const fileDefaults = defaultFileProfilePaths('default', home);
+    const mongoDefaults = defaultMongoProfilePaths('default', home);
+    expect(fileDefaults.dataFile).toBe(join(home, '.kavrix', 'kavrix.vault'));
+    expect(fileDefaults.keyFile).toBe(join(home, '.kavrix', 'kavrix.key'));
+    expect(mongoDefaults.keyFile).toBe(join(home, '.kavrix', 'kavrix.key'));
+    expect(defaultRecoveryFilePath('default', home)).toBe(
+      join(home, '.kavrix', 'kavrix.recovery'),
+    );
+    expect(fileDefaults.keyFile.includes(join('.local', 'share'))).toBe(false);
+  });
+
+  it('resolves named-profile mongo and recovery under ~/.kavrix', () => {
+    const home = join('tmp', 'named-home');
+    expect(defaultMongoProfilePaths('demo', home).keyFile).toBe(
+      join(home, '.kavrix', 'demo.key'),
+    );
+    expect(defaultRecoveryFilePath('demo', home)).toBe(
+      join(home, '.kavrix', 'demo.recovery'),
+    );
   });
 
   it('snapshots home and credentials in ASCII and NO_COLOR modes', () => {

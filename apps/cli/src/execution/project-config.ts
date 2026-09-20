@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { parse as parseYaml } from 'yaml';
 
 import {
+  describeProjectConfigFailure,
   normalizeProjectConfigAliases,
   projectConfigDocumentSchema,
   type PermissionEntry,
@@ -38,9 +39,7 @@ export async function loadProjectConfig(
   const normalized = normalizeProjectConfigAliases(parsed);
   const result = projectConfigDocumentSchema.safeParse(normalized);
   if (!result.success) {
-    throw invalidConfiguration(
-      'Project configuration is invalid. Only version 1 documents with credential references are accepted.',
-    );
+    throw invalidConfiguration(describeProjectConfigFailure(normalized));
   }
   return { document: result.data };
 }

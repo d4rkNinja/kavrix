@@ -147,8 +147,11 @@ describe('kavrix run', () => {
       passphraseFrame(),
     );
     expect(result.exitCode).toBe(11);
-    expect(result.stderr).toContain('nope/absent');
-    expect(result.stderr).not.toContain('e2e-canary-secret-value');
+    const envelope = lastJsonLine(result.stdout);
+    expect(envelope.error?.code).toBe('CREDENTIAL_MISSING');
+    expect(envelope.error?.message).toContain('nope/absent');
+    expect(result.stderr.trim()).toBe('');
+    expect(result.stdout).not.toContain('e2e-canary-secret-value');
   });
 
   it('rejects malformed secret mappings as usage errors', async () => {
@@ -293,7 +296,10 @@ describe('kavrix run', () => {
       passphraseFrame(),
     );
     expect(result.exitCode).toBe(14);
-    expect(result.stderr).toMatch(/protected/i);
+    const envelope = lastJsonLine(result.stdout);
+    expect(envelope.error?.code).toBe('INVALID_CONFIGURATION');
+    expect(envelope.error?.message).toMatch(/protected/i);
+    expect(result.stderr.trim()).toBe('');
   });
 
   it('reports multiple matching grants as a grant error', async () => {
@@ -393,7 +399,7 @@ describe('kavrix run', () => {
       ],
       passphraseFrame(),
     );
-    expect(unresolved.exitCode).toBe(12);
+    expect(unresolved.exitCode).toBe(18);
     expect(unresolved.stderr).toContain('could not be resolved');
   });
 

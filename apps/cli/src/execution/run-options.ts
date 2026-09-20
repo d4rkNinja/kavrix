@@ -1,6 +1,9 @@
 ﻿import { isReservedEnvironmentName } from '@kavrix/runner';
 import { environmentVariableNameSchema } from '@kavrix/schemas';
 
+/** Inherited identity names the child must not receive as a secret dest. */
+const RESERVED_INHERITED_IDENTITY_NAMES = new Set(['USER', 'USERNAME', 'LOGNAME']);
+
 import { invalidConfiguration } from './exit-codes.js';
 import type { DatabaseFlatCommandOptions } from '../database-flat-commands.js';
 
@@ -33,7 +36,10 @@ export function parseSecretMappings(
     if (!environmentVariableNameSchema.safeParse(destination).success) {
       throw invalidMapping(raw);
     }
-    if (isReservedEnvironmentName(destination)) {
+    if (
+      isReservedEnvironmentName(destination) ||
+      RESERVED_INHERITED_IDENTITY_NAMES.has(destination.toUpperCase())
+    ) {
       throw invalidConfiguration(
         `Destination variable '${destination}' is protected and cannot be used for secret injection.`,
       );

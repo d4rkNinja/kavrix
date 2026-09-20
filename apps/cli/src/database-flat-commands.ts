@@ -154,8 +154,21 @@ export async function readDatabaseFlatSecrets(
   });
   const anyStdin = flags.some(Boolean);
   if (anyStdin && !flags.every(Boolean)) {
+    const missingFlags = kinds
+      .filter((_, index) => flags[index] !== true)
+      .map((kind) => {
+        if (kind === 'database-url') return '--database-url-stdin';
+        if (kind === 'passphrase') return '--passphrase-stdin';
+        if (kind === 'field-value-base64') return '--value-stdin-base64';
+        return '--value-stdin';
+      });
+    const firstMissing = missingFlags[0] ?? '--value-stdin';
+    const named =
+      missingFlags.length === 1
+        ? `Missing ${firstMissing}.`
+        : `Missing ${missingFlags.join(' and ')}.`;
     throw new DatabaseFlatCommandError(
-      'Use stdin flags for every secret in a command, or use masked prompts for all of them.',
+      `${named} Use stdin flags for every secret in a command, or use masked prompts for all of them.`,
     );
   }
   const values = await new LocalSecretInput(process.stdin, process.stderr).read(

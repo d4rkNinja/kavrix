@@ -1,5 +1,6 @@
 import {
   CLI_EXIT_CODES,
+  cliErrorCodeForRunnerFailure,
   cliErrorCodeSchema,
   exitCodeForCliError,
   type CliErrorEnvelope,
@@ -62,6 +63,31 @@ export function confirmationRequired(message: string): CodedCliError {
   return new CodedCliError('CONFIRMATION_REQUIRED', message);
 }
 
+export function executionFailed(message: string): CodedCliError {
+  return new CodedCliError('EXECUTION_FAILED', message);
+}
+
+/** Maps a runner failure onto the stable CLI class (spawn-miss is exit 18). */
+export function runnerFailure(code: string, message: string): CodedCliError {
+  return new CodedCliError(cliErrorCodeForRunnerFailure(code), message);
+}
+
+/** Marks an error whose JSON envelope was already written to stdout. */
+export function markJsonReported(error: unknown): void {
+  if (error !== null && typeof error === 'object') {
+    Reflect.set(error, 'jsonReported', true);
+  }
+}
+
+/** True when `--json` already emitted the machine envelope for this failure. */
+export function wasJsonReported(error: unknown): boolean {
+  return (
+    error !== null &&
+    typeof error === 'object' &&
+    Reflect.get(error, 'jsonReported') === true
+  );
+}
+
 export function isCodedCliError(error: unknown): error is CodedCliError {
   return (
     error instanceof Error &&
@@ -86,4 +112,25 @@ export function toErrorEnvelope(code: CliErrorCode, message: string): CliErrorEn
       message,
     },
   };
+}
+
+/**
+ * Maps a DatabaseSessionError onto the stable automation CliErrorCode used by
+ * `--json` envelopes. Authentication must become AUTHENTICATION_FAILED (exit 10).
+ */
+export function cliErrorCodeForSessionFailure(code: string): CliErrorCode {
+  switch (code) {
+    case 'authentication':
+      return 'AUTHENTICATION_FAILED';
+    case 'not-found':
+      return 'CREDENTIAL_MISSING';
+    case 'duplicate':
+    case 'invalid':
+      return 'INVALID_CONFIGURATION';
+    case 'binding':
+    case 'rollback':
+      return 'SECURITY_INTEGRITY_FAILURE';
+    default:
+      return 'DATASTORE_FAILURE';
+  }
 }

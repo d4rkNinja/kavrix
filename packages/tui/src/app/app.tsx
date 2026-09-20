@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState, type ReactElement } from 'rea
 import type { AppBackendAction, InteractiveAppBackend } from './backend.js';
 import {
   createInitialAppRouterState,
+  ensureTtySize,
   sanitizePasteText,
   transitionAppRouter,
   type AppKey,
@@ -12,7 +13,9 @@ import {
 } from './router.js';
 import { AppChrome, renderActiveScreen } from './screens.js';
 import { resolveAppPresentation } from './theme.js';
+import { ErrorState, LoadingState } from './widgets.js';
 import { SplashGate } from '../splash-gate.js';
+import { armFirstFrameWatchdog } from '../first-frame-watchdog.js';
 
 export interface KavrixAppProps {
   readonly backend: InteractiveAppBackend;
@@ -40,14 +43,17 @@ export function KavrixApp({
     ...(color === undefined ? {} : { color }),
   });
   const [backendReady, setBackendReady] = useState(false);
-  const [state, setState] = useState(() =>
-    createInitialAppRouterState({
-      width: stdout.columns,
-      height: stdout.rows,
+  const [hydrateError, setHydrateError] = useState<string | null>(null);
+  const [paintEpoch, setPaintEpoch] = useState(0);
+  const [state, setState] = useState(() => {
+    const size = ensureTtySize(stdout);
+    return createInitialAppRouterState({
+      width: size.width,
+      height: size.height,
       ascii: presentation.ascii,
       color: presentation.color,
-    }),
-  );
+    });
+  });
   const stateRef = useRef(state);
   const backendRef = useRef(backend);
   const onQuitRef = useRef(onQuit);
@@ -86,9 +92,22 @@ export function KavrixApp({
 
   const dispatch = useCallback(
     (action: AppRouterAction): void => {
+      const previousScreen = stateRef.current.screen;
+      const previousOverlay = stateRef.current.overlay;
       const next = transitionAppRouter(stateRef.current, action);
       stateRef.current = next.state;
       setState(next.state);
+      // Remount chrome after hydrate/resize/navigation — not every keystroke —
+      // so Mid fixtures and flaky TTYs cannot keep a blank or stale frame.
+      if (
+        action.type === 'hydrate' ||
+        action.type === 'backend-result' ||
+        action.type === 'resize' ||
+        next.state.screen !== previousScreen ||
+        next.state.overlay !== previousOverlay
+      ) {
+        setPaintEpoch((epoch) => epoch + 1);
+      }
       if (next.effect.kind === 'backend') {
         void runBackend(next.effect.action);
       }
@@ -98,15 +117,61 @@ export function KavrixApp({
   dispatchRef.current = dispatch;
 
   useEffect(() => {
-    void backendRef.current.load().then((snapshot) => {
-      dispatch({ type: 'hydrate', snapshot });
+    let cancelled = false;
+    let settled = false;
+    const timeout = setTimeout(() => {
+      if (cancelled || settled) return;
+      settled = true;
+      setHydrateError(
+        'Vault session hydrate timed out. Press q to quit, then retry with --no-splash or check --config-dir.',
+      );
       setBackendReady(true);
-    });
+      setPaintEpoch((epoch) => epoch + 1);
+    }, 8_000);
+    void backendRef.current
+      .load()
+      .then((snapshot) => {
+        if (cancelled || settled) return;
+        settled = true;
+        dispatch({ type: 'hydrate', snapshot });
+        setBackendReady(true);
+        setPaintEpoch((epoch) => epoch + 1);
+      })
+      .catch((error: unknown) => {
+        if (cancelled || settled) return;
+        settled = true;
+        const message =
+          error instanceof Error && error.message.trim().length > 0
+            ? error.message
+            : 'Vault session hydrate failed.';
+        setHydrateError(message);
+        setBackendReady(true);
+        setPaintEpoch((epoch) => epoch + 1);
+      });
+    return () => {
+      cancelled = true;
+      clearTimeout(timeout);
+    };
   }, [dispatch]);
 
   useEffect(() => {
+    // Kick Ink's first paint; some TTYs stay blank until a second frame.
+    const kick = setTimeout(() => {
+      setPaintEpoch((epoch) => epoch + 1);
+    }, 0);
+    return () => {
+      clearTimeout(kick);
+    };
+  }, []);
+
+  useEffect(() => {
     const resize = (): void => {
-      dispatch({ type: 'resize', width: stdout.columns, height: stdout.rows });
+      const size = ensureTtySize(stdout);
+      dispatch({
+        type: 'resize',
+        width: size.width,
+        height: size.height,
+      });
     };
     stdout.on('resize', resize);
     return () => {
@@ -143,6 +208,25 @@ export function KavrixApp({
     dispatch({ type: 'key', key: { text: cleaned }, nowMs: now() });
   });
 
+  const body =
+    hydrateError !== null ? (
+      <ErrorState
+        title="Hydrate failed"
+        recovery={hydrateError}
+        color={presentation.color}
+        ascii={presentation.ascii}
+      />
+    ) : !backendReady ? (
+      <LoadingState
+        label="Loading vault session…"
+        color={presentation.color}
+        ascii={presentation.ascii}
+        animate
+      />
+    ) : (
+      renderActiveScreen(state)
+    );
+
   return (
     <SplashGate
       color={presentation.color}
@@ -154,7 +238,9 @@ export function KavrixApp({
       ready={backendReady}
       now={now}
     >
-      <AppChrome state={state}>{renderActiveScreen(state)}</AppChrome>
+      <AppChrome key={`chrome-${state.screen}-${String(paintEpoch)}`} state={state}>
+        {body}
+      </AppChrome>
     </SplashGate>
   );
 }
@@ -180,6 +266,23 @@ export function mountKavrixApp(options: MountKavrixAppOptions): KavrixAppHandle 
     ...(options.ascii === undefined ? {} : { ascii: options.ascii }),
     ...(options.color === undefined ? {} : { color: options.color }),
   });
+  const stdout = options.stdout ?? process.stdout;
+  ensureTtySize(stdout);
+  // Ink 7 skips live frames under CI=1 even on a real TTY (xfce4-terminal stays
+  // blank while the process lives). Force interactive and fail loudly if the
+  // first frame never arrives.
+  const watchdog = armFirstFrameWatchdog({
+    stdout,
+    label: 'kavrix tui',
+    onTimeout: (error) => {
+      try {
+        process.stderr.write(`${error.message}\n`);
+      } catch {
+        // ignore
+      }
+      process.exitCode = 1;
+    },
+  });
   const instance = render(
     <KavrixApp
       backend={options.backend}
@@ -189,17 +292,23 @@ export function mountKavrixApp(options: MountKavrixAppOptions): KavrixAppHandle 
       {...(options.noSplash === undefined ? {} : { noSplash: options.noSplash })}
     />,
     {
-      stdout: options.stdout ?? process.stdout,
+      stdout,
       stdin: options.stdin ?? process.stdin,
       exitOnCtrlC: false,
       patchConsole: false,
+      interactive: true,
     },
   );
   return {
     waitUntilExit: async () => {
-      await instance.waitUntilExit();
+      try {
+        await instance.waitUntilExit();
+      } finally {
+        watchdog.dispose();
+      }
     },
     unmount: () => {
+      watchdog.dispose();
       instance.unmount();
     },
   };

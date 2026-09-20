@@ -3,10 +3,13 @@ import { useCallback, useEffect, useRef, useState, type ReactElement } from 'rea
 
 import { BrandBanner } from '../showcase.js';
 import { SplashGate } from '../splash-gate.js';
+import { armFirstFrameWatchdog } from '../first-frame-watchdog.js';
 import { sanitizeTerminalText } from '../terminal-text.js';
 import type { InteractiveAppBackend, AppBackendAction } from './backend.js';
+import { resolveTtySize } from './router.js';
 import {
   createInitialOnboardingState,
+  onboardingStepFocus,
   transitionOnboarding,
   type OnboardingKey,
   type OnboardingState,
@@ -83,14 +86,18 @@ export function KavrixOnboardingApp({
   });
   // Onboarding has no backend hydrate gate; treat first paint as ready.
   const [splashReady] = useState(true);
-  const [state, setState] = useState(() =>
-    createInitialOnboardingState({
-      width: stdout.columns,
-      height: stdout.rows,
+  // paintEpoch forces Ink to remount chrome after each step so transitions
+  // cannot leave a blank/stale alternate frame on flaky TTYs.
+  const [paintEpoch, setPaintEpoch] = useState(0);
+  const [state, setState] = useState(() => {
+    const size = resolveTtySize(stdout);
+    return createInitialOnboardingState({
+      width: size.width,
+      height: size.height,
       ascii: presentation.ascii,
       color: presentation.color,
-    }),
-  );
+    });
+  });
   const stateRef = useRef(state);
   const backendRef = useRef(backend);
   const onCompleteRef = useRef(onComplete);
@@ -125,6 +132,7 @@ export function KavrixOnboardingApp({
       });
       stateRef.current = next.state;
       setState(next.state);
+      setPaintEpoch((epoch) => epoch + 1);
     } catch (error) {
       const notice =
         error instanceof Error && error.message.trim().length > 0
@@ -139,14 +147,21 @@ export function KavrixOnboardingApp({
       });
       stateRef.current = next.state;
       setState(next.state);
+      setPaintEpoch((epoch) => epoch + 1);
     }
   }, []);
 
   const dispatchKey = useCallback(
     (key: OnboardingKey): void => {
+      const previousStep = stateRef.current.step;
       const next = transitionOnboarding(stateRef.current, { type: 'key', key });
       stateRef.current = next.state;
       setState(next.state);
+      // Remount only when the step changes. Remounting on every keystroke
+      // left stale Storage / Key-file frames while typing passphrases.
+      if (next.state.step !== previousStep) {
+        setPaintEpoch((epoch) => epoch + 1);
+      }
       if (next.effect.kind === 'backend') {
         void runBackend(next.effect.action);
       }
@@ -155,14 +170,25 @@ export function KavrixOnboardingApp({
   );
 
   useEffect(() => {
+    // Kick Ink's first paint immediately; some TTYs stay blank until a second frame.
+    const kick = setTimeout(() => {
+      setPaintEpoch((epoch) => epoch + 1);
+    }, 0);
+    return () => {
+      clearTimeout(kick);
+    };
+  }, []);
+
+  useEffect(() => {
     const resize = (): void => {
       const next = transitionOnboarding(stateRef.current, {
         type: 'resize',
-        width: stdout.columns,
-        height: stdout.rows,
+        width: resolveTtySize(stdout).width,
+        height: resolveTtySize(stdout).height,
       });
       stateRef.current = next.state;
       setState(next.state);
+      setPaintEpoch((epoch) => epoch + 1);
     };
     stdout.on('resize', resize);
     return () => {
@@ -210,12 +236,15 @@ export function KavrixOnboardingApp({
       color={presentation.color}
       ascii={presentation.ascii}
       {...(version === undefined ? {} : { version })}
-      {...(noSplash === undefined ? {} : { noSplash })}
+      noSplash={noSplash !== false}
       width={state.width}
       height={state.height}
       ready={splashReady}
     >
-      <OnboardingChrome state={state} />
+      <OnboardingChrome
+        key={`onboard-${state.step}-${String(paintEpoch)}`}
+        state={state}
+      />
     </SplashGate>
   );
 }
@@ -232,10 +261,16 @@ function sanitizePasteTextLocal(raw: string): string {
   return text;
 }
 
+/** Presentational onboarding chrome for first-paint tests (no Ink hooks). */
+export function renderOnboardingScreen(state: OnboardingState): ReactElement {
+  return <OnboardingChrome state={state} />;
+}
+
 function OnboardingChrome({
   state,
 }: Readonly<{ state: OnboardingState }>): ReactElement {
-  const { color, ascii, width, height } = state;
+  const { color, ascii, width } = state;
+  const focus = onboardingStepFocus(state.step);
   const product = resolveProductIdentity();
   const accent: AppAccent =
     state.step === 'success'
@@ -244,8 +279,9 @@ function OnboardingChrome({
         ? CHROME.danger
         : CHROME.accent;
 
+  // Content-sized height: pinning height={rows} blanks some TTYs (Ink/Yoga).
   return (
-    <Box flexDirection="column" width={width} height={height}>
+    <Box flexDirection="column" width={width}>
       <Panel accent={accent} ascii={ascii} color={color} paddingX={1} paddingY={0}>
         <BrandBanner color={color} ascii={ascii} dualTone />
         <Box flexDirection="row" columnGap={1} flexWrap="wrap" marginTop={0}>
@@ -265,7 +301,7 @@ function OnboardingChrome({
           />
           <StatusPill
             label="step"
-            value={state.step}
+            value={`${String(focus.index)}/${String(focus.total)} ${focus.title}`}
             accent={accent}
             color={color}
             ascii={ascii}
@@ -281,6 +317,12 @@ function OnboardingChrome({
       </Panel>
 
       <Box flexDirection="column" flexGrow={1} paddingX={1} paddingY={1}>
+        <Text bold {...accentColor(color, CHROME.warning)}>
+          {safe(
+            `ACTIVE ${String(focus.index)}/${String(focus.total)} - ${focus.title} - ${focus.cue}`,
+            ascii,
+          )}
+        </Text>
         {renderOnboardingBody(state)}
       </Box>
 
@@ -450,7 +492,7 @@ function renderOnboardingBody(state: OnboardingState): ReactElement {
     : `${title}: ${safe(query, ascii)}_`;
   return (
     <Panel
-      title="Input"
+      title={`ACTIVE · ${title}`}
       accent={CHROME.accent}
       ascii={ascii}
       color={color}
@@ -491,10 +533,10 @@ function inputTitle(step: OnboardingState['step']): string {
       return 'Confirm owner passphrase';
     case 'file-recovery-passphrase':
     case 'mongo-recovery-passphrase':
-      return 'Recovery passphrase';
+      return 'Recovery-kit passphrase';
     case 'file-recovery-passphrase-confirm':
     case 'mongo-recovery-passphrase-confirm':
-      return 'Confirm recovery passphrase';
+      return 'Confirm recovery-kit passphrase';
     case 'file-recovery-file':
     case 'mongo-recovery-file':
       return 'Recovery kit path';
@@ -529,6 +571,19 @@ export function mountOnboardingApp(
   const resultPromise = new Promise<OnboardingAppResult>((resolve) => {
     settle = resolve;
   });
+  const stdout = options.stdout ?? process.stdout;
+  const watchdog = armFirstFrameWatchdog({
+    stdout,
+    label: 'kavrix init',
+    onTimeout: (error) => {
+      try {
+        process.stderr.write(`${error.message}\n`);
+      } catch {
+        // ignore
+      }
+      process.exitCode = 1;
+    },
+  });
   const instance = render(
     <KavrixOnboardingApp
       backend={options.backend}
@@ -541,23 +596,28 @@ export function mountOnboardingApp(
       }}
     />,
     {
-      stdout: options.stdout ?? process.stdout,
+      stdout,
       stdin: options.stdin ?? process.stdin,
       exitOnCtrlC: false,
       patchConsole: false,
+      interactive: true,
     },
   );
   return {
     waitUntilExit: async () => {
-      const fromCallback = await Promise.race([
-        resultPromise,
-        instance
-          .waitUntilExit()
-          .then((): OnboardingAppResult => ({ status: 'cancelled' })),
-      ]);
-      return fromCallback;
+      try {
+        return await Promise.race([
+          resultPromise,
+          instance
+            .waitUntilExit()
+            .then((): OnboardingAppResult => ({ status: 'cancelled' })),
+        ]);
+      } finally {
+        watchdog.dispose();
+      }
     },
     unmount: () => {
+      watchdog.dispose();
       instance.unmount();
     },
   };

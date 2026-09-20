@@ -49,7 +49,8 @@ export type AppOverlay =
   | 'input-grant-command'
   | 'input-grant-ttl'
   | 'input-agent-name'
-  | 'input-agent-config';
+  | 'input-agent-config'
+  | 'credential-detail';
 
 export interface AppRouterState {
   readonly screen: AppScreenId;
@@ -90,6 +91,10 @@ export interface AppRouterState {
   readonly revealedUntilMs: number;
   readonly message: string | null;
   readonly quit: boolean;
+  /** Client-side credential name filter from `/` search. */
+  readonly credentialFilter: string;
+  /** True after the first successful hydrate so motion can start. */
+  readonly sessionReady: boolean;
 }
 
 export type AppRouterEffect =
@@ -111,6 +116,34 @@ export type AppRouterAction =
   | Readonly<{ type: 'resize'; width: number; height: number }>
   | Readonly<{ type: 'tick'; nowMs: number }>
   | Readonly<{ type: 'key'; key: AppKey; nowMs: number }>;
+
+/** Clamp missing/zero TTY sizes so Ink/Yoga cannot blank the first frame. */
+export function resolveTtySize(
+  stdout: Readonly<{ columns?: number; rows?: number }>,
+): Readonly<{ width: number; height: number }> {
+  const width = stdout.columns;
+  const height = stdout.rows;
+  return {
+    width:
+      typeof width === 'number' && Number.isFinite(width) && width > 0 ? width : 80,
+    height:
+      typeof height === 'number' && Number.isFinite(height) && height > 0 ? height : 24,
+  };
+}
+
+/**
+ * Write fallback columns/rows onto a TTY so Ink/Yoga cannot layout at 0×0
+ * (Mid fixtures and hosts that omit size).
+ */
+export function ensureTtySize(stdout: {
+  columns?: number;
+  rows?: number;
+}): Readonly<{ width: number; height: number }> {
+  const size = resolveTtySize(stdout);
+  stdout.columns = size.width;
+  stdout.rows = size.height;
+  return size;
+}
 
 export function createInitialAppRouterState(
   options: Readonly<{
@@ -152,6 +185,8 @@ export function createInitialAppRouterState(
     revealedUntilMs: 0,
     message: null,
     quit: false,
+    credentialFilter: '',
+    sessionReady: false,
   };
 }
 
@@ -165,6 +200,7 @@ export function transitionAppRouter(
         ...state,
         snapshot: action.snapshot,
         message: action.snapshot.notice,
+        sessionReady: true,
       });
     case 'backend-result': {
       const revealedName =
@@ -184,6 +220,7 @@ export function transitionAppRouter(
             ? state.revealedUntilMs
             : action.nowMs + 15_000,
         overlay: 'none',
+        sessionReady: true,
       });
     }
     case 'resize':
@@ -224,6 +261,20 @@ function keyTransition(
   }
 
   if (state.overlay !== 'none') return overlayKey(state, key, nowMs);
+
+  if (
+    key.name === 'escape' &&
+    state.revealedName !== null &&
+    state.screen === 'credentials'
+  ) {
+    return unchanged({
+      ...state,
+      revealedName: null,
+      revealedValue: null,
+      revealedUntilMs: 0,
+      message: 'Reveal cleared; value remasked.',
+    });
+  }
 
   if (key.name === 'escape' && state.screen !== 'home') {
     return unchanged({ ...state, screen: 'home', listIndex: 0, message: null });
@@ -295,7 +346,7 @@ function screenKey(state: AppRouterState, key: AppKey): AppRouterTransition {
     return unchanged({ ...state, overlay: 'input-search', query: '' });
   }
   if (key.text?.toLowerCase() === 'r' && state.screen === 'credentials') {
-    const name = state.snapshot.credentials[state.listIndex]?.name;
+    const name = filteredCredentials(state)[state.listIndex]?.name;
     if (name === undefined) return unchanged(state);
     return unchanged({
       ...state,
@@ -305,7 +356,7 @@ function screenKey(state: AppRouterState, key: AppKey): AppRouterTransition {
     });
   }
   if (key.text?.toLowerCase() === 'c' && state.screen === 'credentials') {
-    const name = state.snapshot.credentials[state.listIndex]?.name;
+    const name = filteredCredentials(state)[state.listIndex]?.name;
     if (name === undefined) {
       return unchanged({
         ...state,
@@ -356,7 +407,7 @@ function screenKey(state: AppRouterState, key: AppKey): AppRouterTransition {
     });
   }
   if (key.text?.toLowerCase() === 'm' && state.screen === 'credentials') {
-    const name = state.snapshot.credentials[state.listIndex]?.name;
+    const name = filteredCredentials(state)[state.listIndex]?.name;
     if (name === undefined) return unchanged(state);
     return unchanged({
       ...state,
@@ -367,7 +418,7 @@ function screenKey(state: AppRouterState, key: AppKey): AppRouterTransition {
     });
   }
   if (key.text?.toLowerCase() === 'x' && state.screen === 'credentials') {
-    const name = state.snapshot.credentials[state.listIndex]?.name;
+    const name = filteredCredentials(state)[state.listIndex]?.name;
     if (name === undefined) return unchanged(state);
     return unchanged({
       ...state,
@@ -519,6 +570,36 @@ function overlayKey(
   key: AppKey,
   nowMs: number,
 ): AppRouterTransition {
+  if (state.overlay === 'credential-detail') {
+    if (key.name === 'escape') {
+      return unchanged({
+        ...state,
+        overlay: 'none',
+        message: 'Closed credential detail.',
+      });
+    }
+    if (key.text?.toLowerCase() === 'r') {
+      const name =
+        state.pendingName ?? filteredCredentials(state)[state.listIndex]?.name;
+      if (name === undefined) return unchanged(state);
+      return unchanged({
+        ...state,
+        overlay: 'confirm-reveal',
+        pendingRevealName: name,
+        message: `REVEAL confirmation required for '${name}'.`,
+      });
+    }
+    if (key.text?.toLowerCase() === 'c') {
+      const name =
+        state.pendingName ?? filteredCredentials(state)[state.listIndex]?.name;
+      if (name === undefined) return unchanged(state);
+      return effect(
+        { ...state, overlay: 'none' },
+        { kind: 'backend', action: { type: 'copy-credential', name } },
+      );
+    }
+    return unchanged(state);
+  }
   if (state.overlay === 'confirm-reveal') {
     if (key.text?.toLowerCase() === 'y') {
       const name = state.pendingRevealName;
@@ -1077,13 +1158,17 @@ function overlayKey(
     }
     if (key.name === 'return') {
       if (state.overlay === 'input-search') {
-        return effect(
-          { ...state, overlay: 'none' },
-          {
-            kind: 'backend',
-            action: { type: 'search-credentials', query: state.query },
-          },
-        );
+        return unchanged({
+          ...state,
+          overlay: 'none',
+          credentialFilter: state.query.trim(),
+          listIndex: 0,
+          query: '',
+          message:
+            state.query.trim().length === 0
+              ? 'Credential search cleared.'
+              : `Credential search: ${state.query.trim()}`,
+        });
       }
       const names = state.query
         .split(/[,\s]+/u)
@@ -1428,6 +1513,16 @@ function overlayKey(
 
 function activateSelection(state: AppRouterState): AppRouterTransition {
   switch (state.screen) {
+    case 'credentials': {
+      const credential = filteredCredentials(state)[state.listIndex];
+      if (credential === undefined) return unchanged(state);
+      return unchanged({
+        ...state,
+        overlay: 'credential-detail',
+        pendingName: credential.name,
+        message: `Credential detail (masked): ${credential.name}. r REVEAL · c copy · Esc close.`,
+      });
+    }
     case 'profiles': {
       const profile = state.snapshot.profiles[state.listIndex];
       if (profile === undefined) return unchanged(state);
@@ -1505,7 +1600,7 @@ function listLength(state: AppRouterState): number {
     case 'vaults':
       return state.snapshot.vaults.length;
     case 'credentials':
-      return state.snapshot.credentials.length;
+      return filteredCredentials(state).length;
     case 'doctor':
       return state.snapshot.doctor.length;
     case 'recovery':
@@ -1582,4 +1677,31 @@ export function navigateToScreen(
   screen: AppScreenId,
 ): AppRouterState {
   return { ...state, screen, listIndex: 0, overlay: 'none' };
+}
+
+/** Credentials visible under the current `/` search filter. */
+export function filteredCredentials(
+  state: AppRouterState,
+): AppRouterState['snapshot']['credentials'] {
+  const query = state.credentialFilter.trim().toLocaleLowerCase();
+  if (query.length === 0) return state.snapshot.credentials;
+  return state.snapshot.credentials.filter((credential) =>
+    credential.name.toLocaleLowerCase().includes(query),
+  );
+}
+
+/**
+ * Bounded window around the selected index so large vault lists stay
+ * measurable and do not render every row at once.
+ */
+export function visibleListWindow<T>(
+  items: readonly T[],
+  selectedIndex: number,
+  windowSize: number,
+): Readonly<{ start: number; items: readonly T[] }> {
+  const size = Math.max(1, windowSize);
+  if (items.length <= size) return { start: 0, items };
+  const half = Math.floor(size / 2);
+  const start = Math.max(0, Math.min(selectedIndex - half, items.length - size));
+  return { start, items: items.slice(start, start + size) };
 }

@@ -1,3 +1,5 @@
+import { cliErrorCodeForRunnerFailure, type CliErrorCode } from '@kavrix/schemas';
+
 export type RunnerErrorCode =
   | 'RUNNER_ABORTED'
   | 'RUNNER_ENVIRONMENT_REJECTED'
@@ -5,6 +7,11 @@ export type RunnerErrorCode =
   | 'RUNNER_INVALID_REQUEST'
   | 'RUNNER_SECRET_IN_ARGUMENTS'
   | 'RUNNER_SPAWN_FAILED';
+
+/** Stable CLI class for one runner failure. Spawn-miss is never a deny. */
+export function cliErrorCodeForRunnerError(code: RunnerErrorCode): CliErrorCode {
+  return cliErrorCodeForRunnerFailure(code);
+}
 
 const messages = {
   RUNNER_ABORTED: 'The child process was cancelled before it started.',

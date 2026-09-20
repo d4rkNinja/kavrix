@@ -351,7 +351,7 @@ describe('flat database command routing', () => {
         },
         ['field-value'],
       ),
-    ).rejects.toThrow('Use stdin flags for every secret');
+    ).rejects.toThrow(/Missing --value-stdin.*Use stdin flags for every secret/);
 
     await withStdin('correct horse battery staple\ncredential-value\n', async () => {
       await expect(

@@ -114,7 +114,10 @@ describe('stored policy lifecycle', () => {
       passphraseFrame(),
     );
     expect(missing.exitCode).toBe(13);
-    expect(missing.stderr).toContain('was not found');
+    // `--json` emits the machine envelope on stdout and suppresses the human stderr duplicate.
+    expect(parseLast(missing.stdout).error?.message ?? missing.stdout).toContain(
+      'was not found',
+    );
   });
 
   it('shows every optional field a fully-specified policy carries', async () => {

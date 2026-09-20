@@ -964,8 +964,109 @@ function effect(
   return { state, effect: nextEffect };
 }
 
+const FILE_FOCUS_STEPS: readonly OnboardingStep[] = [
+  'welcome',
+  'storage',
+  'file-profile-id',
+  'file-data-file',
+  'file-key-file',
+  'file-passphrase',
+  'file-passphrase-confirm',
+  'file-recovery-passphrase',
+  'file-recovery-passphrase-confirm',
+  'file-recovery-file',
+  'creating',
+  'success',
+];
+
+const MONGO_FOCUS_STEPS: readonly OnboardingStep[] = [
+  'welcome',
+  'storage',
+  'mongo-profile-id',
+  'mongo-database',
+  'mongo-key-file',
+  'mongo-url',
+  'mongo-passphrase',
+  'mongo-passphrase-confirm',
+  'mongo-recovery-passphrase',
+  'mongo-recovery-passphrase-confirm',
+  'mongo-recovery-file',
+  'creating',
+  'success',
+];
+
+/** Active onboarding step for operators: index, title, and type-here cue. */
+export function onboardingStepFocus(
+  step: OnboardingStep,
+): Readonly<{ index: number; total: number; title: string; cue: string }> {
+  const chain = step.startsWith('mongo') ? MONGO_FOCUS_STEPS : FILE_FOCUS_STEPS;
+  const index = Math.max(0, chain.indexOf(step));
+  const title = onboardingFocusTitle(step);
+  const cue =
+    step === 'creating'
+      ? 'PLEASE WAIT — do not type'
+      : step === 'error' || step === 'success'
+        ? 'THIS STEP IS ACTIVE'
+        : step.includes('passphrase') || step === 'mongo-url'
+          ? 'TYPE HERE (masked)'
+          : step === 'storage' || step === 'welcome'
+            ? 'THIS STEP IS ACTIVE'
+            : 'TYPE HERE';
+  return {
+    index: step === 'error' ? chain.length : index + 1,
+    total: chain.length,
+    title,
+    cue,
+  };
+}
+
+function onboardingFocusTitle(step: OnboardingStep): string {
+  switch (step) {
+    case 'welcome':
+      return 'Welcome';
+    case 'storage':
+      return 'Choose storage';
+    case 'file-profile-id':
+    case 'mongo-profile-id':
+      return 'Profile id';
+    case 'file-data-file':
+      return 'Data file';
+    case 'file-key-file':
+    case 'mongo-key-file':
+      return 'Key file';
+    case 'mongo-database':
+      return 'Database name';
+    case 'mongo-url':
+      return 'MongoDB URL';
+    case 'file-passphrase':
+    case 'mongo-passphrase':
+      return 'Owner passphrase';
+    case 'file-passphrase-confirm':
+    case 'mongo-passphrase-confirm':
+      return 'Confirm owner passphrase';
+    case 'file-recovery-passphrase':
+    case 'mongo-recovery-passphrase':
+      return 'Recovery-kit passphrase';
+    case 'file-recovery-passphrase-confirm':
+    case 'mongo-recovery-passphrase-confirm':
+      return 'Confirm recovery-kit passphrase';
+    case 'file-recovery-file':
+    case 'mongo-recovery-file':
+      return 'Recovery kit path';
+    case 'creating':
+      return 'Creating vault';
+    case 'success':
+      return 'Setup complete';
+    case 'error':
+      return 'Setup failed';
+    default:
+      return 'Input';
+  }
+}
+
 /** Presentational snapshot for deterministic tests. */
 export function describeOnboardingScreen(state: OnboardingState): string {
+  const focus = onboardingStepFocus(state.step);
   return [
     `step=${state.step}`,
     `storage=${state.storage ?? '-'}`,
@@ -973,5 +1074,6 @@ export function describeOnboardingScreen(state: OnboardingState): string {
     `queryLen=${String(state.query.length)}`,
     `completed=${String(state.completed)}`,
     `quit=${String(state.quit)}`,
+    `focus=${String(focus.index)}/${String(focus.total)}:${focus.title}:${focus.cue}`,
   ].join(' ');
 }

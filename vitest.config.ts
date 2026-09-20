@@ -62,6 +62,7 @@ export default defineConfig({
       'apps/cli/test/launch-routing-guards.test.ts',
       'apps/cli/test/p1-followups.test.ts',
       'apps/cli/test/live-qa-p1-0.2.19.test.ts',
+      'apps/cli/test/live-qa-p1-0.2.20.test.ts',
       'apps/cli/test/execution-executable.test.ts',
       'apps/cli/test/execution-engine.test.ts',
       'apps/cli/test/local-secrets.test.ts',

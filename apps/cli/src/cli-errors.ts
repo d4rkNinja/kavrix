@@ -49,7 +49,8 @@ function portableKeyFileExitCode(error: PortableKeyFileError): number {
  * Maps one thrown failure to its stable documented presentation: a single
  * sanitized line plus the exit-code contract from the CLI reference
  * (0 ok · 1 generic · 2 usage · 10 auth · 11 missing · 12 denied ·
- * 13 grant · 14 configuration · 15 datastore · 16 integrity · 17 confirm).
+ * 13 grant · 14 configuration · 15 datastore · 16 integrity · 17 confirm ·
+ * 18 execution/spawn).
  * Unknown failures stay generic and never leak raw error text, except
  * short module-load diagnostics that cannot carry vault secrets.
  */

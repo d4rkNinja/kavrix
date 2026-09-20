@@ -97,18 +97,48 @@ describe('agent run argument guards', () => {
           configFile,
           ...fixture.routingArgs,
           '--passphrase-stdin',
+          '--json',
           '--',
           bogus,
         ],
         passphraseFrame(),
       );
-      // Either the runner refuses or the CLI maps the spawn failure; both
-      // fail closed with a nonzero code and a sanitized message.
-      expect(result.exitCode).not.toBe(0);
-      expect(
-        result.stderr.includes('could not be started') ||
-          result.stderr.includes('Kavrix'),
-      ).toBe(true);
+      expect(result.exitCode).toBe(18);
+      const line = result.stdout.trim().split('\n').at(-1) ?? '';
+      const body = JSON.parse(line) as {
+        error?: { code: string; exitCode: number };
+      };
+      expect(body.error?.code).toBe('EXECUTION_FAILED');
+      expect(body.error?.exitCode).toBe(18);
+      expect(result.stderr.trim()).toBe('');
+      expect(result.stdout).not.toMatch(/AUTHORIZATION_DENIED|USAGE_ERROR/i);
+
+      const missing =
+        process.platform === 'win32'
+          ? 'C:\\no\\such\\kavrix-agent.exe'
+          : '/no/such/agent';
+      const unresolved = await runCli(
+        [
+          'agent',
+          'run',
+          '--agent',
+          'bot',
+          '--config',
+          configFile,
+          ...fixture.routingArgs,
+          '--passphrase-stdin',
+          '--json',
+          '--',
+          missing,
+        ],
+        passphraseFrame(),
+      );
+      expect(unresolved.exitCode).toBe(18);
+      const unresolvedBody = JSON.parse(
+        unresolved.stdout.trim().split('\n').at(-1) ?? '',
+      ) as { error?: { code: string; exitCode: number } };
+      expect(unresolvedBody.error?.code).toBe('EXECUTION_FAILED');
+      expect(unresolved.stderr.trim()).toBe('');
     } finally {
       await destroyFixture(fixture);
       fixture = undefined as unknown as ExecutionFixture;

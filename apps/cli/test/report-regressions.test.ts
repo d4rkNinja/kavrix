@@ -1,7 +1,7 @@
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import {
   createExecutionFixture,
@@ -442,8 +442,14 @@ describe('stdin frame reference and status', () => {
       '',
     );
     expect(bare.exitCode).toBe(0);
-    const parsed = JSON.parse(bare.stdout.trim()) as { routing: string };
-    expect(parsed.routing).toBe('legacy-v2');
+    const parsed = JSON.parse(bare.stdout.trim()) as {
+      routing: string;
+      configDirectory: string;
+      configDirectoryProvided: boolean;
+    };
+    expect(parsed.routing).toBe('unconfigured');
+    expect(parsed.configDirectory).toContain('absent-profiles');
+    expect(parsed.configDirectoryProvided).toBe(true);
     expect(parsed.version).toBeTruthy();
     const alias = await runCli(
       ['status', '--json', '--config-dir', absentConfigDir],
@@ -451,6 +457,28 @@ describe('stdin frame reference and status', () => {
     );
     expect(alias.exitCode).toBe(0);
     expect(alias.stdout).toBe(bare.stdout);
+  });
+
+  it('status without --config-dir reports the resolved default, not legacy', async () => {
+    const isolatedDefault = join(legacyDirectory, 'status-default-absent');
+    vi.stubEnv('XDG_CONFIG_HOME', isolatedDefault);
+    try {
+      const result = await runCli(['status', '--json'], '');
+      expect(result.exitCode).toBe(0);
+      const parsed = JSON.parse(result.stdout.trim()) as {
+        routing: string;
+        configDirectory: string;
+        configDirectoryProvided: boolean;
+        selectedProfile: unknown;
+      };
+      expect(parsed.routing).toBe('unconfigured');
+      expect(parsed.routing).not.toBe('legacy-v2');
+      expect(parsed.configDirectory).toContain('status-default-absent');
+      expect(parsed.configDirectoryProvided).toBe(false);
+      expect(parsed.selectedProfile).toBeNull();
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 });
 

@@ -3,10 +3,11 @@ import { describe, expect, it } from 'vitest';
 import {
   createInitialOnboardingState,
   describeOnboardingScreen,
+  onboardingStepFocus,
   transitionOnboarding,
   type OnboardingKey,
   type OnboardingState,
-} from '../../src/index.js';
+} from '../../src/app/onboarding-router.js';
 
 function press(state: OnboardingState, key: OnboardingKey): OnboardingState {
   return transitionOnboarding(state, { type: 'key', key }).state;
@@ -298,6 +299,23 @@ describe('init onboarding router', () => {
     expect(state.step).toBe('file-recovery-file');
     state = press(state, { name: 'escape' });
     expect(state.step).toBe('file-recovery-passphrase-confirm');
+  });
+
+  it('exposes an obvious focus cue for welcome, passphrase, and recovery', () => {
+    expect(onboardingStepFocus('welcome').cue).toBe('THIS STEP IS ACTIVE');
+    expect(onboardingStepFocus('storage').title).toBe('Choose storage');
+    expect(onboardingStepFocus('file-passphrase')).toMatchObject({
+      title: 'Owner passphrase',
+      cue: 'TYPE HERE (masked)',
+    });
+    expect(onboardingStepFocus('file-recovery-passphrase')).toMatchObject({
+      title: 'Recovery-kit passphrase',
+      cue: 'TYPE HERE (masked)',
+    });
+    expect(onboardingStepFocus('creating').cue).toMatch(/PLEASE WAIT/i);
+    expect(describeOnboardingScreen(createInitialOnboardingState())).toMatch(
+      /focus=1\/\d+:Welcome:THIS STEP IS ACTIVE/,
+    );
   });
 
   it('records completedRecoveryFile on backend success', () => {

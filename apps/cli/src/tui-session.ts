@@ -1,9 +1,11 @@
 import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
+import { lstat } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { zeroize } from '@kavrix/crypto';
+import { ensureSecureDirectory } from '@kavrix/key-files';
 import { profileIdSchema } from '@kavrix/schemas';
 
 import {
@@ -171,6 +173,45 @@ export interface CliTuiSessionOptions {
   readonly commandRunner?: CliTuiCommandRunner;
 }
 
+/**
+ * Portable-key / vault / recovery writes require an existing owner-only parent.
+ * Classic guided init ensures `~/.kavrix`; TUI create must do the same for
+ * default and operator-chosen paths so empty HOME does not fail with
+ * KEY_FILE_NOT_FOUND during db init / recovery.
+ */
+async function ensureSecureArtifactParents(
+  paths: readonly (string | undefined | null)[],
+): Promise<void> {
+  const seen = new Set<string>();
+  for (const candidate of paths) {
+    if (typeof candidate !== 'string') continue;
+    const trimmed = candidate.trim();
+    if (trimmed.length === 0) continue;
+    const parent = dirname(trimmed);
+    if (parent.length === 0 || seen.has(parent)) continue;
+    seen.add(parent);
+    try {
+      const metadata = await lstat(parent);
+      if (!metadata.isDirectory()) {
+        throw new Error(`Artifact parent is not a directory: ${parent}`);
+      }
+      // Parent already exists (e.g. secure test scratch under /tmp). Do not call
+      // ensureSecureDirectory — that re-validates the grandparent and fails when
+      // the grandparent is a world-writable temp root.
+    } catch (error) {
+      const code =
+        typeof error === 'object' &&
+        error !== null &&
+        'code' in error &&
+        typeof error.code === 'string'
+          ? error.code
+          : undefined;
+      if (code !== 'ENOENT') throw error;
+      await ensureSecureDirectory(parent);
+    }
+  }
+}
+
 export function createCliTuiBackend(options: CliTuiSessionOptions = {}): CliTuiBackend {
   const session = new CliTuiSession(options);
   return {
@@ -327,7 +368,7 @@ class CliTuiSession {
               slotId: '(see CLI)',
               status: 'active' as const,
               detail:
-                'Open Recovery to load status from kavrix recovery / db recovery.',
+                'Open Recovery kit for key-material slots. Doctor / heal repairs local state — it is not recovery-kit use.',
             },
           ];
     return {
@@ -517,6 +558,7 @@ class CliTuiSession {
     let vaultReady = false;
 
     try {
+      await ensureSecureArtifactParents([dataFile, keyFile, recoveryFile || null]);
       await this.#runTextCommand(
         [
           'db',
@@ -692,6 +734,7 @@ class CliTuiSession {
     let vaultReady = false;
 
     try {
+      await ensureSecureArtifactParents([keyFile, recoveryFile || null]);
       await this.#runTextCommand(
         [
           'db',

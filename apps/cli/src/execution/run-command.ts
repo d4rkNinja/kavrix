@@ -10,7 +10,12 @@ import {
   type GrantRecord,
   type PermissionEntry,
 } from '@kavrix/schemas';
-import { RunnerError, runSecureCommand, type EnvironmentMapping } from '@kavrix/runner';
+import {
+  INHERITABLE_ENVIRONMENT_NAMES,
+  RunnerError,
+  runSecureCommand,
+  type EnvironmentMapping,
+} from '@kavrix/runner';
 
 import {
   closeDatabaseFlatVault,
@@ -24,8 +29,10 @@ import {
   CodedCliError,
   authorizationDenied,
   confirmationRequired,
+  executionFailed,
   grantInvalid,
   invalidConfiguration,
+  runnerFailure,
 } from './exit-codes.js';
 import { resolveExecutable } from './executable.js';
 import {
@@ -70,17 +77,10 @@ export interface RunOutcome {
   readonly outputTruncated?: boolean;
 }
 
-const INHERITED_ENVIRONMENT_NAMES = [
-  'PATH',
-  'PATHEXT',
-  'SystemRoot',
-  'WINDIR',
-  'COMSPEC',
-  'TEMP',
-  'TMP',
-  'HOME',
-  'USERPROFILE',
-] as const;
+// Forward only names the runner currently accepts. Identity names
+// (USER/USERNAME/LOGNAME) stay reserved as destinations in run-options;
+// they join inherit when the runner lists them as inheritable.
+const INHERITED_ENVIRONMENT_NAMES = INHERITABLE_ENVIRONMENT_NAMES;
 
 const JSON_CAPTURE_MAX_BYTES = 64 * 1024;
 
@@ -135,8 +135,29 @@ export async function executeRun(options: RunCliOptions): Promise<RunOutcome> {
   }
 
   const explicitMappings = parseSecretMappings(options.secretMappings ?? []);
-  const configDocument =
-    options.noConfig === true ? null : await loadOptionalProjectConfig(options.config);
+  // Only load cwd project files when the caller asked for project features
+  // (--environment, --config, or --policy). Pure `--secret` runs ignore a
+  // broken kavrix.yaml in cwd; use --no-config to force that for any mix.
+  const wantsProjectConfig =
+    options.noConfig !== true &&
+    (options.config !== undefined ||
+      options.environmentName !== undefined ||
+      (options.policyIds?.length ?? 0) > 0);
+  const configDocument = wantsProjectConfig
+    ? await loadOptionalProjectConfig(options.config)
+    : null;
+  if (options.environmentName !== undefined) {
+    if (options.noConfig === true) {
+      throw invalidConfiguration(
+        '--environment requires a project file and cannot be combined with --no-config.',
+      );
+    }
+    if (configDocument === null) {
+      throw invalidConfiguration(
+        `Project environment '${options.environmentName}' requires a project file (kavrix.yaml). Pass --config <path>, create kavrix.yaml in the working directory, or omit --environment. Use --no-config to ignore cwd project files when using only --secret.`,
+      );
+    }
+  }
   const configuredMappings: readonly ResolvedMapping[] =
     configDocument !== null && options.environmentName !== undefined
       ? environmentMappings(configDocument, options.environmentName).map(
@@ -251,6 +272,13 @@ async function loadOptionalProjectConfig(
       return (await loadProjectConfig(candidate)).document;
     } catch (error) {
       if (isMissingConfig(error)) continue;
+      // Auto-discovered cwd project files that fail validation should name the
+      // escape hatch used by pure `--secret` runs.
+      if (error instanceof CodedCliError) {
+        throw invalidConfiguration(
+          `${error.message} Pass --no-config to ignore cwd project files when using only --secret.`,
+        );
+      }
       throw error;
     }
   }
@@ -286,13 +314,7 @@ async function authorizeAndSpawn(
 
   const resolution = await resolveExecutable(target.request);
   if (resolution.status === 'unresolved') {
-    return await denyExecution(
-      state,
-      'user',
-      'executable-unresolved',
-      undefined,
-      authorizationDenied(`'${target.request}' could not be resolved on PATH.`),
-    );
+    throw executionFailed(`'${target.request}' could not be resolved on PATH.`);
   }
   if (resolution.status === 'refused') {
     return await denyExecution(
@@ -524,12 +546,15 @@ async function authorizeAndSpawn(
       },
     });
   } catch (error) {
-    if (error instanceof RunnerError && error.code === 'RUNNER_ENVIRONMENT_REJECTED') {
-      throw invalidConfiguration(
-        'A destination variable conflicts with a protected runtime variable.',
+    if (error instanceof RunnerError) {
+      throw runnerFailure(
+        error.code,
+        error.code === 'RUNNER_ENVIRONMENT_REJECTED'
+          ? 'A destination variable conflicts with a protected runtime variable.'
+          : 'The executable could not be started.',
       );
     }
-    throw authorizationDenied('The authorized executable could not be started.');
+    throw executionFailed('The executable could not be started.');
   } finally {
     for (const [signalName, handler] of handlers) {
       process.off(signalName, handler);

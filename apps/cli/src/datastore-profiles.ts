@@ -855,8 +855,23 @@ async function yieldRegistryMutation(): Promise<void> {
   await new Promise<void>((resolve) => setImmediate(resolve));
 }
 
-function defaultConfigDirectory(): string {
+/**
+ * Default protected profile directory.
+ * A non-empty `XDG_CONFIG_HOME` wins (`$XDG_CONFIG_HOME/kavrix`). Empty,
+ * whitespace-only, or control-bearing XDG values are treated as unset so a
+ * blank environment cannot resolve to a relative or invalid path. The fallback
+ * is `~/.config/kavrix` (Windows uses `%USERPROFILE%\.config\kavrix`).
+ */
+export function defaultProfileConfigDirectory(): string {
+  const xdg = process.env['XDG_CONFIG_HOME'];
+  if (typeof xdg === 'string' && xdg.trim().length > 0 && !hasControlCharacters(xdg)) {
+    return join(xdg, 'kavrix');
+  }
   return join(homedir(), '.config', 'kavrix');
+}
+
+function defaultConfigDirectory(): string {
+  return defaultProfileConfigDirectory();
 }
 
 async function secureConfigDirectory(input: string): Promise<string> {

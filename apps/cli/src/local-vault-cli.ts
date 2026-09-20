@@ -92,6 +92,7 @@ import { DatabaseSessionError } from './database-session.js';
 import {
   DatastoreProfileError,
   DatastoreProfileRegistry,
+  defaultProfileConfigDirectory,
   resolveDatastoreProfileRouting,
   type DatastoreProfile,
   type DatastoreProfileRoutingOverrides,
@@ -125,7 +126,7 @@ import {
 } from './root-datastore.js';
 import { CLI_VERSION } from './version.js';
 import { applyStdinFrameHelp, registerFramesCommand } from './stdin-frames.js';
-import { registerExecutionCommands } from './execution/register.js';
+import { registerExecutionCommands, reportJsonFailure } from './execution/register.js';
 import { registerTuiCommand } from './tui-command.js';
 import { registerSelfUpdateCommand } from './self-update.js';
 import {
@@ -139,6 +140,7 @@ import {
   datastoreFailure,
   isCodedCliError,
   securityIntegrityFailure,
+  wasJsonReported,
 } from './execution/exit-codes.js';
 import { enforceRevealPolicy } from './execution/reveal-policy.js';
 import { classifyCliFailure } from './cli-errors.js';
@@ -767,10 +769,9 @@ export function buildLocalCli(): Command {
 
 /** Reports non-secret routing facts so scripts can detect the active universe. */
 async function handleStatus(options: LocalCliOptions): Promise<void> {
-  const registryOptions =
-    options.profileConfigDir === undefined
-      ? {}
-      : { configDirectory: options.profileConfigDir };
+  const configDirectory = options.profileConfigDir ?? defaultProfileConfigDirectory();
+  const configDirectoryProvided = options.profileConfigDir !== undefined;
+  const registryOptions = { configDirectory };
   const registry =
     options.profile === undefined && options.datastore === undefined
       ? await DatastoreProfileRegistry.openIfPresent(registryOptions)
@@ -783,15 +784,20 @@ async function handleStatus(options: LocalCliOptions): Promise<void> {
       : options.profile === undefined
         ? await registry.current()
         : await registry.get(parseCommandProfileId(options.profile));
+  const routing =
+    registry === null
+      ? 'unconfigured'
+      : profile === null
+        ? 'no-selected-profile'
+        : profile.databaseId !== undefined
+          ? 'database-container'
+          : 'unbound-profile';
   const result = {
     version: CLI_VERSION,
     platform: process.platform,
-    routing:
-      profile === null
-        ? 'legacy-v2'
-        : profile.databaseId !== undefined
-          ? 'database-container'
-          : 'unbound-profile',
+    routing,
+    configDirectory: sanitizeTerminalText(configDirectory),
+    configDirectoryProvided,
     selectedProfile:
       profile === null
         ? null
@@ -819,14 +825,33 @@ async function handleStatus(options: LocalCliOptions): Promise<void> {
   } else {
     lines.push('  Profile:        (none selected)');
   }
+  lines.push(
+    `  Config dir:     ${sanitizeTerminalText(result.configDirectory)}${
+      result.configDirectoryProvided ? '' : ' (default; pass --profile-config-dir)'
+    }`,
+  );
+  if (result.routing === 'unconfigured') {
+    lines.push(
+      '  Note:           No profile registry here. This is not a silent legacy profile.',
+    );
+  }
   lines.push('', '');
   process.stdout.write(lines.join('\n'));
+}
+
+function argvRequestsJson(argv: readonly string[]): boolean {
+  const separator = argv.indexOf('--');
+  const flags = separator === -1 ? argv : argv.slice(0, separator);
+  return flags.includes('--json');
 }
 
 export async function runLocalCli(argv: readonly string[]): Promise<void> {
   try {
     await buildLocalCli().parseAsync(argv);
   } catch (error) {
+    if (argvRequestsJson(argv)) {
+      reportJsonFailure(error);
+    }
     const { message, exitCode } = classifyCliFailure(error);
     if (
       process.env['KAVRIX_DEBUG_CONNECT'] === '1' &&
@@ -835,7 +860,9 @@ export async function runLocalCli(argv: readonly string[]): Promise<void> {
     ) {
       process.stderr.write(error.stack + '\n');
     }
-    if (message.length > 0) {
+    // `--json` already wrote the machine envelope to stdout; do not duplicate
+    // the same human report on stderr.
+    if (message.length > 0 && !wasJsonReported(error)) {
       process.stderr.write(colorizeError(message) + '\n');
     }
     process.exitCode = exitCode;

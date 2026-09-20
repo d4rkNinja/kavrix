@@ -34,9 +34,19 @@ export const APP_MENU: readonly AppMenuEntry[] = [
     hint: 'Masked secrets',
     accent: 'yellow',
   },
-  { id: 'doctor', label: 'Doctor', hint: 'Health checks', accent: 'yellow' },
-  { id: 'recovery', label: 'Recovery', hint: 'Kit slots', accent: 'red' },
-  { id: 'run', label: 'Run', hint: 'Dry-run inject', accent: 'yellow' },
+  {
+    id: 'doctor',
+    label: 'Doctor / heal',
+    hint: 'Local health (not kit)',
+    accent: 'yellow',
+  },
+  { id: 'recovery', label: 'Recovery kit', hint: 'Key-material slots', accent: 'red' },
+  {
+    id: 'run',
+    label: 'Run preview',
+    hint: 'Dry-run inject (not project env)',
+    accent: 'yellow',
+  },
   {
     id: 'policy',
     label: 'Policy / Grant / Audit',
@@ -46,8 +56,8 @@ export const APP_MENU: readonly AppMenuEntry[] = [
   { id: 'agent', label: 'Agent', hint: 'Broker dry-run', accent: 'yellow' },
   {
     id: 'browse',
-    label: 'Context / Service / Item',
-    hint: 'Structured browse',
+    label: 'Vault context / service / item',
+    hint: 'Vault hierarchy (not run --environment)',
     accent: 'yellow',
   },
   { id: 'help', label: 'Help', hint: 'Keymap', accent: 'white' },

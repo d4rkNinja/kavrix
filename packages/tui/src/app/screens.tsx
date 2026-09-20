@@ -7,7 +7,12 @@ import { BrandBanner } from '../showcase.js';
 import { sanitizeTerminalText, secretMask } from '../terminal-text.js';
 import type { AppSnapshot } from './backend.js';
 import { APP_MENU } from './ids.js';
-import type { AppOverlay, AppRouterState } from './router.js';
+import {
+  filteredCredentials,
+  visibleListWindow,
+  type AppOverlay,
+  type AppRouterState,
+} from './router.js';
 import {
   accentColor,
   CHROME,
@@ -41,11 +46,19 @@ function overlayCopy(
   overlay: AppOverlay,
   query: string,
   ascii: boolean,
+  pendingName: string | null = null,
 ): Readonly<{ title: string; body: string; accent: AppAccent; hint?: string }> | null {
   if (overlay === 'none') return null;
   const masked = '*'.repeat(Math.min(query.length, 32));
   const q = safe(query, ascii);
   switch (overlay) {
+    case 'credential-detail':
+      return {
+        title: 'Credential detail',
+        body: `Name: ${safe(pendingName ?? '(selected)', ascii)}  Value: ${secretMask(ascii)}  r REVEAL · c copy · Esc close`,
+        accent: CHROME.accent,
+        hint: 'Values stay masked until an explicit REVEAL.',
+      };
     case 'confirm-reveal':
       return {
         title: 'Confirm reveal',
@@ -172,16 +185,16 @@ function overlayCopy(
     case 'input-recovery-file':
     case 'input-recovery-verify-file':
       return {
-        title: 'Recovery file',
-        body: `Recovery file: ${q}_`,
+        title: 'Recovery kit file',
+        body: `Recovery kit file: ${q}_`,
         accent: 'red',
       };
     case 'input-recovery-passphrase':
     case 'input-recovery-passphrase-confirm':
     case 'input-recovery-verify-passphrase':
       return {
-        title: 'Recovery passphrase',
-        body: `Recovery passphrase: ${masked}_`,
+        title: 'Recovery-kit passphrase',
+        body: `Recovery-kit passphrase: ${masked}_`,
         accent: 'red',
       };
     case 'input-policy-id':
@@ -244,10 +257,10 @@ export function AppChrome({
   state: AppRouterState;
   children: ReactElement | ReactElement[];
 }>): ReactElement {
-  const { color, ascii, width, height } = state;
+  const { color, ascii, width } = state;
   const home = state.snapshot.home;
   const accent = screenAccent(state.screen);
-  const overlay = overlayCopy(state.overlay, state.query, ascii);
+  const overlay = overlayCopy(state.overlay, state.query, ascii, state.pendingName);
   const product = resolveProductIdentity();
   const motion = allowMotion();
   const ellipsis = ascii ? '...' : '…';
@@ -258,8 +271,10 @@ export function AppChrome({
         ? `${home.vaultId.slice(0, 10)}${ellipsis}`
         : home.vaultId;
 
+  // Prefer content-sized height over pinning to the full TTY rows. Fixed
+  // height={rows} + flexGrow panels blank on some maximized TTYs (Ink/Yoga).
   return (
-    <Box flexDirection="column" width={width} height={height}>
+    <Box flexDirection="column" width={width}>
       <Panel accent={accent} ascii={ascii} color={color} paddingX={1} paddingY={0}>
         <BrandBanner color={color} ascii={ascii} dualTone />
         <Box flexDirection="row" columnGap={1} flexWrap="wrap" marginTop={0}>
@@ -303,7 +318,7 @@ export function AppChrome({
 
       <Box flexDirection="column" flexGrow={1} paddingX={0} paddingY={0}>
         {overlay === null ? (
-          <MotionEnter enabled={motion} key={state.screen}>
+          <MotionEnter enabled={motion && state.sessionReady} key={state.screen}>
             {children}
           </MotionEnter>
         ) : (
@@ -344,11 +359,11 @@ export function AppChrome({
 }
 
 function Footer({ state }: Readonly<{ state: AppRouterState }>): ReactElement {
-  const { color, ascii, message, snapshot } = state;
+  const { color, ascii, message, snapshot, width } = state;
   const notice = message ?? snapshot.notice;
   const noticeAccent = toneAccent(snapshot.noticeTone);
   const sep = ascii ? ' | ' : ' · ';
-  const chips = footerChips(state.screen);
+  const chips = prioritizeFooterChips(footerChips(state.screen), width);
   return (
     <Box flexDirection="column">
       {notice === null ? null : (
@@ -389,6 +404,7 @@ function footerChips(screen: AppRouterState['screen']): readonly Readonly<{
   switch (screen) {
     case 'credentials':
       return [
+        { keyLabel: 'Enter', hint: 'detail', accent: key },
         { keyLabel: 'j/k', hint: 'move', accent: key },
         { keyLabel: 'c', hint: 'copy', accent: key },
         { keyLabel: 'r', hint: 'reveal', accent: CHROME.danger },
@@ -425,6 +441,66 @@ function footerChips(screen: AppRouterState['screen']): readonly Readonly<{
         ...commonTail,
       ];
   }
+}
+
+const FOOTER_PREFERRED_KEYS = new Set(['Enter', 'Esc', 'q']);
+
+/** Keep critical keys on small terminals; overflow is summarized. */
+export function prioritizeFooterChips(
+  chips: readonly Readonly<{
+    keyLabel: string;
+    hint: string;
+    accent: AppAccent;
+  }>[],
+  width: number,
+): readonly Readonly<{
+  keyLabel: string;
+  hint: string;
+  accent: AppAccent;
+}>[] {
+  if (chips.length === 0) return chips;
+  const budget = Math.max(20, width - 4);
+  const estimate = (chip: Readonly<{ keyLabel: string; hint: string }>): number =>
+    chip.keyLabel.length + chip.hint.length + 4;
+  const overflowCost = estimate({ keyLabel: '+99', hint: 'more' });
+  const remainingPreferredCost = (fromIndex: number): number => {
+    let cost = 0;
+    for (let index = fromIndex; index < chips.length; index += 1) {
+      const chip = chips[index];
+      if (chip !== undefined && FOOTER_PREFERRED_KEYS.has(chip.keyLabel)) {
+        cost += estimate(chip);
+      }
+    }
+    return cost;
+  };
+  const kept: (typeof chips)[number][] = [];
+  let used = 0;
+  let hidden = 0;
+  for (let index = 0; index < chips.length; index += 1) {
+    const chip = chips[index];
+    if (chip === undefined) continue;
+    const cost = estimate(chip);
+    if (FOOTER_PREFERRED_KEYS.has(chip.keyLabel)) {
+      kept.push(chip);
+      used += cost;
+      continue;
+    }
+    const reserve = remainingPreferredCost(index + 1) + overflowCost;
+    if (kept.length > 0 && used + cost + reserve > budget) {
+      hidden += 1;
+      continue;
+    }
+    kept.push(chip);
+    used += cost;
+  }
+  if (hidden > 0) {
+    kept.push({
+      keyLabel: `+${String(hidden)}`,
+      hint: 'more',
+      accent: CHROME.muted,
+    });
+  }
+  return kept;
 }
 
 export function HomeScreen({
@@ -574,7 +650,10 @@ export function CredentialsScreen({
   state,
 }: Readonly<{ state: AppRouterState }>): ReactElement {
   const { color, ascii, listIndex, revealedName, revealedValue, snapshot } = state;
-  const pendingAt = useListStagger(state.snapshot.credentials.length, allowMotion());
+  const filtered = filteredCredentials(state);
+  const windowSize = Math.max(6, Math.min(20, state.height - 12));
+  const window = visibleListWindow(filtered, listIndex, windowSize);
+  const pendingAt = useListStagger(window.items.length, allowMotion());
   return (
     <Box flexDirection="column" flexGrow={1}>
       <Panel
@@ -585,26 +664,31 @@ export function CredentialsScreen({
         paddingX={1}
       >
         <Text {...accentColor(color, CHROME.muted)}>
-          Values stay masked. c copy · r then y REVEAL (15s) · n put · m rename · x
-          remove.
+          {safe(
+            `Values stay masked. Enter opens detail · c copy · r then y REVEAL (15s) · n put. ${String(filtered.length)}/${String(snapshot.credentials.length)} shown${state.credentialFilter.length > 0 ? ` (filter: ${state.credentialFilter})` : ''}.`,
+            ascii,
+          )}
         </Text>
-        {state.snapshot.credentials.length === 0 ? (
+        {filtered.length === 0 ? (
           <EmptyState
             title={
               snapshot.home.unlocked
-                ? 'No credentials yet. Press n to put one.'
+                ? state.credentialFilter.length > 0
+                  ? 'No credentials match this search.'
+                  : 'No credentials yet. Press n to put one.'
                 : 'Vault locked. Press u to unlock, then n to put.'
             }
             hint={
               snapshot.home.unlocked
-                ? 'Names are visible; values stay masked until an explicit reveal.'
+                ? 'Names are visible; values stay masked until an explicit reveal. Enter opens detail.'
                 : 'Unlock first. Secrets are never accepted on the command line.'
             }
             color={color}
             ascii={ascii}
           />
         ) : (
-          state.snapshot.credentials.map((credential, index) => {
+          window.items.map((credential, offset) => {
+            const index = window.start + offset;
             const active = index === listIndex;
             const revealed = revealedName === credential.name;
             return (
@@ -616,7 +700,7 @@ export function CredentialsScreen({
                   accent={CHROME.accent}
                   color={color}
                   ascii={ascii}
-                  pending={pendingAt(index)}
+                  pending={pendingAt(offset)}
                 />
                 {revealed ? (
                   <Panel
@@ -647,7 +731,7 @@ export function DoctorScreen({
   const rows = state.snapshot.doctor;
   return (
     <Panel
-      title="Doctor"
+      title="Doctor / heal (local health, not recovery kit)"
       accent={CHROME.accent}
       ascii={ascii}
       color={color}
@@ -688,9 +772,9 @@ export function RecoveryScreen({
   return (
     <ListScreen
       state={state}
-      title="Recovery"
+      title="Recovery kit (key material)"
       accent={CHROME.danger}
-      empty="No recovery slots. n create · v verify · Enter/x revoke (last slot blocked)."
+      empty="No recovery-kit slots. n create · v verify · Enter/x revoke (last slot blocked). Doctor heal is a different command."
       rows={state.snapshot.recovery.map((slot) => ({
         id: slot.slotId,
         primary: `${slot.slotId} [${slot.status}]`,
@@ -838,9 +922,9 @@ export function BrowseScreen({
   return (
     <ListScreen
       state={state}
-      title="Context / Service / Item"
+      title="Vault context / service / item"
       accent={CHROME.accent}
-      empty="No browse rows. Unlock and press Enter to load context/service/item lists."
+      empty="No vault-context rows. Unlock and press Enter to load vault context / service / item lists (not run --environment)."
       rows={state.snapshot.browse.map((node) => ({
         id: node.id,
         primary: `${node.kind}: ${node.label}`,
@@ -858,7 +942,7 @@ export function HelpScreen({
     '--- Getting started ---',
     '1) Profiles: n file or m mongodb, then Enter to select',
     '2) Unlock with u (paste works in passphrase / URL overlays)',
-    '3) Credentials: n put · c copy (no on-screen plaintext) · r then y REVEAL',
+    '3) Credentials: Enter detail · n put · c copy (no on-screen plaintext) · r then y REVEAL',
     '',
     '--- Copy / paste ---',
     'Paste into overlays: Ctrl+Shift+V / Cmd+V (bracketed paste; never submits Enter)',
@@ -868,11 +952,11 @@ export function HelpScreen({
     '',
     '--- Keymap ---',
     'Global: j/k or arrows move, Enter open, Esc Home, q quit',
-    'Credentials: c copy · r reveal · n put · m rename · x remove · / search',
+    'Credentials: Enter detail · c copy · r reveal · n put · m rename · x remove · / search',
     'Profiles: Enter use · n file · m mongodb (URL+passphrase on stdin frames)',
     'Session: u unlock · l lock (clears revealed state)',
-    'Doctor: d · Recovery: n/c create · v verify · Enter/x revoke',
-    'Run: p · Agent: g dry-run (prompts for agent name) · Policy: n/x/g/r · Browse: Enter refresh',
+    'Doctor / heal: d (local health, not key recovery). Recovery kit: n/c create · v verify · Enter/x revoke',
+    'Run: p (project-file --environment is CLI-only). Agent: g dry-run. Policy: n/x/g/r. Vault context browse: Enter refresh',
     'Display: a ASCII · NO_COLOR / TERM=dumb disable color · win32 ASCII default',
     'Motion: KAVRIX_TUI_REDUCED_MOTION=1 skips splash, stagger, and status pulse',
   ];

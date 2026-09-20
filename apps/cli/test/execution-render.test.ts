@@ -9,6 +9,7 @@ import {
   isRecord,
   named,
   renderRecordLines,
+  reportJsonFailure,
   text,
 } from '../src/execution/register.js';
 import {
@@ -19,8 +20,13 @@ import {
   grantDenyMessage,
 } from '../src/execution/run-command.js';
 import { grantStatus, parseHashPins } from '../src/execution/policy-command.js';
-import { CodedCliError } from '../src/execution/exit-codes.js';
+import {
+  authenticationFailure,
+  CodedCliError,
+  wasJsonReported,
+} from '../src/execution/exit-codes.js';
 import { extractMergedOptions } from '../src/execution/cli-options.js';
+import { DatabaseSessionError } from '../src/database-session.js';
 
 describe('register render helpers', () => {
   it('escapes every terminal control code point while preserving JSON values', () => {
@@ -279,6 +285,54 @@ describe('policy presentation helpers', () => {
       node: 'a'.repeat(64),
     });
     expect(() => parseHashPins(['noparse'])).toThrow(/--hash expects/u);
+  });
+});
+
+describe('reportJsonFailure envelopes', () => {
+  it('emits the run --json AUTHENTICATION_FAILED envelope once', () => {
+    const output: string[] = [];
+    const write = vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => {
+      output.push(String(chunk));
+      return true;
+    });
+    const error = authenticationFailure('Vault unlock failed.');
+    try {
+      expect(reportJsonFailure(error)).toBe(true);
+      expect(reportJsonFailure(error)).toBe(true);
+    } finally {
+      write.mockRestore();
+    }
+    expect(wasJsonReported(error)).toBe(true);
+    expect(output).toHaveLength(1);
+    const body = JSON.parse((output[0] ?? '').trim()) as {
+      error: { code: string; exitCode: number; message: string };
+    };
+    expect(body.error).toEqual({
+      code: 'AUTHENTICATION_FAILED',
+      exitCode: 10,
+      message: 'Vault unlock failed.',
+    });
+  });
+
+  it('maps DatabaseSessionError authentication onto the same envelope', () => {
+    const output: string[] = [];
+    const write = vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => {
+      output.push(String(chunk));
+      return true;
+    });
+    const error = new DatabaseSessionError('authentication');
+    try {
+      expect(reportJsonFailure(error)).toBe(true);
+    } finally {
+      write.mockRestore();
+    }
+    const body = JSON.parse((output[0] ?? '').trim()) as {
+      error: { code: string; exitCode: number; message: string };
+    };
+    expect(body.error.code).toBe('AUTHENTICATION_FAILED');
+    expect(body.error.exitCode).toBe(10);
+    expect(body.error.message).toMatch(/authentication failed/i);
+    expect(body.error.message).not.toMatch(/passphrase/i);
   });
 });
 

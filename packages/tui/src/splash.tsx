@@ -93,9 +93,10 @@ export function SplashScreen({
   ascii = false,
   version,
   width = 80,
-  height = 24,
+  height: _height = 24,
   animate = true,
 }: SplashScreenProps): ReactElement {
+  void _height;
   const motion = resolveMotionPolicy({ requested: animate });
   const frame = useMotionFrame(motion.animate, MOTION.splashPulseMs);
   const spinnerFrames = ascii ? SPLASH_ASCII_SPINNER_FRAMES : SPLASH_SPINNER_FRAMES;
@@ -115,7 +116,6 @@ export function SplashScreen({
     <Box
       flexDirection="column"
       width={Math.max(40, width)}
-      height={Math.max(12, height)}
       alignItems="center"
       justifyContent="center"
     >

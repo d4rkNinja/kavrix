@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 
 import {
+  exitCodeForCliError,
   fieldScalarValueSchema,
   itemIdSchema,
   secretValueSchema,
@@ -8,7 +9,12 @@ import {
 import { describe, expect, it } from 'vitest';
 
 import {
+  cliErrorCodeForRunnerError,
+  INHERITABLE_ENVIRONMENT_NAMES,
+  isReservedEnvironmentName,
+  RESERVED_ENVIRONMENT_NAMES,
   RunnerError,
+  RUNNER_SPAWN_FAILED_CLI_ERROR_CODE,
   runSecureCommand,
   type EnvironmentMapping,
   type InheritableEnvironmentName,
@@ -362,6 +368,25 @@ describe('runSecureCommand', () => {
     expect(capturedText(result.stdout)).toBe('true');
   });
 
+  it('inherits parent USER without treating it as a writable dest', async () => {
+    const previous = process.env['USER'];
+    process.env['USER'] = 'kavrix-inherited-identity';
+    try {
+      const result = await runSecureCommand(
+        nodeRequest('process.stdout.write(process.env.USER ?? "")', {
+          inheritEnvironment: ['USER'],
+        }),
+      );
+      expect(capturedText(result.stdout)).toBe('kavrix-inherited-identity');
+    } finally {
+      if (previous === undefined) {
+        Reflect.deleteProperty(process.env, 'USER');
+      } else {
+        process.env['USER'] = previous;
+      }
+    }
+  });
+
   it('sanitizes asynchronous spawn failures', async () => {
     const canary = 'missing-executable-secret-canary';
     await expectRunnerError(
@@ -373,6 +398,30 @@ describe('runSecureCommand', () => {
       'RUNNER_SPAWN_FAILED',
       canary,
     );
+  });
+
+  it('classifies a missing executable as EXECUTION_FAILED, not authorization denied', async () => {
+    const request: SecureRunRequest = {
+      executable: `${workingDirectory}/does-not-exist-kavrix-runner`,
+      cwd: workingDirectory,
+    };
+    await expectRunnerError(request, 'RUNNER_SPAWN_FAILED');
+    await expectRunnerError(
+      { ...request, output: { mode: 'inherit' } },
+      'RUNNER_SPAWN_FAILED',
+    );
+
+    expect(RUNNER_SPAWN_FAILED_CLI_ERROR_CODE).toBe('EXECUTION_FAILED');
+    expect(cliErrorCodeForRunnerError('RUNNER_SPAWN_FAILED')).toBe(
+      RUNNER_SPAWN_FAILED_CLI_ERROR_CODE,
+    );
+    expect(cliErrorCodeForRunnerError('RUNNER_SPAWN_FAILED')).not.toBe(
+      'AUTHORIZATION_DENIED',
+    );
+    expect(exitCodeForCliError(cliErrorCodeForRunnerError('RUNNER_SPAWN_FAILED'))).toBe(
+      18,
+    );
+    expect(exitCodeForCliError('AUTHORIZATION_DENIED')).toBe(12);
   });
 
   it('inherits parent streams in inherit mode and preserves child exit codes', async () => {
@@ -424,9 +473,23 @@ describe('runSecureCommand', () => {
 });
 
 describe('request and environment validation', () => {
+  it('publishes identity names as inheritable reserved destinations', () => {
+    expect(INHERITABLE_ENVIRONMENT_NAMES).toEqual(
+      expect.arrayContaining(['PATH', 'HOME', 'USER', 'USERNAME', 'LOGNAME']),
+    );
+    for (const name of ['USER', 'USERNAME', 'LOGNAME', 'PATH', 'HOME'] as const) {
+      expect(RESERVED_ENVIRONMENT_NAMES).toContain(name);
+      expect(isReservedEnvironmentName(name)).toBe(true);
+      expect(isReservedEnvironmentName(name.toLowerCase())).toBe(true);
+    }
+  });
+
   it.each([
     ['invalid name', 'BAD-NAME'],
     ['reserved loader name', 'NODE_OPTIONS'],
+    ['reserved identity USER', 'USER'],
+    ['reserved identity USERNAME', 'USERNAME'],
+    ['reserved identity LOGNAME', 'LOGNAME'],
     ['reserved path name', 'Path'],
     ['NUL value', 'KAVRIX_VALUE_WITH_NUL'],
   ])('rejects %s generically', async (_label, name) => {

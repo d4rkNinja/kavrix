@@ -106,7 +106,9 @@ kavrix get github/token --reveal
 kavrix run --secret TOKEN=github/token -- printenv TOKEN
 ```
 
-`kavrix run` requires a command after `--` (the child executable and its args).
+`kavrix run` takes the child as remaining arguments. `--` is recommended when
+the child has its own flags; `policy check|explain` still require `--`. Use
+`--no-config` to ignore a cwd `kavrix.yaml` for pure `--secret` runs.
 Without `--profile`, root `put` / `get` / `list` default `--datastore` to
 **file** (aligned with `init`). Prefer `--profile` after onboarding; pass
 `--datastore mongodb` explicitly for MongoDB without a profile.

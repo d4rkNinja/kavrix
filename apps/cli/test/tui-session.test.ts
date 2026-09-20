@@ -1,10 +1,11 @@
-import { rm } from 'node:fs/promises';
+import { rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { databaseIdSchema, profileIdSchema, vaultIdSchema } from '@kavrix/schemas';
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { validateSecureFileDestination } from '@kavrix/key-files';
 import { createSecureTestDirectory as mkdtemp } from '../../../packages/key-files/test/secure-temporary-directory.js';
 import { DatastoreProfileRegistry } from '../src/datastore-profiles.js';
 import { createCliTuiBackend } from '../src/tui-session.js';
@@ -729,5 +730,130 @@ describe('CliTuiSession mutations (mocked spawn)', () => {
     );
     expect(result.snapshot.agentStatus.toLowerCase()).not.toContain('noop');
     expect(calls.some((call) => call.args[0] === 'agent')).toBe(false);
+  });
+
+  it('ensures ~/.kavrix parents before create-file-profile on empty HOME defaults', async () => {
+    // Jr live repro: empty HOME + TUI defaults must not fail KEY_FILE_NOT_FOUND
+    // because portable-key parents were never created (XDG share mismatch).
+    const home = await mkdtemp(join(tmpdir(), 'kavrix-tui-empty-home-'));
+    dirs.push(home);
+    const configDir = join(home, 'config');
+    const defaults = {
+      dataFile: join(home, '.kavrix', 'kavrix.vault'),
+      keyFile: join(home, '.kavrix', 'kavrix.key'),
+    };
+    const recoveryFile = join(home, '.kavrix', 'kavrix.recovery');
+
+    let sawInit = false;
+    const backend = createCliTuiBackend({
+      profileConfigDir: configDir,
+      ascii: true,
+      commandRunner: async (args) => {
+        if (args.includes('add') && args.includes('profile')) {
+          // Parents must exist before any vault/key write (Jr KEY_FILE_NOT_FOUND).
+          await validateSecureFileDestination(defaults.keyFile);
+          await validateSecureFileDestination(defaults.dataFile);
+          await validateSecureFileDestination(recoveryFile);
+          const registry = await DatastoreProfileRegistry.open({
+            configDirectory: configDir,
+          });
+          await registry.add({
+            id: profileIdSchema.parse('default'),
+            datastore: 'file',
+            dataFile: defaults.dataFile,
+            keyFile: defaults.keyFile,
+          });
+          return '';
+        }
+        if (
+          args.includes('use') &&
+          args.includes('profile') &&
+          !args.includes('vault')
+        ) {
+          const registry = await DatastoreProfileRegistry.open({
+            configDirectory: configDir,
+          });
+          await registry.use(profileIdSchema.parse('default'));
+          return '';
+        }
+        if (args[0] === 'db' && args[1] === 'init') {
+          sawInit = true;
+          await validateSecureFileDestination(defaults.keyFile);
+          const registry = await DatastoreProfileRegistry.open({
+            configDirectory: configDir,
+          });
+          await registry.bindDatabaseIdForInitialization(
+            profileIdSchema.parse('default'),
+            databaseIdSchema.parse('db_fresh'),
+          );
+          return '';
+        }
+        if (args.includes('vault') && args.includes('create')) {
+          return JSON.stringify({ vaultId: 'vault_fresh' });
+        }
+        if (args.includes('vault') && args.includes('use')) {
+          return '';
+        }
+        if (args.includes('list')) {
+          return JSON.stringify({ names: [] });
+        }
+        if (args[0] === 'db' && args[1] === 'recovery' && args.includes('create')) {
+          return '';
+        }
+        if (args[0] === 'db' && args[1] === 'recovery' && args.includes('verify')) {
+          return '';
+        }
+        if (args[0] === 'db' && args[1] === 'recovery' && args.includes('status')) {
+          return JSON.stringify({
+            active: 1,
+            revoked: 0,
+            slots: [{ id: 'slot-1', state: 'active' }],
+          });
+        }
+        return '{}';
+      },
+    });
+
+    const result = await backend.dispatch({
+      type: 'create-file-profile',
+      profileId: 'default',
+      dataFile: defaults.dataFile,
+      keyFile: defaults.keyFile,
+      passphrase: 'FreshQaPassphrase16!',
+      recoveryFile,
+      recoveryPassphrase: 'RecoveryQaPassphrase16!',
+    });
+
+    expect(sawInit).toBe(true);
+    expect(result.snapshot.noticeTone).toBe('success');
+    expect(defaults.keyFile).toContain(join('.kavrix', 'kavrix.key'));
+    expect(defaults.keyFile.includes(join('.local', 'share'))).toBe(false);
+  });
+
+  it('surfaces ensureSecureArtifactParents when parent path is a file', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'kavrix-tui-bad-parent-'));
+    dirs.push(home);
+    const configDir = join(home, 'config');
+    // Place a file where ~/.kavrix should be so parent creation cannot mkdir.
+    const blocked = join(home, '.kavrix');
+    await writeFile(blocked, 'not-a-directory');
+    const dataFile = join(blocked, 'kavrix.vault');
+    const keyFile = join(blocked, 'kavrix.key');
+    const backend = createCliTuiBackend({
+      profileConfigDir: configDir,
+      ascii: true,
+      commandRunner: async () => {
+        throw new Error('commandRunner must not run when parents are invalid');
+      },
+    });
+    const result = await backend.dispatch({
+      type: 'create-file-profile',
+      profileId: 'default',
+      dataFile,
+      keyFile,
+      passphrase: 'FreshQaPassphrase16!',
+    });
+    expect(result.snapshot.noticeTone).toBe('error');
+    expect(result.snapshot.notice).toMatch(/not a directory/i);
   });
 });

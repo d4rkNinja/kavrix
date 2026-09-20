@@ -9,11 +9,16 @@ import {
   confirmationRequired,
   credentialMissing,
   datastoreFailure,
+  executionFailed,
   grantInvalid,
   invalidConfiguration,
+  runnerFailure,
   isCodedCliError,
   securityIntegrityFailure,
   toErrorEnvelope,
+  markJsonReported,
+  wasJsonReported,
+  cliErrorCodeForSessionFailure,
 } from '../src/execution/exit-codes.js';
 
 describe('coded CLI errors', () => {
@@ -29,6 +34,10 @@ describe('coded CLI errors', () => {
       [datastoreFailure('x'), 'DATASTORE_FAILURE', 15],
       [securityIntegrityFailure('x'), 'SECURITY_INTEGRITY_FAILURE', 16],
       [confirmationRequired('x'), 'CONFIRMATION_REQUIRED', 17],
+      [executionFailed('x'), 'EXECUTION_FAILED', 18],
+      [runnerFailure('RUNNER_SPAWN_FAILED', 'x'), 'EXECUTION_FAILED', 18],
+      [runnerFailure('RUNNER_ENVIRONMENT_REJECTED', 'x'), 'INVALID_CONFIGURATION', 14],
+      [runnerFailure('RUNNER_TIMEOUT', 'x'), 'EXECUTION_FAILED', 18],
     ] as const;
     for (const [error, code, exit] of cases) {
       expect(isCodedCliError(error)).toBe(true);
@@ -48,5 +57,31 @@ describe('coded CLI errors', () => {
       exitCode: 12,
       message: 'denied',
     });
+  });
+
+  it('maps session failures onto stable JSON auth codes', () => {
+    expect(cliErrorCodeForSessionFailure('authentication')).toBe(
+      'AUTHENTICATION_FAILED',
+    );
+    expect(cliErrorCodeForSessionFailure('not-found')).toBe('CREDENTIAL_MISSING');
+    expect(cliErrorCodeForSessionFailure('duplicate')).toBe('INVALID_CONFIGURATION');
+    expect(cliErrorCodeForSessionFailure('invalid')).toBe('INVALID_CONFIGURATION');
+    expect(cliErrorCodeForSessionFailure('binding')).toBe('SECURITY_INTEGRITY_FAILURE');
+    expect(cliErrorCodeForSessionFailure('rollback')).toBe(
+      'SECURITY_INTEGRITY_FAILURE',
+    );
+    expect(cliErrorCodeForSessionFailure('unknown-session')).toBe('DATASTORE_FAILURE');
+  });
+
+  it('tracks JSON-reported markers without throwing on primitives', () => {
+    expect(wasJsonReported(null)).toBe(false);
+    expect(wasJsonReported('x')).toBe(false);
+    expect(wasJsonReported(undefined)).toBe(false);
+    markJsonReported(null);
+    markJsonReported('skip');
+    const error = authenticationFailure('json path');
+    expect(wasJsonReported(error)).toBe(false);
+    markJsonReported(error);
+    expect(wasJsonReported(error)).toBe(true);
   });
 });
