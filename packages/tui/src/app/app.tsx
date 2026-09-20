@@ -15,6 +15,7 @@ import { AppChrome, renderActiveScreen } from './screens.js';
 import { resolveAppPresentation } from './theme.js';
 import { ErrorState, LoadingState } from './widgets.js';
 import { SplashGate } from '../splash-gate.js';
+import { armFirstFrameWatchdog } from '../first-frame-watchdog.js';
 
 export interface KavrixAppProps {
   readonly backend: InteractiveAppBackend;
@@ -267,6 +268,21 @@ export function mountKavrixApp(options: MountKavrixAppOptions): KavrixAppHandle 
   });
   const stdout = options.stdout ?? process.stdout;
   ensureTtySize(stdout);
+  // Ink 7 skips live frames under CI=1 even on a real TTY (xfce4-terminal stays
+  // blank while the process lives). Force interactive and fail loudly if the
+  // first frame never arrives.
+  const watchdog = armFirstFrameWatchdog({
+    stdout,
+    label: 'kavrix tui',
+    onTimeout: (error) => {
+      try {
+        process.stderr.write(`${error.message}\n`);
+      } catch {
+        // ignore
+      }
+      process.exitCode = 1;
+    },
+  });
   const instance = render(
     <KavrixApp
       backend={options.backend}
@@ -280,13 +296,19 @@ export function mountKavrixApp(options: MountKavrixAppOptions): KavrixAppHandle 
       stdin: options.stdin ?? process.stdin,
       exitOnCtrlC: false,
       patchConsole: false,
+      interactive: true,
     },
   );
   return {
     waitUntilExit: async () => {
-      await instance.waitUntilExit();
+      try {
+        await instance.waitUntilExit();
+      } finally {
+        watchdog.dispose();
+      }
     },
     unmount: () => {
+      watchdog.dispose();
       instance.unmount();
     },
   };

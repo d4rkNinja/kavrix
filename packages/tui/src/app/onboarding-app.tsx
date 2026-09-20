@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState, type ReactElement } from 'rea
 
 import { BrandBanner } from '../showcase.js';
 import { SplashGate } from '../splash-gate.js';
+import { armFirstFrameWatchdog } from '../first-frame-watchdog.js';
 import { sanitizeTerminalText } from '../terminal-text.js';
 import type { InteractiveAppBackend, AppBackendAction } from './backend.js';
 import { resolveTtySize } from './router.js';
@@ -570,6 +571,19 @@ export function mountOnboardingApp(
   const resultPromise = new Promise<OnboardingAppResult>((resolve) => {
     settle = resolve;
   });
+  const stdout = options.stdout ?? process.stdout;
+  const watchdog = armFirstFrameWatchdog({
+    stdout,
+    label: 'kavrix init',
+    onTimeout: (error) => {
+      try {
+        process.stderr.write(`${error.message}\n`);
+      } catch {
+        // ignore
+      }
+      process.exitCode = 1;
+    },
+  });
   const instance = render(
     <KavrixOnboardingApp
       backend={options.backend}
@@ -582,23 +596,28 @@ export function mountOnboardingApp(
       }}
     />,
     {
-      stdout: options.stdout ?? process.stdout,
+      stdout,
       stdin: options.stdin ?? process.stdin,
       exitOnCtrlC: false,
       patchConsole: false,
+      interactive: true,
     },
   );
   return {
     waitUntilExit: async () => {
-      const fromCallback = await Promise.race([
-        resultPromise,
-        instance
-          .waitUntilExit()
-          .then((): OnboardingAppResult => ({ status: 'cancelled' })),
-      ]);
-      return fromCallback;
+      try {
+        return await Promise.race([
+          resultPromise,
+          instance
+            .waitUntilExit()
+            .then((): OnboardingAppResult => ({ status: 'cancelled' })),
+        ]);
+      } finally {
+        watchdog.dispose();
+      }
     },
     unmount: () => {
+      watchdog.dispose();
       instance.unmount();
     },
   };

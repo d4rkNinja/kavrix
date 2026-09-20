@@ -404,6 +404,7 @@ describe('KavrixApp vault-shell first paint', () => {
         stdin: stdin as unknown as NodeJS.ReadStream,
         exitOnCtrlC: false,
         patchConsole: false,
+        interactive: true,
       },
     );
     await instance.waitUntilRenderFlush();
@@ -460,6 +461,7 @@ describe('KavrixApp vault-shell first paint', () => {
         stdin: stdin as unknown as NodeJS.ReadStream,
         exitOnCtrlC: false,
         patchConsole: false,
+        interactive: true,
       },
     );
     await instance.waitUntilRenderFlush();
