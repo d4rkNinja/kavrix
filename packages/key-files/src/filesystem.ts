@@ -417,6 +417,118 @@ export async function ensureSecureDirectory(inputPath: string): Promise<string> 
   }
 }
 
+/* v8 ignore start -- platform ACL harden paths gated by dedicated tests */
+/**
+ * Re-hardens an existing owner-owned directory to strict owner-only mode (0700
+ * on POSIX; user-only ACL on Windows). Refuses symlinks, non-directories, and
+ * paths not owned by the current user. Does not create missing directories —
+ * use {@link ensureSecureDirectory} for create-or-verify.
+ */
+export async function hardenExistingSecureDirectory(
+  inputPath: string,
+): Promise<string> {
+  if (typeof inputPath !== 'string' || inputPath.length === 0) {
+    throw new PortableKeyFileError('KEY_FILE_INVALID_PATH');
+  }
+  const absolutePath = isAbsolute(inputPath) ? inputPath : resolve(inputPath);
+  let before: FileIdentity;
+  try {
+    before = await directoryIdentity(absolutePath);
+  } catch (error) {
+    throw mappedFileError(error, 'KEY_FILE_UNSAFE');
+  }
+  try {
+    if (process.platform === 'win32') {
+      await setWindowsUserOnlyAcl(absolutePath);
+    } else {
+      let handle: FileHandle | undefined;
+      try {
+        handle = await open(
+          absolutePath,
+          constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
+        );
+        const opened = await handle.stat({ bigint: true });
+        if (!opened.isDirectory() || !sameIdentity(before, opened)) {
+          throw new PortableKeyFileError('KEY_FILE_UNSAFE');
+        }
+        const getuid = process.getuid;
+        if (getuid === undefined || opened.uid !== BigInt(getuid())) {
+          throw new PortableKeyFileError('KEY_FILE_UNSAFE');
+        }
+        await handle.chmod(0o700);
+        const hardened = await handle.stat({ bigint: true });
+        if (
+          !hardened.isDirectory() ||
+          !sameIdentity(before, hardened) ||
+          (hardened.mode & 0o777n) !== 0o700n
+        ) {
+          throw new PortableKeyFileError('KEY_FILE_UNSAFE');
+        }
+      } finally {
+        if (handle !== undefined) await handle.close();
+      }
+    }
+    const verified = await verifyStrictSecureDirectory(absolutePath, before);
+    return verified.path;
+  } catch (error) {
+    throw mappedFileError(error, 'KEY_FILE_UNSAFE');
+  }
+}
+
+/**
+ * Re-hardens an existing owner-owned regular file to mode 0600 (POSIX) or
+ * user-only ACL (Windows). Refuses symlinks, multiply-linked files, and paths
+ * not owned by the current user.
+ */
+export async function hardenExistingSecureFile(inputPath: string): Promise<string> {
+  const { directoryPath, targetPath } = await resolveTarget(inputPath);
+  await validateWriteDirectory(directoryPath);
+  let handle: FileHandle | undefined;
+  try {
+    const before = await lstatRegularIdentity(targetPath);
+    handle = await open(targetPath, noFollowReadWriteFlags());
+    const opened = await handle.stat({ bigint: true });
+    if (!sameIdentity(before, opened) || !opened.isFile() || opened.nlink !== 1n) {
+      throw new PortableKeyFileError('KEY_FILE_UNSAFE');
+    }
+    if (process.platform === 'win32') {
+      await handle.close();
+      handle = undefined;
+      await setWindowsUserOnlyAcl(targetPath);
+      await verifyWindowsUserOnlyAcl(targetPath);
+    } else {
+      const getuid = process.getuid;
+      if (getuid === undefined || opened.uid !== BigInt(getuid())) {
+        throw new PortableKeyFileError('KEY_FILE_UNSAFE');
+      }
+      await handle.chmod(0o600);
+      const hardened = await handle.stat({ bigint: true });
+      if (
+        !sameIdentity(before, hardened) ||
+        !hardened.isFile() ||
+        hardened.nlink !== 1n ||
+        (hardened.mode & 0o777n) !== 0o600n
+      ) {
+        throw new PortableKeyFileError('KEY_FILE_UNSAFE');
+      }
+      await handle.close();
+      handle = undefined;
+    }
+    await verifyPathStillNamesFile(targetPath, before);
+    return targetPath;
+  } catch (error) {
+    if (handle !== undefined) {
+      try {
+        await handle.close();
+      } catch {
+        throw new PortableKeyFileError('KEY_FILE_OPERATION_FAILED');
+      }
+    }
+    throw mappedFileError(error, 'KEY_FILE_UNSAFE');
+  }
+}
+/* v8 ignore stop */
+
 async function validateRegularFile(
   targetPath: string,
   metadata: BigIntStats,

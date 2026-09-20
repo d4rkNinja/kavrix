@@ -21,6 +21,8 @@ export {
   MAX_SECURE_STREAM_FILE_BYTES,
   deleteSecureFile,
   ensureSecureDirectory,
+  hardenExistingSecureDirectory,
+  hardenExistingSecureFile,
   readSecureFile,
   releaseOwnedSecureFilePublication,
   validateSecureFileDestination,

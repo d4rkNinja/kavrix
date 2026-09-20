@@ -613,6 +613,90 @@ export class DatastoreProfileRegistry {
     });
   }
 
+  /**
+   * Clears a dangling `current` profile pointer that would otherwise make the
+   * registry unreadable. Safe and reversible: selection becomes unset.
+   * Prefer {@link healDanglingCurrentPointerAt} when normal open fails closed.
+   */
+  async healDanglingCurrentPointer(): Promise<boolean> {
+    if (!(await registryExists(this.#path))) return false;
+    const document = await readProtectedJsonDocument(this.#path, {
+      schema: { parse: parseDocumentAllowingDanglingCurrent },
+      maximumBytes: MAX_REGISTRY_BYTES,
+    });
+    const normalized = normalizeDocument(document);
+    const ids = new Set(normalized.profiles.map((profile) => profile.id));
+    if (normalized.current === null || ids.has(normalized.current)) {
+      return false;
+    }
+    await transitionProtectedJsonDocument(
+      this.#path,
+      {
+        schema: { parse: parseDocumentAllowingDanglingCurrent },
+        maximumBytes: MAX_REGISTRY_BYTES,
+      },
+      (current) => ({
+        document: { ...normalizeDocument(current), current: null },
+        result: undefined,
+      }),
+    );
+    return true;
+  }
+
+  /**
+   * Opens the config directory and heals a dangling current pointer without
+   * requiring a prior strict registry read (which would fail closed).
+   */
+  static async healDanglingCurrentPointerAt(
+    options: DatastoreProfileRegistryOptions = {},
+  ): Promise<boolean> {
+    const directory = await secureConfigDirectory(
+      options.configDirectory ?? defaultConfigDirectory(),
+    );
+    const registry = new DatastoreProfileRegistry(
+      resolveProfilePath(directory, options.fileName),
+    );
+    return registry.healDanglingCurrentPointer();
+  }
+
+  /**
+   * Removes unbound profiles (no databaseId) left behind by incomplete init.
+   * Does not delete key/data files.
+   */
+  async removeUnboundProfiles(
+    ids?: readonly ProfileId[],
+  ): Promise<readonly DatastoreProfile[]> {
+    const allow = ids === undefined ? undefined : new Set(ids);
+    return this.#mutate((document) => {
+      const removed: DatastoreProfile[] = [];
+      const profiles: DatastoreProfile[] = [];
+      for (const profile of document.profiles) {
+        const unbound = profile.databaseId === undefined;
+        const selected = allow === undefined || allow.has(profile.id);
+        if (unbound && selected) {
+          removed.push(cloneProfile(profile));
+          continue;
+        }
+        profiles.push(profile);
+      }
+      if (removed.length === 0) {
+        return { document, result: [] as DatastoreProfile[] };
+      }
+      const remainingIds = new Set(profiles.map((profile) => profile.id));
+      return {
+        document: {
+          ...document,
+          current:
+            document.current !== null && remainingIds.has(document.current)
+              ? document.current
+              : null,
+          profiles: sortProfiles(profiles),
+        },
+        result: removed,
+      };
+    });
+  }
+
   async #readOrEmpty(): Promise<DatastoreProfileRegistryDocument> {
     if (!(await registryExists(this.#path))) return emptyDocument();
     try {
@@ -833,6 +917,7 @@ function parseDocumentVersion(
   record: Readonly<Record<string, unknown>>,
   version: 1 | 2,
   parseStoredProfile: (value: unknown) => DatastoreProfile,
+  allowDanglingCurrent = false,
 ): StoredDatastoreProfileRegistryDocument {
   assertExactKeys(record, ['current', 'profiles', 'version']);
   if (!Array.isArray(record['profiles'])) {
@@ -851,9 +936,31 @@ function parseDocumentVersion(
   if (!sameProfiles(profiles, sorted))
     throw new DatastoreProfileError('PROFILE_INVALID');
   const current = record['current'] === null ? null : parseProfileId(record['current']);
-  if (current !== null && !ids.has(current))
-    throw new DatastoreProfileError('PROFILE_INVALID');
+  if (current !== null && !ids.has(current)) {
+    if (!allowDanglingCurrent) throw new DatastoreProfileError('PROFILE_INVALID');
+    // Heal path keeps the dangling id so the mutate callback can clear it.
+  }
   return { version, current, profiles: sorted };
+}
+
+/** Heal-only parser: accepts a dangling `current` pointer for repair. */
+function parseDocumentAllowingDanglingCurrent(
+  value: unknown,
+): StoredDatastoreProfileRegistryDocument {
+  assertNoSensitiveKeys(value);
+  const record = plainRecord(value);
+  if (record['version'] === LEGACY_REGISTRY_VERSION) {
+    return parseDocumentVersion(
+      record,
+      LEGACY_REGISTRY_VERSION,
+      parseVersion1Profile,
+      true,
+    );
+  }
+  if (record['version'] === REGISTRY_VERSION) {
+    return parseDocumentVersion(record, REGISTRY_VERSION, parseProfile, true);
+  }
+  throw new DatastoreProfileError('PROFILE_INVALID');
 }
 
 function normalizeDocument(

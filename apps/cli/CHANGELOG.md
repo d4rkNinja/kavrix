@@ -1,5 +1,10 @@
 # kavrix
 
+## 0.2.17
+
+- Add `kavrix doctor --heal` / `doctor health --heal` and `kavrix db doctor health --heal` to safely auto-repair broken local state: remove incomplete unbound profiles (PROFILE_DUPLICATE leftovers), clear dangling profile selection pointers, and re-harden owner-only ACLs/modes on key-file parents and key files. Supports `--heal --dry-run` to list planned actions without applying them. Never invents passphrase recovery and never deletes vault/key data files.
+- Docs: document heal capabilities and explicit non-goals (wrong passphrase, corrupt vault, operator decisions).
+
 ## 0.2.16
 
 - Add `kavrix update` to check npm for a newer release and install it globally (`npm install -g kavrix@<version>`). Supports `--check` (report only; always exit 0), `--json`, `--tag`, and `--registry`. Only global npm installs are upgraded; Homebrew/pnpm/yarn/npx/dev checkouts refuse with a manual command.

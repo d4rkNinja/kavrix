@@ -277,12 +277,18 @@ separate protected medium.
 | Create a fresh owner key file  | `kavrix db recovery use`             |
 | Diagnose container trust state | `kavrix db doctor health`            |
 
-`kavrix db doctor health [--accept-current]` verifies the database binding,
-every encrypted document, and the trusted local anchor, and reports structured
-findings. With `--accept-current`, and only after the entire observed snapshot
-authenticates with the database root key, it rewrites the local rollback anchor
-to match; datastore content is never modified. See the troubleshooting section
-of `docs/local-database.md` before using it.
+`kavrix db doctor health [--accept-current] [--heal] [--dry-run]` verifies the
+database binding, every encrypted document, and the trusted local anchor, and
+reports structured findings. With `--accept-current`, and only after the entire
+observed snapshot authenticates with the database root key, it rewrites the
+local rollback anchor to match; datastore content is never modified. With
+`--heal`, Kavrix also applies safe local-state repairs: remove incomplete
+unbound profiles left by failed init, clear dangling profile selection
+pointers, and re-harden owner-only ACLs/modes on key-file parents and key
+files. `--heal --dry-run` lists planned repairs without applying them. Heal
+never invents passphrase recovery and never deletes vault or key data files.
+See the troubleshooting section of `docs/local-database.md` before using
+`--accept-current` or `--heal`.
 
 Recovery use validates the kit, database binding, current datastore state, and
 trusted database anchor before writing a fresh owner key and anchor. Recovery

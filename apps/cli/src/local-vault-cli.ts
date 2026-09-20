@@ -81,6 +81,7 @@ import {
   usesDatabaseContainer,
   withDatabaseFlatVault,
 } from './database-flat-commands.js';
+import { doctorHealModeFromOptions, runDoctorHeal } from './doctor-heal.js';
 import {
   DatabaseMigrationCommandError,
   executeDatabaseMigrationCommand,
@@ -198,6 +199,8 @@ export type LocalCliOptions = Readonly<{
   routingOverrides?: DatastoreProfileRoutingOverrides;
   overwrite?: boolean;
   acceptCurrent?: boolean;
+  heal?: boolean;
+  dryRun?: boolean;
   reveal?: boolean;
   json?: boolean;
   /** Explicit legacy version-2 single-vault init (migrate sources only). */
@@ -555,19 +558,28 @@ export function buildLocalCli(): Command {
     .option('--json', 'Emit machine-readable output (the default).');
   addDatabaseOptions(doctor);
   addKeyOptions(doctor);
+  addDoctorHealOptions(doctor);
   doctor.action(async (...args: unknown[]) => {
-    await handleDoctor(getOptions(args));
+    const options = getOptions(args);
+    if (options.heal === true) {
+      await handleDoctorHealth(options);
+      return;
+    }
+    await handleDoctor(options);
   });
 
   const doctorHealth = doctor
     .command('health')
-    .description('Run fail-closed health checks and repair only safe transient state.');
+    .description(
+      'Run fail-closed health checks; with --heal, apply safe local-state repairs.',
+    );
   addDatabaseOptions(doctorHealth);
   addKeyOptions(doctorHealth);
   doctorHealth.option(
     '--accept-current',
     'Initialize a missing local rollback anchor only after manually verifying the current vault.',
   );
+  addDoctorHealOptions(doctorHealth);
   doctorHealth.action(async (...args: unknown[]) => {
     await handleDoctorHealth(getOptions(args));
   });
@@ -1318,6 +1330,15 @@ function addKeyOptions(command: Command): void {
     DEFAULT_KEY_FILE,
   );
   addVaultOption(command);
+}
+
+function addDoctorHealOptions(command: Command): void {
+  command
+    .option(
+      '--heal',
+      'Apply safe, reversible local-state repairs (incomplete unbound profiles, dangling selection pointers, owner-only ACL drift).',
+    )
+    .option('--dry-run', 'With --heal, list planned repairs without applying them.');
 }
 
 function addVaultOption(command: Command): void {
@@ -3061,6 +3082,75 @@ async function handleDoctorHealth(options: LocalCliOptions): Promise<void> {
     revokedRecoverySlots?: number;
   }
 
+  const healMode = doctorHealModeFromOptions(options);
+  const emptyHeal = {
+    actions: [] as const,
+    healed: [] as const,
+    planned: [] as const,
+    manualRecoveryRequired: [] as const,
+  };
+  const healReport =
+    options.heal === true
+      ? await runDoctorHeal({
+          mode: healMode === 'report' ? 'heal' : healMode,
+          ...(options.profileConfigDir === undefined
+            ? {}
+            : { profileConfigDir: options.profileConfigDir }),
+          ...(options.profile === undefined ? {} : { profileId: options.profile }),
+          keyFile: options.keyFile,
+          ...(options.dataFile === undefined ? {} : { dataFile: options.dataFile }),
+        })
+      : emptyHeal;
+
+  // Local-only heal can finish without unlocking when no bound vault remains
+  // (including after incomplete unbound profiles were removed).
+  const binding = await databaseProfileBindingState(options);
+  const healedUnboundOnly =
+    options.heal === true &&
+    healReport.healed.includes('incomplete-unbound-profile') &&
+    healReport.manualRecoveryRequired.length === 0 &&
+    (binding === 'unbound' || binding === 'missing');
+  if (options.heal === true && (binding === 'unbound' || healedUnboundOnly)) {
+    const healthy = healReport.manualRecoveryRequired.length === 0;
+    writeJson({
+      healthy,
+      checks: healReport.actions.map((action) => ({
+        name: action.id,
+        status:
+          action.status === 'applied' || action.status === 'planned'
+            ? 'ok'
+            : action.status === 'manual'
+              ? 'manual-recovery'
+              : 'warning',
+        detail: action.detail,
+      })),
+      autoHealed: healReport.healed,
+      planned: healReport.planned,
+      healActions: healReport.actions,
+      manualRecoveryRequired: healReport.manualRecoveryRequired,
+    });
+    if (!healthy) process.exitCode = 16;
+    return;
+  }
+
+  if (healMode === 'dry-run') {
+    writeJson({
+      healthy: healReport.manualRecoveryRequired.length === 0,
+      dryRun: true,
+      checks: healReport.actions.map((action) => ({
+        name: action.id,
+        status: action.status === 'planned' ? 'ok' : 'manual-recovery',
+        detail: action.detail,
+      })),
+      autoHealed: [],
+      planned: healReport.planned,
+      healActions: healReport.actions,
+      manualRecoveryRequired: healReport.manualRecoveryRequired,
+    });
+    if (healReport.manualRecoveryRequired.length > 0) process.exitCode = 16;
+    return;
+  }
+
   await rejectUnboundDatabaseProfile(options, 'doctor health');
   if (await usesDatabaseContainer(options)) {
     const values = await readDatabaseFlatSecrets(options, []);
@@ -3073,8 +3163,17 @@ async function handleDoctorHealth(options: LocalCliOptions): Promise<void> {
           const document = await session.inspectVault(vaultId, (payload) => {
             credentialCount = Object.keys(payload.records).length;
           });
+          const healChecks = healReport.actions.map((action) => ({
+            name: action.id,
+            status:
+              action.status === 'applied' || action.status === 'planned'
+                ? ('ok' as const)
+                : ('manual-recovery' as const),
+            detail: action.detail,
+          }));
+          const manual = [...healReport.manualRecoveryRequired];
           writeJson({
-            healthy: true,
+            healthy: manual.length === 0,
             datastore: profile.datastore,
             vaultId,
             revision: document.revision,
@@ -3087,10 +3186,14 @@ async function handleDoctorHealth(options: LocalCliOptions): Promise<void> {
                 revision: document.revision,
                 credentialCount,
               },
+              ...healChecks,
             ],
-            autoHealed: [],
-            manualRecoveryRequired: [],
+            autoHealed: [...healReport.healed],
+            planned: healReport.planned,
+            healActions: healReport.actions,
+            manualRecoveryRequired: manual,
           });
+          if (manual.length > 0) process.exitCode = 16;
         },
       );
     } catch (error) {
@@ -3107,9 +3210,19 @@ async function handleDoctorHealth(options: LocalCliOptions): Promise<void> {
             status: 'manual-recovery',
             detail,
           },
+          ...healReport.actions.map((action) => ({
+            name: action.id,
+            status:
+              action.status === 'applied' || action.status === 'planned'
+                ? 'ok'
+                : 'manual-recovery',
+            detail: action.detail,
+          })),
         ],
-        autoHealed: [],
-        manualRecoveryRequired: [detail],
+        autoHealed: [...healReport.healed],
+        planned: healReport.planned,
+        healActions: healReport.actions,
+        manualRecoveryRequired: [detail, ...healReport.manualRecoveryRequired],
       });
       process.exitCode = 15;
     }
@@ -3255,6 +3368,26 @@ async function handleDoctorHealth(options: LocalCliOptions): Promise<void> {
     }
   }
 
+  for (const item of healReport.manualRecoveryRequired) {
+    if (!manualRecoveryRequired.includes(item)) manualRecoveryRequired.push(item);
+  }
+  autoHealed.push(...healReport.healed);
+  for (const action of healReport.actions) {
+    if (action.status === 'applied' || action.status === 'planned') {
+      checks.push({
+        name: action.id,
+        status: 'ok',
+        detail: action.detail,
+      });
+    } else if (action.status === 'manual') {
+      checks.push({
+        name: action.id,
+        status: 'manual-recovery',
+        detail: action.detail,
+      });
+    }
+  }
+
   const healthy =
     manualRecoveryRequired.length === 0 &&
     checks.every((check) => check.status === 'ok' || check.status === 'warning');
@@ -3263,6 +3396,8 @@ async function handleDoctorHealth(options: LocalCliOptions): Promise<void> {
     autoHealed,
     checks,
     manualRecoveryRequired,
+    healActions: healReport.actions,
+    planned: healReport.planned,
   };
   if (storeTarget !== undefined) {
     Object.assign(result, storeLocation({ ...options, datastore }, storeTarget));

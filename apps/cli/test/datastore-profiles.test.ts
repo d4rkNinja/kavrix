@@ -8,7 +8,11 @@ import {
   profileIdSchema,
   vaultIdSchema,
 } from '@kavrix/schemas';
-import { setWindowsUserOnlyAcl } from '@kavrix/key-files';
+import {
+  deleteSecureFile,
+  setWindowsUserOnlyAcl,
+  writeProtectedJsonDocument,
+} from '@kavrix/key-files';
 import { MongoLocalVaultStore } from '@kavrix/storage';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -739,4 +743,110 @@ describe('datastore profiles', () => {
     if (process.platform === 'win32') await setWindowsUserOnlyAcl(path);
     await expect(profiles.add(fileProfile('profile-64'))).rejects.toThrow('limited');
   }, 60_000);
+});
+
+describe('datastore profile heal helpers', () => {
+  it('clears a dangling current pointer and removes unbound profiles', async () => {
+    const profiles = await registry();
+    const unbound = {
+      id: profileIdSchema.parse('stuck'),
+      datastore: 'file' as const,
+      dataFile: '/protected/stuck.kavrix-db',
+      keyFile: '/protected/stuck.kavrix-db-key',
+    };
+    await profiles.add(unbound);
+    await profiles.use(unbound.id);
+
+    const removed = await profiles.removeUnboundProfiles();
+    expect(removed.map((profile) => profile.id)).toEqual([unbound.id]);
+    expect(await profiles.list()).toEqual([]);
+
+    await profiles.add(fileProfile('kept'));
+    const registryPath = resolveProfilePath(directory);
+    await deleteSecureFile(registryPath);
+    await writeProtectedJsonDocument(
+      registryPath,
+      { version: 2 as const, current: 'ghost', profiles: [] },
+      'create',
+      {
+        maximumBytes: 128 * 1024,
+        schema: {
+          parse: (value: unknown) =>
+            value as {
+              version: 2;
+              current: string | null;
+              profiles: [];
+            },
+        },
+      },
+    );
+    expect(await profiles.healDanglingCurrentPointer()).toBe(true);
+    expect(await profiles.healDanglingCurrentPointer()).toBe(false);
+    expect(await profiles.current()).toBeNull();
+  });
+
+  it('heals dangling pointers via healDanglingCurrentPointerAt and filters removals', async () => {
+    const unboundA = {
+      id: profileIdSchema.parse('stuck-a'),
+      datastore: 'file' as const,
+      dataFile: '/protected/a.kavrix-db',
+      keyFile: '/protected/a.kavrix-db-key',
+    };
+    const unboundB = {
+      id: profileIdSchema.parse('stuck-b'),
+      datastore: 'file' as const,
+      dataFile: '/protected/b.kavrix-db',
+      keyFile: '/protected/b.kavrix-db-key',
+    };
+    const profiles = await registry();
+    await profiles.add(unboundA);
+    await profiles.add(unboundB);
+    await profiles.add(fileProfile('kept'));
+    const removed = await profiles.removeUnboundProfiles([unboundA.id]);
+    expect(removed.map((profile) => profile.id)).toEqual([unboundA.id]);
+    expect((await profiles.list()).map((profile) => profile.id).sort()).toEqual([
+      'kept',
+      'stuck-b',
+    ]);
+
+    const registryPath = resolveProfilePath(directory);
+    await deleteSecureFile(registryPath);
+    await writeProtectedJsonDocument(
+      registryPath,
+      { version: 2 as const, current: 'ghost', profiles: [] },
+      'create',
+      {
+        maximumBytes: 128 * 1024,
+        schema: {
+          parse: (value: unknown) =>
+            value as {
+              version: 2;
+              current: string | null;
+              profiles: [];
+            },
+        },
+      },
+    );
+    expect(
+      await DatastoreProfileRegistry.healDanglingCurrentPointerAt({
+        configDirectory: directory,
+      }),
+    ).toBe(true);
+    const healed = await registry();
+    expect(await healed.current()).toBeNull();
+    expect(await healed.healDanglingCurrentPointer()).toBe(false);
+  });
+
+  it('returns false when healing a missing registry file', async () => {
+    const emptyDir = await mkdtemp(join(tmpdir(), 'kavrix-heal-missing-'));
+    try {
+      expect(
+        await DatastoreProfileRegistry.healDanglingCurrentPointerAt({
+          configDirectory: emptyDir,
+        }),
+      ).toBe(false);
+    } finally {
+      await rm(emptyDir, { force: true, recursive: true });
+    }
+  });
 });
