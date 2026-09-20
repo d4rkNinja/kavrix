@@ -392,9 +392,7 @@ async function matchExplicitPathsToAmbientBoundProfile(
     overrides.dataFile === undefined ? undefined : resolve(overrides.dataFile);
   const providedKey =
     overrides.keyFile === undefined ? undefined : resolve(overrides.keyFile);
-  const dataMatches =
-    providedData === undefined ||
-    (expectedData !== undefined && providedData === expectedData);
+  const dataMatches = providedData === undefined || providedData === expectedData;
   const keyMatches = providedKey === undefined || providedKey === expectedKey;
   if (dataMatches && keyMatches) return current;
   throw new DatabaseFlatCommandError(
