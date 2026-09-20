@@ -459,7 +459,11 @@ const INHERITED_ENVIRONMENT = [
   'USERPROFILE',
 ] as const;
 
-const DEFAULT_AGENT_CONFIG_CANDIDATES = ['kavrix.yaml', 'kavrix.yml', 'kavrix.json'] as const;
+const DEFAULT_AGENT_CONFIG_CANDIDATES = [
+  'kavrix.yaml',
+  'kavrix.yml',
+  'kavrix.json',
+] as const;
 
 async function loadAgentProjectConfig(
   explicitPath: string | undefined,

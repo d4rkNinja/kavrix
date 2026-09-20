@@ -693,7 +693,10 @@ export function buildLocalCli(): Command {
     .description('List vault identifiers stored in the selected MongoDB collection.');
   addDatabaseOnlyOptions(vaultList);
   addDatastoreProfileSelectionOptions(vaultList);
-  vaultList.option('--json', 'Emit machine-readable output (the default for this command).');
+  vaultList.option(
+    '--json',
+    'Emit machine-readable output (the default for this command).',
+  );
   vaultList.action(async (...args: unknown[]) => {
     await handleVaultList(getOptions(args));
   });
