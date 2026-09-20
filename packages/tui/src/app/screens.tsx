@@ -97,6 +97,18 @@ function overlayCopy(
         body: 'Revoke grant? y/n',
         accent: 'yellow',
       };
+    case 'confirm-remove-profile':
+      return {
+        title: 'Remove profile',
+        body: `Remove profile '${safe(pendingName ?? '(selected)', ascii)}'? Key and data files are kept. y/n`,
+        accent: 'red',
+      };
+    case 'input-vault-label':
+      return {
+        title: 'New vault',
+        body: `Vault label: ${q}_`,
+        accent: CHROME.accent,
+      };
     case 'input-search':
       return { title: 'Search', body: `Search: ${q}_`, accent: CHROME.accent };
     case 'input-run':
@@ -421,6 +433,57 @@ function footerChips(screen: AppRouterState['screen']): readonly Readonly<{
         { keyLabel: 'Enter', hint: 'use', accent: key },
         { keyLabel: 'n', hint: 'file', accent: key },
         { keyLabel: 'm', hint: 'mongo', accent: key },
+        { keyLabel: 'x', hint: 'remove', accent: CHROME.danger },
+        ...commonTail,
+      ];
+    case 'vaults':
+      return [
+        { keyLabel: 'j/k', hint: 'move', accent: key },
+        { keyLabel: 'Enter', hint: 'use', accent: key },
+        { keyLabel: 'n', hint: 'new vault', accent: key },
+        { keyLabel: 'u', hint: 'unlock', accent: key },
+        ...commonTail,
+      ];
+    case 'policy':
+      return [
+        { keyLabel: 'j/k', hint: 'move', accent: key },
+        { keyLabel: 'Enter', hint: 'refresh', accent: key },
+        { keyLabel: 'n', hint: 'new policy', accent: key },
+        { keyLabel: 'x', hint: 'remove policy', accent: CHROME.danger },
+        { keyLabel: 'g', hint: 'new grant', accent: key },
+        { keyLabel: 'r', hint: 'revoke grant', accent: CHROME.danger },
+        ...commonTail,
+      ];
+    case 'recovery':
+      return [
+        { keyLabel: 'j/k', hint: 'move', accent: key },
+        { keyLabel: 'n', hint: 'create kit', accent: key },
+        { keyLabel: 'v', hint: 'verify kit', accent: key },
+        { keyLabel: 'x', hint: 'revoke', accent: CHROME.danger },
+        ...commonTail,
+      ];
+    case 'doctor':
+      return [
+        { keyLabel: 'd', hint: 'run checks', accent: key },
+        { keyLabel: 'j/k', hint: 'move', accent: key },
+        ...commonTail,
+      ];
+    case 'run':
+      return [
+        { keyLabel: 'p', hint: 'pick creds', accent: key },
+        { keyLabel: 'j/k', hint: 'move', accent: key },
+        ...commonTail,
+      ];
+    case 'agent':
+      return [
+        { keyLabel: 'g', hint: 'dry-run', accent: key },
+        { keyLabel: 'j/k', hint: 'move', accent: key },
+        ...commonTail,
+      ];
+    case 'browse':
+      return [
+        { keyLabel: 'Enter', hint: 'refresh', accent: key },
+        { keyLabel: 'j/k', hint: 'move', accent: key },
         ...commonTail,
       ];
     case 'home':
@@ -620,7 +683,7 @@ export function ProfilesScreen({
       />
       <Text {...accentColor(color, CHROME.muted)}>
         {safe(
-          'Enter = use · n = file profile · m = mongodb profile (URL+passphrase on stdin frames)',
+          'Enter = use · n = file profile · m = mongodb profile · x = remove profile (files are kept)',
           ascii,
         )}
       </Text>
@@ -631,18 +694,27 @@ export function ProfilesScreen({
 export function VaultsScreen({
   state,
 }: Readonly<{ state: AppRouterState }>): ReactElement {
+  const { color, ascii } = state;
   return (
-    <ListScreen
-      state={state}
-      title="Vaults"
-      accent={CHROME.accent}
-      empty="No vaults yet. Select a profile, then unlock (u)."
-      rows={state.snapshot.vaults.map((vault) => ({
-        id: vault.id,
-        primary: `${vault.id}${vault.selected ? ' *' : ''}`,
-        secondary: vault.detail,
-      }))}
-    />
+    <Box flexDirection="column" flexGrow={1}>
+      <ListScreen
+        state={state}
+        title="Vaults"
+        accent={CHROME.accent}
+        empty="No vaults yet. Select a profile, then unlock (u)."
+        rows={state.snapshot.vaults.map((vault) => ({
+          id: vault.id,
+          primary: `${vault.id}${vault.selected ? ' *' : ''}`,
+          secondary: vault.detail,
+        }))}
+      />
+      <Text {...accentColor(color, CHROME.muted)}>
+        {safe(
+          'Enter = use selected vault · n = create a new vault (unlock first with u)',
+          ascii,
+        )}
+      </Text>
+    </Box>
   );
 }
 
@@ -807,18 +879,55 @@ export function RunScreen({
 export function PolicyScreen({
   state,
 }: Readonly<{ state: AppRouterState }>): ReactElement {
+  const { color, ascii, listIndex } = state;
+  const rows = state.snapshot.policies;
+  const pendingAt = useListStagger(rows.length, allowMotion());
+  const statusTag = (status: string): string => `[${status.toUpperCase()}]`;
   return (
-    <ListScreen
-      state={state}
+    <Panel
       title="Policy / Grant / Audit"
       accent={CHROME.accent}
-      empty="No rows. Enter refresh · n policy · x remove · g grant · r revoke grant."
-      rows={state.snapshot.policies.map((row) => ({
-        id: `${row.kind}:${row.id}`,
-        primary: `${row.kind} ${row.id}`,
-        secondary: row.summary,
-      }))}
-    />
+      ascii={ascii}
+      color={color}
+      paddingX={1}
+      flexGrow={1}
+    >
+      {rows.length === 0 ? (
+        <EmptyState
+          title="No rows yet. Press n to create a policy, g to issue a grant, Enter to load."
+          hint="n = create policy · x = remove policy · g = create grant · r = revoke grant"
+          color={color}
+          ascii={ascii}
+        />
+      ) : (
+        rows.map((row, index) => {
+          const active = index === listIndex;
+          const inactiveGrant =
+            row.kind === 'grant' && row.status !== undefined && row.status !== 'active';
+          const label =
+            row.kind === 'grant' && row.status !== undefined
+              ? `${row.kind} ${row.id} ${statusTag(row.status)}`
+              : `${row.kind} ${row.id}`;
+          const rowAccent = inactiveGrant
+            ? CHROME.muted
+            : row.kind === 'grant'
+              ? CHROME.success
+              : CHROME.accent;
+          return (
+            <SelectRow
+              key={`${row.kind}:${row.id}`}
+              active={active}
+              label={label}
+              hint={row.summary}
+              accent={rowAccent}
+              color={color}
+              ascii={ascii}
+              pending={pendingAt(index)}
+            />
+          );
+        })
+      )}
+    </Panel>
   );
 }
 
@@ -953,10 +1062,13 @@ export function HelpScreen({
     '--- Keymap ---',
     'Global: j/k or arrows move, Enter open, Esc Home, q quit',
     'Credentials: Enter detail · c copy · r reveal · n put · m rename · x remove · / search',
-    'Profiles: Enter use · n file · m mongodb (URL+passphrase on stdin frames)',
+    'Profiles: Enter use · n file · m mongodb · x remove (key/data files are kept)',
+    'Vaults: Enter use · n create a new vault in the selected database (unlock first)',
     'Session: u unlock · l lock (clears revealed state)',
     'Doctor / heal: d (local health, not key recovery). Recovery kit: n/c create · v verify · Enter/x revoke',
-    'Run: p (project-file --environment is CLI-only). Agent: g dry-run. Policy: n/x/g/r. Vault context browse: Enter refresh',
+    'Run: p (project-file --environment is CLI-only). Agent: g dry-run.',
+    'Policy: n create · x remove · g create grant · r revoke grant · Enter refresh',
+    'Vault context browse: Enter refresh',
     'Display: a ASCII · NO_COLOR / TERM=dumb disable color · win32 ASCII default',
     'Motion: KAVRIX_TUI_REDUCED_MOTION=1 skips splash, stagger, and status pulse',
   ];

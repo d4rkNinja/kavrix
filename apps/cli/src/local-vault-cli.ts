@@ -987,6 +987,7 @@ function addDatastoreProfileCommands(db: Command): void {
       'Remove one datastore profile; removing the current profile clears selection.',
     );
   addProfileConfigOption(remove);
+  remove.option('--json', 'Emit machine-readable output.');
   remove.action(async (...args: unknown[]) => {
     await handleProfileRemove(
       getArgument(args, 'profile ID'),

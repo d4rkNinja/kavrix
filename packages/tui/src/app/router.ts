@@ -19,12 +19,14 @@ export type AppOverlay =
   | 'confirm-recovery-revoke'
   | 'confirm-policy-remove'
   | 'confirm-grant-revoke'
+  | 'confirm-remove-profile'
   | 'input-search'
   | 'input-run'
   | 'input-passphrase'
   | 'input-put-name'
   | 'input-put-value'
   | 'input-rename'
+  | 'input-vault-label'
   | 'input-profile-id'
   | 'input-profile-data-file'
   | 'input-profile-key-file'
@@ -397,6 +399,35 @@ function screenKey(state: AppRouterState, key: AppKey): AppRouterTransition {
       message: 'New mongodb profile id. Enter continues; Esc cancels.',
     });
   }
+  if (key.text?.toLowerCase() === 'x' && state.screen === 'profiles') {
+    const profile = state.snapshot.profiles[state.listIndex];
+    if (profile === undefined) {
+      return unchanged({
+        ...state,
+        message: 'Select a profile to remove (n file, m mongodb, Enter use).',
+      });
+    }
+    return unchanged({
+      ...state,
+      overlay: 'confirm-remove-profile',
+      pendingName: profile.id,
+      message: `Remove profile '${profile.id}'? Its key/data files are kept; y/n`,
+    });
+  }
+  if (key.text?.toLowerCase() === 'n' && state.screen === 'vaults') {
+    if (!state.snapshot.home.unlocked) {
+      return unchanged({
+        ...state,
+        message: 'Unlock first (u), then n creates a new vault in this database.',
+      });
+    }
+    return unchanged({
+      ...state,
+      overlay: 'input-vault-label',
+      query: '',
+      message: 'New vault label. Enter creates and selects it; Esc cancels.',
+    });
+  }
   if (key.text?.toLowerCase() === 'n' && state.screen === 'credentials') {
     return unchanged({
       ...state,
@@ -714,6 +745,52 @@ function overlayKey(
       });
     }
     return unchanged(state);
+  }
+  if (state.overlay === 'confirm-remove-profile') {
+    if (key.text?.toLowerCase() === 'y') {
+      const profileId = state.pendingName;
+      if (profileId === null) return unchanged({ ...state, overlay: 'none' });
+      return effect(
+        { ...state, overlay: 'none', pendingName: null },
+        { kind: 'backend', action: { type: 'remove-profile', profileId } },
+      );
+    }
+    if (key.text?.toLowerCase() === 'n' || key.name === 'escape') {
+      return unchanged({
+        ...state,
+        overlay: 'none',
+        pendingName: null,
+        message: 'Profile removal cancelled.',
+      });
+    }
+    return unchanged(state);
+  }
+  if (state.overlay === 'input-vault-label') {
+    if (key.name === 'escape') {
+      return unchanged({
+        ...state,
+        overlay: 'none',
+        query: '',
+        message: 'Vault create cancelled.',
+      });
+    }
+    if (key.name === 'backspace') {
+      return unchanged({ ...state, query: removeLast(state.query) });
+    }
+    if (key.name === 'return') {
+      const label = state.query.trim();
+      if (label.length === 0) {
+        return unchanged({ ...state, message: 'Vault label cannot be empty.' });
+      }
+      if (label.length > 64 || hasControlCharacter(label)) {
+        return unchanged({ ...state, message: 'Vault label is invalid.' });
+      }
+      return effect(
+        { ...state, overlay: 'none', query: '' },
+        { kind: 'backend', action: { type: 'create-vault', label } },
+      );
+    }
+    return appendOverlayText(state, key.text, 128);
   }
   if (
     state.overlay === 'input-put-name' ||
@@ -1617,6 +1694,14 @@ function listLength(state: AppRouterState): number {
 function clamp(index: number, length: number): number {
   if (length <= 0) return 0;
   return Math.max(0, Math.min(index, length - 1));
+}
+
+function hasControlCharacter(value: string): boolean {
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code <= 31 || code === 127) return true;
+  }
+  return false;
 }
 
 function removeLast(value: string): string {

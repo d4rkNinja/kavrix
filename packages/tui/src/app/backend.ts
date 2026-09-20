@@ -40,6 +40,7 @@ export interface AppPolicyRow {
   readonly id: string;
   readonly kind: 'policy' | 'grant' | 'audit';
   readonly summary: string;
+  readonly status?: 'active' | 'expired' | 'exhausted' | 'revoked' | 'clock-invalid';
 }
 
 export interface AppBrowseNode {
@@ -104,6 +105,8 @@ export type AppBackendAction =
       recoveryPassphrase?: string;
     }>
   | Readonly<{ type: 'use-vault'; vaultId: string }>
+  | Readonly<{ type: 'create-vault'; label: string }>
+  | Readonly<{ type: 'remove-profile'; profileId: string }>
   | Readonly<{
       type: 'unlock';
       passphrase: string;

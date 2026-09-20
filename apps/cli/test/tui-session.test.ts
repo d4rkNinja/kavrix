@@ -369,6 +369,110 @@ describe('CliTuiSession mutations (mocked spawn)', () => {
     expect(removed).toBe(false);
   });
 
+  it('creates a vault with stored unlock material and selects it', async () => {
+    const configDir = await setupProfile();
+    const calls: Array<{ args: readonly string[]; frames: readonly string[] }> = [];
+    const backend = createCliTuiBackend({
+      profileConfigDir: configDir,
+      ascii: true,
+      commandRunner: async (args, frames) => {
+        calls.push({ args, frames });
+        if (args.includes('vault') && args.includes('create')) {
+          return JSON.stringify({ vaultId: 'vault_second' });
+        }
+        if (args.includes('list')) {
+          return JSON.stringify({ names: [] });
+        }
+        return '{}';
+      },
+    });
+    // Unlock first: create-vault requires stored unlock material.
+    const unlocked = await backend.dispatch({
+      type: 'unlock',
+      passphrase: 'CorrectHorseBattery!',
+    });
+    expect(unlocked.snapshot.noticeTone).toBe('success');
+
+    const created = await backend.dispatch({
+      type: 'create-vault',
+      label: 'work vault',
+    });
+    expect(created.snapshot.noticeTone).toBe('success');
+    expect(created.snapshot.home.vaultId).toBe('vault_second');
+    const createCall = calls.find(
+      (call) => call.args.includes('vault') && call.args.includes('create'),
+    );
+    expect(createCall?.frames).toEqual(['CorrectHorseBattery!', 'work vault']);
+    expect(createCall?.args.join(' ').includes('CorrectHorseBattery!')).toBe(false);
+  });
+
+  it('removes a non-current profile without touching the session', async () => {
+    const configDir = await setupProfile();
+    const registry = await DatastoreProfileRegistry.open({
+      configDirectory: configDir,
+    });
+    await registry.add({
+      id: profileIdSchema.parse('spare'),
+      datastore: 'file',
+      dataFile: join(configDir, 'spare.kavrix'),
+      keyFile: join(configDir, 'spare.key'),
+    });
+    const backend = createCliTuiBackend({
+      profileConfigDir: configDir,
+      ascii: true,
+      commandRunner: async (args) => {
+        if (
+          args.includes('profile') &&
+          args.includes('remove') &&
+          args.includes('spare')
+        ) {
+          // The real CLI mutates the registry; mirror that here.
+          await registry.remove('spare');
+          return JSON.stringify({ removed: true, id: 'spare' });
+        }
+        return '{}';
+      },
+    });
+    const removed = await backend.dispatch({
+      type: 'remove-profile',
+      profileId: 'spare',
+    });
+    expect(removed.snapshot.noticeTone).toBe('success');
+    const remaining = (await registry.list()).map((profile) => profile.id);
+    expect(remaining).toEqual(['smoke']);
+    expect(removed.snapshot.home.profileId).toBe('smoke');
+  });
+
+  it('locks and clears session state when the current profile is removed', async () => {
+    const configDir = await setupProfile();
+    const registry = await DatastoreProfileRegistry.open({
+      configDirectory: configDir,
+    });
+    const backend = createCliTuiBackend({
+      profileConfigDir: configDir,
+      ascii: true,
+      commandRunner: async (args) => {
+        if (
+          args.includes('profile') &&
+          args.includes('remove') &&
+          args.includes('smoke')
+        ) {
+          await registry.remove('smoke');
+          return JSON.stringify({ removed: true, id: 'smoke' });
+        }
+        return '{}';
+      },
+    });
+    await backend.dispatch({ type: 'unlock', passphrase: 'CorrectHorseBattery!' });
+    const removed = await backend.dispatch({
+      type: 'remove-profile',
+      profileId: 'smoke',
+    });
+    expect(removed.snapshot.noticeTone).toBe('success');
+    expect(removed.snapshot.home.profileId).toBeNull();
+    expect(removed.snapshot.home.unlocked).toBe(false);
+  });
+
   it('runs doctor, policy, grant, recovery, preview, and agent via real CLI frames', async () => {
     const configDir = await setupProfile();
     const calls: Array<{ args: readonly string[]; frames: readonly string[] }> = [];

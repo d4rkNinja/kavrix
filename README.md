@@ -238,6 +238,25 @@ kavrix tui    # full app: profiles, vaults, credentials, doctor, recovery, …
 Use `kavrix init --no-tui` for classic line prompts, or stdin/explicit routing
 for scripts. A walkthrough is embedded in the [Demo](#demo) section above.
 
+### Full CRUD from the TUI (0.2.22)
+
+Every screen now surfaces its actions in the footer, and the flows cover the
+full lifecycle — no CLI round-trip required:
+
+| Screen        | Create                   | Read / use           | Update     | Delete                    |
+| ------------- | ------------------------ | -------------------- | ---------- | ------------------------- |
+| Profiles      | `n` file / `m` mongodb   | list + `Enter` use   | —          | `x` remove (files kept)   |
+| Vaults        | `n` new vault (unlocked) | list + `Enter` use   | —          | —                         |
+| Credentials   | `n` put                  | list, `Enter` detail | `m` rename | `x` remove (confirmed)    |
+| Policies      | `n` new policy           | `Enter` refresh      | —          | `x` remove (confirmed)    |
+| Grants        | `g` new grant            | `Enter` refresh      | —          | `r` revoke (confirmed)    |
+| Recovery kits | `n` create               | `v` verify           | —          | `x` revoke (last is safe) |
+
+Grant rows carry their live status (`ACTIVE`, `REVOKED`, `EXPIRED`,
+`EXHAUSTED`), destructive actions always ask for confirmation, and secrets
+stay masked end to end — reveal requires `r` then `y`, copy never paints
+plaintext, and unlock material never reaches a process argument.
+
 ## Credential model
 
 The structured model supports field definitions such as username, password, API

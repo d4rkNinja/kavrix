@@ -64,6 +64,7 @@ export interface CliTuiSnapshot {
     id: string;
     kind: 'policy' | 'grant' | 'audit';
     summary: string;
+    status?: 'active' | 'expired' | 'exhausted' | 'revoked' | 'clock-invalid';
   }>[];
   readonly browse: readonly Readonly<{
     id: string;
@@ -108,6 +109,8 @@ export type CliTuiAction =
       recoveryPassphrase?: string;
     }>
   | Readonly<{ type: 'use-vault'; vaultId: string }>
+  | Readonly<{ type: 'create-vault'; label: string }>
+  | Readonly<{ type: 'remove-profile'; profileId: string }>
   | Readonly<{
       type: 'unlock';
       passphrase: string;
@@ -288,6 +291,12 @@ class CliTuiSession {
           break;
         case 'use-vault':
           await this.#useVault(action.vaultId);
+          break;
+        case 'create-vault':
+          await this.#createVault(action.label);
+          break;
+        case 'remove-profile':
+          await this.#removeProfile(action.profileId);
           break;
         case 'unlock':
           await this.#unlock(action.passphrase, action.databaseUrl);
@@ -537,6 +546,81 @@ class CliTuiSession {
     this.#vaultId = id;
     this.#browseNodes = [];
     this.#notice = `Selected vault ${id}.`;
+    this.#noticeTone = 'success';
+  }
+
+  async #createVault(label: string): Promise<void> {
+    const vaultLabel = label.trim();
+    if (vaultLabel.length === 0) {
+      throw new Error('Vault label required.');
+    }
+    if (this.#passphrase === null) {
+      throw new Error('Unlock before creating a vault.');
+    }
+    const passphrase = this.#passphrase.toString('utf8');
+    const frames = await this.#ownerAuthFrames([passphrase, vaultLabel]);
+    const transport = await this.#ownerTransportArgs();
+    const created = await this.#runJsonCommand(
+      [
+        'db',
+        'vault',
+        'create',
+        ...(await this.#profileArgs()),
+        ...transport,
+        '--passphrase-stdin',
+        '--json',
+      ],
+      frames,
+    );
+    const vaultId =
+      typeof created === 'object' &&
+      created !== null &&
+      typeof (created as { vaultId?: unknown }).vaultId === 'string'
+        ? (created as { vaultId: string }).vaultId
+        : null;
+    if (vaultId === null) {
+      throw new Error('db vault create did not return a vaultId.');
+    }
+    await this.#useVault(vaultId);
+    this.#vaultId = vaultId;
+    this.#notice = `Created vault ${vaultId} (${vaultLabel}).`;
+    this.#noticeTone = 'success';
+  }
+
+  async #removeProfile(profileId: string): Promise<void> {
+    const id = profileId.trim();
+    if (id.length === 0) {
+      throw new Error('Profile id required.');
+    }
+    const current = await this.#currentProfile();
+    await this.#runJsonCommand(
+      [
+        'db',
+        'profile',
+        'remove',
+        id,
+        ...(this.#options.profileConfigDir === undefined
+          ? []
+          : ['--profile-config-dir', this.#options.profileConfigDir]),
+        '--json',
+      ],
+      [],
+    );
+    if (current?.id === id) {
+      // Removing the selected profile ends its session: selection cleared on
+      // disk, so drop the in-memory unlock material and derived rows too.
+      this.#lock();
+      this.#vaultId = null;
+      this.#recoverySlots = [];
+      this.#doctorRows = [];
+      this.#policyRows = [];
+      this.#runPreview = null;
+      this.#agentStatus = null;
+      this.#browseNodes = [];
+      this.#credentialNames = [];
+      this.#clearDatabaseUrl();
+    }
+    this.#notice = `Removed profile ${id}.`;
     this.#noticeTone = 'success';
   }
 
@@ -2155,6 +2239,7 @@ function parsePolicyRows(
     id: string;
     kind: 'policy' | 'grant' | 'audit';
     summary: string;
+    status?: 'active' | 'expired' | 'exhausted' | 'revoked' | 'clock-invalid';
   }[] = [];
   if (typeof policyRaw === 'object' && policyRaw !== null) {
     const policies = (policyRaw as Record<string, unknown>)['policies'];
@@ -2192,12 +2277,21 @@ function parsePolicyRows(
               : null;
         if (id === null) continue;
         const secret = typeof grant['secret'] === 'string' ? grant['secret'] : '?';
-        const status =
+        const rawStatus =
           typeof grant['status'] === 'string' ? grant['status'] : 'unknown';
+        const status =
+          rawStatus === 'active' ||
+          rawStatus === 'expired' ||
+          rawStatus === 'exhausted' ||
+          rawStatus === 'revoked' ||
+          rawStatus === 'clock-invalid'
+            ? rawStatus
+            : undefined;
         rows.push({
           id,
           kind: 'grant',
-          summary: `secret=${secret} status=${status}`,
+          summary: `secret=${secret} status=${rawStatus}`,
+          ...(status === undefined ? {} : { status }),
         });
       }
     }

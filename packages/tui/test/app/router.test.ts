@@ -10,6 +10,7 @@ import {
   navigateToScreen,
   transitionAppRouter,
   sanitizePasteText,
+  AppChrome,
   HomeScreen,
   ProfilesScreen,
   VaultsScreen,
@@ -1036,5 +1037,140 @@ describe('help and credentials UX', () => {
     ).state;
     const frameText = frame(navigateToScreen(locked, 'credentials'));
     expect(frameText).toMatch(/Press u to unlock/i);
+  });
+});
+
+describe('0.2.22 TUI CRUD discoverability and new flows', () => {
+  it('policy screen renders per-row grant status and hints', () => {
+    const withRows: AppRouterState = {
+      ...navigateToScreen(hydrate(), 'policy'),
+      snapshot: {
+        ...sampleSnapshot(),
+        policies: [
+          { id: 'deploy', kind: 'policy', summary: 'secret=git cmds=terraform' },
+          {
+            id: 'grant_1',
+            kind: 'grant',
+            summary: 'secret=git status=revoked',
+            status: 'revoked',
+          },
+          {
+            id: 'grant_2',
+            kind: 'grant',
+            summary: 'secret=git status=active',
+            status: 'active',
+          },
+        ],
+      },
+    };
+    const frameText = frame(withRows);
+    expect(frameText).toContain('[REVOKED]');
+    expect(frameText).toContain('secret=git status=revoked');
+  });
+
+  it('policy screen empty state names create/remove/grant/revoke keys', () => {
+    const empty = {
+      ...navigateToScreen(hydrate(), 'policy'),
+      snapshot: { ...sampleSnapshot(), policies: [] },
+    };
+    const frameText = frame(empty);
+    expect(frameText).toMatch(/n to create a policy/i);
+    expect(frameText).toMatch(/g = create grant/i);
+    expect(frameText).toMatch(/r = revoke grant/i);
+  });
+
+  it('footer chips surface CRUD keys on policy, vaults, recovery, and profiles', () => {
+    const chrome = (screen: AppRouterState['screen']): string => {
+      const el = createElement(AppChrome, {
+        state: { ...navigateToScreen(hydrate(), screen), width: 160 },
+        children: createElement('box'),
+      });
+      return renderToString(el, { columns: 160 });
+    };
+    expect(chrome('policy')).toMatch(/new policy/);
+    expect(chrome('policy')).toMatch(/remove policy/);
+    expect(chrome('policy')).toMatch(/new grant/);
+    expect(chrome('policy')).toMatch(/revoke grant/);
+    expect(chrome('vaults')).toMatch(/new vault/);
+    expect(chrome('recovery')).toMatch(/create kit/);
+    expect(chrome('recovery')).toMatch(/verify kit/);
+    expect(chrome('profiles')).toMatch(/remove/);
+  });
+
+  it('n on unlocked vaults opens the label overlay and submits create-vault', () => {
+    let state = navigateToScreen(hydrate(), 'vaults');
+    state = transitionAppRouter(state, {
+      type: 'key',
+      key: { text: 'n' },
+      nowMs: 0,
+    }).state;
+    expect(state.overlay).toBe('input-vault-label');
+    for (const char of 'work vault') {
+      state = transitionAppRouter(state, {
+        type: 'key',
+        key: { text: char },
+        nowMs: 0,
+      }).state;
+    }
+    const submitted = transitionAppRouter(state, {
+      type: 'key',
+      key: { name: 'return' },
+      nowMs: 0,
+    });
+    expect(submitted.effect).toEqual({
+      kind: 'backend',
+      action: { type: 'create-vault', label: 'work vault' },
+    });
+  });
+
+  it('n on locked vaults asks to unlock instead of opening the overlay', () => {
+    const locked = transitionAppRouter(createInitialAppRouterState(), {
+      type: 'hydrate',
+      snapshot: {
+        ...sampleSnapshot(),
+        home: { ...sampleSnapshot().home, unlocked: false },
+      },
+    }).state;
+    const onVaults = navigateToScreen(locked, 'vaults');
+    const result = transitionAppRouter(onVaults, {
+      type: 'key',
+      key: { text: 'n' },
+      nowMs: 0,
+    });
+    expect(result.state.overlay).toBe('none');
+    expect(result.state.message).toMatch(/unlock first/i);
+  });
+
+  it('x on profiles confirms then dispatches remove-profile', () => {
+    let state = navigateToScreen(hydrate(), 'profiles');
+    state = transitionAppRouter(state, {
+      type: 'key',
+      key: { text: 'x' },
+      nowMs: 0,
+    }).state;
+    expect(state.overlay).toBe('confirm-remove-profile');
+    expect(state.pendingName).toBe('dev');
+    const confirmed = transitionAppRouter(state, {
+      type: 'key',
+      key: { text: 'y' },
+      nowMs: 0,
+    });
+    expect(confirmed.effect).toEqual({
+      kind: 'backend',
+      action: { type: 'remove-profile', profileId: 'dev' },
+    });
+    const cancelled = transitionAppRouter(state, {
+      type: 'key',
+      key: { text: 'n' },
+      nowMs: 0,
+    });
+    expect(cancelled.effect).toEqual({ kind: 'none' });
+    expect(cancelled.state.overlay).toBe('none');
+  });
+
+  it('help documents the new vault and profile keys', () => {
+    const frameText = frame(navigateToScreen(hydrate(), 'help'));
+    expect(frameText).toMatch(/Vaults: Enter use · n create/i);
+    expect(frameText).toMatch(/x remove \(key\/data files are kept\)/i);
   });
 });
