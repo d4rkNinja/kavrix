@@ -85,9 +85,7 @@ function midSnapshot(): AppSnapshot {
   };
 }
 
-function deferredLoadBackend(
-  snapshot: AppSnapshot,
-): Readonly<{
+function deferredLoadBackend(snapshot: AppSnapshot): Readonly<{
   backend: InteractiveAppBackend;
   resolveLoad: (next?: AppSnapshot) => void;
   rejectLoad: (error: Error) => void;
@@ -380,7 +378,8 @@ describe('TUI first paint reliability', () => {
 });
 
 describe('KavrixApp vault-shell first paint', () => {
-  let instance: ReturnType<typeof render> | ReturnType<typeof mountKavrixApp> | undefined;
+  let instance:
+    ReturnType<typeof render> | ReturnType<typeof mountKavrixApp> | undefined;
 
   afterEach(() => {
     instance?.unmount();

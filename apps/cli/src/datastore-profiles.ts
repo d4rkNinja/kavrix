@@ -864,11 +864,7 @@ async function yieldRegistryMutation(): Promise<void> {
  */
 export function defaultProfileConfigDirectory(): string {
   const xdg = process.env['XDG_CONFIG_HOME'];
-  if (
-    typeof xdg === 'string' &&
-    xdg.trim().length > 0 &&
-    !hasControlCharacters(xdg)
-  ) {
+  if (typeof xdg === 'string' && xdg.trim().length > 0 && !hasControlCharacters(xdg)) {
     return join(xdg, 'kavrix');
   }
   return join(homedir(), '.config', 'kavrix');

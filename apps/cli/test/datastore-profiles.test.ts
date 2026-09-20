@@ -913,7 +913,9 @@ describe('defaultProfileConfigDirectory', () => {
 
   it('uses XDG_CONFIG_HOME/kavrix when that variable is a non-empty path', () => {
     vi.stubEnv('XDG_CONFIG_HOME', join(directory, 'xdg-config'));
-    expect(defaultProfileConfigDirectory()).toBe(join(directory, 'xdg-config', 'kavrix'));
+    expect(defaultProfileConfigDirectory()).toBe(
+      join(directory, 'xdg-config', 'kavrix'),
+    );
   });
 
   it('treats empty XDG_CONFIG_HOME as unset and falls back to ~/.config/kavrix', () => {

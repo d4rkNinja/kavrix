@@ -654,7 +654,7 @@ describe('runDoctorHeal unit', () => {
       ],
     });
     expect([...dirs].sort()).toEqual(
-      [(await realpath(dataParent)), (await realpath(keyParent))].sort(),
+      [await realpath(dataParent), await realpath(keyParent)].sort(),
     );
     expect(dirs.has(await canonPath(projectRoot))).toBe(false);
 

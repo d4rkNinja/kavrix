@@ -65,7 +65,8 @@ export function exitCodeForCliError(code: CliErrorCode): number {
  * OS start failure). This is not AUTHORIZATION_DENIED: policy-check deny,
  * including `executable-unresolved`, remains exit 12.
  */
-export const SPAWN_FAILURE_CLI_ERROR_CODE = 'EXECUTION_FAILED' as const satisfies CliErrorCode;
+export const SPAWN_FAILURE_CLI_ERROR_CODE =
+  'EXECUTION_FAILED' as const satisfies CliErrorCode;
 
 /**
  * Maps a runner failure onto the stable CLI class. Spawn-miss is

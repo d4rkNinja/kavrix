@@ -228,7 +228,10 @@ describe('app router navigation', () => {
     const shown = frame({ ...revealed, ascii: true, color: false });
     expect(shown).toContain('REVEAL:');
     expect(shown).toContain('temporary');
-    const remasked = transitionAppRouter(revealed, { type: 'tick', nowMs: 15_011 }).state;
+    const remasked = transitionAppRouter(revealed, {
+      type: 'tick',
+      nowMs: 15_011,
+    }).state;
     expect(remasked.revealedName).toBeNull();
     expect(remasked.revealedValue).toBeNull();
     expect(remasked.screen).toBe('credentials');
