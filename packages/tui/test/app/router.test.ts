@@ -25,6 +25,8 @@ import {
   resolveAppPresentation,
   listScreenInventory,
   defaultFileProfilePaths,
+  defaultMongoProfilePaths,
+  defaultRecoveryFilePath,
   pathSeparator,
   type AppRouterState,
   type AppSnapshot,
@@ -393,18 +395,27 @@ describe('ASCII and NO_COLOR presentation', () => {
     expect(pathSeparator()).toBe(sep);
     const home = join('Users', 'demo');
     const paths = defaultFileProfilePaths('demo', home);
-    expect(paths.dataFile).toBe(
-      join(home, '.local', 'share', 'kavrix', 'demo', 'db.kavrix'),
-    );
-    expect(paths.keyFile).toBe(
-      join(home, '.local', 'share', 'kavrix', 'demo', 'owner.key'),
-    );
+    expect(paths.dataFile).toBe(join(home, '.kavrix', 'demo.vault'));
+    expect(paths.keyFile).toBe(join(home, '.kavrix', 'demo.key'));
     // No bashisms: removing path.sep leaves no other directory separators.
     for (const candidate of [paths.dataFile, paths.keyFile]) {
       const withoutSep = candidate.split(sep).join('');
       expect(withoutSep.includes('/')).toBe(false);
       expect(withoutSep.includes('\\')).toBe(false);
     }
+  });
+
+  it('keeps default vault/key/recovery under ~/.kavrix (not XDG share)', () => {
+    const home = join('tmp', 'empty-home');
+    const fileDefaults = defaultFileProfilePaths('default', home);
+    const mongoDefaults = defaultMongoProfilePaths('default', home);
+    expect(fileDefaults.dataFile).toBe(join(home, '.kavrix', 'kavrix.vault'));
+    expect(fileDefaults.keyFile).toBe(join(home, '.kavrix', 'kavrix.key'));
+    expect(mongoDefaults.keyFile).toBe(join(home, '.kavrix', 'kavrix.key'));
+    expect(defaultRecoveryFilePath('default', home)).toBe(
+      join(home, '.kavrix', 'kavrix.recovery'),
+    );
+    expect(fileDefaults.keyFile.includes(join('.local', 'share'))).toBe(false);
   });
 
   it('snapshots home and credentials in ASCII and NO_COLOR modes', () => {

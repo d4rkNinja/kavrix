@@ -39,7 +39,7 @@ function deferredBackend(): InteractiveAppBackend {
       new Promise(() => {
         /* never resolves — first paint must not wait on hydrate */
       }),
-    dispatch: async () => ({ snapshot: emptySnapshot() }),
+    dispatch: () => Promise.resolve({ snapshot: emptySnapshot() }),
   };
 }
 
