@@ -593,7 +593,9 @@ export class DatastoreProfileRegistry {
     const profile = document.profiles.find(
       (candidate) => candidate.id === document.current,
     );
-    if (profile === undefined) throw new DatastoreProfileError('PROFILE_INVALID');
+    // Dangling pointers are normally cleared in normalizeDocument; keep the
+    // same unset-selection semantics if one slips through.
+    if (profile === undefined) return null;
     return cloneProfile(profile);
   }
 
@@ -624,9 +626,9 @@ export class DatastoreProfileRegistry {
       schema: { parse: parseDocumentAllowingDanglingCurrent },
       maximumBytes: MAX_REGISTRY_BYTES,
     });
-    const normalized = normalizeDocument(document);
-    const ids = new Set(normalized.profiles.map((profile) => profile.id));
-    if (normalized.current === null || ids.has(normalized.current)) {
+    // Inspect the stored pointer before normalizeDocument coerces it to null.
+    const ids = new Set(document.profiles.map((profile) => profile.id));
+    if (document.current === null || ids.has(document.current)) {
       return false;
     }
     await transitionProtectedJsonDocument(
@@ -657,6 +659,34 @@ export class DatastoreProfileRegistry {
       resolveProfilePath(directory, options.fileName),
     );
     return registry.healDanglingCurrentPointer();
+  }
+
+  /**
+   * Reports whether the on-disk registry has a `current` id that does not match
+   * any profile. Soft-read coerces that pointer to null in memory, so callers
+   * that want to detect or heal must use this probe (or heal helpers).
+   */
+  static async hasDanglingCurrentPointerAt(
+    options: DatastoreProfileRegistryOptions = {},
+  ): Promise<boolean> {
+    const inputDirectory = options.configDirectory ?? defaultConfigDirectory();
+    try {
+      await lstat(resolve(inputDirectory));
+    } catch (error) {
+      if (errorCode(error) === 'ENOENT') return false;
+      throw new DatastoreProfileError('PROFILE_UNSAFE');
+    }
+    const directory = await secureConfigDirectory(inputDirectory);
+    const path = resolveProfilePath(directory, options.fileName);
+    if (!(await registryExists(path))) return false;
+    const document = await readProtectedJsonDocument(path, {
+      schema: { parse: parseDocumentAllowingDanglingCurrent },
+      maximumBytes: MAX_REGISTRY_BYTES,
+    });
+    // Inspect the stored pointer before normalizeDocument coerces it to null.
+    if (document.current === null) return false;
+    const ids = new Set(document.profiles.map((profile) => profile.id));
+    return !ids.has(document.current);
   }
 
   /**
@@ -935,12 +965,18 @@ function parseDocumentVersion(
   const sorted = sortProfiles(profiles);
   if (!sameProfiles(profiles, sorted))
     throw new DatastoreProfileError('PROFILE_INVALID');
-  const current = record['current'] === null ? null : parseProfileId(record['current']);
-  if (current !== null && !ids.has(current)) {
-    if (!allowDanglingCurrent) throw new DatastoreProfileError('PROFILE_INVALID');
-    // Heal path keeps the dangling id so the mutate callback can clear it.
+  const parsedCurrent =
+    record['current'] === null ? null : parseProfileId(record['current']);
+  if (parsedCurrent !== null && !ids.has(parsedCurrent)) {
+    // Keep the dangling id so protected-json canonical round-trip still matches
+    // on-disk bytes. Soft-read happens in normalizeDocument / current(): treat
+    // the selection as unset without failing the whole registry. doctor --heal
+    // (or the next mutation that rewrites current) clears it on disk.
+    // allowDanglingCurrent remains for heal-path callers that document intent.
+    void allowDanglingCurrent;
+    return { version, current: parsedCurrent, profiles: sorted };
   }
-  return { version, current, profiles: sorted };
+  return { version, current: parsedCurrent, profiles: sorted };
 }
 
 /** Heal-only parser: accepts a dangling `current` pointer for repair. */
@@ -966,9 +1002,12 @@ function parseDocumentAllowingDanglingCurrent(
 function normalizeDocument(
   document: StoredDatastoreProfileRegistryDocument,
 ): DatastoreProfileRegistryDocument {
+  const ids = new Set(document.profiles.map((profile) => profile.id));
+  const current =
+    document.current !== null && ids.has(document.current) ? document.current : null;
   return {
     version: REGISTRY_VERSION,
-    current: document.current,
+    current,
     profiles: document.profiles,
   };
 }

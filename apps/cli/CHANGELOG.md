@@ -1,5 +1,10 @@
 # kavrix
 
+## 0.2.18
+
+- Soft-read datastore profile registries when `current` points at a missing profile id: treat the selection as unset so `db profile list`, `status`, and explicit `--profile <existing>` keep working. `doctor --heal` still detects and clears the dangling on-disk pointer.
+- Fail closed only for operations that require a selected profile when none is valid.
+
 ## 0.2.17
 
 - Add `kavrix doctor --heal` / `doctor health --heal` and `kavrix db doctor health --heal` to safely auto-repair broken local state: remove incomplete unbound profiles (PROFILE_DUPLICATE leftovers), clear dangling profile selection pointers, and re-harden owner-only ACLs/modes on key-file parents and key files. Supports `--heal --dry-run` to list planned actions without applying them. Never invents passphrase recovery and never deletes vault/key data files.

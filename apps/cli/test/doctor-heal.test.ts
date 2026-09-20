@@ -2,6 +2,7 @@ import { chmod, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
+import { databaseIdSchema, vaultIdSchema } from '@kavrix/schemas';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { deleteSecureFile, writeProtectedJsonDocument } from '@kavrix/key-files';
@@ -368,33 +369,42 @@ describe('runDoctorHeal unit', () => {
     // Ensure the secure config directory exists, then plant a dangling pointer.
     await DatastoreProfileRegistry.open({ configDirectory: configDir });
     const seeded = await DatastoreProfileRegistry.open({ configDirectory: configDir });
-    await seeded.add({
+    const alive: DatastoreProfile = {
       id: 'alive' as DatastoreProfile['id'],
       datastore: 'file',
       dataFile: join(directory, 'a.db'),
       keyFile: join(directory, 'a.key'),
-    });
+      databaseId: databaseIdSchema.parse('db_alive'),
+      defaultVaultId: vaultIdSchema.parse('vault_alive'),
+    };
+    await seeded.add(alive);
     const registryPath = resolveProfilePath(configDir);
+    const onDisk = {
+      version: 2 as const,
+      current: 'does-not-exist',
+      profiles: [alive],
+    };
     await deleteSecureFile(registryPath);
-    await writeProtectedJsonDocument(
-      registryPath,
-      {
-        version: 2 as const,
-        current: 'ghost',
-        profiles: [],
+    await writeProtectedJsonDocument(registryPath, onDisk, 'create', {
+      maximumBytes: 128 * 1024,
+      schema: {
+        parse: (value: unknown) =>
+          value as {
+            version: 2;
+            current: string | null;
+            profiles: DatastoreProfile[];
+          },
       },
-      'create',
-      {
-        maximumBytes: 128 * 1024,
-        schema: {
-          parse: (value: unknown) =>
-            value as {
-              version: 2;
-              current: string | null;
-              profiles: DatastoreProfile[];
-            },
-        },
-      },
+    });
+
+    // Soft-read must keep list/recovery usable before heal clears the pointer.
+    const listed = await runCli(
+      ['db', 'profile', 'list', '--json', '--profile-config-dir', configDir],
+      '',
+    );
+    expect(listed.exitCode).toBe(0);
+    expect(JSON.parse(listed.stdout).profiles.map((p: { id: string }) => p.id)).toEqual(
+      ['alive'],
     );
 
     const reportMode = await runDoctorHeal({
@@ -418,7 +428,13 @@ describe('runDoctorHeal unit', () => {
       configDirectory: configDir,
     });
     expect(await registry.current()).toBeNull();
-    expect(await registry.list()).toEqual([]);
+    expect((await registry.list()).map((profile) => profile.id)).toEqual(['alive']);
+
+    const use = await runCli(
+      ['db', 'profile', 'use', 'alive', '--profile-config-dir', configDir],
+      '',
+    );
+    expect(use.exitCode).toBe(0);
   });
 
   it('refuses to harden broad filesystem roots even if named as a key parent', async () => {
