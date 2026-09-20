@@ -79,6 +79,7 @@ import {
   readDatabaseFlatSecrets,
   rejectUnboundDatabaseProfile,
   usesDatabaseContainer,
+  resolveLegacyFileProfileRouting,
   withDatabaseFlatVault,
 } from './database-flat-commands.js';
 import { doctorHealModeFromOptions, runDoctorHeal } from './doctor-heal.js';
@@ -3119,6 +3120,7 @@ async function handleDoctorHealth(options: LocalCliOptions): Promise<void> {
     const healthy = healReport.manualRecoveryRequired.length === 0;
     writeJson({
       healthy,
+      ...(healMode === 'dry-run' ? { dryRun: true } : {}),
       checks: healReport.actions.map((action) => ({
         name: action.id,
         status:
@@ -3129,7 +3131,7 @@ async function handleDoctorHealth(options: LocalCliOptions): Promise<void> {
               : 'warning',
         detail: action.detail,
       })),
-      autoHealed: healReport.healed,
+      autoHealed: healMode === 'dry-run' ? [] : healReport.healed,
       planned: healReport.planned,
       healActions: healReport.actions,
       manualRecoveryRequired: healReport.manualRecoveryRequired,
@@ -3138,23 +3140,10 @@ async function handleDoctorHealth(options: LocalCliOptions): Promise<void> {
     return;
   }
 
-  if (healMode === 'dry-run') {
-    writeJson({
-      healthy: healReport.manualRecoveryRequired.length === 0,
-      dryRun: true,
-      checks: healReport.actions.map((action) => ({
-        name: action.id,
-        status: action.status === 'planned' ? 'ok' : 'manual-recovery',
-        detail: action.detail,
-      })),
-      autoHealed: [],
-      planned: healReport.planned,
-      healActions: healReport.actions,
-      manualRecoveryRequired: healReport.manualRecoveryRequired,
-    });
-    if (healReport.manualRecoveryRequired.length > 0) process.exitCode = 16;
-    return;
-  }
+  // Dry-run must not short-circuit past vault validation: operators rely on it
+  // as the safety rail for --heal. Unbound/heal-only cases already returned
+  // above; bound or explicit vault targets fall through and fail closed the
+  // same way as apply / plain doctor.
 
   await rejectUnboundDatabaseProfile(options, 'doctor health');
   if (await usesDatabaseContainer(options)) {
@@ -3179,6 +3168,7 @@ async function handleDoctorHealth(options: LocalCliOptions): Promise<void> {
           const manual = [...healReport.manualRecoveryRequired];
           writeJson({
             healthy: manual.length === 0,
+            ...(healMode === 'dry-run' ? { dryRun: true } : {}),
             datastore: profile.datastore,
             vaultId,
             revision: document.revision,
@@ -3193,7 +3183,7 @@ async function handleDoctorHealth(options: LocalCliOptions): Promise<void> {
               },
               ...healChecks,
             ],
-            autoHealed: [...healReport.healed],
+            autoHealed: healMode === 'dry-run' ? [] : [...healReport.healed],
             planned: healReport.planned,
             healActions: healReport.actions,
             manualRecoveryRequired: manual,
@@ -3209,6 +3199,7 @@ async function handleDoctorHealth(options: LocalCliOptions): Promise<void> {
           : 'Database authentication failed.';
       writeJson({
         healthy: false,
+        ...(healMode === 'dry-run' ? { dryRun: true } : {}),
         checks: [
           {
             name: 'database-container',
@@ -3224,7 +3215,7 @@ async function handleDoctorHealth(options: LocalCliOptions): Promise<void> {
             detail: action.detail,
           })),
         ],
-        autoHealed: [...healReport.healed],
+        autoHealed: healMode === 'dry-run' ? [] : [...healReport.healed],
         planned: healReport.planned,
         healActions: healReport.actions,
         manualRecoveryRequired: [detail, ...healReport.manualRecoveryRequired],
@@ -3398,7 +3389,8 @@ async function handleDoctorHealth(options: LocalCliOptions): Promise<void> {
     checks.every((check) => check.status === 'ok' || check.status === 'warning');
   const result: Record<string, unknown> = {
     healthy,
-    autoHealed,
+    ...(healMode === 'dry-run' ? { dryRun: true } : {}),
+    autoHealed: healMode === 'dry-run' ? [] : autoHealed,
     checks,
     manualRecoveryRequired,
     healActions: healReport.actions,
@@ -3881,11 +3873,12 @@ async function handleVaultList(options: LocalCliOptions): Promise<void> {
       'This profile is a database container. Use `kavrix db vault list` (not legacy `vault list`).',
     );
   }
-  const values = await readSecrets(['database-url'], options);
+  const routed = await resolveLegacyFileProfileRouting(options);
+  const values = await readSecrets(['database-url'], routed);
   const databaseUrl = requiredSecret(values, 0);
-  await withStore(databaseUrl, options, async (store, target) => {
+  await withStore(databaseUrl, routed, async (store, target) => {
     const vaults = await store.listVaultIds();
-    writeJson({ ...storeLocation(options, target), vaults });
+    writeJson({ ...storeLocation(routed, target), vaults });
   });
 }
 
@@ -3895,12 +3888,13 @@ async function handleVaultStatus(options: LocalCliOptions): Promise<void> {
       'This profile is a database container. Use `kavrix db vault status` (not legacy `vault status`).',
     );
   }
-  const values = await readSecrets(['database-url'], options);
+  const routed = await resolveLegacyFileProfileRouting(options);
+  const values = await readSecrets(['database-url'], routed);
   const databaseUrl = requiredSecret(values, 0);
-  await withStore(databaseUrl, options, async (store, target) => {
-    const document = await requireVault(store, options.vault);
+  await withStore(databaseUrl, routed, async (store, target) => {
+    const document = await requireVault(store, routed.vault);
     writeJson({
-      ...storeLocation(options, target),
+      ...storeLocation(routed, target),
       vaultId: document.id,
       revision: document.revision,
       currentKeyVersion: document.currentKeyVersion,

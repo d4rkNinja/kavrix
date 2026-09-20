@@ -4,6 +4,11 @@
 
 - Soft-read datastore profile registries when `current` points at a missing profile id: treat the selection as unset so `db profile list`, `status`, and explicit `--profile <existing>` keep working. `doctor --heal` still detects and clears the dangling on-disk pointer.
 - Fail closed only for operations that require a selected profile when none is valid.
+- Fix `vault list` / `vault status` so `--profile` (and ambient legacy file profiles) route to that profile's vault paths instead of silently using `./kavrix.vault`.
+- Fix `doctor --heal --dry-run` (and `db doctor health --heal --dry-run`) false `healthy:true` when the same vault target fails apply / plain doctor; dry-run now fail-closes on the same problems after local-state planning.
+- Fix `run --secret` help examples that used protected destination `ENV`; use `MYSECRET` and reject reserved destinations with an explicit protected-destination message.
+- When a bound database-container profile is selected, explicit `--data-file`/`--key-file` that resolve to the same artifacts keep container routing; non-matching path overrides fail with a clear "omit path overrides" error instead of opaque "invalid or unsafe".
+
 
 ## 0.2.17
 

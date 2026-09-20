@@ -53,14 +53,14 @@ function registerRun(program: Command): void {
   const run = program
     .command('run')
     .description(
-      'Execute a command with selected credentials injected into its environment only. Pass the child after `--` (example: kavrix run --secret ENV=name -- printenv ENV).',
+      'Execute a command with selected credentials injected into its environment only. Pass the child after `--` (example: kavrix run --secret MYSECRET=name -- printenv MYSECRET).',
     )
     .usage('[options] -- <executable> [args...]')
     .allowUnknownOption(true)
     .allowExcessArguments(true)
     .option(
       '--secret <mapping>',
-      'Destination variable and credential name (ENV=NAME).',
+      'Destination variable and credential name (MYSECRET=NAME).',
       collectExecutionOption,
       [],
     )

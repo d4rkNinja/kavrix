@@ -1,4 +1,5 @@
-﻿import { environmentVariableNameSchema } from '@kavrix/schemas';
+﻿import { isReservedEnvironmentName } from '@kavrix/runner';
+import { environmentVariableNameSchema } from '@kavrix/schemas';
 
 import { invalidConfiguration } from './exit-codes.js';
 import type { DatabaseFlatCommandOptions } from '../database-flat-commands.js';
@@ -31,6 +32,11 @@ export function parseSecretMappings(
     const secret = raw.slice(separator + 1);
     if (!environmentVariableNameSchema.safeParse(destination).success) {
       throw invalidMapping(raw);
+    }
+    if (isReservedEnvironmentName(destination)) {
+      throw invalidConfiguration(
+        `Destination variable '${destination}' is protected and cannot be used for secret injection.`,
+      );
     }
     if (
       secret.length === 0 ||
