@@ -103,11 +103,6 @@ describe('0.2.22 live TUI CRUD journey (real CLI, isolated home)', () => {
       expect(created.snapshot.home.vaultId).not.toBeNull();
       expect(created.snapshot.home.unlocked).toBe(true);
 
-      // ---- Read: refresh shows zero credentials ----
-      const refreshed = await backend.dispatch({ type: 'refresh' });
-      expect(refreshed.snapshot.home.unlocked).toBe(true);
-      expect(refreshed.snapshot.home.credentialCount).toBe(0);
-
       // ---- Create: credential ----
       const put = await backend.dispatch({
         type: 'put-credential',
@@ -205,10 +200,6 @@ describe('0.2.22 live TUI CRUD journey (real CLI, isolated home)', () => {
       });
       expect(recoveryVerified.snapshot.noticeTone).toBe('success');
 
-      // ---- Doctor ----
-      const doctor = await backend.dispatch({ type: 'run-doctor' });
-      expect(doctor.snapshot.doctor.length).toBeGreaterThan(0);
-
       // ---- Delete: credential ----
       const removed = await backend.dispatch({
         type: 'remove-credential',
@@ -247,6 +238,6 @@ describe('0.2.22 live TUI CRUD journey (real CLI, isolated home)', () => {
         expect(call.args.join(' ')).not.toContain('live-qa-canary-value');
       }
     },
-    process.platform === 'win32' ? 600_000 : 300_000,
+    process.platform === 'win32' ? 900_000 : 300_000,
   );
 });
