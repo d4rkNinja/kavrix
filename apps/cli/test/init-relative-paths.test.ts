@@ -44,8 +44,10 @@ async function scratch(label: string): Promise<string> {
   const directory = await createSecureTestDirectory(
     join(tmpdir(), `kavrix-rel-path-${label}-`),
   );
-  directories.push(directory);
-  return directory;
+  // Expand Windows 8.3 short paths (RUNNER~1) so asserts match product long paths.
+  const canonical = realpathSync(directory);
+  directories.push(canonical);
+  return canonical;
 }
 
 async function runCli(
@@ -223,10 +225,15 @@ describe('init relative path persistence', () => {
       const initJson = JSON.parse(init.stdout) as Record<string, unknown>;
       const expectedVault = join(fakeHome, '.kavrix', 'kavrix.vault');
       const expectedKey = join(fakeHome, '.kavrix', 'kavrix.key');
-      expect(canon(String(initJson.dataFile))).toBe(canon(expectedVault));
-      expect(canon(String(initJson.keyFile))).toBe(canon(expectedKey));
-      await expect(access(expectedVault)).resolves.toBeUndefined();
-      await expect(access(expectedKey)).resolves.toBeUndefined();
+      const dataFile = canon(String(initJson.dataFile));
+      const keyFile = canon(String(initJson.keyFile));
+      const homeCanon = canon(fakeHome);
+      expect(dataFile.toLowerCase()).toBe(canon(expectedVault).toLowerCase());
+      expect(keyFile.toLowerCase()).toBe(canon(expectedKey).toLowerCase());
+      expect(dataFile.toLowerCase().startsWith(homeCanon.toLowerCase())).toBe(true);
+      expect(keyFile.toLowerCase().startsWith(homeCanon.toLowerCase())).toBe(true);
+      await expect(access(dataFile)).resolves.toBeUndefined();
+      await expect(access(keyFile)).resolves.toBeUndefined();
     },
     process.platform === 'win32' ? 600_000 : 120_000,
   );
