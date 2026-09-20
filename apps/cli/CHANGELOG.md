@@ -1,9 +1,7 @@
 # kavrix
 
-## 0.2.18
+## 0.2.19
 
-- Soft-read datastore profile registries when `current` points at a missing profile id: treat the selection as unset so `db profile list`, `status`, and explicit `--profile <existing>` keep working. `doctor --heal` still detects and clears the dangling on-disk pointer.
-- Fail closed only for operations that require a selected profile when none is valid.
 - Fix `vault list` / `vault status` so `--profile` (and ambient legacy file profiles) route to that profile's vault paths instead of silently using `./kavrix.vault`.
 - Fix `doctor --heal --dry-run` (and `db doctor health --heal --dry-run`) false `healthy:true` when the same vault target fails apply / plain doctor; dry-run now fail-closes on the same problems after local-state planning.
 - Fix `run --secret` help examples that used protected destination `ENV`; use `MYSECRET` and reject reserved destinations with an explicit protected-destination message.
@@ -15,7 +13,12 @@
 - `policy create --command /bin/echo` explains basename-only command names.
 - `agent exec --dry-run` fails closed on unknown permissions (requires project config).
 - `recovery use --overwrite` / `recovery create --overwrite` honor the flag (replace destinations) instead of refusing overwrite.
-- Note: `0.2.17` is `doctor --heal` local-state repair (including ACL hardening); this release consolidates live-QA dangling-current + P1 + P2 fixes only.
+- Note: `0.2.18` is dangling-current soft-read only (#168); this release consolidates live-QA P1 + P2 fixes.
+
+## 0.2.18
+
+- Soft-read datastore profile registries when `current` points at a missing profile id: treat the selection as unset so `db profile list`, `status`, and explicit `--profile <existing>` keep working. `doctor --heal` still detects and clears the dangling on-disk pointer.
+- Fail closed only for operations that require a selected profile when none is valid.
 
 ## 0.2.17
 
