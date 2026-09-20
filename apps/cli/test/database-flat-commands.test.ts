@@ -482,7 +482,7 @@ describe('flat database command routing', () => {
         { passphrase: 'correct horse battery staple', extras: [] },
         async () => undefined,
       ),
-    ).rejects.toThrow(/bound profile/i);
+    ).rejects.toThrow(/bound(?: database-container)? profile/i);
   });
 
   it('closes a store when session opening fails and validates cross-datastore overrides', async () => {

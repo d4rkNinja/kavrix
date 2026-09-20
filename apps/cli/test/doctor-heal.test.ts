@@ -182,6 +182,9 @@ describe('doctor --heal', () => {
       dataFile: join(directory, 'vault.db'),
       keyFile,
     });
+    // Select so binding is unbound (not missing). P1 dry-run no longer
+    // short-circuits missing binding before vault unlock.
+    await registry.use('homeish' as DatastoreProfile['id']);
 
     const previousCwd = process.cwd();
     try {
@@ -256,6 +259,7 @@ describe('doctor --heal', () => {
       dataFile: join(keyParent, 'kavrix.vault'),
       keyFile,
     });
+    await registry.use('default' as DatastoreProfile['id']);
 
     const previousCwd = process.cwd();
     try {

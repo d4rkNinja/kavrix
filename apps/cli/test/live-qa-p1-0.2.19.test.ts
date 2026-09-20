@@ -326,7 +326,7 @@ describe('0.2.19 live-qa Jr P2: matching bound-profile path overrides', () => {
       `${PASS}\nval\n`,
     );
     expect(put.exitCode).not.toBe(0);
-    expect(put.stderr).toMatch(/Omit path overrides|bound profile/i);
+    expect(put.stderr).toMatch(/Omit (?:path overrides|those flags)|bound(?: database-container)? profile/i);
     expect(put.stderr).not.toMatch(/invalid or unsafe/i);
   });
 });
