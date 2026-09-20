@@ -162,11 +162,9 @@ describe('armFirstFrameWatchdog', () => {
   it('swallows stderr write failures when onTimeout is omitted', () => {
     vi.useFakeTimers();
     const stdout = new TestStdout();
-    const writeErr = vi
-      .spyOn(process.stderr, 'write')
-      .mockImplementation(() => {
-        throw new Error('stderr closed');
-      });
+    const writeErr = vi.spyOn(process.stderr, 'write').mockImplementation(() => {
+      throw new Error('stderr closed');
+    });
     const watchdog = armFirstFrameWatchdog({
       stdout,
       label: 'test-stderr-throw',

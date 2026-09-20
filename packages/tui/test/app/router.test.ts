@@ -428,7 +428,6 @@ describe('ASCII and NO_COLOR presentation', () => {
     );
   });
 
-
   it('snapshots home and credentials in ASCII and NO_COLOR modes', () => {
     const asciiHome = frame(navigateToScreen(hydrate(true, false), 'home'));
     const asciiCreds = frame(navigateToScreen(hydrate(true, false), 'credentials'));

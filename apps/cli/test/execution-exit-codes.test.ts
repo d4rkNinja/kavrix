@@ -60,12 +60,16 @@ describe('coded CLI errors', () => {
   });
 
   it('maps session failures onto stable JSON auth codes', () => {
-    expect(cliErrorCodeForSessionFailure('authentication')).toBe('AUTHENTICATION_FAILED');
+    expect(cliErrorCodeForSessionFailure('authentication')).toBe(
+      'AUTHENTICATION_FAILED',
+    );
     expect(cliErrorCodeForSessionFailure('not-found')).toBe('CREDENTIAL_MISSING');
     expect(cliErrorCodeForSessionFailure('duplicate')).toBe('INVALID_CONFIGURATION');
     expect(cliErrorCodeForSessionFailure('invalid')).toBe('INVALID_CONFIGURATION');
     expect(cliErrorCodeForSessionFailure('binding')).toBe('SECURITY_INTEGRITY_FAILURE');
-    expect(cliErrorCodeForSessionFailure('rollback')).toBe('SECURITY_INTEGRITY_FAILURE');
+    expect(cliErrorCodeForSessionFailure('rollback')).toBe(
+      'SECURITY_INTEGRITY_FAILURE',
+    );
     expect(cliErrorCodeForSessionFailure('unknown-session')).toBe('DATASTORE_FAILURE');
   });
 

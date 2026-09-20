@@ -568,7 +568,6 @@ describe('CLI contract', () => {
     expect(exitCodeForCliError('EXECUTION_FAILED')).toBe(18);
   });
 
-
   it('keeps policy-check unresolved on AUTHORIZATION_DENIED exit 12', () => {
     expect(DENY_DECISION_REASONS).toContain('executable-unresolved');
     expect(
