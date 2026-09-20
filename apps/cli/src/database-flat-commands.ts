@@ -1,4 +1,5 @@
-﻿import { zeroize } from '@kavrix/crypto';
+import { resolve } from 'node:path';
+import { zeroize } from '@kavrix/crypto';
 import {
   profileIdSchema,
   vaultIdSchema,
@@ -321,6 +322,12 @@ async function selectedDatabaseProfile(
       ? {}
       : { configDirectory: options.profileConfigDir };
   if (options.profile === undefined && hasExplicitStandaloneRouting(options)) {
+    const matched = await matchingAmbientBoundProfile(options, registryOptions);
+    if (matched !== null) {
+      // Explicit --data-file/--key-file that resolve to the bound profile's
+      // artifacts must not force the legacy path (opaque "invalid or unsafe").
+      return resolveSelectedProfileRouting(matched, options);
+    }
     await rejectConflictingAmbientBoundProfile(options, registryOptions);
     return null;
   }
@@ -347,7 +354,6 @@ async function rejectConflictingAmbientBoundProfile(
   registryOptions: Readonly<{ configDirectory?: string }>,
 ): Promise<void> {
   const overrides = options.routingOverrides ?? {};
-  if (overrides.datastore === undefined) return;
   let registry: Awaited<ReturnType<typeof DatastoreProfileRegistry.openIfPresent>>;
   try {
     registry = await DatastoreProfileRegistry.openIfPresent(registryOptions);
@@ -357,9 +363,61 @@ async function rejectConflictingAmbientBoundProfile(
   if (registry === null) return;
   const current = await registry.current();
   if (current?.databaseId === undefined) return;
-  throw new DatabaseFlatCommandError(
-    `Explicit --datastore ${overrides.datastore} conflicts with the current bound profile '${current.id}' (${current.datastore}). Pass --profile ${current.id} to use that profile, or clear the current profile before using standalone --datastore routing.`,
-  );
+  // Any explicit --datastore forces the legacy standalone path and must not
+  // silently discard an ambient bound profile.
+  if (overrides.datastore !== undefined) {
+    throw new DatabaseFlatCommandError(
+      `Explicit --datastore ${overrides.datastore} conflicts with the current bound profile '${current.id}' (${current.datastore}). Pass --profile ${current.id} to use that profile, or clear the current profile before using standalone --datastore routing.`,
+    );
+  }
+  if (overrides.dataFile !== undefined || overrides.keyFile !== undefined) {
+    throw new DatabaseFlatCommandError(
+      `Explicit --data-file/--key-file conflict with the current bound profile '${current.id}'. Omit path overrides to use the bound profile, or pass --profile ${current.id}.`,
+    );
+  }
+}
+
+/**
+ * When operators pass absolute/relative --data-file/--key-file that resolve to
+ * the ambient bound profile's artifacts, keep database-container routing.
+ */
+async function matchingAmbientBoundProfile(
+  options: DatabaseFlatCommandOptions,
+  registryOptions: Readonly<{ configDirectory?: string }>,
+): Promise<DatastoreProfile | null> {
+  const overrides = options.routingOverrides ?? {};
+  let registry: Awaited<ReturnType<typeof DatastoreProfileRegistry.openIfPresent>>;
+  try {
+    registry = await DatastoreProfileRegistry.openIfPresent(registryOptions);
+  } catch {
+    return null;
+  }
+  if (registry === null) return null;
+  const current = await registry.current();
+  if (current?.databaseId === undefined) return null;
+  // Explicit --datastore always means standalone legacy intent.
+  if (overrides.datastore !== undefined) return null;
+  if (current.datastore !== 'file') {
+    // Mongo bound profiles: path overrides are not meaningful matches.
+    return null;
+  }
+  const dataOk =
+    overrides.dataFile === undefined ||
+    routingPathsEqual(overrides.dataFile, current.dataFile);
+  const keyOk =
+    overrides.keyFile === undefined ||
+    routingPathsEqual(overrides.keyFile, current.keyFile);
+  if (!dataOk || !keyOk) return null;
+  // Require at least one path override to have been the reason we entered
+  // standalone routing; datastore-only match is handled as conflict above.
+  if (overrides.dataFile === undefined && overrides.keyFile === undefined) {
+    return null;
+  }
+  return current;
+}
+
+function routingPathsEqual(left: string, right: string): boolean {
+  return resolve(left) === resolve(right);
 }
 
 /**
@@ -367,6 +425,61 @@ async function rejectConflictingAmbientBoundProfile(
  * legacy single-vault path; an ambient current profile must never adopt such
  * an invocation into database-container mode.
  */
+
+/**
+ * Applies a selected or ambient legacy (non-database-container) file/mongodb
+ * profile's public routing onto CLI options. Bound database-container profiles
+ * are left untouched so callers can redirect to `db vault *`.
+ */
+export async function resolveLegacyFileProfileRouting<
+  T extends DatabaseFlatCommandOptions,
+>(options: T): Promise<T> {
+  const registryOptions =
+    options.profileConfigDir === undefined
+      ? {}
+      : { configDirectory: options.profileConfigDir };
+  let registry: Awaited<ReturnType<typeof DatastoreProfileRegistry.openIfPresent>>;
+  try {
+    registry =
+      options.profile === undefined
+        ? await DatastoreProfileRegistry.openIfPresent(registryOptions)
+        : await DatastoreProfileRegistry.open(registryOptions);
+  } catch {
+    return options;
+  }
+  if (registry === null) return options;
+  let profile: DatastoreProfile | null;
+  try {
+    profile =
+      options.profile === undefined
+        ? await registry.current()
+        : await registry.get(profileIdSchema.parse(options.profile));
+  } catch (error) {
+    if (options.profile !== undefined) throw error;
+    return options;
+  }
+  if (profile === null || profile.databaseId !== undefined) return options;
+  const routing = resolveDatastoreProfileRouting(
+    profile,
+    options.routingOverrides ?? {},
+  );
+  if (routing.datastore === 'file') {
+    return {
+      ...options,
+      datastore: 'file',
+      dataFile: routing.dataFile,
+      keyFile: routing.keyFile,
+    } as T;
+  }
+  return {
+    ...options,
+    datastore: 'mongodb',
+    database: routing.database,
+    collection: routing.vaultCollection,
+    keyFile: routing.keyFile,
+  } as T;
+}
+
 function hasExplicitStandaloneRouting(options: DatabaseFlatCommandOptions): boolean {
   if (options.profile !== undefined) return false;
   const overrides = options.routingOverrides;
