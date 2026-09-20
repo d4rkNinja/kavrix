@@ -3125,6 +3125,7 @@ async function handleDoctorHealth(options: LocalCliOptions): Promise<void> {
   // Commander always fills --key-file with DEFAULT_KEY_FILE (./kavrix.key).
   // Passing that unused default into heal would chmod the CWD parent even when
   // the active profile key lives under ~/.kavrix/. Only harden explicit paths.
+  const { getKavrixConfigDir } = await import('./kavrix-config.js');
   const healReport =
     options.heal === true
       ? await runDoctorHeal({
@@ -3137,6 +3138,7 @@ async function handleDoctorHealth(options: LocalCliOptions): Promise<void> {
             ? { keyFile: options.keyFile }
             : {}),
           ...(options.dataFile === undefined ? {} : { dataFile: options.dataFile }),
+          kavrixArtifactDir: getKavrixConfigDir(),
         })
       : emptyHeal;
 
@@ -3257,9 +3259,6 @@ async function handleDoctorHealth(options: LocalCliOptions): Promise<void> {
     return;
   }
 
-  const values = await readSecrets(['database-url', 'passphrase'], options);
-  const databaseUrl = requiredSecret(values, 0);
-  const passphrase = requiredSecret(values, 1);
   const checks: HealthCheck[] = [];
   const autoHealed: string[] = [];
   const manualRecoveryRequired: string[] = [];
@@ -3271,128 +3270,152 @@ async function handleDoctorHealth(options: LocalCliOptions): Promise<void> {
     manualRecoveryRequired.push(detail);
   };
 
-  try {
-    await withStore(databaseUrl, options, async (store, connectedTarget) => {
-      storeTarget = connectedTarget;
+  // A legacy file datastore whose target cannot even be validated must not
+  // crash the doctor run (0.2.20 failed closed with a raw exit 15 before any
+  // report). It becomes the primary manual-recovery finding instead, so the
+  // JSON diagnosis — including what heal just repaired — still lands.
+  let legacyStoreReachable = true;
+  if (datastore === 'file') {
+    const legacyDataFile = options.dataFile ?? DEFAULT_DATA_FILE;
+    try {
+      await FileLocalVaultStore.validatePath(legacyDataFile);
+    } catch {
+      legacyStoreReachable = false;
+      addManualRecovery(
+        'database',
+        `The local vault datastore at ${legacyDataFile} could not be opened safely. Run \`kavrix doctor health --heal\` again after fixing its parent directory, or keep key and data files inside the Kavrix home (for example ~/.kavrix).`,
+      );
+    }
+  }
 
-      let retried = false;
-      try {
-        await store.ping();
-      } catch {
+  if (legacyStoreReachable) {
+    const values = await readSecrets(['database-url', 'passphrase'], options);
+    const databaseUrl = requiredSecret(values, 0);
+    const passphrase = requiredSecret(values, 1);
+
+    try {
+      await withStore(databaseUrl, options, async (store, connectedTarget) => {
+        storeTarget = connectedTarget;
+
+        let retried = false;
         try {
           await store.ping();
-          retried = true;
-          autoHealed.push('datastore-retry');
+        } catch {
+          try {
+            await store.ping();
+            retried = true;
+            autoHealed.push('datastore-retry');
+          } catch {
+            addManualRecovery(
+              'database',
+              'The encrypted datastore is unavailable or failed its health check.',
+            );
+            return;
+          }
+        }
+        checks.push({
+          name: 'database',
+          status: 'ok',
+          detail: retried
+            ? 'The encrypted datastore recovered after one bounded retry.'
+            : 'The encrypted datastore is available.',
+        });
+
+        let document: Awaited<ReturnType<typeof requireVault>>;
+        try {
+          document = await requireVault(store, options.vault);
         } catch {
           addManualRecovery(
-            'database',
-            'The encrypted datastore is unavailable or failed its health check.',
+            'vault-document',
+            'The vault document is missing or invalid.',
           );
           return;
         }
-      }
-      checks.push({
-        name: 'database',
-        status: 'ok',
-        detail: retried
-          ? 'The encrypted datastore recovered after one bounded retry.'
-          : 'The encrypted datastore is available.',
-      });
-
-      let document: Awaited<ReturnType<typeof requireVault>>;
-      try {
-        document = await requireVault(store, options.vault);
-      } catch {
-        addManualRecovery(
-          'vault-document',
-          'The vault document is missing or invalid.',
-        );
-        return;
-      }
-      checks.push({
-        name: 'vault-document',
-        status: 'ok',
-        detail:
-          'The vault schema, revision, and authenticated metadata binding are valid.',
-        revision: document.revision,
-      });
-
-      let rootKey: Awaited<ReturnType<typeof unlockVault>> | undefined;
-      try {
-        rootKey = await unlockVault(document, options.keyFile, passphrase, {
-          acceptCurrent: options.acceptCurrent === true,
-          onAnchorUpdated: (kind) => {
-            autoHealed.push(
-              kind === 'initialized'
-                ? 'revision-anchor-initialized'
-                : 'revision-anchor-advanced',
-            );
-          },
-        });
-      } catch (error) {
-        const message = error instanceof Error ? error.message : '';
-        const detail = message.includes('rollback')
-          ? 'The trusted local revision anchor rejected this database snapshot as a rollback or fork.'
-          : message.includes('revision anchor')
-            ? 'The trusted local revision anchor is missing or invalid.'
-            : 'The portable key could not be authenticated.';
-        addManualRecovery('portable-key', detail);
-        return;
-      }
-      checks.push({
-        name: 'portable-key',
-        status: 'ok',
-        detail: 'The protected portable key is readable and bound to this vault.',
-      });
-      checks.push({
-        name: 'revision-anchor',
-        status: 'ok',
-        detail:
-          'The trusted local revision anchor matches the authenticated vault snapshot.',
-      });
-
-      try {
-        const payload = await decryptVaultPayload(document, rootKey);
-        const activeRecoverySlots = document.recoverySlots.filter(
-          (slot) => slot.state === 'active',
-        ).length;
-        const revokedRecoverySlots = document.recoverySlots.filter(
-          (slot) => slot.state === 'revoked',
-        ).length;
         checks.push({
-          name: 'encrypted-payload',
+          name: 'vault-document',
           status: 'ok',
           detail:
-            'The encrypted payload passed authenticated decryption and schema validation.',
-          credentialCount: Object.keys(payload.records).length,
+            'The vault schema, revision, and authenticated metadata binding are valid.',
+          revision: document.revision,
+        });
+
+        let rootKey: Awaited<ReturnType<typeof unlockVault>> | undefined;
+        try {
+          rootKey = await unlockVault(document, options.keyFile, passphrase, {
+            acceptCurrent: options.acceptCurrent === true,
+            onAnchorUpdated: (kind) => {
+              autoHealed.push(
+                kind === 'initialized'
+                  ? 'revision-anchor-initialized'
+                  : 'revision-anchor-advanced',
+              );
+            },
+          });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : '';
+          const detail = message.includes('rollback')
+            ? 'The trusted local revision anchor rejected this database snapshot as a rollback or fork.'
+            : message.includes('revision anchor')
+              ? 'The trusted local revision anchor is missing or invalid.'
+              : 'The portable key could not be authenticated.';
+          addManualRecovery('portable-key', detail);
+          return;
+        }
+        checks.push({
+          name: 'portable-key',
+          status: 'ok',
+          detail: 'The protected portable key is readable and bound to this vault.',
         });
         checks.push({
-          name: 'recovery-slots',
-          status: activeRecoverySlots > 0 ? 'ok' : 'warning',
+          name: 'revision-anchor',
+          status: 'ok',
           detail:
-            activeRecoverySlots > 0
-              ? 'At least one recovery slot is active.'
-              : 'No active recovery slot is configured; create one with `kavrix recovery create` (legacy) or `kavrix db recovery create` (database-container).',
-          activeRecoverySlots,
-          revokedRecoverySlots,
+            'The trusted local revision anchor matches the authenticated vault snapshot.',
         });
-        // Missing recovery is advisory only — matches database-container doctor
-        // health (healthy:true without a kit). Fail closed only on auth/integrity.
-      } catch {
+
+        try {
+          const payload = await decryptVaultPayload(document, rootKey);
+          const activeRecoverySlots = document.recoverySlots.filter(
+            (slot) => slot.state === 'active',
+          ).length;
+          const revokedRecoverySlots = document.recoverySlots.filter(
+            (slot) => slot.state === 'revoked',
+          ).length;
+          checks.push({
+            name: 'encrypted-payload',
+            status: 'ok',
+            detail:
+              'The encrypted payload passed authenticated decryption and schema validation.',
+            credentialCount: Object.keys(payload.records).length,
+          });
+          checks.push({
+            name: 'recovery-slots',
+            status: activeRecoverySlots > 0 ? 'ok' : 'warning',
+            detail:
+              activeRecoverySlots > 0
+                ? 'At least one recovery slot is active.'
+                : 'No active recovery slot is configured; create one with `kavrix recovery create` (legacy) or `kavrix db recovery create` (database-container).',
+            activeRecoverySlots,
+            revokedRecoverySlots,
+          });
+          // Missing recovery is advisory only — matches database-container doctor
+          // health (healthy:true without a kit). Fail closed only on auth/integrity.
+        } catch {
+          addManualRecovery(
+            'encrypted-payload',
+            'Authenticated payload decryption or metadata validation failed.',
+          );
+        } finally {
+          zeroize(rootKey);
+        }
+      });
+    } catch {
+      if (!checks.some((check) => check.name === 'database')) {
         addManualRecovery(
-          'encrypted-payload',
-          'Authenticated payload decryption or metadata validation failed.',
+          'database',
+          'The encrypted datastore could not be opened safely.',
         );
-      } finally {
-        zeroize(rootKey);
       }
-    });
-  } catch {
-    if (!checks.some((check) => check.name === 'database')) {
-      addManualRecovery(
-        'database',
-        'The encrypted datastore could not be opened safely.',
-      );
     }
   }
 

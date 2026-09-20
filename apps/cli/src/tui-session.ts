@@ -1,17 +1,21 @@
 import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
-import { lstat } from 'node:fs/promises';
+import { lstat, realpath } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { zeroize } from '@kavrix/crypto';
-import { ensureSecureDirectory } from '@kavrix/key-files';
+import {
+  ensureSecureDirectory,
+  hardenExistingSecureDirectory,
+} from '@kavrix/key-files';
 import { profileIdSchema } from '@kavrix/schemas';
 
 import {
   DatastoreProfileRegistry,
   type DatastoreProfile,
 } from './datastore-profiles.js';
+import { getKavrixConfigDir } from './kavrix-config.js';
 import { copySecretToClipboard } from './tui-clipboard.js';
 
 /**
@@ -168,9 +172,11 @@ const require = createRequire(import.meta.url);
 export interface CliTuiSessionOptions {
   readonly profileConfigDir?: string;
   readonly ascii?: boolean;
-  readonly binPath?: string;
+  binPath?: string;
   /** Optional injectable CLI runner (tests); secrets stay in frames only. */
   readonly commandRunner?: CliTuiCommandRunner;
+  /** Injectable kavrix artifact home (~/.kavrix) for tests; defaults to homedir. */
+  readonly kavrixArtifactDir?: string;
 }
 
 /**
@@ -181,7 +187,9 @@ export interface CliTuiSessionOptions {
  */
 async function ensureSecureArtifactParents(
   paths: readonly (string | undefined | null)[],
+  kavrixArtifactDir?: string,
 ): Promise<void> {
+  const kavrixBase = kavrixArtifactDir ?? getKavrixConfigDir();
   const seen = new Set<string>();
   for (const candidate of paths) {
     if (typeof candidate !== 'string') continue;
@@ -197,7 +205,13 @@ async function ensureSecureArtifactParents(
       }
       // Parent already exists (e.g. secure test scratch under /tmp). Do not call
       // ensureSecureDirectory — that re-validates the grandparent and fails when
-      // the grandparent is a world-writable temp root.
+      // the grandparent is a world-writable temp root. Exception: the kavrix
+      // artifact home is kavrix-owned state, so an existing directory that
+      // predates strict ACLs (0.2.x upgrades inherit profile-directory ACEs on
+      // Windows) is hardened here — idempotent when already strict.
+      if (await isSameDirectoryPath(parent, kavrixBase)) {
+        await hardenExistingSecureDirectory(parent);
+      }
     } catch (error) {
       const code =
         typeof error === 'object' &&
@@ -209,6 +223,14 @@ async function ensureSecureArtifactParents(
       if (code !== 'ENOENT') throw error;
       await ensureSecureDirectory(parent);
     }
+  }
+}
+
+async function isSameDirectoryPath(left: string, right: string): Promise<boolean> {
+  try {
+    return (await realpath(left)) === (await realpath(right));
+  } catch {
+    return false;
   }
 }
 
@@ -558,7 +580,10 @@ class CliTuiSession {
     let vaultReady = false;
 
     try {
-      await ensureSecureArtifactParents([dataFile, keyFile, recoveryFile || null]);
+      await ensureSecureArtifactParents(
+        [dataFile, keyFile, recoveryFile || null],
+        this.#options.kavrixArtifactDir,
+      );
       await this.#runTextCommand(
         [
           'db',
@@ -734,7 +759,10 @@ class CliTuiSession {
     let vaultReady = false;
 
     try {
-      await ensureSecureArtifactParents([keyFile, recoveryFile || null]);
+      await ensureSecureArtifactParents(
+        [keyFile, recoveryFile || null],
+        this.#options.kavrixArtifactDir,
+      );
       await this.#runTextCommand(
         [
           'db',

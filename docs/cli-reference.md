@@ -289,7 +289,9 @@ local rollback anchor to match; datastore content is never modified. With
 `--heal`, Kavrix also applies safe local-state repairs: remove incomplete
 unbound profiles left by failed init, clear dangling profile selection (list/status/--profile soft-read a missing `current` as unset; `--heal` clears it on disk)
 pointers, and re-harden owner-only ACLs/modes on the immediate parents of
-existing key/data files and on those key files. Heal does not chmod a
+existing key/data files, on those key files, and on the Kavrix-owned artifact
+home (`~/.kavrix`) with its `config.toml` (even before any artifact exists
+there, so a failed init can be unblocked). Heal does not chmod a
 `--config-dir` that is only a profile registry home (for example a project
 root). `--heal --dry-run` lists planned repairs without applying them. Heal
 never invents passphrase recovery and never deletes vault or key data files.

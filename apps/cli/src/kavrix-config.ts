@@ -13,7 +13,13 @@ import { writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
-import { ensureSecureDirectory, validateSecureFileSource } from '@kavrix/key-files';
+import {
+  ensureSecureDirectory,
+  hardenExistingSecureDirectory,
+  hardenExistingSecureFile,
+  PortableKeyFileError,
+  validateSecureFileSource,
+} from '@kavrix/key-files';
 
 const CONFIG_FILE_NAME = 'config.toml';
 const MAX_CONFIG_FILE_BYTES = 64 * 1024;
@@ -84,9 +90,18 @@ export async function ensureKavrixConfig(): Promise<string> {
   const dir = getKavrixConfigDir();
   const path = getKavrixConfigPath();
 
-  await ensureSecureDirectory(dir);
+  try {
+    await ensureSecureDirectory(dir);
+  } catch (error) {
+    if (!isUnsafeKeyFileError(error)) throw error;
+    // An existing kavrix-owned home may predate strict ACLs (0.2.x upgrades
+    // on Windows inherit profile-directory ACEs). Harden it once, then
+    // re-verify; foreign-owned directories still fail closed.
+    await hardenExistingSecureDirectory(dir);
+    await ensureSecureDirectory(dir);
+  }
   if (existsSync(path)) {
-    await validateSecureFileSource(path, MAX_CONFIG_FILE_BYTES);
+    await validateOrHardenConfigFile(path);
     return path;
   }
 
@@ -112,9 +127,29 @@ export async function ensureKavrixConfig(): Promise<string> {
     // ensureSecureDirectory and is created with mode 0600 on POSIX.
   }
 
-  await validateSecureFileSource(path, MAX_CONFIG_FILE_BYTES);
+  await validateOrHardenConfigFile(path);
 
   return path;
+}
+
+/**
+ * Validates the kavrix-owned config reference file, hardening files that
+ * predate strict ACLs (they keep the ACEs inherited at creation even after
+ * the parent directory is hardened). Fail-closed for anything harden cannot
+ * make owner-only.
+ */
+async function validateOrHardenConfigFile(path: string): Promise<void> {
+  try {
+    await validateSecureFileSource(path, MAX_CONFIG_FILE_BYTES);
+  } catch (error) {
+    if (!isUnsafeKeyFileError(error)) throw error;
+    await hardenExistingSecureFile(path);
+    await validateSecureFileSource(path, MAX_CONFIG_FILE_BYTES);
+  }
+}
+
+function isUnsafeKeyFileError(error: unknown): boolean {
+  return error instanceof PortableKeyFileError && error.code === 'KEY_FILE_UNSAFE';
 }
 
 export function getConfigPathForDisplay(): string {

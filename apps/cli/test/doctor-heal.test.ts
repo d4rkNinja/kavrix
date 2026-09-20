@@ -1046,3 +1046,120 @@ async function expectOwnerOnlyFile(filePath: string): Promise<void> {
   }
   expect((await stat(canonical)).mode & 0o777).toBe(0o600);
 }
+
+describe('runDoctorHeal kavrix artifact home', () => {
+  it('heal hardens the kavrix artifact home and config reference without existing artifacts', async () => {
+    const directory = await scratch('kavrix-home');
+    const kavrixHome = join(directory, '.kavrix');
+    await mkdir(kavrixHome, { mode: 0o755 });
+    await markOwnedSecretParentUnsafe(kavrixHome);
+    const configPath = join(kavrixHome, 'config.toml');
+    await writeFile(configPath, '# kavrix onboarding reference\n', {
+      mode: 0o644,
+    });
+    await markOwnedSecretFileUnsafe(configPath);
+
+    const report = await runDoctorHeal({
+      mode: 'heal',
+      kavrixArtifactDir: kavrixHome,
+    });
+
+    expect(report.healed).toContain('kavrix-dir-acl');
+    expect(report.healed).toContain('kavrix-config-file-acl');
+    expect(report.manualRecoveryRequired).toEqual([]);
+    await expectOwnerOnlyDirectory(kavrixHome);
+    await expectOwnerOnlyFile(configPath);
+  });
+
+  it('report mode flags the unsafe kavrix artifact home as manual recovery without changes', async () => {
+    const directory = await scratch('kavrix-home-report');
+    const kavrixHome = join(directory, '.kavrix');
+    await mkdir(kavrixHome, { mode: 0o755 });
+    await markOwnedSecretParentUnsafe(kavrixHome);
+
+    const report = await runDoctorHeal({
+      mode: 'report',
+      kavrixArtifactDir: kavrixHome,
+    });
+
+    expect(
+      report.actions.some(
+        (action) => action.id === 'kavrix-dir-acl' && action.status === 'manual',
+      ),
+    ).toBe(true);
+    expect(report.manualRecoveryRequired.length).toBeGreaterThan(0);
+    if (process.platform !== 'win32') {
+      expect((await stat(kavrixHome)).mode & 0o777).toBe(0o755);
+    }
+  });
+});
+
+describe('doctor health legacy datastore guard', () => {
+  it('reports an unopenable legacy datastore as manual recovery instead of crashing', async () => {
+    const directory = await scratch('doctor-store');
+    const fakeHome = join(directory, 'home');
+    await mkdir(fakeHome, { mode: 0o755 });
+    const kavrixHome = join(fakeHome, '.kavrix');
+    await mkdir(kavrixHome, { mode: 0o755 });
+    await markOwnedSecretParentUnsafe(kavrixHome);
+    const configPath = join(kavrixHome, 'config.toml');
+    await writeFile(configPath, '# kavrix onboarding reference\n', {
+      mode: 0o644,
+    });
+    await markOwnedSecretFileUnsafe(configPath);
+
+    // A legacy data file whose parent directory cannot be validated at all:
+    // doctor must still produce its JSON report (exit 16), never a raw
+    // "The local vault file is invalid or unsafe." crash (the 0.2.20 bug).
+    const dataFile = join(directory, 'no-such-parent', 'vault.db');
+    const configDir = join(directory, 'config');
+    const restoreHome = overrideHomeEnv(fakeHome);
+    try {
+      const result = await runCli(
+        [
+          'doctor',
+          'health',
+          '--heal',
+          '--json',
+          '--profile-config-dir',
+          configDir,
+          '--data-file',
+          dataFile,
+        ],
+        '',
+      );
+      expect(result.exitCode).toBe(16);
+      const report = JSON.parse(result.stdout) as {
+        healthy: boolean;
+        autoHealed: string[];
+        checks: Array<{ name: string; status: string }>;
+        manualRecoveryRequired: string[];
+      };
+      expect(report.healthy).toBe(false);
+      expect(
+        report.checks.some(
+          (check) => check.name === 'database' && check.status === 'manual-recovery',
+        ),
+      ).toBe(true);
+      expect(report.autoHealed).toContain('kavrix-dir-acl');
+      expect(report.autoHealed).toContain('kavrix-config-file-acl');
+      await expectOwnerOnlyDirectory(kavrixHome);
+      await expectOwnerOnlyFile(configPath);
+    } finally {
+      restoreHome();
+    }
+  });
+});
+
+function overrideHomeEnv(directory: string): () => void {
+  const previousHome = process.env.HOME;
+  const previousUserProfile = process.env.USERPROFILE;
+  process.env.HOME = directory;
+  process.env.USERPROFILE = directory;
+  return () => {
+    if (previousHome === undefined) delete process.env.HOME;
+    else process.env.HOME = previousHome;
+    if (previousUserProfile === undefined) delete process.env.USERPROFILE;
+    else process.env.USERPROFILE = previousUserProfile;
+  };
+}

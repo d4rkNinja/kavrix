@@ -138,8 +138,8 @@ export PATH="$HOME/.local/bin:$PATH"
 npm install --global kavrix
 ```
 
-Published npm may lag git `main` (for example 0.2.10 on npm while main is
-0.2.11). For tip-of-main from a clone:
+Published npm may lag git `main` (for example 0.2.20 on npm while `main` is
+already ahead). For tip-of-main from a clone:
 
 ```sh
 pnpm install --frozen-lockfile && pnpm build
@@ -226,7 +226,9 @@ Interactive TTY `kavrix init` opens Ink onboarding by default and stores under
 
 On Linux, macOS, and Windows with Node.js `>=24.12.0`, Kavrix ships a real Ink
 terminal UI for managing the secrets firewall (no mocks — every action runs the
-same CLI):
+same CLI). The chrome stays quiet and readable, and `kavrix init` renders a
+first paint immediately — including inside CI-like non-interactive terminals —
+instead of blocking on secret prompts:
 
 ```sh
 kavrix init   # TUI onboarding on an interactive TTY (default)
@@ -234,11 +236,7 @@ kavrix tui    # full app: profiles, vaults, credentials, doctor, recovery, …
 ```
 
 Use `kavrix init --no-tui` for classic line prompts, or stdin/explicit routing
-for scripts. Demo walkthrough:
-
-[![Kavrix TUI demo](docs/assets/kavrix-tui-demo.gif)](docs/assets/kavrix-tui-demo.mp4)
-
-Video: [`docs/assets/kavrix-tui-demo.mp4`](docs/assets/kavrix-tui-demo.mp4).
+for scripts. A walkthrough is embedded in the [Demo](#demo) section above.
 
 ## Credential model
 
@@ -280,14 +278,14 @@ structured access or migration.
 
 ### Keys, recovery, and health
 
-| Command                | Purpose                                                                                       |
-| ---------------------- | --------------------------------------------------------------------------------------------- |
-| `kavrix key ...`       | Verify, copy, replicate, assign, or rewrap key files.                                         |
-| `kavrix recovery ...`  | Create, verify, inspect, revoke, or use recovery kits.                                        |
-| `kavrix doctor`        | Authenticate and validate a vault without revealing values.                                   |
-| `kavrix doctor health` | Diagnose; with `--heal`, safely repair incomplete profiles, dangling pointers, and ACL drift. |
-| `kavrix tui` / `ui`    | Full interactive Ink app against the real CLI.                                                |
-| `kavrix init`          | TTY: Ink onboarding; scripted file init binds profile for put/run; `--legacy` = v2.           |
+| Command                | Purpose                                                                                                |
+| ---------------------- | ------------------------------------------------------------------------------------------------------ |
+| `kavrix key ...`       | Verify, copy, replicate, assign, or rewrap key files.                                                  |
+| `kavrix recovery ...`  | Create, verify, inspect, revoke, or use recovery kits.                                                 |
+| `kavrix doctor`        | Authenticate and validate a vault without revealing values.                                            |
+| `kavrix doctor health` | Diagnose; with `--heal`, safely repair incomplete profiles, dangling pointers, and ACL/key-home drift. |
+| `kavrix tui` / `ui`    | Full interactive Ink app against the real CLI.                                                         |
+| `kavrix init`          | TTY: Ink onboarding; scripted file init binds profile for put/run; `--legacy` = v2.                    |
 
 ## Quick start (MongoDB)
 
@@ -344,6 +342,22 @@ Without `--profile`, root credential commands default `--datastore` to
 `--datastore mongodb` explicitly when you need MongoDB without a profile.
 
 `kavrix <command> --help` is authoritative for your installed version.
+
+## Windows permissions
+
+Kavrix enforces owner-only access on Windows through NTFS ACLs (the equivalent
+of POSIX mode `700`/`600`). Directories under your user profile inherit extra
+ACEs by default — including leftover ACEs from deleted accounts — so a
+`~/.kavrix` directory created by an older release can fail init's portable-key
+parent check with "harden parent permissions to mode 700".
+
+Since 0.2.21, `kavrix init` and `kavrix db profile add` harden the Kavrix home
+(`%USERPROFILE%\.kavrix`) automatically before writing keys, and
+`kavrix doctor health --heal` repairs an existing Kavrix home and its
+`config.toml`. Directories Kavrix does not own — your home directory itself,
+for example — are never modified. Keep key, vault, and recovery files inside
+`~/.kavrix` (or another directory only your account can access), not directly
+in your home directory.
 
 ## Backups and recovery
 

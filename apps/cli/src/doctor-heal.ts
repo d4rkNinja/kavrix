@@ -1,7 +1,7 @@
 import { realpathSync } from 'node:fs';
 import { lstat, realpath } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { dirname, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 
 import {
   hardenExistingSecureDirectory,
@@ -41,6 +41,13 @@ export type DoctorHealOptions = Readonly<{
   /** Explicit key/data paths (standalone routing without a profile registry). */
   keyFile?: string;
   dataFile?: string;
+  /**
+   * Kavrix-owned artifact home (~/.kavrix). When provided, heal hardens it and
+   * its config reference even when no key/data artifact exists there yet — an
+   * existing home that predates strict ACLs blocks portable-key writes at
+   * init. CLI handlers pass the resolved home; absent means do not touch it.
+   */
+  kavrixArtifactDir?: string;
 }>;
 
 /**
@@ -226,6 +233,36 @@ export async function runDoctorHeal(
     );
   }
 
+  if (options.kavrixArtifactDir !== undefined) {
+    const kavrixHome = resolve(options.kavrixArtifactDir);
+    await maybeHardenDirectory(
+      kavrixHome,
+      'kavrix-dir-acl',
+      actions,
+      healed,
+      planned,
+      manualRecoveryRequired,
+      apply,
+      dryRun,
+      options.mode,
+    );
+    const kavrixConfigPath = join(kavrixHome, 'config.toml');
+    if (await pathExists(kavrixConfigPath)) {
+      await maybeHardenFile(
+        kavrixConfigPath,
+        'kavrix-config-file-acl',
+        'Config reference file',
+        actions,
+        healed,
+        planned,
+        manualRecoveryRequired,
+        apply,
+        dryRun,
+        options.mode,
+      );
+    }
+  }
+
   const filesToHarden = new Set<string>();
   for (const profile of scoped) {
     const resolvedKey = resolve(profile.keyFile);
@@ -238,6 +275,8 @@ export async function runDoctorHeal(
   for (const filePath of filesToHarden) {
     await maybeHardenFile(
       filePath,
+      'key-file-acl',
+      'Key file',
       actions,
       healed,
       planned,
@@ -402,6 +441,8 @@ async function maybeHardenDirectory(
 
 async function maybeHardenFile(
   filePath: string,
+  actionId: string,
+  label: string,
   actions: DoctorHealAction[],
   healed: string[],
   planned: string[],
@@ -413,9 +454,9 @@ async function maybeHardenFile(
   const state = await inspectFileAcl(filePath);
   if (state === 'missing' || state === 'ok') return;
   if (state === 'foreign-owner') {
-    const detail = `Key file ${filePath} is not owned by the current user; heal cannot safely change its ACL.`;
+    const detail = `${label} ${filePath} is not owned by the current user; heal cannot safely change its ACL.`;
     actions.push({
-      id: 'key-file-acl',
+      id: actionId,
       status: 'manual',
       detail,
       path: filePath,
@@ -429,11 +470,11 @@ async function maybeHardenFile(
       healed,
       planned,
       {
-        id: 'key-file-acl',
+        id: actionId,
         status: dryRun ? 'planned' : 'manual',
         detail: dryRun
-          ? `Would harden key file ${filePath} to owner-only permissions.`
-          : `Key file ${filePath} has unsafe permissions; re-run with --heal.`,
+          ? `Would harden ${label.toLowerCase()} ${filePath} to owner-only permissions.`
+          : `${label} ${filePath} has unsafe permissions; re-run with --heal.`,
         path: filePath,
       },
       false,
@@ -441,7 +482,7 @@ async function maybeHardenFile(
     );
     if (mode === 'report') {
       manualRecoveryRequired.push(
-        `Key file ${filePath} has unsafe permissions; re-run with --heal.`,
+        `${label} ${filePath} has unsafe permissions; re-run with --heal.`,
       );
     }
     return;
@@ -453,9 +494,9 @@ async function maybeHardenFile(
       healed,
       planned,
       {
-        id: 'key-file-acl',
+        id: actionId,
         status: 'applied',
-        detail: `Hardened key file ${filePath} to owner-only permissions.`,
+        detail: `Hardened ${label.toLowerCase()} ${filePath} to owner-only permissions.`,
         path: filePath,
       },
       true,
@@ -464,12 +505,12 @@ async function maybeHardenFile(
   } catch (error) {
     const detail =
       error instanceof PortableKeyFileError
-        ? `Could not harden key file ${filePath}: ${error.message}`
-        : `Could not harden key file ${filePath}: ${
+        ? `Could not harden ${label.toLowerCase()} ${filePath}: ${error.message}`
+        : `Could not harden ${label.toLowerCase()} ${filePath}: ${
             error instanceof Error ? error.message : String(error)
           }`;
     actions.push({
-      id: 'key-file-acl',
+      id: actionId,
       status: 'manual',
       detail,
       path: filePath,

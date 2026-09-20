@@ -383,6 +383,7 @@ async function handleDatabaseDoctorHealth(
     planned: [] as const,
     manualRecoveryRequired: [] as const,
   };
+  const { getKavrixConfigDir } = await import('./kavrix-config.js');
   const healReport =
     options.heal === true
       ? await runDoctorHeal({
@@ -393,6 +394,7 @@ async function handleDatabaseDoctorHealth(
           ...(options.profile === undefined ? {} : { profileId: options.profile }),
           ...(options.keyFile === undefined ? {} : { keyFile: options.keyFile }),
           ...(options.dataFile === undefined ? {} : { dataFile: options.dataFile }),
+          kavrixArtifactDir: getKavrixConfigDir(),
         })
       : emptyHeal;
 

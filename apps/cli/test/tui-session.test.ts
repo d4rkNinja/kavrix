@@ -1,11 +1,14 @@
-import { rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { databaseIdSchema, profileIdSchema, vaultIdSchema } from '@kavrix/schemas';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { validateSecureFileDestination } from '@kavrix/key-files';
+import {
+  validateSecureFileDestination,
+  verifyWindowsUserOnlyAcl,
+} from '@kavrix/key-files';
 import { createSecureTestDirectory as mkdtemp } from '../../../packages/key-files/test/secure-temporary-directory.js';
 import { DatastoreProfileRegistry } from '../src/datastore-profiles.js';
 import { createCliTuiBackend } from '../src/tui-session.js';
@@ -855,5 +858,82 @@ describe('CliTuiSession mutations (mocked spawn)', () => {
     });
     expect(result.snapshot.noticeTone).toBe('error');
     expect(result.snapshot.notice).toMatch(/not a directory/i);
+  });
+
+  it('hardens an existing unsafe kavrix home before create-file-profile writes', async () => {
+    // 0.2.20 Windows live QA: an existing ~/.kavrix that predates strict ACLs
+    // (inherited ACEs from the profile directory) failed the portable-key
+    // parent check at init step 12. TUI create must harden its own home.
+    const home = await mkdtemp(join(tmpdir(), 'kavrix-tui-unsafe-home-'));
+    dirs.push(home);
+    const configDir = join(home, 'config');
+    const kavrixHome = join(home, '.kavrix');
+    await mkdir(kavrixHome, { recursive: true });
+    if (process.platform !== 'win32') {
+      await chmod(kavrixHome, 0o755);
+    }
+    const defaults = {
+      dataFile: join(kavrixHome, 'kavrix.vault'),
+      keyFile: join(kavrixHome, 'kavrix.key'),
+    };
+
+    const backend = createCliTuiBackend({
+      profileConfigDir: configDir,
+      ascii: true,
+      kavrixArtifactDir: kavrixHome,
+      commandRunner: async (args) => {
+        if (args.includes('add') && args.includes('profile')) {
+          // Fails with KEY_FILE_UNSAFE unless the parent was hardened first.
+          await validateSecureFileDestination(defaults.keyFile);
+          await validateSecureFileDestination(defaults.dataFile);
+          const registry = await DatastoreProfileRegistry.open({
+            configDirectory: configDir,
+          });
+          await registry.add({
+            id: profileIdSchema.parse('default'),
+            datastore: 'file',
+            dataFile: defaults.dataFile,
+            keyFile: defaults.keyFile,
+          });
+          return '';
+        }
+        if (
+          args.includes('use') &&
+          args.includes('profile') &&
+          !args.includes('vault')
+        ) {
+          return '';
+        }
+        if (args[0] === 'db' && args[1] === 'init') {
+          await validateSecureFileDestination(defaults.keyFile);
+          return '';
+        }
+        if (args.includes('vault') && args.includes('create')) {
+          return JSON.stringify({ vaultId: 'vault_fresh' });
+        }
+        if (args.includes('vault') && args.includes('use')) {
+          return '';
+        }
+        if (args.includes('list')) {
+          return JSON.stringify({ names: [] });
+        }
+        return '{}';
+      },
+    });
+
+    const result = await backend.dispatch({
+      type: 'create-file-profile',
+      profileId: 'default',
+      dataFile: defaults.dataFile,
+      keyFile: defaults.keyFile,
+      passphrase: 'FreshQaPassphrase16!',
+    });
+
+    expect(result.snapshot.noticeTone).toBe('success');
+    if (process.platform === 'win32') {
+      await expect(verifyWindowsUserOnlyAcl(kavrixHome)).resolves.toBeUndefined();
+    } else {
+      expect((await stat(kavrixHome)).mode & 0o777).toBe(0o700);
+    }
   });
 });
