@@ -473,7 +473,7 @@ export function prioritizeFooterChips(
     }
     return cost;
   };
-  const kept: Array<(typeof chips)[number]> = [];
+  const kept: (typeof chips)[number][] = [];
   let used = 0;
   let hidden = 0;
   for (let index = 0; index < chips.length; index += 1) {

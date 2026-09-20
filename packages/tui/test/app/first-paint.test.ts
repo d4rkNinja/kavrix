@@ -99,7 +99,7 @@ function deferredLoadBackend(snapshot: AppSnapshot): Readonly<{
   return {
     backend: {
       load: async () => load,
-      dispatch: async () => ({ snapshot }),
+      dispatch: () => Promise.resolve({ snapshot }),
     },
     resolveLoad: (next = snapshot) => {
       resolveLoad(next);

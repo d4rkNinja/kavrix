@@ -148,7 +148,7 @@ describe('app router navigation', () => {
   });
 
   it('opens credential detail on Enter and remasks after Escape', () => {
-    let state = navigateToScreen(hydrate(), 'credentials');
+    const state = navigateToScreen(hydrate(), 'credentials');
     const opened = transitionAppRouter(state, {
       type: 'key',
       key: { name: 'return' },
