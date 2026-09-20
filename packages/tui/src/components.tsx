@@ -52,11 +52,13 @@ export function DynamicSchemaBuilder({
             editor.supportsMultiple ? 'multiple' : null,
           ].filter((flag): flag is string => flag !== null);
           return (
-            <Text key={field.id}>
-              {sanitizeTerminalText(field.label, ascii)} [{field.type}]{' '}
-              {editor.inputMode}
-              {flags.length === 0 ? '' : ` (${flags.join(', ')})`}
-            </Text>
+            <Box key={field.id} flexDirection="row">
+              <Text>
+                {sanitizeTerminalText(field.label, ascii)} [{field.type}]{' '}
+                {editor.inputMode}
+                {flags.length === 0 ? '' : ` (${flags.join(', ')})`}
+              </Text>
+            </Box>
           );
         })}
     </Box>

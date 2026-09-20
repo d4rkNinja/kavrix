@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type ReactElement } from 'react';
 
+import { resolveMotionPolicy } from './motion.js';
 import {
   SplashScreen,
   shouldDismissSplash,
@@ -72,6 +73,7 @@ export function SplashGate({
       {...(version === undefined ? {} : { version })}
       width={width}
       height={height}
+      animate={resolveMotionPolicy().animate}
     />
   );
 }

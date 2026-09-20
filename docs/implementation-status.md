@@ -27,7 +27,11 @@ Active release workspaces:
 - `@kavrix/storage`: database-scoped local/MongoDB adapters and fail-closed URI/TLS policy.
 - `@kavrix/runner`: shell-free child execution with minimal environments and secret redaction in captured output.
 - `@kavrix/tui`: Ink app shell and screens for `kavrix tui` / onboarding; host
-  backends call the real CLI (static test backend is tests-only).
+  backends call the real CLI (static test backend is tests-only). Chrome uses
+  one gold accent, configurable CredVault/`creds` labels, shared
+  empty/error/loading states, and OpenTUI-inspired enter/stagger/pulse motion
+  that is skipped when `KAVRIX_TUI_REDUCED_MOTION` or `PREFERS_REDUCED_MOTION`
+  is set. The renderer remains Ink; it was not rewritten to OpenTUI.
 - `kavrix`: CLI composition, Ink-first recovery-verified local onboarding
   (`--no-tui` classic), `kavrix tui` session backend, protected `config.toml`
   reference generation, masked input with field-local validation retries and

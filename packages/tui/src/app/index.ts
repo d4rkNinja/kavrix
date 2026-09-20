@@ -1,7 +1,20 @@
 export * from './ids.js';
 export * from './backend.js';
 export * from './router.js';
-export * from './theme.js';
+export {
+  CHROME,
+  accentColor,
+  resolveAppPresentation,
+  toneAccent,
+  pointerGlyph,
+  boxLine,
+  sectionTitle,
+  panelBorderStyle,
+  screenAccent,
+  doctorStatusAccent,
+  type AppAccent,
+  type PanelBorderStyle,
+} from './theme.js';
 export * from './static-backend.js';
 export {
   KavrixApp,
@@ -34,7 +47,13 @@ export {
   SelectRow,
   SectionTitle,
   ModalFrame,
+  MotionEnter,
   CardRow,
+  EmptyState,
+  ErrorState,
+  LoadingState,
+  NoticeBar,
+  useListStagger,
 } from './widgets.js';
 export {
   createInitialOnboardingState,

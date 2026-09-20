@@ -12,8 +12,22 @@ import {
   type OnboardingState,
   type OnboardingStorage,
 } from './onboarding-router.js';
-import { resolveAppPresentation, type AppAccent } from './theme.js';
-import { KeyChip, Panel, SelectRow, StatusPill } from './widgets.js';
+import { resolveMotionPolicy } from '../motion.js';
+import { resolveProductIdentity } from '../product.js';
+import {
+  accentColor,
+  CHROME,
+  resolveAppPresentation,
+  type AppAccent,
+} from './theme.js';
+import {
+  ErrorState,
+  KeyChip,
+  LoadingState,
+  Panel,
+  SelectRow,
+  StatusPill,
+} from './widgets.js';
 
 export interface KavrixOnboardingAppProps {
   readonly backend: InteractiveAppBackend;
@@ -47,13 +61,6 @@ export interface MountOnboardingAppOptions {
 export interface OnboardingAppHandle {
   waitUntilExit: () => Promise<OnboardingAppResult>;
   unmount: () => void;
-}
-
-function tint(
-  enabled: boolean,
-  accent: AppAccent,
-): Readonly<{ color: AppAccent }> | Readonly<Record<string, never>> {
-  return enabled ? { color: accent } : {};
 }
 
 function safe(value: string, ascii: boolean): string {
@@ -229,8 +236,13 @@ function OnboardingChrome({
   state,
 }: Readonly<{ state: OnboardingState }>): ReactElement {
   const { color, ascii, width, height } = state;
+  const product = resolveProductIdentity();
   const accent: AppAccent =
-    state.step === 'success' ? 'green' : state.step === 'error' ? 'red' : 'cyan';
+    state.step === 'success'
+      ? CHROME.success
+      : state.step === 'error'
+        ? CHROME.danger
+        : CHROME.accent;
 
   return (
     <Box flexDirection="column" width={width} height={height}>
@@ -238,9 +250,16 @@ function OnboardingChrome({
         <BrandBanner color={color} ascii={ascii} dualTone />
         <Box flexDirection="row" columnGap={1} flexWrap="wrap" marginTop={0}>
           <StatusPill
+            label="product"
+            value={product.productLabel}
+            accent={CHROME.accent}
+            color={color}
+            ascii={ascii}
+          />
+          <StatusPill
             label="mode"
             value="init"
-            accent="cyan"
+            accent={CHROME.heading}
             color={color}
             ascii={ascii}
           />
@@ -254,7 +273,7 @@ function OnboardingChrome({
           <StatusPill
             label="storage"
             value={state.storage ?? (state.storageIndex === 0 ? 'file?' : 'mongo?')}
-            accent="blue"
+            accent={CHROME.heading}
             color={color}
             ascii={ascii}
           />
@@ -267,12 +286,22 @@ function OnboardingChrome({
 
       <Box flexDirection="row" columnGap={2} paddingX={1}>
         <KeyChip keyLabel="Enter" hint="continue" color={color} />
-        <KeyChip keyLabel="Esc" hint="back / cancel" color={color} keyAccent="yellow" />
-        <KeyChip keyLabel="q" hint="quit" color={color} keyAccent="red" />
+        <KeyChip
+          keyLabel="Esc"
+          hint="back / cancel"
+          color={color}
+          keyAccent={CHROME.warning}
+        />
+        <KeyChip keyLabel="q" hint="quit" color={color} keyAccent={CHROME.danger} />
       </Box>
       {state.message === null && state.error === null ? null : (
         <Box paddingX={1}>
-          <Text {...tint(color, state.error === null ? 'cyan' : 'red')}>
+          <Text
+            {...accentColor(
+              color,
+              state.error === null ? CHROME.accent : CHROME.danger,
+            )}
+          >
             {safe(state.error ?? state.message ?? '', ascii)}
           </Text>
         </Box>
@@ -289,22 +318,22 @@ function renderOnboardingBody(state: OnboardingState): ReactElement {
     return (
       <Panel
         title="Welcome"
-        accent="cyan"
+        accent={CHROME.accent}
         ascii={ascii}
         color={color}
         paddingX={1}
         paddingY={1}
       >
-        <Text bold {...tint(color, 'cyan')}>
+        <Text bold {...accentColor(color, CHROME.accent)}>
           {safe('Initialize a Kavrix vault', ascii)}
         </Text>
-        <Text {...tint(color, 'gray')}>
+        <Text {...accentColor(color, CHROME.muted)}>
           {safe(
             'Interactive setup creates a real profile, vault, and verified recovery kit.',
             ascii,
           )}
         </Text>
-        <Text {...tint(color, 'gray')}>
+        <Text {...accentColor(color, CHROME.muted)}>
           {safe('Secrets stay masked. Press Enter to choose storage.', ascii)}
         </Text>
       </Panel>
@@ -315,7 +344,7 @@ function renderOnboardingBody(state: OnboardingState): ReactElement {
     return (
       <Panel
         title="Storage"
-        accent="magenta"
+        accent={CHROME.accent}
         ascii={ascii}
         color={color}
         paddingX={1}
@@ -325,7 +354,7 @@ function renderOnboardingBody(state: OnboardingState): ReactElement {
           active={state.storageIndex === 0}
           label="1  Local encrypted file"
           hint="Simplest for one device"
-          accent="green"
+          accent={CHROME.accent}
           color={color}
           ascii={ascii}
         />
@@ -333,7 +362,7 @@ function renderOnboardingBody(state: OnboardingState): ReactElement {
           active={state.storageIndex === 1}
           label="2  MongoDB"
           hint="Shared / remote datastore"
-          accent="blue"
+          accent={CHROME.accent}
           color={color}
           ascii={ascii}
         />
@@ -345,16 +374,19 @@ function renderOnboardingBody(state: OnboardingState): ReactElement {
     return (
       <Panel
         title="Creating"
-        accent="yellow"
+        accent={CHROME.warning}
         ascii={ascii}
         color={color}
         paddingX={1}
         paddingY={1}
       >
-        <Text bold {...tint(color, 'yellow')}>
-          {safe(state.message ?? 'Working…', ascii)}
-        </Text>
-        <Text {...tint(color, 'gray')}>
+        <LoadingState
+          label={state.message ?? 'Working…'}
+          color={color}
+          ascii={ascii}
+          animate={resolveMotionPolicy().animate}
+        />
+        <Text {...accentColor(color, CHROME.muted)}>
           {safe('Running real CLI create + recovery create/verify…', ascii)}
         </Text>
       </Panel>
@@ -365,27 +397,27 @@ function renderOnboardingBody(state: OnboardingState): ReactElement {
     return (
       <Panel
         title="Success"
-        accent="green"
+        accent={CHROME.success}
         ascii={ascii}
         color={color}
         paddingX={1}
         paddingY={1}
       >
-        <Text bold {...tint(color, 'green')}>
+        <Text bold {...accentColor(color, CHROME.success)}>
           {safe('SETUP COMPLETE', ascii)}
         </Text>
-        <Text {...tint(color, 'green')}>
+        <Text {...accentColor(color, CHROME.success)}>
           {safe(
             `Profile selected: ${state.completedProfileId ?? state.profileId ?? 'default'}`,
             ascii,
           )}
         </Text>
         {state.completedRecoveryFile !== null ? (
-          <Text {...tint(color, 'green')}>
+          <Text {...accentColor(color, CHROME.success)}>
             {safe(`Recovery kit verified: ${state.completedRecoveryFile}`, ascii)}
           </Text>
         ) : null}
-        <Text {...tint(color, 'gray')}>
+        <Text {...accentColor(color, CHROME.muted)}>
           {safe('Press Enter to finish, then run: kavrix tui', ascii)}
         </Text>
       </Panel>
@@ -396,18 +428,18 @@ function renderOnboardingBody(state: OnboardingState): ReactElement {
     return (
       <Panel
         title="Error"
-        accent="red"
+        accent={CHROME.danger}
         ascii={ascii}
         color={color}
         paddingX={1}
         paddingY={1}
       >
-        <Text bold {...tint(color, 'red')}>
-          {safe(state.error ?? 'Setup failed.', ascii)}
-        </Text>
-        <Text {...tint(color, 'gray')}>
-          {safe('Enter/r retry · Esc/q quit', ascii)}
-        </Text>
+        <ErrorState
+          title={state.error ?? 'Setup failed.'}
+          recovery="Enter/r retry · Esc/q quit"
+          color={color}
+          ascii={ascii}
+        />
       </Panel>
     );
   }
@@ -419,17 +451,17 @@ function renderOnboardingBody(state: OnboardingState): ReactElement {
   return (
     <Panel
       title="Input"
-      accent="cyan"
+      accent={CHROME.accent}
       ascii={ascii}
       color={color}
       paddingX={1}
       paddingY={1}
     >
-      <Text bold {...tint(color, 'cyan')}>
+      <Text bold {...accentColor(color, CHROME.accent)}>
         {safe(body, ascii)}
       </Text>
       {isMaskedStep(state.step) ? (
-        <Text {...tint(color, 'gray')}>
+        <Text {...accentColor(color, CHROME.muted)}>
           {safe('Paste works (Ctrl+Shift+V / Cmd+V)', ascii)}
         </Text>
       ) : null}

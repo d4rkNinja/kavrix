@@ -25,30 +25,30 @@ export interface AppMenuEntry {
 
 /** Primary dashboard destinations (showcase stays reachable but secondary). */
 export const APP_MENU: readonly AppMenuEntry[] = [
-  { id: 'home', label: 'Home', hint: 'Status dashboard', accent: 'cyan' },
-  { id: 'profiles', label: 'Profiles', hint: 'Datastore routes', accent: 'blue' },
-  { id: 'vaults', label: 'Vaults', hint: 'Vault selection', accent: 'magenta' },
+  { id: 'home', label: 'Home', hint: 'Status dashboard', accent: 'yellow' },
+  { id: 'profiles', label: 'Profiles', hint: 'Datastore routes', accent: 'yellow' },
+  { id: 'vaults', label: 'Vaults', hint: 'Vault selection', accent: 'yellow' },
   {
     id: 'credentials',
     label: 'Credentials',
     hint: 'Masked secrets',
-    accent: 'green',
+    accent: 'yellow',
   },
   { id: 'doctor', label: 'Doctor', hint: 'Health checks', accent: 'yellow' },
   { id: 'recovery', label: 'Recovery', hint: 'Kit slots', accent: 'red' },
-  { id: 'run', label: 'Run', hint: 'Dry-run inject', accent: 'cyan' },
+  { id: 'run', label: 'Run', hint: 'Dry-run inject', accent: 'yellow' },
   {
     id: 'policy',
     label: 'Policy / Grant / Audit',
     hint: 'Authorization',
-    accent: 'blue',
+    accent: 'yellow',
   },
-  { id: 'agent', label: 'Agent', hint: 'Broker dry-run', accent: 'magenta' },
+  { id: 'agent', label: 'Agent', hint: 'Broker dry-run', accent: 'yellow' },
   {
     id: 'browse',
     label: 'Context / Service / Item',
     hint: 'Structured browse',
-    accent: 'green',
+    accent: 'yellow',
   },
   { id: 'help', label: 'Help', hint: 'Keymap', accent: 'white' },
   {

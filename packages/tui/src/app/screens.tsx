@@ -1,12 +1,16 @@
 import { Box, Text } from 'ink';
 import type { ReactElement } from 'react';
 
+import { resolveMotionPolicy } from '../motion.js';
+import { resolveProductIdentity } from '../product.js';
 import { BrandBanner } from '../showcase.js';
 import { sanitizeTerminalText, secretMask } from '../terminal-text.js';
 import type { AppSnapshot } from './backend.js';
 import { APP_MENU } from './ids.js';
 import type { AppOverlay, AppRouterState } from './router.js';
 import {
+  accentColor,
+  CHROME,
   doctorStatusAccent,
   screenAccent,
   toneAccent,
@@ -14,22 +18,23 @@ import {
 } from './theme.js';
 import {
   CardRow,
+  EmptyState,
   KeyChip,
   ModalFrame,
+  MotionEnter,
+  NoticeBar,
   Panel,
   SelectRow,
   StatusPill,
+  useListStagger,
 } from './widgets.js';
-
-function tint(
-  enabled: boolean,
-  accent: AppAccent,
-): Readonly<{ color: AppAccent }> | Readonly<Record<string, never>> {
-  return enabled ? { color: accent } : {};
-}
 
 function safe(value: string, ascii: boolean): string {
   return sanitizeTerminalText(value, ascii);
+}
+
+function allowMotion(): boolean {
+  return resolveMotionPolicy().animate;
 }
 
 function overlayCopy(
@@ -80,9 +85,9 @@ function overlayCopy(
         accent: 'yellow',
       };
     case 'input-search':
-      return { title: 'Search', body: `Search: ${q}_`, accent: 'cyan' };
+      return { title: 'Search', body: `Search: ${q}_`, accent: CHROME.accent };
     case 'input-run':
-      return { title: 'Run preview', body: `Run creds: ${q}_`, accent: 'cyan' };
+      return { title: 'Run preview', body: `Run creds: ${q}_`, accent: CHROME.accent };
     case 'input-passphrase':
       return {
         title: 'Unlock vault',
@@ -91,33 +96,37 @@ function overlayCopy(
         hint: 'Paste works (Ctrl+Shift+V / Cmd+V)',
       };
     case 'input-put-name':
-      return { title: 'Put credential', body: `New name: ${q}_`, accent: 'green' };
+      return {
+        title: 'Put credential',
+        body: `New name: ${q}_`,
+        accent: CHROME.accent,
+      };
     case 'input-put-value':
       return {
         title: 'Put value',
         body: `Value: ${masked}_`,
-        accent: 'green',
+        accent: CHROME.accent,
         hint: 'Paste works (Ctrl+Shift+V / Cmd+V)',
       };
     case 'input-rename':
-      return { title: 'Rename', body: `Rename to: ${q}_`, accent: 'green' };
+      return { title: 'Rename', body: `Rename to: ${q}_`, accent: CHROME.accent };
     case 'input-profile-id':
       return {
         title: 'File profile',
         body: `Profile id: ${q}_`,
-        accent: 'blue',
+        accent: CHROME.accent,
       };
     case 'input-profile-data-file':
       return {
         title: 'File profile',
         body: `Data file: ${q}_`,
-        accent: 'blue',
+        accent: CHROME.accent,
       };
     case 'input-profile-key-file':
       return {
         title: 'File profile',
         body: `Key file: ${q}_`,
-        accent: 'blue',
+        accent: CHROME.accent,
       };
     case 'input-profile-passphrase':
     case 'input-profile-passphrase-confirm':
@@ -130,19 +139,19 @@ function overlayCopy(
       return {
         title: 'Mongo profile',
         body: `Mongo profile id: ${q}_`,
-        accent: 'blue',
+        accent: CHROME.accent,
       };
     case 'input-mongo-database':
       return {
         title: 'Mongo profile',
         body: `Mongo database: ${q}_`,
-        accent: 'blue',
+        accent: CHROME.accent,
       };
     case 'input-mongo-key-file':
       return {
         title: 'Mongo profile',
         body: `Mongo key file: ${q}_`,
-        accent: 'blue',
+        accent: CHROME.accent,
       };
     case 'input-mongo-url':
     case 'input-unlock-mongo-url':
@@ -179,50 +188,50 @@ function overlayCopy(
       return {
         title: 'Create policy',
         body: `Policy id: ${q}_`,
-        accent: 'blue',
+        accent: CHROME.accent,
       };
     case 'input-policy-secret':
       return {
         title: 'Create policy',
         body: `Policy secret: ${q}_`,
-        accent: 'blue',
+        accent: CHROME.accent,
       };
     case 'input-policy-command':
       return {
         title: 'Create policy',
         body: `Policy command: ${q}_`,
-        accent: 'blue',
+        accent: CHROME.accent,
       };
     case 'input-grant-secret':
       return {
         title: 'Create grant',
         body: `Grant secret: ${q}_`,
-        accent: 'blue',
+        accent: CHROME.accent,
       };
     case 'input-grant-command':
       return {
         title: 'Create grant',
         body: `Grant command: ${q}_`,
-        accent: 'blue',
+        accent: CHROME.accent,
       };
     case 'input-grant-ttl':
       return {
         title: 'Create grant',
         body: `Grant TTL: ${q}_`,
-        accent: 'blue',
+        accent: CHROME.accent,
       };
     case 'input-agent-name':
       return {
         title: 'Agent dry-run',
         body: `Agent name: ${q}_`,
-        accent: 'magenta',
+        accent: CHROME.accent,
         hint: 'Must match an agent entry in the project config',
       };
     case 'input-agent-config':
       return {
         title: 'Agent config (optional)',
         body: `Config path: ${q}_`,
-        accent: 'magenta',
+        accent: CHROME.accent,
         hint: 'Empty Enter uses default kavrix.yaml discovery',
       };
   }
@@ -239,6 +248,8 @@ export function AppChrome({
   const home = state.snapshot.home;
   const accent = screenAccent(state.screen);
   const overlay = overlayCopy(state.overlay, state.query, ascii);
+  const product = resolveProductIdentity();
+  const motion = allowMotion();
   const ellipsis = ascii ? '...' : '…';
   const vaultShort =
     home.vaultId === null
@@ -253,30 +264,37 @@ export function AppChrome({
         <BrandBanner color={color} ascii={ascii} dualTone />
         <Box flexDirection="row" columnGap={1} flexWrap="wrap" marginTop={0}>
           <StatusPill
+            label="product"
+            value={product.productLabel}
+            accent={CHROME.accent}
+            color={color}
+            ascii={ascii}
+          />
+          <StatusPill
             label="lock"
             value={home.unlocked ? 'open' : 'locked'}
-            accent={home.unlocked ? 'green' : 'yellow'}
+            accent={home.unlocked ? CHROME.success : CHROME.warning}
             color={color}
             ascii={ascii}
           />
           <StatusPill
             label="profile"
             value={home.profileId ?? '-'}
-            accent="blue"
+            accent={CHROME.heading}
             color={color}
             ascii={ascii}
           />
           <StatusPill
             label="vault"
             value={vaultShort}
-            accent="magenta"
+            accent={CHROME.heading}
             color={color}
             ascii={ascii}
           />
           <StatusPill
             label="creds"
             value={String(home.credentialCount)}
-            accent="green"
+            accent={CHROME.heading}
             color={color}
             ascii={ascii}
           />
@@ -285,7 +303,9 @@ export function AppChrome({
 
       <Box flexDirection="column" flexGrow={1} paddingX={0} paddingY={0}>
         {overlay === null ? (
-          children
+          <MotionEnter enabled={motion} key={state.screen}>
+            {children}
+          </MotionEnter>
         ) : (
           <ModalFrame
             title={overlay.title}
@@ -293,14 +313,17 @@ export function AppChrome({
             ascii={ascii}
             color={color}
             width={width}
+            animate={motion}
           >
-            <Text bold {...tint(color, overlay.accent)}>
+            <Text bold {...accentColor(color, overlay.accent)}>
               {safe(overlay.body, ascii)}
             </Text>
             {overlay.hint === undefined ? null : (
-              <Text {...tint(color, 'cyan')}>{safe(overlay.hint, ascii)}</Text>
+              <Text {...accentColor(color, CHROME.muted)}>
+                {safe(overlay.hint, ascii)}
+              </Text>
             )}
-            <Text {...tint(color, 'gray')}>
+            <Text {...accentColor(color, CHROME.muted)}>
               {safe(
                 overlay.title.startsWith('Confirm') ||
                   overlay.title.startsWith('Revoke') ||
@@ -329,15 +352,15 @@ function Footer({ state }: Readonly<{ state: AppRouterState }>): ReactElement {
   return (
     <Box flexDirection="column">
       {notice === null ? null : (
-        <Panel accent={noticeAccent} ascii={ascii} color={color} paddingX={1}>
-          <Text {...tint(color, noticeAccent)}>{safe(notice, ascii)}</Text>
-        </Panel>
+        <NoticeBar message={notice} accent={noticeAccent} color={color} ascii={ascii} />
       )}
-      <Panel accent="gray" ascii={ascii} color={color} paddingX={1}>
+      <Panel accent={CHROME.muted} ascii={ascii} color={color} paddingX={1}>
         <Box flexDirection="row" columnGap={1} flexWrap="wrap">
           {chips.map((chip, index) => (
             <Box key={`${chip.keyLabel}-${chip.hint}`} flexDirection="row">
-              {index === 0 ? null : <Text {...tint(color, 'gray')}>{sep}</Text>}
+              {index === 0 ? null : (
+                <Text {...accentColor(color, CHROME.muted)}>{sep}</Text>
+              )}
               <KeyChip
                 keyLabel={chip.keyLabel}
                 hint={chip.hint}
@@ -357,47 +380,48 @@ function footerChips(screen: AppRouterState['screen']): readonly Readonly<{
   hint: string;
   accent: AppAccent;
 }>[] {
+  const key = CHROME.accent;
   const commonTail = [
-    { keyLabel: 'Esc', hint: 'home', accent: 'yellow' as const },
-    { keyLabel: '?', hint: 'help', accent: 'white' as const },
-    { keyLabel: 'q', hint: 'quit', accent: 'red' as const },
+    { keyLabel: 'Esc', hint: 'home', accent: key },
+    { keyLabel: '?', hint: 'help', accent: CHROME.heading },
+    { keyLabel: 'q', hint: 'quit', accent: CHROME.danger },
   ];
   switch (screen) {
     case 'credentials':
       return [
-        { keyLabel: 'j/k', hint: 'move', accent: 'cyan' },
-        { keyLabel: 'c', hint: 'copy', accent: 'green' },
-        { keyLabel: 'r', hint: 'reveal', accent: 'red' },
-        { keyLabel: 'n', hint: 'put', accent: 'green' },
-        { keyLabel: 'm', hint: 'rename', accent: 'magenta' },
-        { keyLabel: 'x', hint: 'remove', accent: 'red' },
-        { keyLabel: '/', hint: 'search', accent: 'magenta' },
-        { keyLabel: 'u', hint: 'unlock', accent: 'green' },
+        { keyLabel: 'j/k', hint: 'move', accent: key },
+        { keyLabel: 'c', hint: 'copy', accent: key },
+        { keyLabel: 'r', hint: 'reveal', accent: CHROME.danger },
+        { keyLabel: 'n', hint: 'put', accent: key },
+        { keyLabel: 'm', hint: 'rename', accent: key },
+        { keyLabel: 'x', hint: 'remove', accent: CHROME.danger },
+        { keyLabel: '/', hint: 'search', accent: key },
+        { keyLabel: 'u', hint: 'unlock', accent: key },
         ...commonTail,
       ];
     case 'profiles':
       return [
-        { keyLabel: 'j/k', hint: 'move', accent: 'cyan' },
-        { keyLabel: 'Enter', hint: 'use', accent: 'green' },
-        { keyLabel: 'n', hint: 'file', accent: 'blue' },
-        { keyLabel: 'm', hint: 'mongo', accent: 'blue' },
+        { keyLabel: 'j/k', hint: 'move', accent: key },
+        { keyLabel: 'Enter', hint: 'use', accent: key },
+        { keyLabel: 'n', hint: 'file', accent: key },
+        { keyLabel: 'm', hint: 'mongo', accent: key },
         ...commonTail,
       ];
     case 'home':
       return [
-        { keyLabel: 'j/k', hint: 'move', accent: 'cyan' },
-        { keyLabel: 'Enter', hint: 'open', accent: 'green' },
-        { keyLabel: 'u', hint: 'unlock', accent: 'green' },
-        { keyLabel: 'l', hint: 'lock', accent: 'yellow' },
-        { keyLabel: 'r', hint: 'refresh', accent: 'cyan' },
+        { keyLabel: 'j/k', hint: 'move', accent: key },
+        { keyLabel: 'Enter', hint: 'open', accent: key },
+        { keyLabel: 'u', hint: 'unlock', accent: key },
+        { keyLabel: 'l', hint: 'lock', accent: CHROME.warning },
+        { keyLabel: 'r', hint: 'refresh', accent: key },
         ...commonTail,
       ];
     default:
       return [
-        { keyLabel: 'j/k', hint: 'move', accent: 'cyan' },
-        { keyLabel: 'Enter', hint: 'open', accent: 'green' },
-        { keyLabel: 'u', hint: 'unlock', accent: 'green' },
-        { keyLabel: 'l', hint: 'lock', accent: 'yellow' },
+        { keyLabel: 'j/k', hint: 'move', accent: key },
+        { keyLabel: 'Enter', hint: 'open', accent: key },
+        { keyLabel: 'u', hint: 'unlock', accent: key },
+        { keyLabel: 'l', hint: 'lock', accent: CHROME.warning },
         ...commonTail,
       ];
   }
@@ -408,11 +432,12 @@ export function HomeScreen({
 }: Readonly<{ state: AppRouterState }>): ReactElement {
   const { color, ascii, snapshot, menuIndex, width } = state;
   const entries = APP_MENU.filter((entry) => entry.id !== 'home');
+  const pendingAt = useListStagger(entries.length, allowMotion());
   const wide = width >= 80;
   const statusPanel = (
     <Panel
       title="Home / Dashboard"
-      accent="cyan"
+      accent={CHROME.accent}
       ascii={ascii}
       color={color}
       {...(wide ? { flexGrow: 1 } : {})}
@@ -425,7 +450,7 @@ export function HomeScreen({
   const navPanel = (
     <Panel
       title="Navigate"
-      accent="magenta"
+      accent={CHROME.accent}
       ascii={ascii}
       color={color}
       {...(wide ? { flexGrow: 1 } : {})}
@@ -446,6 +471,7 @@ export function HomeScreen({
               color={color}
               ascii={ascii}
               labelWidth={labelWidth}
+              pending={pendingAt(index)}
             />
           );
         });
@@ -476,7 +502,10 @@ function StatusBlock({
   const home = snapshot.home;
   return (
     <Box flexDirection="column">
-      <Text {...tint(color, home.unlocked ? 'green' : 'yellow')}>
+      <Text
+        bold
+        {...accentColor(color, home.unlocked ? CHROME.success : CHROME.warning)}
+      >
         {home.unlocked
           ? ascii
             ? '[OK] Unlocked'
@@ -487,9 +516,11 @@ function StatusBlock({
       </Text>
       <Text>
         Datastore:{' '}
-        <Text {...tint(color, 'cyan')}>{safe(home.datastore ?? '(none)', ascii)}</Text>
+        <Text {...accentColor(color, CHROME.heading)}>
+          {safe(home.datastore ?? '(none)', ascii)}
+        </Text>
       </Text>
-      <Text {...tint(color, 'gray')}>{safe(home.message, ascii)}</Text>
+      <Text {...accentColor(color, CHROME.muted)}>{safe(home.message, ascii)}</Text>
     </Box>
   );
 }
@@ -503,7 +534,7 @@ export function ProfilesScreen({
       <ListScreen
         state={state}
         title="Profiles"
-        accent="blue"
+        accent={CHROME.accent}
         empty="No datastore profiles found. Press n (file) or m (mongodb)."
         rows={state.snapshot.profiles.map((profile) => ({
           id: profile.id,
@@ -511,7 +542,7 @@ export function ProfilesScreen({
           secondary: profile.detail,
         }))}
       />
-      <Text {...tint(color, 'gray')}>
+      <Text {...accentColor(color, CHROME.muted)}>
         {safe(
           'Enter = use · n = file profile · m = mongodb profile (URL+passphrase on stdin frames)',
           ascii,
@@ -528,7 +559,7 @@ export function VaultsScreen({
     <ListScreen
       state={state}
       title="Vaults"
-      accent="magenta"
+      accent={CHROME.accent}
       empty="No vaults yet. Select a profile, then unlock (u)."
       rows={state.snapshot.vaults.map((vault) => ({
         id: vault.id,
@@ -543,28 +574,35 @@ export function CredentialsScreen({
   state,
 }: Readonly<{ state: AppRouterState }>): ReactElement {
   const { color, ascii, listIndex, revealedName, revealedValue, snapshot } = state;
+  const pendingAt = useListStagger(state.snapshot.credentials.length, allowMotion());
   return (
     <Box flexDirection="column" flexGrow={1}>
       <Panel
         title="Credentials"
-        accent="green"
+        accent={CHROME.accent}
         ascii={ascii}
         color={color}
         paddingX={1}
       >
-        <Text {...tint(color, 'gray')}>
+        <Text {...accentColor(color, CHROME.muted)}>
           Values stay masked. c copy · r then y REVEAL (15s) · n put · m rename · x
           remove.
         </Text>
         {state.snapshot.credentials.length === 0 ? (
-          <Text {...tint(color, 'yellow')}>
-            {safe(
+          <EmptyState
+            title={
               snapshot.home.unlocked
                 ? 'No credentials yet. Press n to put one.'
-                : 'Vault locked. Press u to unlock, then n to put.',
-              ascii,
-            )}
-          </Text>
+                : 'Vault locked. Press u to unlock, then n to put.'
+            }
+            hint={
+              snapshot.home.unlocked
+                ? 'Names are visible; values stay masked until an explicit reveal.'
+                : 'Unlock first. Secrets are never accepted on the command line.'
+            }
+            color={color}
+            ascii={ascii}
+          />
         ) : (
           state.snapshot.credentials.map((credential, index) => {
             const active = index === listIndex;
@@ -575,19 +613,20 @@ export function CredentialsScreen({
                   active={active}
                   title={credential.name}
                   subtitle={revealed ? '' : credential.maskedValue || secretMask(ascii)}
-                  accent="green"
+                  accent={CHROME.accent}
                   color={color}
                   ascii={ascii}
+                  pending={pendingAt(index)}
                 />
                 {revealed ? (
                   <Panel
-                    accent="red"
+                    accent={CHROME.danger}
                     ascii={ascii}
                     color={color}
                     paddingX={1}
                     kind="panel"
                   >
-                    <Text bold {...tint(color, 'red')}>
+                    <Text bold {...accentColor(color, CHROME.danger)}>
                       {safe(`REVEAL: ${revealedValue ?? ''}`, ascii)}
                     </Text>
                   </Panel>
@@ -609,16 +648,19 @@ export function DoctorScreen({
   return (
     <Panel
       title="Doctor"
-      accent="yellow"
+      accent={CHROME.accent}
       ascii={ascii}
       color={color}
       paddingX={1}
       flexGrow={1}
     >
       {rows.length === 0 ? (
-        <Text {...tint(color, 'yellow')}>
-          {safe('Press d to run doctor checks.', ascii)}
-        </Text>
+        <EmptyState
+          title="Press d to run doctor checks."
+          hint="Checks stay on this machine. Failures are generic — they never name unlock material."
+          color={color}
+          ascii={ascii}
+        />
       ) : (
         rows.map((check, index) => {
           const active = index === listIndex;
@@ -647,7 +689,7 @@ export function RecoveryScreen({
     <ListScreen
       state={state}
       title="Recovery"
-      accent="red"
+      accent={CHROME.danger}
       empty="No recovery slots. n create · v verify · Enter/x revoke (last slot blocked)."
       rows={state.snapshot.recovery.map((slot) => ({
         id: slot.slotId,
@@ -665,12 +707,12 @@ export function RunScreen({
   return (
     <Panel
       title="Run (dry preview)"
-      accent="cyan"
+      accent={CHROME.accent}
       ascii={ascii}
       color={color}
       paddingX={1}
     >
-      <Text {...tint(color, 'gray')}>
+      <Text {...accentColor(color, CHROME.muted)}>
         Press p, type credential names, Enter. Secrets are never placed on argv.
       </Text>
       <Text>{safe(snapshot.runPreview, ascii)}</Text>
@@ -685,7 +727,7 @@ export function PolicyScreen({
     <ListScreen
       state={state}
       title="Policy / Grant / Audit"
-      accent="blue"
+      accent={CHROME.accent}
       empty="No rows. Enter refresh · n policy · x remove · g grant · r revoke grant."
       rows={state.snapshot.policies.map((row) => ({
         id: `${row.kind}:${row.id}`,
@@ -701,8 +743,14 @@ export function AgentScreen({
 }: Readonly<{ state: AppRouterState }>): ReactElement {
   const { color, ascii, snapshot } = state;
   return (
-    <Panel title="Agent" accent="magenta" ascii={ascii} color={color} paddingX={1}>
-      <Text {...tint(color, 'gray')}>
+    <Panel
+      title="Agent"
+      accent={CHROME.accent}
+      ascii={ascii}
+      color={color}
+      paddingX={1}
+    >
+      <Text {...accentColor(color, CHROME.muted)}>
         {safe(
           'Press g to run kavrix agent run --dry-run. You will be asked for a real agent name (and optional --config). No default agent is invented.',
           ascii,
@@ -722,15 +770,15 @@ export function StorageDocsScreen({
   return (
     <Panel
       title="Storage docs (read-only)"
-      accent="yellow"
+      accent={CHROME.accent}
       ascii={ascii}
       color={color}
       paddingX={1}
     >
-      <Text bold {...tint(color, 'yellow')}>
+      <Text bold {...accentColor(color, CHROME.warning)}>
         {safe('DOCS ONLY — no vault create/unlock/mutate from this screen.', ascii)}
       </Text>
-      <Text {...tint(color, 'gray')}>
+      <Text {...accentColor(color, CHROME.muted)}>
         {safe(
           'Interactive storage picker lives in kavrix init. This TUI screen only summarizes the active profile.',
           ascii,
@@ -742,8 +790,8 @@ export function StorageDocsScreen({
           ascii,
         )}
       </Text>
-      <Text {...tint(color, 'gray')}>{safe(home.message, ascii)}</Text>
-      <Text bold {...(color ? { color: 'cyan' as const } : {})}>
+      <Text {...accentColor(color, CHROME.muted)}>{safe(home.message, ascii)}</Text>
+      <Text bold {...accentColor(color, CHROME.heading)}>
         {safe('Storage choices (from init docs)', ascii)}
       </Text>
       <Text>
@@ -752,7 +800,7 @@ export function StorageDocsScreen({
       <Text>
         {safe('• MongoDB — sync opaque ciphertext through your own deployment.', ascii)}
       </Text>
-      <Text {...tint(color, 'gray')}>
+      <Text {...accentColor(color, CHROME.muted)}>
         {safe(
           'Both keep client-side encryption; the datastore never receives a vault key.',
           ascii,
@@ -760,7 +808,7 @@ export function StorageDocsScreen({
       </Text>
       {doctor.length > 0 ? (
         <Box flexDirection="column" marginTop={1}>
-          <Text bold {...(color ? { color: 'cyan' as const } : {})}>
+          <Text bold {...accentColor(color, CHROME.heading)}>
             {safe('Doctor (last run)', ascii)}
           </Text>
           {doctor.slice(0, 8).map((check) => (
@@ -773,7 +821,7 @@ export function StorageDocsScreen({
           ))}
         </Box>
       ) : (
-        <Text {...tint(color, 'gray')}>
+        <Text {...accentColor(color, CHROME.muted)}>
           {safe(
             'No doctor results yet — open Doctor and press d to run real checks.',
             ascii,
@@ -791,7 +839,7 @@ export function BrowseScreen({
     <ListScreen
       state={state}
       title="Context / Service / Item"
-      accent="green"
+      accent={CHROME.accent}
       empty="No browse rows. Unlock and press Enter to load context/service/item lists."
       rows={state.snapshot.browse.map((node) => ({
         id: node.id,
@@ -826,11 +874,12 @@ export function HelpScreen({
     'Doctor: d · Recovery: n/c create · v verify · Enter/x revoke',
     'Run: p · Agent: g dry-run (prompts for agent name) · Policy: n/x/g/r · Browse: Enter refresh',
     'Display: a ASCII · NO_COLOR / TERM=dumb disable color · win32 ASCII default',
+    'Motion: KAVRIX_TUI_REDUCED_MOTION=1 skips splash, stagger, and status pulse',
   ];
   return (
     <Panel
       title="Help / Keymap"
-      accent="white"
+      accent={CHROME.heading}
       ascii={ascii}
       color={color}
       paddingX={1}
@@ -858,6 +907,7 @@ function ListScreen({
   rows: readonly Readonly<{ id: string; primary: string; secondary: string }>[];
 }>): ReactElement {
   const { color, ascii, listIndex } = state;
+  const pendingAt = useListStagger(rows.length, allowMotion());
   return (
     <Panel
       title={title}
@@ -868,7 +918,12 @@ function ListScreen({
       flexGrow={1}
     >
       {rows.length === 0 ? (
-        <Text {...tint(color, 'yellow')}>{safe(empty, ascii)}</Text>
+        <EmptyState
+          title={empty}
+          hint="j/k move · Enter opens the selected row when one exists."
+          color={color}
+          ascii={ascii}
+        />
       ) : (
         rows.map((row, index) => {
           const active = index === listIndex;
@@ -881,6 +936,7 @@ function ListScreen({
               accent={accent}
               color={color}
               ascii={ascii}
+              pending={pendingAt(index)}
             />
           );
         })

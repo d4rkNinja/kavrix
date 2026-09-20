@@ -30,14 +30,17 @@ Security and presentation rules:
 - Reveal only after an explicit confirm step labeled REVEAL (15s UI timer).
 - Sanitize all terminal strings (`packages/tui/src/terminal-text.ts`).
 - Honor `NO_COLOR` and `TERM=dumb` (disable color).
+- Honor `KAVRIX_TUI_REDUCED_MOTION` / `PREFERS_REDUCED_MOTION` (skip splash,
+  list stagger, and status pulse). Non-TTY and non-interactive sessions never
+  mount the app.
 - Support `--ascii` and auto-ASCII on Windows (`process.platform === 'win32'`)
   or terminals without Unicode.
 - Paths use `node:path` joins; no bashisms.
 - Prefer library calls; when the host spawns the CLI, secrets travel only as
   stdin frames — never argv.
 
-Flags: `--ascii`, `--color`, `--no-color`, `--profile-config-dir` /
-`--config-dir`.
+Flags: `--ascii`, `--color`, `--no-color`, `--no-splash`, `--profile-config-dir`
+/ `--config-dir`. `KAVRIX_TUI_NO_SPLASH=1` also skips the startup splash.
 
 ## Storage showcase
 

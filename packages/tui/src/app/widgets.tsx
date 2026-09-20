@@ -1,20 +1,23 @@
 import { Box, Text } from 'ink';
 import type { ReactElement, ReactNode } from 'react';
 
+import {
+  enterOffsetCells,
+  MOTION,
+  staggerVisibleCount,
+  useElapsedMs,
+  useEnterProgress,
+  useMotionFrame,
+} from '../motion.js';
 import { sanitizeTerminalText } from '../terminal-text.js';
 import {
+  accentColor,
+  CHROME,
   panelBorderStyle,
   pointerGlyph,
   sectionTitle,
   type AppAccent,
 } from './theme.js';
-
-function tint(
-  enabled: boolean,
-  accent: AppAccent,
-): Readonly<{ color: AppAccent }> | Readonly<Record<string, never>> {
-  return enabled ? { color: accent } : {};
-}
 
 function safe(value: string, ascii: boolean): string {
   return sanitizeTerminalText(value, ascii);
@@ -24,7 +27,7 @@ export function SectionTitle({
   label,
   ascii,
   color,
-  accent = 'cyan',
+  accent = CHROME.accent,
 }: Readonly<{
   label: string;
   ascii: boolean;
@@ -32,7 +35,7 @@ export function SectionTitle({
   accent?: AppAccent;
 }>): ReactElement {
   return (
-    <Text bold {...tint(color, accent)}>
+    <Text bold {...accentColor(color, accent)}>
       {sectionTitle(label, ascii)}
     </Text>
   );
@@ -40,18 +43,18 @@ export function SectionTitle({
 
 /**
  * OpenTUI-style bordered panel. Ink has no `title=` on borders, so the title
- * is rendered as a labeled header row inside the box (top border label line).
+ * is rendered as a labeled header row inside the box.
  */
 export function Panel({
   title,
-  accent = 'cyan',
+  accent = CHROME.accent,
   ascii,
   color,
   children,
   flexGrow,
   width,
-  paddingX = 1,
-  paddingY = 0,
+  paddingX = CHROME.paddingX,
+  paddingY = CHROME.paddingY,
   kind = 'panel',
 }: Readonly<{
   title?: string;
@@ -77,7 +80,7 @@ export function Panel({
       paddingY={paddingY}
     >
       {title === undefined ? null : (
-        <Box marginBottom={paddingY > 0 ? 0 : 0}>
+        <Box marginBottom={0}>
           <SectionTitle label={title} ascii={ascii} color={color} accent={accent} />
         </Box>
       )}
@@ -92,23 +95,29 @@ export function StatusPill({
   accent,
   color,
   ascii,
+  pulse = false,
 }: Readonly<{
   label: string;
   value: string;
   accent: AppAccent;
   color: boolean;
   ascii: boolean;
+  pulse?: boolean;
 }>): ReactElement {
+  const frame = useMotionFrame(pulse, MOTION.pulseMs);
+  const dim = pulse && frame % 2 === 1;
   const open = ascii ? '[' : '\u27e6';
   const close = ascii ? ']' : '\u27e7';
   return (
     <Text>
-      <Text {...tint(color, 'gray')}>{open}</Text>
-      <Text {...tint(color, 'gray')}>{safe(label, ascii)}:</Text>
-      <Text bold {...tint(color, accent)}>
+      <Text {...accentColor(color, CHROME.muted)}>{open}</Text>
+      <Text dimColor={dim} {...accentColor(color, CHROME.muted)}>
+        {safe(label, ascii)}:
+      </Text>
+      <Text bold dimColor={dim} {...accentColor(color, accent)}>
         {safe(value, ascii)}
       </Text>
-      <Text {...tint(color, 'gray')}>{close}</Text>
+      <Text {...accentColor(color, CHROME.muted)}>{close}</Text>
     </Text>
   );
 }
@@ -117,7 +126,7 @@ export function KeyChip({
   keyLabel,
   hint,
   color,
-  keyAccent = 'cyan',
+  keyAccent = CHROME.accent,
 }: Readonly<{
   keyLabel: string;
   hint: string;
@@ -126,10 +135,10 @@ export function KeyChip({
 }>): ReactElement {
   return (
     <Text>
-      <Text bold {...tint(color, keyAccent)}>
+      <Text bold {...accentColor(color, keyAccent)}>
         {keyLabel}
       </Text>
-      <Text dimColor {...tint(color, 'gray')}>
+      <Text dimColor {...accentColor(color, CHROME.muted)}>
         {' '}
         {hint}
       </Text>
@@ -139,16 +148,17 @@ export function KeyChip({
 
 /**
  * OpenTUI select-row: accent bar + label + hint with clear active highlight.
- * Active uses inverse / bright background; inactive is dim.
+ * Active uses inverse; inactive is dim. Keyboard moves do not animate.
  */
 export function SelectRow({
   active,
   label,
   hint,
-  accent = 'cyan',
+  accent = CHROME.accent,
   color,
   ascii,
   labelWidth,
+  pending = false,
 }: Readonly<{
   active: boolean;
   label: string;
@@ -158,6 +168,8 @@ export function SelectRow({
   ascii: boolean;
   /** When set, pads the label column so hints align across rows. */
   labelWidth?: number;
+  /** Decorative stagger: row is present but not yet visually settled. */
+  pending?: boolean;
 }>): ReactElement {
   const pointer = pointerGlyph(ascii);
   const bar = active ? pointer : ' ';
@@ -170,12 +182,12 @@ export function SelectRow({
         : `${rawLabel}${' '.repeat(labelWidth - rawLabel.length)}`;
   if (active) {
     return (
-      <Text>
-        <Text bold {...tint(color, accent)} inverse={color}>
+      <Text dimColor={pending}>
+        <Text bold {...accentColor(color, accent)} inverse={color}>
           {` ${bar} ${paddedLabel} `}
         </Text>
         {hint === undefined || hint.length === 0 ? null : (
-          <Text dimColor {...tint(color, 'gray')}>
+          <Text dimColor {...accentColor(color, CHROME.muted)}>
             {' '}
             {safe(hint, ascii)}
           </Text>
@@ -184,10 +196,10 @@ export function SelectRow({
     );
   }
   return (
-    <Text dimColor {...tint(color, 'gray')}>
+    <Text dimColor {...accentColor(color, CHROME.muted)}>
       {` ${bar} ${paddedLabel}`}
       {hint === undefined || hint.length === 0 ? null : (
-        <Text dimColor {...tint(color, 'gray')}>
+        <Text dimColor {...accentColor(color, CHROME.muted)}>
           {'  '}
           {safe(hint, ascii)}
         </Text>
@@ -196,16 +208,46 @@ export function SelectRow({
   );
 }
 
+export function MotionEnter({
+  enabled,
+  children,
+}: Readonly<{
+  enabled: boolean;
+  children: ReactNode;
+}>): ReactElement {
+  const progress = useEnterProgress(enabled, MOTION.enterMs);
+  const offset = enterOffsetCells(progress, enabled);
+  return (
+    <Box flexDirection="column" marginTop={offset} flexGrow={1}>
+      {children}
+    </Box>
+  );
+}
+
+/**
+ * List stagger: every row stays mounted and interactive. Unsettled rows are
+ * only dimmed. Keyboard navigation must not change `enabled` mid-move.
+ */
+export function useListStagger(
+  itemCount: number,
+  enabled: boolean,
+): (index: number) => boolean {
+  const elapsedMs = useElapsedMs(enabled);
+  const visible = enabled ? staggerVisibleCount(elapsedMs, itemCount) : itemCount;
+  return (index: number): boolean => enabled && index >= visible;
+}
+
 /**
  * Centered modal/dialog frame — OpenTUI modal pattern (double border unicode,
- * classic ASCII). Used for passphrase / confirm overlays.
+ * classic ASCII). Entrance is a one-cell settle; exits stay instant.
  */
 export function ModalFrame({
   title,
-  accent = 'yellow',
+  accent = CHROME.warning,
   ascii,
   color,
   width,
+  animate = false,
   children,
 }: Readonly<{
   title: string;
@@ -213,9 +255,15 @@ export function ModalFrame({
   ascii: boolean;
   color: boolean;
   width: number;
+  animate?: boolean;
   children: ReactNode;
 }>): ReactElement {
-  const modalWidth = Math.min(56, Math.max(36, width - 4));
+  const modalWidth = Math.min(
+    CHROME.modalMaxWidth,
+    Math.max(CHROME.modalMinWidth, width - 4),
+  );
+  const progress = useEnterProgress(animate, MOTION.enterMs);
+  const offset = enterOffsetCells(progress, animate);
   return (
     <Box
       width={width}
@@ -223,6 +271,7 @@ export function ModalFrame({
       alignItems="center"
       flexDirection="column"
       paddingY={1}
+      marginTop={offset}
     >
       <Panel
         title={title}
@@ -231,8 +280,8 @@ export function ModalFrame({
         color={color}
         kind="modal"
         width={modalWidth}
-        paddingX={2}
-        paddingY={1}
+        paddingX={CHROME.modalPaddingX}
+        paddingY={CHROME.modalPaddingY}
       >
         {children}
       </Panel>
@@ -244,9 +293,10 @@ export function CardRow({
   active,
   title,
   subtitle,
-  accent = 'green',
+  accent = CHROME.accent,
   color,
   ascii,
+  pending = false,
 }: Readonly<{
   active: boolean;
   title: string;
@@ -254,6 +304,7 @@ export function CardRow({
   accent?: AppAccent;
   color: boolean;
   ascii: boolean;
+  pending?: boolean;
 }>): ReactElement {
   const pointer = pointerGlyph(ascii);
   return (
@@ -264,13 +315,98 @@ export function CardRow({
         ? { borderStyle: panelBorderStyle(ascii, 'panel'), borderColor: accent }
         : {})}
     >
-      <Text bold={active} {...tint(color, active ? accent : 'gray')}>
+      <Text
+        bold={active}
+        dimColor={pending}
+        {...accentColor(color, active ? accent : CHROME.muted)}
+      >
         {active ? pointer : ' '} {safe(title, ascii)}
       </Text>
-      <Text {...tint(color, 'gray')}>
+      <Text dimColor={pending} {...accentColor(color, CHROME.muted)}>
         {'   '}
         {safe(subtitle, ascii)}
       </Text>
     </Box>
+  );
+}
+
+export function EmptyState({
+  title,
+  hint,
+  color,
+  ascii,
+}: Readonly<{
+  title: string;
+  hint: string;
+  color: boolean;
+  ascii: boolean;
+}>): ReactElement {
+  return (
+    <Box flexDirection="column" paddingY={1}>
+      <Text {...accentColor(color, CHROME.warning)}>{safe(title, ascii)}</Text>
+      <Text {...accentColor(color, CHROME.muted)}>{safe(hint, ascii)}</Text>
+    </Box>
+  );
+}
+
+export function ErrorState({
+  title,
+  recovery,
+  color,
+  ascii,
+}: Readonly<{
+  title: string;
+  recovery: string;
+  color: boolean;
+  ascii: boolean;
+}>): ReactElement {
+  return (
+    <Box flexDirection="column" paddingY={1}>
+      <Text bold {...accentColor(color, CHROME.danger)}>
+        {safe(title, ascii)}
+      </Text>
+      <Text {...accentColor(color, CHROME.muted)}>{safe(recovery, ascii)}</Text>
+    </Box>
+  );
+}
+
+export function LoadingState({
+  label,
+  color,
+  ascii,
+  animate = false,
+}: Readonly<{
+  label: string;
+  color: boolean;
+  ascii: boolean;
+  animate?: boolean;
+}>): ReactElement {
+  const frame = useMotionFrame(animate, MOTION.feedbackMs);
+  const spinner = ascii
+    ? ['|', '/', '-', '\\'][frame % 4]
+    : ['\u280b', '\u2819', '\u2839', '\u2838'][frame % 4];
+  return (
+    <Box flexDirection="row" columnGap={1} paddingY={1}>
+      <Text {...accentColor(color, CHROME.accent)}>{spinner ?? '|'}</Text>
+      <Text {...accentColor(color, CHROME.muted)}>{safe(label, ascii)}</Text>
+    </Box>
+  );
+}
+
+export function NoticeBar({
+  message,
+  accent,
+  color,
+  ascii,
+}: Readonly<{
+  message: string;
+  accent: AppAccent;
+  color: boolean;
+  ascii: boolean;
+}>): ReactElement {
+  return (
+    <Panel accent={accent} ascii={ascii} color={color} paddingX={CHROME.paddingX}>
+      <Text {...accentColor(color, accent)}>{safe(message, ascii)}</Text>
+    </Panel>
   );
 }

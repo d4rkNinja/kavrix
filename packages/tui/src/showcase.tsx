@@ -1,8 +1,10 @@
 import { Box, Text, render } from 'ink';
-import { useEffect, useState, type ReactElement } from 'react';
+import type { ReactElement } from 'react';
 
 import type { StorageSelectionShowcaseProps } from './contracts.js';
+import { MOTION, resolveMotionPolicy, useMotionFrame } from './motion.js';
 import { sanitizeTerminalText } from './terminal-text.js';
+import { accentColor, CHROME, panelBorderStyle, pointerGlyph } from './app/theme.js';
 
 const SPINNER_FRAMES = [
   '\u280b',
@@ -15,12 +17,8 @@ const SPINNER_FRAMES = [
   '\u2827',
   '\u2807',
   '\u2817',
-];
-const ASCII_SPINNER_FRAMES = ['|', '/', '-', '\\'];
-const ACCENT_CYCLE = ['cyan', 'magenta', 'blue', 'green'] as const;
-const DUAL_TONE = ['cyan', 'magenta'] as const;
-type Accent = (typeof ACCENT_CYCLE)[number] | 'gray' | 'yellow';
-const ANIMATION_INTERVAL_MS = 120;
+] as const;
+const ASCII_SPINNER_FRAMES = ['|', '/', '-', '\\'] as const;
 
 export interface MountStorageShowcaseOptions {
   readonly stdout: NodeJS.WriteStream;
@@ -33,26 +31,6 @@ export interface StorageShowcaseHandle {
   end: () => Promise<void>;
 }
 
-function useShowcaseFrame(): number {
-  const [frame, setFrame] = useState(0);
-  useEffect(() => {
-    const interval = setInterval(() => {
-      setFrame((value) => value + 1);
-    }, ANIMATION_INTERVAL_MS);
-    return () => {
-      clearInterval(interval);
-    };
-  }, []);
-  return frame;
-}
-
-function tint(
-  enabled: boolean,
-  accent: Accent,
-): Readonly<{ color: Accent }> | Readonly<Record<string, never>> {
-  return enabled ? { color: accent } : {};
-}
-
 /**
  * Animated, colorful storage-selection frame for interactive `kavrix init`.
  * Purely presentational: every rendered string is a static constant, and the
@@ -63,11 +41,11 @@ export function StorageSelectionShowcase({
   color = false,
   ascii = false,
 }: StorageSelectionShowcaseProps): ReactElement {
-  const frame = useShowcaseFrame();
-  const accent = ACCENT_CYCLE[frame % ACCENT_CYCLE.length] ?? 'cyan';
+  const motion = resolveMotionPolicy();
+  const frame = useMotionFrame(motion.animate, MOTION.pulseMs);
   const spinnerFrames = ascii ? ASCII_SPINNER_FRAMES : SPINNER_FRAMES;
-  const spinner = spinnerFrames[frame % spinnerFrames.length];
-  const pointer = ascii ? '>' : '\u276f';
+  const spinner = spinnerFrames[frame % spinnerFrames.length] ?? '|';
+  const pointer = pointerGlyph(ascii);
   const upKey = ascii ? 'Up' : '\u2191';
   const downKey = ascii ? 'Down' : '\u2193';
   const options = [
@@ -75,20 +53,18 @@ export function StorageSelectionShowcase({
       id: 'file' as const,
       title: 'Local encrypted file',
       description: 'Simplest choice for one device; ciphertext stays beside you.',
-      tint: 'green' as const,
     },
     {
       id: 'mongodb' as const,
       title: 'MongoDB',
       description: 'Sync opaque ciphertext through your own MongoDB deployment.',
-      tint: 'yellow' as const,
     },
   ];
 
   return (
     <Box flexDirection="column" gap={1}>
       <BrandBanner color={color} ascii={ascii} dualTone />
-      <Text bold {...(color ? { color: 'cyan' as const } : {})}>
+      <Text bold {...accentColor(color, CHROME.accent)}>
         STEP 2 / STORAGE
       </Text>
       <Text>
@@ -97,8 +73,8 @@ export function StorageSelectionShowcase({
       </Text>
       <Box
         flexDirection="column"
-        borderStyle={ascii ? 'classic' : 'round'}
-        {...(color ? { borderColor: 'cyan' as const } : {})}
+        borderStyle={panelBorderStyle(ascii, 'panel')}
+        {...(color ? { borderColor: CHROME.accent } : {})}
         paddingX={1}
       >
         {options.map((option) => {
@@ -106,10 +82,10 @@ export function StorageSelectionShowcase({
           if (active) {
             return (
               <Box key={option.id} flexDirection="column">
-                <Text bold {...tint(color, accent)} inverse={color}>
+                <Text bold {...accentColor(color, CHROME.accent)} inverse={color}>
                   {` ${pointer} ${option.title} `}
                 </Text>
-                <Text {...tint(color, option.tint)}>
+                <Text {...accentColor(color, CHROME.heading)}>
                   {'  '}
                   {option.description}
                 </Text>
@@ -118,11 +94,11 @@ export function StorageSelectionShowcase({
           }
           return (
             <Box key={option.id} flexDirection="column">
-              <Text dimColor {...tint(color, 'gray')}>
+              <Text dimColor {...accentColor(color, CHROME.muted)}>
                 {' '}
                 {option.title}
               </Text>
-              <Text {...tint(color, 'gray')}>
+              <Text {...accentColor(color, CHROME.muted)}>
                 {'  '}
                 {option.description}
               </Text>
@@ -131,45 +107,45 @@ export function StorageSelectionShowcase({
         })}
       </Box>
       <Text>
-        <Text {...tint(color, accent)}>{spinner}</Text> {`${upKey}/${downKey} navigate`}{' '}
-        <Text bold>Enter</Text> confirm <Text bold>Esc</Text> back{' '}
-        <Text bold>Ctrl+C</Text> cancel
+        <Text {...accentColor(color, CHROME.accent)}>{spinner}</Text>{' '}
+        {`${upKey}/${downKey} navigate`} <Text bold>Enter</Text> confirm{' '}
+        <Text bold>Esc</Text> back <Text bold>Ctrl+C</Text> cancel
       </Text>
     </Box>
   );
 }
 
 /**
- * Dual-tone (cyan/magenta) brandmark for app chrome and showcases.
- * Letter order stays stable so snapshots and screen readers remain deterministic.
- * When `dualTone` is true, accents alternate cyan/magenta; otherwise the
- * historic multi-accent animation is used.
+ * Dual-tone brandmark: KAV in ivory, RIX in gold. Letter order stays stable.
+ * A quiet pulse mark keeps interactive frames alive without rainbow cycling.
  */
 export function BrandBanner({
   color = false,
   ascii = false,
   dualTone = false,
 }: Readonly<{ color?: boolean; ascii?: boolean; dualTone?: boolean }>): ReactElement {
-  const frame = useShowcaseFrame();
+  const motion = resolveMotionPolicy();
+  const frame = useMotionFrame(motion.animate, MOTION.pulseMs);
   const title = sanitizeTerminalText('Kavrix', ascii).toUpperCase();
-  const palette = dualTone ? DUAL_TONE : ACCENT_CYCLE;
+  const kav = title.slice(0, 3);
+  const rix = title.slice(3);
+  const pulse = motion.animate && frame % 2 === 0;
+  const mark = ascii ? (pulse ? '.' : ' ') : pulse ? '\u00b7' : ' ';
   return (
     <Box flexDirection="column">
       <Box flexDirection="row" columnGap={2}>
         <Text bold>
-          {Array.from(title).map((letter, index) => (
-            <Text
-              key={`${letter}-${String(index)}`}
-              {...tint(
-                color,
-                (palette[(frame + index) % palette.length] ?? 'cyan') as Accent,
-              )}
-            >
-              {letter}
-            </Text>
-          ))}
+          {dualTone ? (
+            <>
+              <Text {...accentColor(color, CHROME.heading)}>{kav}</Text>
+              <Text {...accentColor(color, CHROME.accent)}>{rix}</Text>
+            </>
+          ) : (
+            <Text {...accentColor(color, CHROME.accent)}>{title}</Text>
+          )}
         </Text>
-        <Text {...tint(color, 'gray')}>local-first secrets firewall</Text>
+        <Text {...accentColor(color, CHROME.muted)}>local-first secrets firewall</Text>
+        <Text {...accentColor(color, CHROME.accent)}>{mark}</Text>
       </Box>
     </Box>
   );

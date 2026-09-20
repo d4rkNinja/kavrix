@@ -6,6 +6,33 @@ export type AppAccent =
 /** Ink `borderStyle` keys we use for OpenTUI-like panels. */
 export type PanelBorderStyle = 'round' | 'double' | 'single' | 'classic';
 
+/**
+ * Classic-premium chrome tokens. One accent (gold/yellow). Semantic colors
+ * stay reserved for success / warning / danger — never rainbow decoration.
+ */
+export const CHROME = {
+  accent: 'yellow',
+  heading: 'white',
+  muted: 'gray',
+  success: 'green',
+  warning: 'yellow',
+  danger: 'red',
+  info: 'cyan',
+  paddingX: 1,
+  paddingY: 0,
+  modalPaddingX: 2,
+  modalPaddingY: 1,
+  modalMinWidth: 36,
+  modalMaxWidth: 56,
+} as const;
+
+export function accentColor(
+  enabled: boolean,
+  accent: AppAccent,
+): Readonly<{ color: AppAccent }> | Readonly<Record<string, never>> {
+  return enabled ? { color: accent } : {};
+}
+
 export function resolveAppPresentation(
   options: Readonly<{
     color?: boolean;
@@ -76,32 +103,18 @@ export function panelBorderStyle(
   return kind === 'modal' ? 'double' : 'round';
 }
 
-/** Per-screen border / accent colors (OpenTUI container accents). */
+/**
+ * Per-screen chrome accent. Default is the single gold accent; only
+ * recovery (danger) and help (neutral) depart from it.
+ */
 export function screenAccent(screen: string): AppAccent {
   switch (screen) {
-    case 'home':
-      return 'cyan';
-    case 'credentials':
-    case 'browse':
-      return 'green';
-    case 'doctor':
-      return 'yellow';
     case 'recovery':
-      return 'red';
-    case 'vaults':
-    case 'agent':
-      return 'magenta';
-    case 'profiles':
-    case 'policy':
-      return 'blue';
-    case 'run':
-      return 'cyan';
+      return CHROME.danger;
     case 'help':
-      return 'white';
-    case 'showcase':
-      return 'yellow';
+      return CHROME.heading;
     default:
-      return 'cyan';
+      return CHROME.accent;
   }
 }
 

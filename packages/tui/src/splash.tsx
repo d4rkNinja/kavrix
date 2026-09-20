@@ -1,6 +1,7 @@
 import { Box, Text } from 'ink';
-import { useEffect, useState, type ReactElement } from 'react';
+import type { ReactElement } from 'react';
 
+import { MOTION, resolveMotionPolicy, useMotionFrame } from './motion.js';
 import { sanitizeTerminalText } from './terminal-text.js';
 
 /** Braille spinner frames (unicode mode). */
@@ -73,20 +74,6 @@ function tint(
   return enabled ? { color: accent } : {};
 }
 
-function useSplashFrame(enabled: boolean): number {
-  const [frame, setFrame] = useState(0);
-  useEffect(() => {
-    if (!enabled) return undefined;
-    const interval = setInterval(() => {
-      setFrame((value) => value + 1);
-    }, SPLASH_ANIMATION_MS);
-    return () => {
-      clearInterval(interval);
-    };
-  }, [enabled]);
-  return frame;
-}
-
 export interface SplashScreenProps {
   readonly color?: boolean;
   readonly ascii?: boolean;
@@ -109,13 +96,14 @@ export function SplashScreen({
   height = 24,
   animate = true,
 }: SplashScreenProps): ReactElement {
-  const frame = useSplashFrame(animate);
+  const motion = resolveMotionPolicy({ requested: animate });
+  const frame = useMotionFrame(motion.animate, MOTION.splashPulseMs);
   const spinnerFrames = ascii ? SPLASH_ASCII_SPINNER_FRAMES : SPLASH_SPINNER_FRAMES;
   const spinner = spinnerFrames[frame % spinnerFrames.length] ?? '|';
   const kavLines = ascii ? WORDMARK_KAV_ASCII : WORDMARK_KAV;
   const rixLines = ascii ? WORDMARK_RIX_ASCII : WORDMARK_RIX;
-  const kavAccent: Accent = frame % 2 === 0 ? 'cyan' : 'blue';
-  const rixAccent: Accent = frame % 2 === 0 ? 'magenta' : 'green';
+  const kavAccent: Accent = 'white';
+  const rixAccent: Accent = 'yellow';
   const gap = ascii ? '  ' : ' ';
   const safeTagline = sanitizeTerminalText(TAGLINE, ascii);
   const safeVersion =
@@ -176,9 +164,13 @@ export function splashEnabled(
   if (options.noSplash === true) return false;
   const env = options.env ?? process.env;
   const flag = env['KAVRIX_TUI_NO_SPLASH'];
-  if (flag === undefined) return true;
-  const normalized = flag.trim().toLowerCase();
-  return normalized !== '1' && normalized !== 'true' && normalized !== 'yes';
+  if (flag !== undefined) {
+    const normalized = flag.trim().toLowerCase();
+    if (normalized === '1' || normalized === 'true' || normalized === 'yes') {
+      return false;
+    }
+  }
+  return resolveMotionPolicy({ env }).animate;
 }
 
 /**

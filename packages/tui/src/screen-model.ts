@@ -15,6 +15,7 @@ import {
   type TuiPane,
   type TuiState,
 } from './state.js';
+import { resolveProductIdentity } from './product.js';
 import {
   sanitizeTerminalText,
   secretMask,
@@ -47,7 +48,7 @@ export function buildTuiScreenModel(state: TuiState, nowMs: number): TuiScreenMo
   const visibleItems = filteredItemIndexes(state);
   const stateLabel = state.screen.toUpperCase();
   const header = [
-    'CredVault',
+    resolveProductIdentity().productLabel,
     stateLabel,
     `${String(state.groups.length)} groups`,
     `${String(state.items.length)} items`,
