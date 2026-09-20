@@ -17,7 +17,6 @@
 - `recovery use --overwrite` / `recovery create --overwrite` honor the flag (replace destinations) instead of refusing overwrite.
 - Note: `0.2.17` is `doctor --heal` local-state repair (including ACL hardening); this release consolidates live-QA dangling-current + P1 + P2 fixes only.
 
-
 ## 0.2.17
 
 - Add `kavrix doctor --heal` / `doctor health --heal` and `kavrix db doctor health --heal` to safely auto-repair broken local state: remove incomplete unbound profiles (PROFILE_DUPLICATE leftovers), clear dangling profile selection pointers, and re-harden owner-only ACLs/modes on key-file parents and key files. Supports `--heal --dry-run` to list planned actions without applying them. Never invents passphrase recovery and never deletes vault/key data files.
