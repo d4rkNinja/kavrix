@@ -280,14 +280,14 @@ structured access or migration.
 
 ### Keys, recovery, and health
 
-| Command                | Purpose                                                                             |
-| ---------------------- | ----------------------------------------------------------------------------------- |
-| `kavrix key ...`       | Verify, copy, replicate, assign, or rewrap key files.                               |
-| `kavrix recovery ...`  | Create, verify, inspect, revoke, or use recovery kits.                              |
-| `kavrix doctor`        | Authenticate and validate a vault without revealing values.                         |
-| `kavrix doctor health` | Diagnose and safely repair bounded transient state.                                 |
-| `kavrix tui` / `ui`    | Full interactive Ink app against the real CLI.                                      |
-| `kavrix init`          | TTY: Ink onboarding; scripted file init binds profile for put/run; `--legacy` = v2. |
+| Command                | Purpose                                                                                       |
+| ---------------------- | --------------------------------------------------------------------------------------------- |
+| `kavrix key ...`       | Verify, copy, replicate, assign, or rewrap key files.                                         |
+| `kavrix recovery ...`  | Create, verify, inspect, revoke, or use recovery kits.                                        |
+| `kavrix doctor`        | Authenticate and validate a vault without revealing values.                                   |
+| `kavrix doctor health` | Diagnose; with `--heal`, safely repair incomplete profiles, dangling pointers, and ACL drift. |
+| `kavrix tui` / `ui`    | Full interactive Ink app against the real CLI.                                                |
+| `kavrix init`          | TTY: Ink onboarding; scripted file init binds profile for put/run; `--legacy` = v2.           |
 
 ## Quick start (MongoDB)
 

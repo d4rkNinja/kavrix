@@ -154,9 +154,12 @@ remain schema-driven; plaintext field values never cross the storage boundary.
   `11` per the CLI reference table.
 - Local file locks record their owner PID; locks from provably dead processes
   are auto-removed on the next invocation while live owners keep failing
-  closed with a visible message. `db doctor health [--accept-current]` adds a
-  bounded container repair: full authenticated verification, then re-anchor of
-  the local rollback guard after explicit human consent.
+  closed with a visible message. `db doctor health [--accept-current] [--heal]`
+  adds bounded repairs: full authenticated verification then re-anchor of the
+  local rollback guard after explicit human consent (`--accept-current`); and
+  safe local-state heal (`--heal`) for incomplete unbound profiles, dangling
+  selection pointers, and owner-only ACL/mode drift (`--heal --dry-run` plans
+  without applying). Heal never invents passphrase recovery or deletes vault data.
 - Reserved vault identifiers (`__proto__`, `constructor`, `prototype`) are
   refused at init with reviewed messages.
 - Multi-line and empty credential values are supported via

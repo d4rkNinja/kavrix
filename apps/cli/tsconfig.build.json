@@ -17,6 +17,7 @@
     "src/database-migration.ts",
     "src/database-session.ts",
     "src/datastore-profiles.ts",
+    "src/doctor-heal.ts",
     "src/root-datastore.ts",
     "src/profile-config-directory.ts",
     "src/structured-vault-commands.ts",

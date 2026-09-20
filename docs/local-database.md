@@ -105,9 +105,17 @@ reject the stored state as stale or forked. Kavrix refuses such snapshots;
 the bounded remedy is:
 
 ```sh
-kavrix db doctor health                    # diagnose: binding, documents, anchor
-kavrix db doctor health --accept-current   # after human verification only
+kavrix db doctor health                         # diagnose: binding, documents, anchor
+kavrix db doctor health --heal                  # safe local-state repairs
+kavrix db doctor health --heal --dry-run        # list planned repairs only
+kavrix db doctor health --accept-current        # after human verification only
 ```
+
+`--heal` repairs incomplete unbound profiles (failed-init leftovers that cause
+`PROFILE_DUPLICATE` on retry), dangling profile selection pointers, and
+owner-only ACL/mode drift on key-file parents and key files. It does **not**
+recover a forgotten passphrase, rewrite corrupt vault ciphertext, or delete
+vault/key data files.
 
 `--accept-current` fully authenticates every encrypted document with the
 database root key first; if that succeeds it rewrites the local rollback

@@ -1,4 +1,5 @@
 import {
+  chmod,
   link,
   lstat,
   mkdir,
@@ -7,6 +8,7 @@ import {
   readdir,
   realpath,
   rm,
+  stat,
   symlink,
   writeFile,
 } from 'node:fs/promises';
@@ -37,6 +39,8 @@ import {
   createOwnedSecureFile,
   deleteSecureFile,
   ensureSecureDirectory,
+  hardenExistingSecureDirectory,
+  hardenExistingSecureFile,
   readSecureFile,
   readSecureFileWhileExclusive,
   releaseOwnedSecureFilePublication,
@@ -419,5 +423,37 @@ describe('filesystem adapter branch coverage', () => {
         'database-recovery-kit-file',
       ),
     ).rejects.toMatchObject({ code: 'KEY_FILE_OPERATION_FAILED' });
+  });
+
+  it('re-hardens an existing owner directory and file that drifted open', async () => {
+    if (process.platform === 'win32') return;
+    const child = join(directory, 'child');
+    await mkdir(child, { mode: 0o755 });
+    await chmod(child, 0o755);
+    await expect(hardenExistingSecureDirectory(child)).resolves.toBeTypeOf('string');
+    expect((await stat(child)).mode & 0o777).toBe(0o700);
+    const file = join(child, 'secret.bin');
+    await writeFile(file, 'x', { mode: 0o644 });
+    await chmod(file, 0o644);
+    await expect(hardenExistingSecureFile(file)).resolves.toBeTypeOf('string');
+    expect((await stat(file)).mode & 0o777).toBe(0o600);
+  });
+
+  it('refuses to harden a symlink as a secure directory or file', async () => {
+    if (process.platform === 'win32') return;
+    const targetDir = join(directory, 'real-dir');
+    await mkdir(targetDir, { mode: 0o700 });
+    const linkDir = join(directory, 'link-dir');
+    await symlink(targetDir, linkDir);
+    await expect(hardenExistingSecureDirectory(linkDir)).rejects.toMatchObject({
+      code: 'KEY_FILE_UNSAFE',
+    });
+    const file = join(directory, 'real.bin');
+    await writeFile(file, 'x', { mode: 0o600 });
+    const linkFile = join(directory, 'link.bin');
+    await symlink(file, linkFile);
+    await expect(hardenExistingSecureFile(linkFile)).rejects.toMatchObject({
+      code: 'KEY_FILE_UNSAFE',
+    });
   });
 });

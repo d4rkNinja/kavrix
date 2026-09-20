@@ -30,6 +30,7 @@ import {
 } from './datastore-profiles.js';
 import { DatabaseSession, DatabaseSessionError } from './database-session.js';
 import { LocalSecretInput, type LocalSecretKind } from './local-secrets.js';
+import { doctorHealModeFromOptions, runDoctorHeal } from './doctor-heal.js';
 import { resolveProfileConfigDirectory } from './profile-config-directory.js';
 
 const DEFAULT_KEY_FILE = './kavrix.database.key';
@@ -55,6 +56,8 @@ type DatabaseCommandOptions = Readonly<{
   anchorFile?: string;
   json?: boolean;
   acceptCurrent?: boolean;
+  heal?: boolean;
+  dryRun?: boolean;
   showLabels?: boolean;
   allowInsecureTransport?: boolean;
 }>;
@@ -104,7 +107,7 @@ export function addDatabaseOwnerCommands(db: Command): void {
   const doctorHealth = doctor
     .command('health')
     .description(
-      'Verify the encrypted database binding, snapshot authenticity, and rollback anchor.',
+      'Verify the encrypted database binding, snapshot authenticity, and rollback anchor; with --heal, apply safe local-state repairs.',
     );
   addRoutingOptions(doctorHealth);
   addSecretOption(doctorHealth);
@@ -113,6 +116,11 @@ export function addDatabaseOwnerCommands(db: Command): void {
       '--accept-current',
       'Re-anchor the local rollback guard to the observed datastore after manually verifying it (heals stale or forked anchors).',
     )
+    .option(
+      '--heal',
+      'Apply safe, reversible local-state repairs (incomplete unbound profiles, dangling selection pointers, owner-only ACL drift).',
+    )
+    .option('--dry-run', 'With --heal, list planned repairs without applying them.')
     .option('--json', 'Emit machine-readable output even on a terminal.');
   doctorHealth.action(async (...args: unknown[]) =>
     handleDatabaseDoctorHealth(optionsFrom(args)),
@@ -339,6 +347,8 @@ type DoctorHealthReport = Readonly<{
   manualRecoveryRequired: readonly string[];
   revision?: number;
   vaultCount?: number;
+  planned?: readonly string[];
+  healActions?: readonly Record<string, unknown>[];
 }>;
 
 /**
@@ -352,6 +362,82 @@ type DoctorHealthReport = Readonly<{
 async function handleDatabaseDoctorHealth(
   options: DatabaseCommandOptions,
 ): Promise<void> {
+  const healMode = doctorHealModeFromOptions(options);
+  const emptyHeal = {
+    actions: [] as const,
+    healed: [] as const,
+    planned: [] as const,
+    manualRecoveryRequired: [] as const,
+  };
+  const healReport =
+    options.heal === true
+      ? await runDoctorHeal({
+          mode: healMode === 'report' ? 'heal' : healMode,
+          ...(options.profileConfigDir === undefined
+            ? {}
+            : { profileConfigDir: options.profileConfigDir }),
+          ...(options.profile === undefined ? {} : { profileId: options.profile }),
+          ...(options.keyFile === undefined ? {} : { keyFile: options.keyFile }),
+          ...(options.dataFile === undefined ? {} : { dataFile: options.dataFile }),
+        })
+      : emptyHeal;
+
+  if (healMode === 'dry-run') {
+    writeOutput({
+      healthy: healReport.manualRecoveryRequired.length === 0,
+      dryRun: true,
+      datastore: options.datastore === 'mongodb' ? 'mongodb' : 'file',
+      checks: healReport.actions.map((action) => ({
+        name: action.id,
+        status: action.status === 'planned' ? 'ok' : 'manual-recovery',
+        detail: action.detail,
+      })),
+      autoHealed: [],
+      planned: healReport.planned,
+      healActions: healReport.actions,
+      manualRecoveryRequired: healReport.manualRecoveryRequired,
+    });
+    if (healReport.manualRecoveryRequired.length > 0) process.exitCode = 15;
+    return;
+  }
+
+  // Local heal that cleared incomplete unbound state may leave no selectable
+  // bound profile; that is a successful heal outcome, not a container failure.
+  if (
+    options.heal === true &&
+    healReport.healed.includes('incomplete-unbound-profile') &&
+    healReport.manualRecoveryRequired.length === 0
+  ) {
+    const registryOptions =
+      options.profileConfigDir === undefined
+        ? {}
+        : { configDirectory: options.profileConfigDir };
+    const registry = await DatastoreProfileRegistry.openIfPresent(registryOptions);
+    const remaining = registry === null ? [] : await registry.list();
+    const stillUnboundOrEmpty =
+      remaining.length === 0 ||
+      remaining.every((profile) => profile.databaseId === undefined);
+    if (stillUnboundOrEmpty) {
+      writeOutput({
+        healthy: true,
+        datastore: options.datastore === 'mongodb' ? 'mongodb' : 'file',
+        checks: healReport.actions.map((action) => ({
+          name: action.id,
+          status:
+            action.status === 'applied' || action.status === 'planned'
+              ? 'ok'
+              : 'manual-recovery',
+          detail: action.detail,
+        })),
+        autoHealed: [...healReport.healed],
+        planned: healReport.planned,
+        healActions: healReport.actions,
+        manualRecoveryRequired: [],
+      });
+      return;
+    }
+  }
+
   const acceptCurrent = options.acceptCurrent === true;
   const route = await resolveRoute(options);
   const checks: Record<string, unknown>[] = [];
@@ -403,14 +489,28 @@ async function handleDatabaseDoctorHealth(
         revision: status.revision,
         vaultCount: status.vaultCount,
       });
+      autoHealed.push(...healReport.healed);
+      manualRecoveryRequired.push(...healReport.manualRecoveryRequired);
+      for (const action of healReport.actions) {
+        checks.push({
+          name: action.id,
+          status:
+            action.status === 'applied' || action.status === 'planned'
+              ? 'ok'
+              : 'manual-recovery',
+          detail: action.detail,
+        });
+      }
       report = {
-        healthy: true,
+        healthy: manualRecoveryRequired.length === 0,
         datastore: route.datastore,
         checks,
         autoHealed,
         manualRecoveryRequired,
         revision: status.revision,
         vaultCount: status.vaultCount,
+        planned: healReport.planned,
+        healActions: healReport.actions,
       };
     } catch (error) {
       const failure = error instanceof Error ? error : undefined;
@@ -421,12 +521,26 @@ async function handleDatabaseDoctorHealth(
         status: 'manual-recovery',
         detail,
       });
+      autoHealed.push(...healReport.healed);
+      for (const action of healReport.actions) {
+        checks.push({
+          name: action.id,
+          status:
+            action.status === 'applied' || action.status === 'planned'
+              ? 'ok'
+              : 'manual-recovery',
+          detail: action.detail,
+        });
+      }
+      manualRecoveryRequired.push(...healReport.manualRecoveryRequired);
       report = {
         healthy: false,
         datastore: route.datastore,
         checks,
         autoHealed,
         manualRecoveryRequired,
+        planned: healReport.planned,
+        healActions: healReport.actions,
       };
     } finally {
       if (session !== undefined) await session.close().catch(() => undefined);

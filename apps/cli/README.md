@@ -178,7 +178,7 @@ never store MongoDB credentials, passphrases, private labels, keys, or values.
 | `put`, `get`, `list`, `view`, `search`, `stats`, `has`, `rename`, `remove` | Store, read, and organize credentials.                                                |
 | `key status/verify/copy/replicate/assign/rewrap`                           | Manage protected key files.                                                           |
 | `recovery create/verify/status/revoke/use`                                 | Manage recovery kits.                                                                 |
-| `doctor`, `doctor health`                                                  | Validate a vault; repair bounded transient state safely.                              |
+| `doctor`, `doctor health`                                                  | Validate a vault; `--heal` repairs incomplete profiles, dangling pointers, ACL drift. |
 | `update`                                                                   | Upgrade a global npm install (`--check` / `--json`; npm-global only).                 |
 | `tui` / `ui`                                                               | Full interactive Ink app against the real CLI (TTY required).                         |
 | `init`, `vault`, `legacy v2 commands`                                      | TTY: Ink onboarding; scripted file init binds a profile for put/run; `--legacy` = v2. |
