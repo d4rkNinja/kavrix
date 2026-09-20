@@ -87,3 +87,24 @@ export function toErrorEnvelope(code: CliErrorCode, message: string): CliErrorEn
     },
   };
 }
+
+/**
+ * Maps a DatabaseSessionError onto the stable automation CliErrorCode used by
+ * `--json` envelopes. Authentication must become AUTHENTICATION_FAILED (exit 10).
+ */
+export function cliErrorCodeForSessionFailure(code: string): CliErrorCode {
+  switch (code) {
+    case 'authentication':
+      return 'AUTHENTICATION_FAILED';
+    case 'not-found':
+      return 'CREDENTIAL_MISSING';
+    case 'duplicate':
+    case 'invalid':
+      return 'INVALID_CONFIGURATION';
+    case 'binding':
+    case 'rollback':
+      return 'SECURITY_INTEGRITY_FAILURE';
+    default:
+      return 'DATASTORE_FAILURE';
+  }
+}

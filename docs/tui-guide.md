@@ -42,6 +42,11 @@ Security and presentation rules:
 Flags: `--ascii`, `--color`, `--no-color`, `--no-splash`, `--profile-config-dir`
 / `--config-dir`. `KAVRIX_TUI_NO_SPLASH=1` also skips the startup splash.
 
+Chrome is content-sized (not pinned to the full TTY row count) and remounts after
+navigation/input so first paint and onboarding step transitions stay visible on
+flaky or maximized terminals. `kavrix tui` shows a Loading… state until vault
+hydrate completes (or an error/timeout banner if it fails).
+
 ## Storage showcase
 
 The active `@kavrix/tui` workspace also keeps a read-only storage docs /

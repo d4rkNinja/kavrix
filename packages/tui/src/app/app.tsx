@@ -12,6 +12,7 @@ import {
 } from './router.js';
 import { AppChrome, renderActiveScreen } from './screens.js';
 import { resolveAppPresentation } from './theme.js';
+import { ErrorState, LoadingState } from './widgets.js';
 import { SplashGate } from '../splash-gate.js';
 
 export interface KavrixAppProps {
@@ -40,6 +41,8 @@ export function KavrixApp({
     ...(color === undefined ? {} : { color }),
   });
   const [backendReady, setBackendReady] = useState(false);
+  const [hydrateError, setHydrateError] = useState<string | null>(null);
+  const [paintEpoch, setPaintEpoch] = useState(0);
   const [state, setState] = useState(() =>
     createInitialAppRouterState({
       width: stdout.columns,
@@ -89,6 +92,15 @@ export function KavrixApp({
       const next = transitionAppRouter(stateRef.current, action);
       stateRef.current = next.state;
       setState(next.state);
+      // Remount chrome after navigation/input so flaky TTYs cannot keep a blank frame.
+      if (
+        action.type === 'key' ||
+        action.type === 'hydrate' ||
+        action.type === 'backend-result' ||
+        action.type === 'resize'
+      ) {
+        setPaintEpoch((epoch) => epoch + 1);
+      }
       if (next.effect.kind === 'backend') {
         void runBackend(next.effect.action);
       }
@@ -98,15 +110,60 @@ export function KavrixApp({
   dispatchRef.current = dispatch;
 
   useEffect(() => {
-    void backendRef.current.load().then((snapshot) => {
-      dispatch({ type: 'hydrate', snapshot });
+    let cancelled = false;
+    let settled = false;
+    const timeout = setTimeout(() => {
+      if (cancelled || settled) return;
+      settled = true;
+      setHydrateError(
+        'Vault session hydrate timed out. Press q to quit, then retry with --no-splash or check --config-dir.',
+      );
       setBackendReady(true);
-    });
+      setPaintEpoch((epoch) => epoch + 1);
+    }, 8_000);
+    void backendRef.current
+      .load()
+      .then((snapshot) => {
+        if (cancelled || settled) return;
+        settled = true;
+        dispatch({ type: 'hydrate', snapshot });
+        setBackendReady(true);
+        setPaintEpoch((epoch) => epoch + 1);
+      })
+      .catch((error: unknown) => {
+        if (cancelled || settled) return;
+        settled = true;
+        const message =
+          error instanceof Error && error.message.trim().length > 0
+            ? error.message
+            : 'Vault session hydrate failed.';
+        setHydrateError(message);
+        setBackendReady(true);
+        setPaintEpoch((epoch) => epoch + 1);
+      });
+    return () => {
+      cancelled = true;
+      clearTimeout(timeout);
+    };
   }, [dispatch]);
 
   useEffect(() => {
+    // Kick Ink's first paint; some TTYs stay blank until a second frame.
+    const kick = setTimeout(() => {
+      setPaintEpoch((epoch) => epoch + 1);
+    }, 0);
+    return () => {
+      clearTimeout(kick);
+    };
+  }, []);
+
+  useEffect(() => {
     const resize = (): void => {
-      dispatch({ type: 'resize', width: stdout.columns, height: stdout.rows });
+      dispatch({
+        type: 'resize',
+        width: stdout.columns,
+        height: stdout.rows,
+      });
     };
     stdout.on('resize', resize);
     return () => {
@@ -143,6 +200,25 @@ export function KavrixApp({
     dispatch({ type: 'key', key: { text: cleaned }, nowMs: now() });
   });
 
+  const body =
+    hydrateError !== null ? (
+      <ErrorState
+        title="Hydrate failed"
+        recovery={hydrateError}
+        color={presentation.color}
+        ascii={presentation.ascii}
+      />
+    ) : !backendReady ? (
+      <LoadingState
+        label="Loading vault session…"
+        color={presentation.color}
+        ascii={presentation.ascii}
+        animate
+      />
+    ) : (
+      renderActiveScreen(state)
+    );
+
   return (
     <SplashGate
       color={presentation.color}
@@ -154,7 +230,9 @@ export function KavrixApp({
       ready={backendReady}
       now={now}
     >
-      <AppChrome state={state}>{renderActiveScreen(state)}</AppChrome>
+      <AppChrome key={`chrome-${state.screen}-${String(paintEpoch)}`} state={state}>
+        {body}
+      </AppChrome>
     </SplashGate>
   );
 }

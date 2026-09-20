@@ -1,5 +1,13 @@
 # kavrix
 
+## 0.2.20
+
+- Ship classic-premium TUI chrome (unified gold accent, shared empty/error/loading states, quiet reduced-motion-aware enter/stagger/pulse) already on main.
+- Fix TUI / `kavrix init` onboarding blank or stale frames on some TTYs: content-sized chrome (no full-row height pin), force redraw after each step/input, hydrate Loading… gate with timeout/error banner, reliable first paint kick.
+- Fix `run --json` authentication failures to emit a JSON `AUTHENTICATION_FAILED` envelope (exit 10) instead of empty stdout.
+- Fail closed when `--environment` is set without a project file; pure `--secret` no longer fails on a broken cwd `kavrix.yaml` unless project features are requested (help documents `--no-config`).
+- `put` mixed-stdin errors now name the missing flag (e.g. `Missing --value-stdin`).
+
 ## 0.2.19
 
 - Fix `vault list` / `vault status` so `--profile` (and ambient legacy file profiles) route to that profile's vault paths instead of silently using `./kavrix.vault`.

@@ -22,9 +22,11 @@ import {
   executionFlatOptions,
   extractMergedOptions,
 } from './cli-options.js';
+import { DatabaseSessionError } from '../database-session.js';
 import {
   CLI_EXIT_CODES,
   CodedCliError,
+  cliErrorCodeForSessionFailure,
   invalidConfiguration,
   isCodedCliError,
   toErrorEnvelope,
@@ -68,7 +70,7 @@ function registerRun(program: Command): void {
     .option('--config <path>', 'Non-secret project configuration file.')
     .option(
       '--no-config',
-      'Skip project configuration (kavrix.yaml / --config); use only CLI flags and profiles.',
+      'Ignore cwd kavrix.yaml / --config; use only CLI --secret flags and profiles.',
     )
     .option(
       '--policy <id>',
@@ -649,8 +651,17 @@ async function guard(
     if (jsonRequested) emitJson(result);
     else renderHuman(result);
   } catch (error) {
-    if (jsonRequested && error instanceof Error && isCodedCliError(error)) {
-      emitJson(toErrorEnvelope(error.errorCode, singleLine(error.message)));
+    if (jsonRequested) {
+      if (isCodedCliError(error)) {
+        emitJson(toErrorEnvelope(error.errorCode, singleLine(error.message)));
+      } else if (error instanceof DatabaseSessionError) {
+        emitJson(
+          toErrorEnvelope(
+            cliErrorCodeForSessionFailure(error.code),
+            singleLine(error.message),
+          ),
+        );
+      }
     }
     throw error;
   }

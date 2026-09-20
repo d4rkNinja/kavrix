@@ -244,7 +244,7 @@ export function AppChrome({
   state: AppRouterState;
   children: ReactElement | ReactElement[];
 }>): ReactElement {
-  const { color, ascii, width, height } = state;
+  const { color, ascii, width } = state;
   const home = state.snapshot.home;
   const accent = screenAccent(state.screen);
   const overlay = overlayCopy(state.overlay, state.query, ascii);
@@ -258,8 +258,10 @@ export function AppChrome({
         ? `${home.vaultId.slice(0, 10)}${ellipsis}`
         : home.vaultId;
 
+  // Prefer content-sized height over pinning to the full TTY rows. Fixed
+  // height={rows} + flexGrow panels blank on some maximized TTYs (Ink/Yoga).
   return (
-    <Box flexDirection="column" width={width} height={height}>
+    <Box flexDirection="column" width={width}>
       <Panel accent={accent} ascii={ascii} color={color} paddingX={1} paddingY={0}>
         <BrandBanner color={color} ascii={ascii} dualTone />
         <Box flexDirection="row" columnGap={1} flexWrap="wrap" marginTop={0}>

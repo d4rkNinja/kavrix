@@ -83,6 +83,9 @@ export function KavrixOnboardingApp({
   });
   // Onboarding has no backend hydrate gate; treat first paint as ready.
   const [splashReady] = useState(true);
+  // paintEpoch forces Ink to remount chrome after each step so transitions
+  // cannot leave a blank/stale alternate frame on flaky TTYs.
+  const [paintEpoch, setPaintEpoch] = useState(0);
   const [state, setState] = useState(() =>
     createInitialOnboardingState({
       width: stdout.columns,
@@ -125,6 +128,7 @@ export function KavrixOnboardingApp({
       });
       stateRef.current = next.state;
       setState(next.state);
+      setPaintEpoch((epoch) => epoch + 1);
     } catch (error) {
       const notice =
         error instanceof Error && error.message.trim().length > 0
@@ -139,6 +143,7 @@ export function KavrixOnboardingApp({
       });
       stateRef.current = next.state;
       setState(next.state);
+      setPaintEpoch((epoch) => epoch + 1);
     }
   }, []);
 
@@ -147,12 +152,25 @@ export function KavrixOnboardingApp({
       const next = transitionOnboarding(stateRef.current, { type: 'key', key });
       stateRef.current = next.state;
       setState(next.state);
+      // Force a full chrome remount after every input so step transitions
+      // cannot leave a blank or stale frame on flaky TTYs.
+      setPaintEpoch((epoch) => epoch + 1);
       if (next.effect.kind === 'backend') {
         void runBackend(next.effect.action);
       }
     },
     [runBackend],
   );
+
+  useEffect(() => {
+    // Kick Ink's first paint immediately; some TTYs stay blank until a second frame.
+    const kick = setTimeout(() => {
+      setPaintEpoch((epoch) => epoch + 1);
+    }, 0);
+    return () => {
+      clearTimeout(kick);
+    };
+  }, []);
 
   useEffect(() => {
     const resize = (): void => {
@@ -163,6 +181,7 @@ export function KavrixOnboardingApp({
       });
       stateRef.current = next.state;
       setState(next.state);
+      setPaintEpoch((epoch) => epoch + 1);
     };
     stdout.on('resize', resize);
     return () => {
@@ -215,7 +234,10 @@ export function KavrixOnboardingApp({
       height={state.height}
       ready={splashReady}
     >
-      <OnboardingChrome state={state} />
+      <OnboardingChrome
+        key={`onboard-${state.step}-${String(paintEpoch)}`}
+        state={state}
+      />
     </SplashGate>
   );
 }
@@ -235,7 +257,7 @@ function sanitizePasteTextLocal(raw: string): string {
 function OnboardingChrome({
   state,
 }: Readonly<{ state: OnboardingState }>): ReactElement {
-  const { color, ascii, width, height } = state;
+  const { color, ascii, width } = state;
   const product = resolveProductIdentity();
   const accent: AppAccent =
     state.step === 'success'
@@ -244,8 +266,9 @@ function OnboardingChrome({
         ? CHROME.danger
         : CHROME.accent;
 
+  // Content-sized height: pinning height={rows} blanks some TTYs (Ink/Yoga).
   return (
-    <Box flexDirection="column" width={width} height={height}>
+    <Box flexDirection="column" width={width}>
       <Panel accent={accent} ascii={ascii} color={color} paddingX={1} paddingY={0}>
         <BrandBanner color={color} ascii={ascii} dualTone />
         <Box flexDirection="row" columnGap={1} flexWrap="wrap" marginTop={0}>
