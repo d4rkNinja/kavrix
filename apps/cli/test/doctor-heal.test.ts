@@ -159,7 +159,6 @@ describe('doctor --heal', () => {
     );
   });
 
-
   it('does not chmod CWD for unused default ./kavrix.key when profile key lives elsewhere', async () => {
     if (process.platform === 'win32') return;
     const directory = await scratch('no-cwd-chmod');
@@ -205,8 +204,7 @@ describe('doctor --heal', () => {
       };
       expect(
         planned.healActions.some(
-          (action) =>
-            action.id === 'key-parent-acl' && action.path === workdir,
+          (action) => action.id === 'key-parent-acl' && action.path === workdir,
         ),
       ).toBe(false);
 
@@ -223,8 +221,7 @@ describe('doctor --heal', () => {
       };
       expect(
         report.healActions.some(
-          (action) =>
-            action.id === 'key-parent-acl' && action.path === workdir,
+          (action) => action.id === 'key-parent-acl' && action.path === workdir,
         ),
       ).toBe(false);
       expect(
@@ -424,7 +421,6 @@ describe('runDoctorHeal unit', () => {
     expect(await registry.list()).toEqual([]);
   });
 
-
   it('refuses to harden broad filesystem roots even if named as a key parent', async () => {
     if (process.platform === 'win32') return;
     const report = await runDoctorHeal({
@@ -485,8 +481,7 @@ describe('runDoctorHeal unit', () => {
       });
       expect(
         report.actions.some(
-          (action) =>
-            action.id === 'key-parent-acl' && action.path === workdir,
+          (action) => action.id === 'key-parent-acl' && action.path === workdir,
         ),
       ).toBe(false);
       const { stat } = await import('node:fs/promises');
