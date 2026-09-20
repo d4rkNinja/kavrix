@@ -112,7 +112,7 @@ kavrix db doctor health --accept-current        # after human verification only
 ```
 
 `--heal` repairs incomplete unbound profiles (failed-init leftovers that cause
-`PROFILE_DUPLICATE` on retry), dangling profile selection pointers, and
+`PROFILE_DUPLICATE` on retry), dangling profile selection pointers (readable via soft-read; cleared by `--heal`), and
 owner-only ACL/mode drift on key-file parents and key files. It does **not**
 recover a forgotten passphrase, rewrite corrupt vault ciphertext, or delete
 vault/key data files.

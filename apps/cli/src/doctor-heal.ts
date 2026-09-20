@@ -62,38 +62,43 @@ export async function runDoctorHeal(
       ? {}
       : { configDirectory: options.profileConfigDir };
 
-  let registry: DatastoreProfileRegistry | null;
+  // Soft-read treats a dangling `current` as null, so openIfPresent no longer
+  // fails closed on that case. Probe the on-disk pointer explicitly so report /
+  // dry-run / heal still surface and clear it.
+  let danglingCurrent = false;
   try {
-    registry = await DatastoreProfileRegistry.openIfPresent(registryOptions);
+    danglingCurrent =
+      await DatastoreProfileRegistry.hasDanglingCurrentPointerAt(registryOptions);
   } catch (error) {
-    if (error instanceof DatastoreProfileError && error.code === 'PROFILE_INVALID') {
-      const detailBase = 'Profile registry has a dangling or invalid current pointer.';
-      if (dryRun) {
-        recordAction(
-          actions,
-          healed,
-          planned,
-          {
-            id: 'dangling-current-pointer',
-            status: 'planned',
-            detail: `${detailBase} Would clear the selection pointer.`,
-          },
-          false,
-          true,
-        );
-        // Still try to continue after a non-mutating probe is impossible; stop.
-        manualRecoveryRequired.push(`${detailBase} Re-run with --heal.`);
-        return { actions, healed, planned, manualRecoveryRequired };
-      }
-      if (!apply) {
-        actions.push({
+    if (!(error instanceof DatastoreProfileError && error.code === 'PROFILE_UNSAFE')) {
+      throw error;
+    }
+    // Directory ACL issues are handled below via openIfPresent / harden paths.
+  }
+  if (danglingCurrent) {
+    const detailBase = 'Profile registry has a dangling or invalid current pointer.';
+    if (dryRun) {
+      recordAction(
+        actions,
+        healed,
+        planned,
+        {
           id: 'dangling-current-pointer',
-          status: 'manual',
-          detail: `${detailBase} Re-run with --heal to clear it.`,
-        });
-        manualRecoveryRequired.push(`${detailBase} Re-run with --heal to clear it.`);
-        return { actions, healed, planned, manualRecoveryRequired };
-      }
+          status: 'planned',
+          detail: `${detailBase} Would clear the selection pointer.`,
+        },
+        false,
+        true,
+      );
+      manualRecoveryRequired.push(`${detailBase} Re-run with --heal.`);
+    } else if (!apply) {
+      actions.push({
+        id: 'dangling-current-pointer',
+        status: 'manual',
+        detail: `${detailBase} Re-run with --heal to clear it.`,
+      });
+      manualRecoveryRequired.push(`${detailBase} Re-run with --heal to clear it.`);
+    } else {
       try {
         const cleared =
           await DatastoreProfileRegistry.healDanglingCurrentPointerAt(registryOptions);
@@ -112,7 +117,6 @@ export async function runDoctorHeal(
             false,
           );
         }
-        registry = await DatastoreProfileRegistry.openIfPresent(registryOptions);
       } catch (healError) {
         const detail =
           healError instanceof Error
@@ -122,6 +126,19 @@ export async function runDoctorHeal(
         manualRecoveryRequired.push(detail);
         return { actions, healed, planned, manualRecoveryRequired };
       }
+    }
+  }
+
+  let registry: DatastoreProfileRegistry | null;
+  try {
+    registry = await DatastoreProfileRegistry.openIfPresent(registryOptions);
+  } catch (error) {
+    if (error instanceof DatastoreProfileError && error.code === 'PROFILE_INVALID') {
+      const detail =
+        'The datastore profile registry is invalid and cannot be repaired automatically.';
+      actions.push({ id: 'profile-registry', status: 'manual', detail });
+      manualRecoveryRequired.push(detail);
+      return { actions, healed, planned, manualRecoveryRequired };
     } else if (
       error instanceof DatastoreProfileError &&
       error.code === 'PROFILE_UNSAFE'

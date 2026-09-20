@@ -21,6 +21,7 @@ import {
   resolveDatastoreProfileRouting,
   resolveProfilePath,
   verifyDatastoreProfileDatabaseId,
+  type DatastoreProfile,
 } from '../src/datastore-profiles.js';
 import { buildLocalCli } from '../src/local-vault-cli.js';
 import { LocalSecretInput } from '../src/local-secrets.js';
@@ -743,6 +744,64 @@ describe('datastore profiles', () => {
     if (process.platform === 'win32') await setWindowsUserOnlyAcl(path);
     await expect(profiles.add(fileProfile('profile-64'))).rejects.toThrow('limited');
   }, 60_000);
+});
+
+describe('datastore profile dangling current soft-read', () => {
+  it('lists and selects profiles when current points at a missing id', async () => {
+    const profiles = await registry();
+    await profiles.add(fileProfile('main'));
+    await profiles.add(fileProfile('other'));
+    await profiles.use(profileIdSchema.parse('main'));
+
+    const registryPath = resolveProfilePath(directory);
+    const onDisk = JSON.parse(await readFile(registryPath, 'utf8')) as {
+      version: number;
+      current: string | null;
+      profiles: unknown[];
+    };
+    onDisk.current = 'does-not-exist';
+    await deleteSecureFile(registryPath);
+    await writeProtectedJsonDocument(
+      registryPath,
+      onDisk,
+      'create',
+      {
+        maximumBytes: 128 * 1024,
+        schema: {
+          parse: (value: unknown) =>
+            value as {
+              version: 2;
+              current: string | null;
+              profiles: DatastoreProfile[];
+            },
+        },
+      },
+    );
+
+    expect(
+      await DatastoreProfileRegistry.hasDanglingCurrentPointerAt({
+        configDirectory: directory,
+      }),
+    ).toBe(true);
+
+    const opened = await DatastoreProfileRegistry.open({ configDirectory: directory });
+    expect(await opened.current()).toBeNull();
+    expect((await opened.list()).map((profile) => profile.id).sort()).toEqual([
+      'main',
+      'other',
+    ]);
+    expect(await opened.get(profileIdSchema.parse('main'))).toMatchObject({
+      id: 'main',
+    });
+
+    await opened.use(profileIdSchema.parse('main'));
+    expect(await opened.current()).toMatchObject({ id: 'main' });
+    expect(
+      await DatastoreProfileRegistry.hasDanglingCurrentPointerAt({
+        configDirectory: directory,
+      }),
+    ).toBe(false);
+  });
 });
 
 describe('datastore profile heal helpers', () => {

@@ -283,7 +283,7 @@ reports structured findings. With `--accept-current`, and only after the entire
 observed snapshot authenticates with the database root key, it rewrites the
 local rollback anchor to match; datastore content is never modified. With
 `--heal`, Kavrix also applies safe local-state repairs: remove incomplete
-unbound profiles left by failed init, clear dangling profile selection
+unbound profiles left by failed init, clear dangling profile selection (list/status/--profile soft-read a missing `current` as unset; `--heal` clears it on disk)
 pointers, and re-harden owner-only ACLs/modes on key-file parents and key
 files. `--heal --dry-run` lists planned repairs without applying them. Heal
 never invents passphrase recovery and never deletes vault or key data files.
