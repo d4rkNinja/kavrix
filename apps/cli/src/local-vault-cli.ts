@@ -3089,6 +3089,9 @@ async function handleDoctorHealth(options: LocalCliOptions): Promise<void> {
     planned: [] as const,
     manualRecoveryRequired: [] as const,
   };
+  // Commander always fills --key-file with DEFAULT_KEY_FILE (./kavrix.key).
+  // Passing that unused default into heal would chmod the CWD parent even when
+  // the active profile key lives under ~/.kavrix/. Only harden explicit paths.
   const healReport =
     options.heal === true
       ? await runDoctorHeal({
@@ -3097,7 +3100,9 @@ async function handleDoctorHealth(options: LocalCliOptions): Promise<void> {
             ? {}
             : { profileConfigDir: options.profileConfigDir }),
           ...(options.profile === undefined ? {} : { profileId: options.profile }),
-          keyFile: options.keyFile,
+          ...(options.routingOverrides?.keyFile !== undefined
+            ? { keyFile: options.keyFile }
+            : {}),
           ...(options.dataFile === undefined ? {} : { dataFile: options.dataFile }),
         })
       : emptyHeal;

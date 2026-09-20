@@ -1,6 +1,6 @@
 import { chmod, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -159,6 +159,149 @@ describe('doctor --heal', () => {
     );
   });
 
+  it('does not chmod CWD for unused default ./kavrix.key when profile key lives elsewhere', async () => {
+    if (process.platform === 'win32') return;
+    const directory = await scratch('no-cwd-chmod');
+    const workdir = join(directory, 'workdir');
+    await mkdir(workdir, { mode: 0o755 });
+    await chmod(workdir, 0o755);
+    const keyParent = join(directory, 'profile-keys');
+    await mkdir(keyParent, { mode: 0o700 });
+    const keyFile = join(keyParent, 'kavrix.key');
+    await writeFile(keyFile, 'placeholder', { mode: 0o600 });
+    const configDir = join(directory, 'config');
+    const registry = await DatastoreProfileRegistry.open({
+      configDirectory: configDir,
+    });
+    // Unbound profile whose real key parent is not CWD — mimics ~/.kavrix after init
+    // while Commander still defaults --key-file to ./kavrix.key.
+    await registry.add({
+      id: 'homeish' as DatastoreProfile['id'],
+      datastore: 'file',
+      dataFile: join(directory, 'vault.db'),
+      keyFile,
+    });
+
+    const previousCwd = process.cwd();
+    try {
+      process.chdir(workdir);
+      const dryRun = await runCli(
+        [
+          'doctor',
+          'health',
+          '--heal',
+          '--dry-run',
+          '--json',
+          '--profile-config-dir',
+          configDir,
+        ],
+        '',
+      );
+      expect(dryRun.exitCode).toBe(0);
+      const planned = JSON.parse(dryRun.stdout) as {
+        planned: string[];
+        healActions: Array<{ id: string; path?: string }>;
+      };
+      expect(
+        planned.healActions.some(
+          (action) => action.id === 'key-parent-acl' && action.path === workdir,
+        ),
+      ).toBe(false);
+
+      const healed = await runCli(
+        ['doctor', 'health', '--heal', '--json', '--profile-config-dir', configDir],
+        '',
+      );
+      expect(healed.exitCode).toBe(0);
+      const { stat } = await import('node:fs/promises');
+      expect((await stat(workdir)).mode & 0o777).toBe(0o755);
+      const report = JSON.parse(healed.stdout) as {
+        autoHealed: string[];
+        healActions: Array<{ id: string; path?: string }>;
+      };
+      expect(
+        report.healActions.some(
+          (action) => action.id === 'key-parent-acl' && action.path === workdir,
+        ),
+      ).toBe(false);
+      expect(
+        report.healActions.filter((action) => action.id === 'key-parent-acl'),
+      ).toEqual([]);
+    } finally {
+      process.chdir(previousCwd);
+    }
+  });
+
+  it('does not plan/apply ACL on a workspace-like parent of a nested empty workdir', async () => {
+    if (process.platform === 'win32') return;
+    // Mimic /workspace (755) with a nested empty CWD and profile key under a private dir.
+    const workspaceLike = await scratch('workspace-like');
+    await chmod(workspaceLike, 0o755);
+    const workdir = join(workspaceLike, 'nested-cwd');
+    await mkdir(workdir, { mode: 0o755 });
+    await chmod(workdir, 0o755);
+    const keyParent = join(workspaceLike, 'home', '.kavrix');
+    await mkdir(keyParent, { recursive: true, mode: 0o700 });
+    await chmod(keyParent, 0o700);
+    const keyFile = join(keyParent, 'kavrix.key');
+    await writeFile(keyFile, 'placeholder', { mode: 0o600 });
+    const configDir = join(workspaceLike, 'home', '.config', 'kavrix');
+    const registry = await DatastoreProfileRegistry.open({
+      configDirectory: configDir,
+    });
+    await registry.add({
+      id: 'default' as DatastoreProfile['id'],
+      datastore: 'file',
+      dataFile: join(keyParent, 'kavrix.vault'),
+      keyFile,
+    });
+
+    const previousCwd = process.cwd();
+    try {
+      process.chdir(workdir);
+      const dryRun = await runCli(
+        [
+          'doctor',
+          'health',
+          '--heal',
+          '--dry-run',
+          '--json',
+          '--profile-config-dir',
+          configDir,
+        ],
+        '',
+      );
+      expect(dryRun.exitCode).toBe(0);
+      const planned = JSON.parse(dryRun.stdout) as {
+        healActions: Array<{ id: string; path?: string; status: string }>;
+      };
+      const aclPaths = planned.healActions
+        .filter((action) => action.id === 'key-parent-acl')
+        .map((action) => action.path);
+      expect(aclPaths).not.toContain(workdir);
+      expect(aclPaths).not.toContain(workspaceLike);
+
+      const healed = await runCli(
+        ['doctor', 'health', '--heal', '--json', '--profile-config-dir', configDir],
+        '',
+      );
+      expect(healed.exitCode).toBe(0);
+      const { stat } = await import('node:fs/promises');
+      expect((await stat(workdir)).mode & 0o777).toBe(0o755);
+      expect((await stat(workspaceLike)).mode & 0o777).toBe(0o755);
+      const report = JSON.parse(healed.stdout) as {
+        healActions: Array<{ id: string; path?: string }>;
+      };
+      const appliedAcl = report.healActions
+        .filter((action) => action.id === 'key-parent-acl')
+        .map((action) => action.path);
+      expect(appliedAcl).not.toContain(workdir);
+      expect(appliedAcl).not.toContain(workspaceLike);
+    } finally {
+      process.chdir(previousCwd);
+    }
+  });
+
   it('reports help for --heal on doctor health and db doctor health', async () => {
     const root = await runCli(['doctor', 'health', '--help'], '');
     expect(root.stdout).toMatch(/--heal/);
@@ -276,6 +419,104 @@ describe('runDoctorHeal unit', () => {
     });
     expect(await registry.current()).toBeNull();
     expect(await registry.list()).toEqual([]);
+  });
+
+  it('refuses to harden broad filesystem roots even if named as a key parent', async () => {
+    if (process.platform === 'win32') return;
+    const report = await runDoctorHeal({
+      mode: 'dry-run',
+      // Simulate a pathological key whose immediate parent is /tmp (top-level root).
+      keyFile: '/tmp/kavrix-heal-broad-root-sentinel.key',
+    });
+    // Missing artifact → no ACL plan. Plant the file then ensure /tmp is skipped.
+    const { writeFile, unlink, chmod: chmodFile } = await import('node:fs/promises');
+    await writeFile('/tmp/kavrix-heal-broad-root-sentinel.key', 'x', { mode: 0o600 });
+    try {
+      const withFile = await runDoctorHeal({
+        mode: 'dry-run',
+        keyFile: '/tmp/kavrix-heal-broad-root-sentinel.key',
+      });
+      const tmpActions = withFile.actions.filter(
+        (action) => action.id === 'key-parent-acl' && action.path === resolve('/tmp'),
+      );
+      expect(tmpActions.length).toBe(1);
+      expect(tmpActions[0]?.status).toBe('skipped');
+      expect(withFile.planned).not.toContain('key-parent-acl');
+    } finally {
+      await unlink('/tmp/kavrix-heal-broad-root-sentinel.key').catch(() => undefined);
+      void chmodFile;
+    }
+  });
+
+  it('skips unused nonexistent standalone key-file so CWD is not hardened', async () => {
+    if (process.platform === 'win32') return;
+    const directory = await scratch('unused-default-key');
+    const workdir = join(directory, 'workdir');
+    await mkdir(workdir, { mode: 0o755 });
+    await chmod(workdir, 0o755);
+    const keyParent = join(directory, 'real-keys');
+    await mkdir(keyParent, { mode: 0o700 });
+    const keyFile = join(keyParent, 'owner.key');
+    await writeFile(keyFile, 'placeholder', { mode: 0o600 });
+    const configDir = join(directory, 'config');
+    const registry = await DatastoreProfileRegistry.open({
+      configDirectory: configDir,
+    });
+    await registry.add({
+      id: 'real' as DatastoreProfile['id'],
+      datastore: 'file',
+      databaseId: '11111111-1111-4111-8111-111111111111' as never,
+      dataFile: join(directory, 'vault.db'),
+      keyFile,
+    });
+
+    const previousCwd = process.cwd();
+    try {
+      process.chdir(workdir);
+      const report = await runDoctorHeal({
+        mode: 'dry-run',
+        profileConfigDir: configDir,
+        // Simulate Commander default pointing at missing ./kavrix.key under CWD.
+        keyFile: './kavrix.key',
+      });
+      expect(
+        report.actions.some(
+          (action) => action.id === 'key-parent-acl' && action.path === workdir,
+        ),
+      ).toBe(false);
+      const { stat } = await import('node:fs/promises');
+      expect((await stat(workdir)).mode & 0o777).toBe(0o755);
+    } finally {
+      process.chdir(previousCwd);
+    }
+  });
+
+  it('still hardens an explicit standalone key-file parent when the key exists', async () => {
+    if (process.platform === 'win32') return;
+    const directory = await scratch('explicit-cwd-key');
+    const workdir = join(directory, 'workdir');
+    await mkdir(workdir, { mode: 0o755 });
+    await chmod(workdir, 0o755);
+    const keyFile = join(workdir, 'kavrix.key');
+    await writeFile(keyFile, 'placeholder', { mode: 0o644 });
+    await chmod(keyFile, 0o644);
+
+    const previousCwd = process.cwd();
+    try {
+      process.chdir(workdir);
+      const report = await runDoctorHeal({
+        mode: 'heal',
+        keyFile: './kavrix.key',
+      });
+      expect(report.healed).toEqual(
+        expect.arrayContaining(['key-parent-acl', 'key-file-acl']),
+      );
+      const { stat } = await import('node:fs/promises');
+      expect((await stat(workdir)).mode & 0o777).toBe(0o700);
+      expect((await stat(keyFile)).mode & 0o777).toBe(0o600);
+    } finally {
+      process.chdir(previousCwd);
+    }
   });
 
   it('maps doctorHealModeFromOptions correctly', () => {
