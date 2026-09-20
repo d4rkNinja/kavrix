@@ -313,6 +313,25 @@ async function maybeHardenDirectory(
     });
     return;
   }
+  // Symlink directories are never chmod'd — even in --heal apply mode.
+  try {
+    const meta = await lstat(directory);
+    if (meta.isSymbolicLink()) {
+      const detail =
+        `Directory ${directory} is a symbolic link; heal will not change its ACL. ` +
+        'Replace the link with a real owner-only directory or harden the link target manually.';
+      actions.push({
+        id: actionId,
+        status: 'manual',
+        detail,
+        path: directory,
+      });
+      manualRecoveryRequired.push(detail);
+      return;
+    }
+  } catch {
+    // Fall through to inspectDirectoryAcl missing/unsafe handling.
+  }
   const state = await inspectDirectoryAcl(directory);
   if (state === 'missing' || state === 'ok') return;
   if (state === 'foreign-owner') {
@@ -491,6 +510,17 @@ async function addImmediateParentIfArtifactExists(
 ): Promise<void> {
   const resolved = resolve(artifactPath);
   if (!(await pathExists(resolved))) return;
+  const logicalParent = dirname(resolved);
+  try {
+    const parentMeta = await lstat(logicalParent);
+    if (parentMeta.isSymbolicLink()) {
+      // Symlink parents cannot be chmod'd safely — surface them as ACL findings
+      // (manual) instead of resolving through to the real directory only.
+      pathsToHarden.add(logicalParent);
+    }
+  } catch {
+    // Parent vanished between existence check and lstat; continue with realpath.
+  }
   // Immediate parent only — never dirname(dirname(...)). Canonicalize so
   // Windows 8.3 / casing forms compare as the same owned directory.
   const canonicalArtifact = await realpath(resolved);

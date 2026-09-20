@@ -567,7 +567,10 @@ describe('sealed state integrity', () => {
       passphraseFrame(),
     );
     expect(afterTamper.exitCode).toBe(16);
-    expect(afterTamper.stderr).toContain('failed authentication');
+    // `--json` emits the machine envelope on stdout and suppresses the human stderr duplicate.
+    expect(
+      parseLast(afterTamper.stdout).error?.message ?? afterTamper.stdout,
+    ).toContain('failed authentication');
   });
 
   it('fails closed on a reformatted sidecar so canonical parsing stays strict', async () => {

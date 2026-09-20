@@ -369,8 +369,8 @@ describe('runSecureCommand', () => {
   });
 
   it('inherits parent USER without treating it as a writable dest', async () => {
-    const previous = process.env.USER;
-    process.env.USER = 'kavrix-inherited-identity';
+    const previous = process.env['USER'];
+    process.env['USER'] = 'kavrix-inherited-identity';
     try {
       const result = await runSecureCommand(
         nodeRequest('process.stdout.write(process.env.USER ?? "")', {
@@ -382,7 +382,7 @@ describe('runSecureCommand', () => {
       if (previous === undefined) {
         Reflect.deleteProperty(process.env, 'USER');
       } else {
-        process.env.USER = previous;
+        process.env['USER'] = previous;
       }
     }
   });
