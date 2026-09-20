@@ -126,9 +126,6 @@ export function classifyCliFailure(error: unknown): Readonly<{
           : error.message;
     return { message, exitCode: portableKeyFileExitCode(error) };
   }
-  if (error instanceof EncryptedDatabaseStoreError && error.code === 'unsafe') {
-    return { message: error.message, exitCode: 15 };
-  }
   // Secret-input framing problems are operator usage mistakes.
   if (
     typeof error === 'object' &&
