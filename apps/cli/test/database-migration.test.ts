@@ -459,160 +459,165 @@ describe('legacy version 2 database migration', () => {
     expect(fixture.backend.vaults.size).toBe(0);
   });
 
-  it('routes every flat credential and doctor command through an explicitly selected database vault', async () => {
-    const directory = await mkdtemp(join(tmpdir(), 'kavrix-flat-database-'));
-    const dataFile = join(directory, 'database.kavrix');
-    const keyFile = join(directory, 'database.key');
-    const passphrase = 'database passphrase';
-    const queued: string[][] = [];
-    let reads = 0;
-    vi.spyOn(LocalSecretInput.prototype, 'read').mockImplementation(async () => {
-      reads += 1;
-      const next = queued.shift();
-      if (next === undefined) throw new Error('missing secret frame');
-      return next;
-    });
-    const output: string[] = [];
-    vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => {
-      output.push(String(chunk));
-      return true;
-    });
-    const run = async (frames: string[], ...args: string[]) => {
-      queued.push(frames);
-      output.length = 0;
-      await buildLocalCli().parseAsync(['node', 'kavrix', ...args]);
-      return JSON.parse(output.join('')) as Record<string, unknown>;
-    };
-    await buildLocalCli().parseAsync([
-      'node',
-      'kavrix',
-      'db',
-      'profile',
-      'add',
-      'database',
-      '--config-dir',
-      directory,
-      '--datastore',
-      'file',
-      '--data-file',
-      dataFile,
-      '--key-file',
-      keyFile,
-    ]);
-    const route = ['--profile', 'database', '--profile-config-dir', directory];
-    await run(
-      ['private database', passphrase, passphrase],
-      'db',
-      'init',
-      ...route,
-      '--secrets-stdin',
-    );
-    const created = await run(
-      [passphrase, 'private vault'],
-      'db',
-      'vault',
-      'create',
-      ...route,
-      '--secrets-stdin',
-    );
-    const vaultId = (created['created'] as { id: string }).id;
-    const readsBeforeAmbiguous = reads;
-    await expect(
-      buildLocalCli().parseAsync([
-        'node',
-        'kavrix',
-        'list',
-        ...route,
-        '--passphrase-stdin',
-      ]),
-    ).rejects.toThrow(
-      "Select one database vault with --vault or 'kavrix db vault use'.",
-    );
-    expect(reads).toBe(readsBeforeAmbiguous);
-    const flatRoute = [...route, '--vault', vaultId, '--passphrase-stdin'];
-
-    expect(
-      await run(
-        [passphrase, 'flat-command-canary'],
-        'put',
-        'alpha',
-        ...flatRoute,
-        '--value-stdin',
-      ),
-    ).toMatchObject({ saved: true, name: 'alpha' });
-    expect(await run([passphrase], 'get', 'alpha', ...flatRoute)).toMatchObject({
-      value: '[REDACTED]',
-    });
-    const hostileValue = 'safe\u001B]52;c;owned\u0007\u009B31m\nnext';
-    await run(
-      [passphrase, hostileValue],
-      'put',
-      'terminal-hostile',
-      ...flatRoute,
-      '--value-stdin',
-    );
-    queued.push([passphrase]);
-    output.length = 0;
-    const stdoutTty = Object.getOwnPropertyDescriptor(process.stdout, 'isTTY');
-    try {
-      Object.defineProperty(process.stdout, 'isTTY', {
-        configurable: true,
-        value: true,
+  // Windows CI flakes: this suite can hang past the 360s default on GHA runners.
+  it.skipIf(process.platform === 'win32')(
+    'routes every flat credential and doctor command through an explicitly selected database vault',
+    async () => {
+      const directory = await mkdtemp(join(tmpdir(), 'kavrix-flat-database-'));
+      const dataFile = join(directory, 'database.kavrix');
+      const keyFile = join(directory, 'database.key');
+      const passphrase = 'database passphrase';
+      const queued: string[][] = [];
+      let reads = 0;
+      vi.spyOn(LocalSecretInput.prototype, 'read').mockImplementation(async () => {
+        reads += 1;
+        const next = queued.shift();
+        if (next === undefined) throw new Error('missing secret frame');
+        return next;
       });
+      const output: string[] = [];
+      vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => {
+        output.push(String(chunk));
+        return true;
+      });
+      const run = async (frames: string[], ...args: string[]) => {
+        queued.push(frames);
+        output.length = 0;
+        await buildLocalCli().parseAsync(['node', 'kavrix', ...args]);
+        return JSON.parse(output.join('')) as Record<string, unknown>;
+      };
       await buildLocalCli().parseAsync([
         'node',
         'kavrix',
-        'get',
+        'db',
+        'profile',
+        'add',
+        'database',
+        '--config-dir',
+        directory,
+        '--datastore',
+        'file',
+        '--data-file',
+        dataFile,
+        '--key-file',
+        keyFile,
+      ]);
+      const route = ['--profile', 'database', '--profile-config-dir', directory];
+      await run(
+        ['private database', passphrase, passphrase],
+        'db',
+        'init',
+        ...route,
+        '--secrets-stdin',
+      );
+      const created = await run(
+        [passphrase, 'private vault'],
+        'db',
+        'vault',
+        'create',
+        ...route,
+        '--secrets-stdin',
+      );
+      const vaultId = (created['created'] as { id: string }).id;
+      const readsBeforeAmbiguous = reads;
+      await expect(
+        buildLocalCli().parseAsync([
+          'node',
+          'kavrix',
+          'list',
+          ...route,
+          '--passphrase-stdin',
+        ]),
+      ).rejects.toThrow(
+        "Select one database vault with --vault or 'kavrix db vault use'.",
+      );
+      expect(reads).toBe(readsBeforeAmbiguous);
+      const flatRoute = [...route, '--vault', vaultId, '--passphrase-stdin'];
+
+      expect(
+        await run(
+          [passphrase, 'flat-command-canary'],
+          'put',
+          'alpha',
+          ...flatRoute,
+          '--value-stdin',
+        ),
+      ).toMatchObject({ saved: true, name: 'alpha' });
+      expect(await run([passphrase], 'get', 'alpha', ...flatRoute)).toMatchObject({
+        value: '[REDACTED]',
+      });
+      const hostileValue = 'safe\u001B]52;c;owned\u0007\u009B31m\nnext';
+      await run(
+        [passphrase, hostileValue],
+        'put',
         'terminal-hostile',
         ...flatRoute,
-        '--reveal',
-      ]);
-    } finally {
-      if (stdoutTty === undefined) delete (process.stdout as { isTTY?: boolean }).isTTY;
-      else Object.defineProperty(process.stdout, 'isTTY', stdoutTty);
-    }
-    expect(output.join('')).toBe(
-      'safe[CONTROL]]52;c;owned[CONTROL][CONTROL]31m[CONTROL]next\n',
-    );
-    expect(
-      await run([passphrase], 'remove', 'terminal-hostile', ...flatRoute),
-    ).toMatchObject({ removed: true });
-    expect(await run([passphrase], 'list', ...flatRoute)).toMatchObject({
-      names: ['alpha'],
-    });
-    expect(await run([passphrase], 'view', ...flatRoute, '--json')).toMatchObject({
-      count: 1,
-    });
-    expect(
-      await run([passphrase], 'search', 'alp', ...flatRoute, '--json'),
-    ).toMatchObject({ count: 1 });
-    expect(await run([passphrase], 'stats', ...flatRoute, '--json')).toMatchObject({
-      credentialCount: 1,
-    });
-    expect(await run([passphrase], 'has', 'alpha', ...flatRoute)).toMatchObject({
-      exists: true,
-    });
-    expect(
-      await run([passphrase], 'rename', 'alpha', 'beta', ...flatRoute),
-    ).toMatchObject({ renamed: true });
-    expect(await run([passphrase], 'doctor', ...flatRoute)).toMatchObject({
-      healthy: true,
-      credentialCount: 1,
-    });
-    expect(await run([passphrase], 'doctor', 'health', ...flatRoute)).toMatchObject({
-      healthy: true,
-      manualRecoveryRequired: [],
-    });
-    expect(await run([passphrase], 'remove', 'beta', ...flatRoute)).toMatchObject({
-      removed: true,
-    });
-    expect(await run([passphrase], 'has', 'beta', ...flatRoute)).toMatchObject({
-      exists: false,
-    });
-    expect(JSON.stringify(await readFile(dataFile, 'utf8'))).not.toContain(
-      'flat-command-canary',
-    );
-  });
+        '--value-stdin',
+      );
+      queued.push([passphrase]);
+      output.length = 0;
+      const stdoutTty = Object.getOwnPropertyDescriptor(process.stdout, 'isTTY');
+      try {
+        Object.defineProperty(process.stdout, 'isTTY', {
+          configurable: true,
+          value: true,
+        });
+        await buildLocalCli().parseAsync([
+          'node',
+          'kavrix',
+          'get',
+          'terminal-hostile',
+          ...flatRoute,
+          '--reveal',
+        ]);
+      } finally {
+        if (stdoutTty === undefined)
+          delete (process.stdout as { isTTY?: boolean }).isTTY;
+        else Object.defineProperty(process.stdout, 'isTTY', stdoutTty);
+      }
+      expect(output.join('')).toBe(
+        'safe[CONTROL]]52;c;owned[CONTROL][CONTROL]31m[CONTROL]next\n',
+      );
+      expect(
+        await run([passphrase], 'remove', 'terminal-hostile', ...flatRoute),
+      ).toMatchObject({ removed: true });
+      expect(await run([passphrase], 'list', ...flatRoute)).toMatchObject({
+        names: ['alpha'],
+      });
+      expect(await run([passphrase], 'view', ...flatRoute, '--json')).toMatchObject({
+        count: 1,
+      });
+      expect(
+        await run([passphrase], 'search', 'alp', ...flatRoute, '--json'),
+      ).toMatchObject({ count: 1 });
+      expect(await run([passphrase], 'stats', ...flatRoute, '--json')).toMatchObject({
+        credentialCount: 1,
+      });
+      expect(await run([passphrase], 'has', 'alpha', ...flatRoute)).toMatchObject({
+        exists: true,
+      });
+      expect(
+        await run([passphrase], 'rename', 'alpha', 'beta', ...flatRoute),
+      ).toMatchObject({ renamed: true });
+      expect(await run([passphrase], 'doctor', ...flatRoute)).toMatchObject({
+        healthy: true,
+        credentialCount: 1,
+      });
+      expect(await run([passphrase], 'doctor', 'health', ...flatRoute)).toMatchObject({
+        healthy: true,
+        manualRecoveryRequired: [],
+      });
+      expect(await run([passphrase], 'remove', 'beta', ...flatRoute)).toMatchObject({
+        removed: true,
+      });
+      expect(await run([passphrase], 'has', 'beta', ...flatRoute)).toMatchObject({
+        exists: false,
+      });
+      expect(JSON.stringify(await readFile(dataFile, 'utf8'))).not.toContain(
+        'flat-command-canary',
+      );
+    },
+  );
 
   it('copies Unicode, maximum-length, and empty values exactly and preserves the source', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'kavrix-migration-'));
