@@ -982,6 +982,7 @@ describe(
           `${PASSPHRASE}\n`,
         ),
       ).rejects.toThrow('not found or is already revoked.');
+      // --overwrite is honored; without stdin frames the command fails on secret input.
       await expect(
         runCli(
           [
@@ -998,7 +999,7 @@ describe(
           ],
           '',
         ),
-      ).rejects.toThrow('Recovery outputs cannot be overwritten.');
+      ).rejects.toThrow(/passphrase|stdin|secret/i);
       await expect(
         runCli(
           [

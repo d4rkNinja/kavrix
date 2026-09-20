@@ -7,7 +7,15 @@
 - Fix `vault list` / `vault status` so `--profile` (and ambient legacy file profiles) route to that profile's vault paths instead of silently using `./kavrix.vault`.
 - Fix `doctor --heal --dry-run` (and `db doctor health --heal --dry-run`) false `healthy:true` when the same vault target fails apply / plain doctor; dry-run now fail-closes on the same problems after local-state planning.
 - Fix `run --secret` help examples that used protected destination `ENV`; use `MYSECRET` and reject reserved destinations with an explicit protected-destination message.
-- When a bound database-container profile is selected, explicit `--data-file`/`--key-file` that resolve to the same artifacts keep container routing; non-matching path overrides fail with a clear "omit path overrides" error instead of opaque "invalid or unsafe".
+- When a bound database-container profile is selected, explicit `--data-file`/`--key-file` that resolve to the same artifacts keep container routing; non-matching path overrides fail with a clear "omit path overrides" / profile-routing error instead of opaque "invalid or unsafe".
+- Differentiate missing key-file vs wrong-passphrase failures (preserve `KEY_FILE_NOT_FOUND` instead of collapsing missing keys to authentication).
+- Surface unsafe key/data parent permissions (e.g. mode 777) with doctor/heal guidance instead of opaque "database operation is invalid".
+- Accept `--json` on commands that already emit JSON by default (`vault list`, `db init`, `db recovery create|verify`, `db key create`).
+- `recovery verify` without a matching `--key-file` now reports a clear key-path/mismatch error instead of an opaque revision-anchor integrity failure.
+- `policy create --command /bin/echo` explains basename-only command names.
+- `agent exec --dry-run` fails closed on unknown permissions (requires project config).
+- `recovery use --overwrite` / `recovery create --overwrite` honor the flag (replace destinations) instead of refusing overwrite.
+- Note: `0.2.17` is `doctor --heal` local-state repair (including ACL hardening); this release consolidates live-QA dangling-current + P1 + P2 fixes only.
 
 
 ## 0.2.17

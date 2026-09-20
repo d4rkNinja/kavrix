@@ -69,6 +69,7 @@ export function addDatabaseOwnerCommands(db: Command): void {
     .description('Initialize one encrypted multi-vault database.');
   addRoutingOptions(init);
   addSecretOption(init);
+  init.option('--json', 'Emit machine-readable output (the default for this command).');
   init.action(async (...args: unknown[]) => handleDatabaseInit(optionsFrom(args)));
 
   const status = db
@@ -98,6 +99,7 @@ export function addDatabaseOwnerCommands(db: Command): void {
     '--output-key-file <path>',
     'Fresh protected local-share database-key destination.',
   );
+  keyCreate.option('--json', 'Emit machine-readable output (the default for this command).');
   keyCreate.action(async (...args: unknown[]) =>
     handleDatabaseKeyCreate(optionsFrom(args)),
   );
@@ -139,6 +141,7 @@ export function addDatabaseOwnerCommands(db: Command): void {
     '--recovery-file <path>',
     'Protected database recovery-kit destination.',
   );
+  create.option('--json', 'Emit machine-readable output (the default for this command).');
   create.action(async (...args: unknown[]) => handleRecoveryCreate(optionsFrom(args)));
 
   const verify = recovery
@@ -150,6 +153,7 @@ export function addDatabaseOwnerCommands(db: Command): void {
     '--recovery-file <path>',
     'Protected database recovery-kit source.',
   );
+  verify.option('--json', 'Emit machine-readable output (the default for this command).');
   verify.action(async (...args: unknown[]) => handleRecoveryVerify(optionsFrom(args)));
 
   const recoveryStatus = recovery

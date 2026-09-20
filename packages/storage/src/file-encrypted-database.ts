@@ -1299,18 +1299,18 @@ async function assertOwnedPermissions(
       else await verifyWindowsDirectoryAcl(path);
       return;
     } catch {
-      throw new EncryptedDatabaseStoreError('invalid');
+      throw new EncryptedDatabaseStoreError('unsafe');
     }
   }
   const getuid = process.getuid;
   if (getuid === undefined || metadata.uid !== BigInt(getuid())) {
-    throw new EncryptedDatabaseStoreError('invalid');
+    throw new EncryptedDatabaseStoreError('unsafe');
   }
   if (requireFile) {
     if ((metadata.mode & 0o777n) !== 0o600n)
-      throw new EncryptedDatabaseStoreError('invalid');
+      throw new EncryptedDatabaseStoreError('unsafe');
   } else if ((metadata.mode & 0o022n) !== 0n) {
-    throw new EncryptedDatabaseStoreError('invalid');
+    throw new EncryptedDatabaseStoreError('unsafe');
   }
 }
 
