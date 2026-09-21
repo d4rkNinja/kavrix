@@ -876,14 +876,20 @@ describe('in-process broker and client round trip', () => {
       });
       await missing.done;
       expect(session.counters).toEqual({ allowed: 0, denied: 2 });
-      // Denial audits persist right after each exit frame; poll briefly.
+      // Denial audits persist right after each exit frame; poll briefly and
+      // tolerate reads that race the first sealed-file creation (the file can
+      // briefly not exist on slower runners).
       let denials;
-      for (let attempt = 0; attempt < 40; attempt += 1) {
-        const snapshot = await state.read();
-        denials = snapshot.audit.filter(
-          (event) => event.action === 'authorization-denied',
-        );
-        if (denials.length === 2) break;
+      for (let attempt = 0; attempt < 60; attempt += 1) {
+        try {
+          const snapshot = await state.read();
+          denials = snapshot.audit.filter(
+            (event) => event.action === 'authorization-denied',
+          );
+          if (denials.length === 2) break;
+        } catch {
+          // Sealed file not yet published; retry.
+        }
         await new Promise((resolve) => setTimeout(resolve, 50));
       }
       expect(denials?.length).toBe(2);

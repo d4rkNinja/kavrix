@@ -85,6 +85,25 @@ describe('--session passphrase resolution fail-closed paths', () => {
 });
 
 describe('ensureKavrixConfig self-heal', () => {
+  it('session status without any profile fails with guidance', async () => {
+    const directory = await createSecureTestDirectory(
+      join(tmpdir(), 'kavrix-session-noprofile-'),
+    );
+    directories.push(directory);
+    const result = await runCli(
+      [
+        'session',
+        'status',
+        '--profile-config-dir',
+        join(directory, 'config'),
+        '--json',
+      ],
+      '',
+    );
+    expect(result.code).not.toBe(0);
+    expect(result.stderr).toMatch(/no datastore profile is selected/i);
+  });
+
   afterEach(async () => {
     // Leave the worker's isolated kavrix home hardened for later tests.
     const { hardenExistingSecureDirectory } = await import('@kavrix/key-files');
