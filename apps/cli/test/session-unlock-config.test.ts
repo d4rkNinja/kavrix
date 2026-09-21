@@ -78,7 +78,9 @@ describe('--session passphrase resolution fail-closed paths', () => {
       '',
     );
     expect(result.code).not.toBe(0);
-    expect(result.stderr).toMatch(/no session unlock/i);
+    // Linux CI without secret-tool reports the store as unavailable;
+    // Windows reports no-session. Both fail closed with guidance.
+    expect(result.stderr).toMatch(/no session unlock|credential store is unavailable/i);
   });
 });
 
