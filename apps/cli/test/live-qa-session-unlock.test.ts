@@ -195,7 +195,11 @@ describe.skipIf(process.platform !== 'win32')(
         expect(revoked.revoked).toBe(true);
         const denied = await run(['list', ...routing, '--session', '--json']);
         expect(denied.code).not.toBe(0);
-        expect(`${denied.stderr}\n${denied.stdout}`).toMatch(/no session unlock/i);
+        // Linux CI without secret-tool reports the store as unavailable;
+        // Windows reports no-session. Both fail closed.
+        expect(`${denied.stderr}\n${denied.stdout}`).toMatch(
+          /no session unlock|credential store is unavailable/i,
+        );
 
         // The passphrase remains fully functional after revocation.
         const manual = await run(
