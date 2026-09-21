@@ -161,7 +161,10 @@ function windowsPort(account: string): SessionUnlockPort {
   // PasswordVault occasionally rejects operations transiently on loaded
   // runners (and while shard processes contend for the user vault); retry a
   // bounded number of times with linear backoff, mirroring the ACL helper.
-  const withRetry = async (script: string, env?: Record<string, string>) => {
+  const withRetry = async (
+    script: string,
+    env?: Record<string, string>,
+  ): Promise<void> => {
     let lastError: unknown;
     for (let attempt = 0; attempt < 3; attempt += 1) {
       try {
