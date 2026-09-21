@@ -35,6 +35,7 @@ import {
   executionFlatOptions,
   extractMergedOptions,
 } from '../src/execution/cli-options.js';
+import { toErrorEnvelope } from '../src/execution/exit-codes.js';
 import { buildLocalCli, runLocalCli } from '../src/local-vault-cli.js';
 
 const directories: string[] = [];
@@ -1020,6 +1021,113 @@ describe('in-process broker and client round trip', () => {
       session.secrets = new Map();
       await broker.cleanup();
       state.close();
+    }
+  }, 30_000);
+
+  it('maps a missing broker child to EXECUTION_FAILED, not invalid-request deny', async () => {
+    const directory = await createSecureTestDirectory(
+      join(tmpdir(), 'kavrix-broker-spawn-miss-'),
+    );
+    directories.push(directory);
+    const scope = {
+      scopeKind: 'database' as const,
+      scopeId: 'db_broker_spawn_miss',
+    };
+    const state = await AuthorizationState.open(
+      join(directory, 'owner.key'),
+      deriveAuthorizationStateKey(new Uint8Array(32).fill(29), scope),
+      scope,
+    );
+    const token = randomUUID().replaceAll('-', '') + randomUUID().replaceAll('-', '');
+    const session = {
+      token,
+      permissions: {
+        gh: permissionEntrySchema.parse({
+          secret: 'x/y',
+          commands: ['node'],
+          env: 'SPAWN_MISS_TOKEN',
+        }),
+      },
+      secrets: new Map([['x/y', 'spawn-miss-canary']]),
+      state,
+      platform: process.platform,
+      counters: { allowed: 0, denied: 0 },
+      queue: Promise.resolve(),
+    };
+    const broker = await startAgentBrokerForTest(session);
+    const missing = join(tmpdir(), 'kavrix-no-such-bin', 'missing-child');
+    process.env[AGENT_BROKER_ENV] = broker.endpoint;
+    process.env[AGENT_TOKEN_ENV] = token;
+    const stderrChunks: string[] = [];
+    const stdoutChunks: string[] = [];
+    const stdoutWrite = vi
+      .spyOn(process.stdout, 'write')
+      .mockImplementation((chunk) => {
+        stdoutChunks.push(String(chunk));
+        return true;
+      });
+    const stderrWrite = vi
+      .spyOn(process.stderr, 'write')
+      .mockImplementation((chunk) => {
+        stderrChunks.push(String(chunk));
+        return true;
+      });
+    try {
+      const raw = await openRawBrokerRequest(broker.endpoint, {
+        v: 1,
+        token,
+        op: 'exec',
+        permission: 'gh',
+        argv: [missing],
+      });
+      const frames = await raw.done;
+      expect(frames.some((frame) => frame.event === 'decision')).toBe(false);
+      expect(frames).not.toContainEqual({
+        v: 1,
+        event: 'decision',
+        outcome: 'deny',
+        reason: 'invalid-request',
+      });
+      expect(frames).toContainEqual({
+        v: 1,
+        event: 'exit',
+        exitCode: 18,
+        signal: null,
+      });
+      expect(session.counters).toEqual({ allowed: 0, denied: 0 });
+
+      await expect(
+        executeAgentExec({
+          permission: 'gh',
+          executableAndArgs: [missing],
+        }),
+      ).rejects.toMatchObject({
+        errorCode: 'EXECUTION_FAILED',
+        exitCode: 18,
+      });
+      const combinedStderr = stderrChunks.join('');
+      const combinedStdout = stdoutChunks.join('');
+      expect(combinedStderr).not.toMatch(
+        /denied|AUTHORIZATION_DENIED|USAGE_ERROR|invalid-request/i,
+      );
+      expect(combinedStdout).not.toMatch(/AUTHORIZATION_DENIED|USAGE_ERROR/i);
+      expect(
+        toErrorEnvelope('EXECUTION_FAILED', 'The executable could not be started.')
+          .error,
+      ).toEqual({
+        code: 'EXECUTION_FAILED',
+        exitCode: 18,
+        message: 'The executable could not be started.',
+      });
+    } finally {
+      stdoutWrite.mockRestore();
+      stderrWrite.mockRestore();
+      delete process.env[AGENT_BROKER_ENV];
+      delete process.env[AGENT_TOKEN_ENV];
+      session.secrets = new Map();
+      await broker.cleanup();
+      state.close();
+      process.exitCode = undefined;
     }
   }, 30_000);
 

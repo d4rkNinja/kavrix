@@ -918,6 +918,7 @@ function addDatastoreProfileCommands(db: Command): void {
     .command('add <id>')
     .description('Add a datastore route without storing connection credentials.');
   addProfileConfigOption(add);
+  add.option('--json', 'Emit machine-readable output.');
   add
     .requiredOption('--datastore <type>', 'Datastore type: mongodb or file.')
     .option(
@@ -949,6 +950,7 @@ function addDatastoreProfileCommands(db: Command): void {
     .command('use <id>')
     .description('Select one datastore profile without changing its routing.');
   addProfileConfigOption(use);
+  use.option('--json', 'Emit machine-readable output.');
   use.action(async (...args: unknown[]) => {
     await handleProfileUse(
       getArgument(args, 'profile ID'),

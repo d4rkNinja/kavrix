@@ -1,6 +1,6 @@
 {
   "name": "kavrix",
-  "version": "0.2.22",
+  "version": "0.2.23",
   "description": "Local-first secrets firewall for developers, applications, and AI agents",
   "license": "MIT",
   "repository": {

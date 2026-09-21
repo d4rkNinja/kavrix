@@ -56,6 +56,19 @@ export function safeCommandName(value: string): string {
   return stripped.length > 64 ? `${stripped.slice(0, 61)}...` : stripped;
 }
 
+/**
+ * Audit-safe bare command name for `argv[0]`, which may arrive as a full
+ * path. Reduces to the basename and returns `undefined` when the result
+ * still cannot satisfy the audit schema's command-name pattern so callers
+ * can omit the field instead of dropping the whole denial event.
+ */
+export function auditCommandName(value: string): string | undefined {
+  const cut = Math.max(value.lastIndexOf('/'), value.lastIndexOf('\\'));
+  const base = cut >= 0 && cut + 1 < value.length ? value.slice(cut + 1) : value;
+  const stripped = safeCommandName(base);
+  return /^[A-Za-z0-9][A-Za-z0-9._+-]*$/u.test(stripped) ? stripped : undefined;
+}
+
 export function boundedPreview(argv: readonly string[]): string[] {
   return argv.slice(0, 8).map(safeCommandName);
 }

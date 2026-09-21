@@ -170,9 +170,10 @@ describe('kavrix agent firewall', () => {
     expect(summary.ran).toBe(true);
     // One raw-socket allow, plus one allow through the real client binary;
     // denials: unknown permission, deny entry, confirmation unavailable,
-    // unresolved executable, and a missing injection mapping.
+    // and a missing injection mapping. A missing executable is spawn-class
+    // EXECUTION_FAILED, not an authorization deny.
     expect(summary.allowedRequests).toBe(3);
-    expect(summary.deniedRequests).toBe(5);
+    expect(summary.deniedRequests).toBe(4);
     // The agent process exited cleanly; its own exit code propagates.
     expect(summary.exitCode).toBe(0);
 
@@ -203,9 +204,10 @@ describe('kavrix agent firewall', () => {
     expect(observation.confirmGate.frames.map((f) => f.reason)).toContain(
       'confirmation-unavailable',
     );
-    expect(observation.unresolved.frames.map((f) => f.reason)).toContain(
-      'executable-unresolved',
-    );
+    expect(observation.unresolved.frames.some((f) => f.outcome === 'deny')).toBe(false);
+    expect(
+      observation.unresolved.frames.find((f) => f.event === 'exit')?.exitCode,
+    ).toBe(18);
     expect(observation.noMapping.frames.map((f) => f.reason)).toContain(
       'no-injection-mapping',
     );

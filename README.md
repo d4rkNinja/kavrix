@@ -66,6 +66,16 @@ Inside an agent session, children inherit broker access and request credentials
 through `kavrix agent exec`. Denials are distinguishable from broken
 connections, and `kavrix audit` records the events.
 
+The firewall is verified end to end: the agent process's environment and
+arguments contain no credential material — only the local broker endpoint and
+a one-session token. Every request is policy-evaluated against the agent's
+permission entries (allowed commands, SHA-256 pins, TTL windows,
+confirmations), the secret is injected into the authorized child only, denials
+never start a child, and both outcomes are recorded in the sealed audit trail.
+A missing or unresolvable broker-side executable reports
+`EXECUTION_FAILED` (exit 18) exactly like `kavrix run` — never a fake
+authorization denial.
+
 ## Policies
 
 ```sh

@@ -36,6 +36,7 @@ import {
 import { AuthorizationState, nowIso } from './authorization-state.js';
 import { requestApproval } from './confirm.js';
 import {
+  CLI_EXIT_CODES,
   CodedCliError,
   executionFailed,
   invalidConfiguration,
@@ -50,8 +51,8 @@ import {
 } from './engine.js';
 import {
   NdjsonDecoder,
+  auditCommandName,
   boundedPreview,
-  safeCommandName,
   streamOutputFrames,
   tokensMatch,
 } from './broker-protocol.js';
@@ -332,9 +333,17 @@ export async function executeAgentExec(options: AgentExecOptions): Promise<unkno
 
   return await new Promise<unknown>((resolvePromise, rejectPromise) => {
     let denialReason: AuthorizationReason | undefined;
+    let allowed = false;
     let finalExit: { exitCode: number | null; signal: string | null } | undefined;
     const decoder = new NdjsonDecoder();
     let settled = false;
+
+    const finishFailure = (error: CodedCliError): void => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      rejectPromise(error);
+    };
 
     const finishSuccess = (): void => {
       if (settled) return;
@@ -394,6 +403,8 @@ export async function executeAgentExec(options: AgentExecOptions): Promise<unkno
             if (frame.data.outcome === 'deny') {
               denialReason = frame.data.reason;
               process.stderr.write(`kavrix agent: denied (${frame.data.reason})\n`);
+            } else {
+              allowed = true;
             }
             break;
           }
@@ -405,6 +416,10 @@ export async function executeAgentExec(options: AgentExecOptions): Promise<unkno
             break;
           case 'exit':
             finalExit = { exitCode: frame.data.exitCode, signal: frame.data.signal };
+            if (!allowed && denialReason === undefined) {
+              finishFailure(cliErrorForChildStart(finalExit.exitCode));
+              break;
+            }
             finishSuccess();
             break;
         }
@@ -493,6 +508,24 @@ function validatedPermission(value: string): string {
     throw invalidConfiguration('Permission names must be opaque identifiers.');
   }
   return value;
+}
+
+/** Child never started: spawn-miss / ENOENT is execution, never a deny. */
+function cliErrorForChildStart(errorOrExit?: unknown): CodedCliError {
+  if (errorOrExit instanceof RunnerError) {
+    return runnerFailure(
+      errorOrExit.code,
+      errorOrExit.code === 'RUNNER_ENVIRONMENT_REJECTED'
+        ? 'A destination variable conflicts with a protected runtime variable.'
+        : 'The executable could not be started.',
+    );
+  }
+  if (errorOrExit === CLI_EXIT_CODES.invalidConfiguration) {
+    return invalidConfiguration(
+      'A destination variable conflicts with a protected runtime variable.',
+    );
+  }
+  return executionFailed('The executable could not be started.');
 }
 
 async function openAgentState(
@@ -779,7 +812,9 @@ function terminateBrokerConnection(
           actor: 'agent',
           action: 'authorization-denied',
           permissionKey: request.permission,
-          command: safeCommandName(request.argv[0] ?? ''),
+          ...(auditCommandName(request.argv[0] ?? '') === undefined
+            ? {}
+            : { command: auditCommandName(request.argv[0] ?? '') }),
           reason: 'invalid-request',
         },
         true,
@@ -912,13 +947,13 @@ async function handleAuthorizedExec(
       exitCode: 1,
       signal: null,
     });
+    const auditedCommand =
+      request.argv.length > 0 ? auditCommandName(request.argv[0] ?? '') : undefined;
     await auditBestEffort(context, {
       actor: 'agent',
       action: 'authorization-denied',
       permissionKey: request.permission,
-      ...(request.argv.length > 0
-        ? { command: safeCommandName(request.argv[0] ?? '') }
-        : {}),
+      ...(auditedCommand === undefined ? {} : { command: auditedCommand }),
       ...(auditReasonOrUndefined(reason) === undefined
         ? {}
         : { reason: auditReasonOrUndefined(reason) }),
@@ -933,7 +968,7 @@ async function handleAuthorizedExec(
 
   const resolution = await resolveExecutable(request.argv[0] ?? '');
   if (resolution.status === 'unresolved') {
-    await deny('executable-unresolved');
+    sendChildStartFailure(socket, context);
     return;
   }
   if (resolution.status === 'refused') {
@@ -999,25 +1034,28 @@ async function handleAuthorizedExec(
     return;
   }
 
-  sendDecisionFrame(socket, context, {
-    v: 1,
-    event: 'decision',
-    outcome: 'allow',
-    reason: decision.reason,
-  });
-  session.counters.allowed += 1;
-  await auditBestEffort(context, {
-    actor: 'agent',
-    action: 'authorization-allowed',
-    permissionKey: request.permission,
-    secret: entry.secret,
-    command: resolution.displayName,
-    ...(request.argv.length > 1
-      ? { argvPreview: boundedPreview(request.argv.slice(1)) }
-      : {}),
-  });
-
   if (context.terminatedHard) return;
+
+  const announceAllow = (): void => {
+    if (context.decisionSent || context.terminatedHard) return;
+    sendDecisionFrame(socket, context, {
+      v: 1,
+      event: 'decision',
+      outcome: 'allow',
+      reason: decision.reason,
+    });
+    session.counters.allowed += 1;
+    void auditBestEffort(context, {
+      actor: 'agent',
+      action: 'authorization-allowed',
+      permissionKey: request.permission,
+      secret: entry.secret,
+      command: resolution.displayName,
+      ...(request.argv.length > 1
+        ? { argvPreview: boundedPreview(request.argv.slice(1)) }
+        : {}),
+    });
+  };
 
   let result;
   try {
@@ -1032,13 +1070,14 @@ async function handleAuthorizedExec(
       input: 'pipe',
       output: { mode: 'pipe' },
       onSpawn(child) {
+        child.once('spawn', announceAllow);
         wireChildRelay(socket, context, child);
       },
       ...(window === undefined ? {} : { timeoutMs: window }),
     });
-  } catch {
+  } catch (error) {
     if (connectionIsTerminated(context)) return;
-    await deny('invalid-request');
+    sendChildStartFailure(socket, context, error);
     return;
   }
 
@@ -1136,6 +1175,20 @@ function sendExitFrame(
   if (context.exitSent) return;
   context.exitSent = true;
   sendServerFrame(socket, frame);
+}
+
+function sendChildStartFailure(
+  socket: Socket,
+  context: ConnectionContext,
+  error?: unknown,
+): void {
+  const coded = cliErrorForChildStart(error);
+  sendExitFrame(socket, context, {
+    v: 1,
+    event: 'exit',
+    exitCode: coded.exitCode,
+    signal: null,
+  });
 }
 
 function sendServerFrame(socket: Socket, frame: AgentBrokerServerFrame): void {
