@@ -1,9 +1,26 @@
 import { chmod, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
+const directories: string[] = [];
+
+afterEach(async () => {
+  const pending = directories.splice(0);
+  await Promise.all(
+    pending.map((directory) =>
+      rm(directory, { force: true, recursive: true }).catch(() => undefined),
+    ),
+  );
+});
+
+import { databaseIdSchema, profileIdSchema, vaultIdSchema } from '@kavrix/schemas';
+
+import { createSecureTestDirectory } from '../../../packages/key-files/test/secure-temporary-directory.js';
+import { runCli } from './execution-helpers.js';
 import { classifyCliFailure } from '../src/cli-errors.js';
+import { DatastoreProfileRegistry } from '../src/datastore-profiles.js';
 import { SessionUnlockError } from '../src/session-unlock.js';
 import { ensureKavrixConfig, getKavrixConfigDir } from '../src/kavrix-config.js';
 
@@ -28,13 +45,48 @@ describe('session unlock error classification', () => {
   });
 });
 
+describe('--session passphrase resolution fail-closed paths', () => {
+  it('list --session on a profile without a session fails with the enable hint', async () => {
+    const directory = await createSecureTestDirectory(
+      join(tmpdir(), 'kavrix-session-miss-'),
+    );
+    directories.push(directory);
+    const configDir = join(directory, 'config');
+    const registry = await DatastoreProfileRegistry.open({
+      configDirectory: configDir,
+    });
+    await registry.add({
+      id: profileIdSchema.parse('default'),
+      datastore: 'file',
+      dataFile: join(directory, 'data.vault'),
+      keyFile: join(directory, 'owner.key'),
+      databaseId: databaseIdSchema.parse('db_sessionmiss'),
+      defaultVaultId: vaultIdSchema.parse('vault_sessionmiss'),
+    });
+    await registry.use(profileIdSchema.parse('default'));
+
+    const result = await runCli(
+      [
+        'list',
+        '--profile',
+        'default',
+        '--profile-config-dir',
+        configDir,
+        '--session',
+        '--json',
+      ],
+      '',
+    );
+    expect(result.code).not.toBe(0);
+    expect(result.stderr).toMatch(/no session unlock/i);
+  });
+});
+
 describe('ensureKavrixConfig self-heal', () => {
   afterEach(async () => {
     // Leave the worker's isolated kavrix home hardened for later tests.
     const { hardenExistingSecureDirectory } = await import('@kavrix/key-files');
-    await hardenExistingSecureDirectory(getKavrixConfigDir()).catch(
-      () => undefined,
-    );
+    await hardenExistingSecureDirectory(getKavrixConfigDir()).catch(() => undefined);
   });
 
   it('hardens an existing unsafe kavrix home and config reference', async () => {
@@ -61,9 +113,7 @@ describe('ensureKavrixConfig self-heal', () => {
 
   it('succeeds on a fresh home and creates the onboarding reference', async () => {
     const kavrixHome = getKavrixConfigDir();
-    await rm(kavrixHome, { force: true, recursive: true }).catch(
-      () => undefined,
-    );
+    await rm(kavrixHome, { force: true, recursive: true }).catch(() => undefined);
 
     const path = await ensureKavrixConfig();
     expect(path.endsWith('config.toml')).toBe(true);
