@@ -7,6 +7,7 @@ export {
   createNativeKeychain,
   createNativeProtectedSyncState,
   createNativeSessionCredentials,
+  NativeSessionUnlockStore,
   NativeKeychain,
   NativeProtectedSyncState,
   NativeSessionCredentials,

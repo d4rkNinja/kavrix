@@ -267,6 +267,24 @@ Grant rows carry their live status (`ACTIVE`, `REVOKED`, `EXPIRED`,
 stay masked end to end — reveal requires `r` then `y`, copy never paints
 plaintext, and unlock material never reaches a process argument.
 
+## Session unlock: stop typing the passphrase
+
+`kavrix session enable` (or the prompt at the end of `kavrix init`) seals your
+unlock material behind the operating system credential store — Windows Hello /
+Credential Manager, macOS Keychain, or Linux Secret Service. After that:
+
+```sh
+kavrix list --session          # unlock with the OS instead of the passphrase
+kavrix session status          # enabled? expired? created?
+kavrix session revoke          # remove it; the passphrase always still works
+```
+
+In `kavrix tui`, `u` uses the session automatically when one is active, and
+the **Session unlock** screen manages enable/remove. Sessions auto-lock after
+their TTL (default 12 hours), either half (keychain entry or sealed file) is
+useless alone, and the passphrase remains the root — nothing about it is
+weakened, stored, or transmitted.
+
 ## Credential model
 
 The structured model supports field definitions such as username, password, API

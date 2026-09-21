@@ -20,6 +20,7 @@ export type AppOverlay =
   | 'confirm-policy-remove'
   | 'confirm-grant-revoke'
   | 'confirm-remove-profile'
+  | 'confirm-session-revoke'
   | 'input-search'
   | 'input-run'
   | 'input-passphrase'
@@ -283,24 +284,7 @@ function keyTransition(
   }
 
   if (key.text?.toLowerCase() === 'u') {
-    if (state.snapshot.home.datastore === 'mongodb') {
-      return unchanged({
-        ...state,
-        overlay: 'input-unlock-mongo-url',
-        query: '',
-        pendingMongoUrl: null,
-        message:
-          'MongoDB URL (masked). Paste works (Ctrl+Shift+V / Cmd+V). Enter continues; Esc cancels.',
-      });
-    }
-    return unchanged({
-      ...state,
-      overlay: 'input-passphrase',
-      query: '',
-      pendingMongoUrl: null,
-      message:
-        'Unlock vault — enter passphrase (masked). Paste works (Ctrl+Shift+V / Cmd+V). Enter unlocks; Esc cancels.',
-    });
+    return unlockIntent(state);
   }
   if (key.text?.toLowerCase() === 'l') {
     return unchanged({ ...state, overlay: 'confirm-lock' });
@@ -308,6 +292,45 @@ function keyTransition(
 
   if (state.screen === 'home') return homeKey(state, key);
   return screenKey(state, key);
+}
+
+/**
+ * `u` resolves the unlock path: an enabled, unexpired OS session unlocks
+ * immediately through the keychain; otherwise the passphrase overlay opens.
+ */
+function unlockIntent(state: AppRouterState): AppRouterTransition {
+  const session = state.snapshot.session;
+  if (session.enabled && !session.expired) {
+    return effect(state, {
+      kind: 'backend',
+      action: { type: 'session-unlock' },
+    });
+  }
+  if (session.enabled && session.expired) {
+    return unchanged({
+      ...state,
+      message:
+        'Session unlock has expired; unlock with the passphrase, then enable a new session on the Session screen.',
+    });
+  }
+  if (state.snapshot.home.datastore === 'mongodb') {
+    return unchanged({
+      ...state,
+      overlay: 'input-unlock-mongo-url',
+      query: '',
+      pendingMongoUrl: null,
+      message:
+        'MongoDB URL (masked). Paste works (Ctrl+Shift+V / Cmd+V). Enter continues; Esc cancels.',
+    });
+  }
+  return unchanged({
+    ...state,
+    overlay: 'input-passphrase',
+    query: '',
+    pendingMongoUrl: null,
+    message:
+      'Unlock vault — enter passphrase (masked). Paste works (Ctrl+Shift+V / Cmd+V). Enter unlocks; Esc cancels.',
+  });
 }
 
 function homeKey(state: AppRouterState, key: AppKey): AppRouterTransition {
@@ -541,6 +564,34 @@ function screenKey(state: AppRouterState, key: AppKey): AppRouterTransition {
       });
     }
   }
+  if (state.screen === 'session') {
+    if (key.text?.toLowerCase() === 'n') {
+      if (!state.snapshot.home.unlocked) {
+        return unchanged({
+          ...state,
+          message:
+            'Unlock with the passphrase first (u); enabling stores that unlock behind the OS credential store.',
+        });
+      }
+      return effect(state, {
+        kind: 'backend',
+        action: { type: 'session-enable' },
+      });
+    }
+    if (key.text?.toLowerCase() === 'x') {
+      if (!state.snapshot.session.enabled) {
+        return unchanged({
+          ...state,
+          message: 'No session unlock to remove; n enables one after unlock.',
+        });
+      }
+      return unchanged({
+        ...state,
+        overlay: 'confirm-session-revoke',
+        message: 'Remove session unlock? The passphrase will be required again. y/n',
+      });
+    }
+  }
   if (state.screen === 'policy') {
     if (key.text?.toLowerCase() === 'n') {
       return unchanged({
@@ -742,6 +793,22 @@ function overlayKey(
         overlay: 'none',
         pendingName: null,
         message: 'Remove cancelled.',
+      });
+    }
+    return unchanged(state);
+  }
+  if (state.overlay === 'confirm-session-revoke') {
+    if (key.text?.toLowerCase() === 'y') {
+      return effect(
+        { ...state, overlay: 'none' },
+        { kind: 'backend', action: { type: 'session-revoke' } },
+      );
+    }
+    if (key.text?.toLowerCase() === 'n' || key.name === 'escape') {
+      return unchanged({
+        ...state,
+        overlay: 'none',
+        message: 'Session removal cancelled.',
       });
     }
     return unchanged(state);
@@ -1639,6 +1706,8 @@ function activateSelection(state: AppRouterState): AppRouterTransition {
         message: `Revoke recovery slot '${slot.slotId}'? y/n`,
       });
     }
+    case 'session':
+      return effect(state, { kind: 'backend', action: { type: 'refresh-session' } });
     case 'policy':
       return effect(state, { kind: 'backend', action: { type: 'refresh-policy' } });
     case 'browse':

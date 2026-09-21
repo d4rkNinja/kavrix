@@ -1174,3 +1174,110 @@ describe('0.2.22 TUI CRUD discoverability and new flows', () => {
     expect(frameText).toMatch(/x remove \(key\/data files are kept\)/i);
   });
 });
+
+describe('0.2.24 session unlock TUI', () => {
+  const sessionSnapshot = {
+    ...sampleSnapshot(),
+    session: {
+      enabled: true,
+      expired: false,
+      createdAt: '2026-01-01T00:00:00.000Z',
+      ttlHours: 12,
+    },
+  };
+
+  it('u dispatches session-unlock when a session is enabled', () => {
+    const state = { ...navigateToScreen(hydrate(), 'home'), snapshot: sessionSnapshot };
+    const result = transitionAppRouter(state, {
+      type: 'key',
+      key: { text: 'u' },
+      nowMs: 0,
+    });
+    expect(result.effect).toEqual({
+      kind: 'backend',
+      action: { type: 'session-unlock' },
+    });
+  });
+
+  it('u falls back to the passphrase overlay without a session', () => {
+    const noSession = {
+      ...navigateToScreen(hydrate(), 'home'),
+      snapshot: {
+        ...sampleSnapshot(),
+        session: { enabled: false, expired: false, createdAt: null, ttlHours: null },
+      },
+    };
+    const result = transitionAppRouter(noSession, {
+      type: 'key',
+      key: { text: 'u' },
+      nowMs: 0,
+    });
+    expect(result.state.overlay).toBe('input-passphrase');
+  });
+
+  it('u reports an expired session instead of unlocking', () => {
+    const expired = {
+      ...navigateToScreen(hydrate(), 'home'),
+      snapshot: {
+        ...sampleSnapshot(),
+        session: { enabled: true, expired: true, createdAt: null, ttlHours: 12 },
+      },
+    };
+    const result = transitionAppRouter(expired, {
+      type: 'key',
+      key: { text: 'u' },
+      nowMs: 0,
+    });
+    expect(result.effect).toEqual({ kind: 'none' });
+    expect(result.state.message).toMatch(/expired/i);
+  });
+
+  it('session screen renders active session rows and enable hint when off', () => {
+    const active = frame({
+      ...navigateToScreen(hydrate(), 'session'),
+      snapshot: {
+        ...sampleSnapshot(),
+        session: {
+          enabled: true,
+          expired: false,
+          createdAt: '2026-01-01T00:00:00.000Z',
+          ttlHours: 12,
+        },
+      },
+    });
+    expect(active).toContain('ACTIVE session unlock');
+    const off = frame({
+      ...navigateToScreen(hydrate(), 'session'),
+      snapshot: {
+        ...sampleSnapshot(),
+        session: { enabled: false, expired: false, createdAt: null, ttlHours: null },
+      },
+    });
+    expect(off).toMatch(/No session unlock for this profile/i);
+  });
+
+  it('x on session screen confirms then dispatches session-revoke', () => {
+    let state: AppRouterState = {
+      ...navigateToScreen(hydrate(), 'session'),
+      snapshot: {
+        ...sampleSnapshot(),
+        session: { enabled: true, expired: false, createdAt: null, ttlHours: null },
+      },
+    };
+    state = transitionAppRouter(state, {
+      type: 'key',
+      key: { text: 'x' },
+      nowMs: 0,
+    }).state;
+    expect(state.overlay).toBe('confirm-session-revoke');
+    const confirmed = transitionAppRouter(state, {
+      type: 'key',
+      key: { text: 'y' },
+      nowMs: 0,
+    });
+    expect(confirmed.effect).toEqual({
+      kind: 'backend',
+      action: { type: 'session-revoke' },
+    });
+  });
+});

@@ -435,6 +435,35 @@ function renderOnboardingBody(state: OnboardingState): ReactElement {
     );
   }
 
+  if (state.step === 'enable-session') {
+    return (
+      <Panel
+        title="Session unlock"
+        accent={CHROME.accent}
+        ascii={state.ascii}
+        color={state.color}
+        paddingX={1}
+        paddingY={1}
+      >
+        <Text bold {...accentColor(state.color, CHROME.success)}>
+          {safe('SETUP COMPLETE', state.ascii)}
+        </Text>
+        <Text>
+          {safe(
+            'Enable OS session unlock? Future unlocks then use Windows Hello / the OS credential store instead of the passphrase.',
+            state.ascii,
+          )}
+        </Text>
+        <Text {...accentColor(state.color, CHROME.muted)}>
+          {safe(
+            'Enter = enable now · Esc = skip (passphrase always still works; enable later from the Session screen)',
+            state.ascii,
+          )}
+        </Text>
+      </Panel>
+    );
+  }
+
   if (state.step === 'success') {
     return (
       <Panel

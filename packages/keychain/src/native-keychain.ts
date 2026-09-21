@@ -20,6 +20,10 @@ import {
   type SessionCredentialLocator,
   type SessionCredentialSecret,
   type VaultId,
+  sessionUnlockLocatorSchema,
+  sessionUnlockSecretSchema,
+  type SessionUnlockLocator,
+  type SessionUnlockSecret,
 } from '@kavrix/schemas';
 import {
   SyncLocalStateError,
@@ -115,6 +119,41 @@ function parseStoredDeviceSecret(secret: Uint8Array): DeviceUnlockSecret {
     throw new KeychainError(
       'KEYCHAIN_CORRUPTED',
       'The native credential store returned invalid remembered material.',
+    );
+  }
+  return parsed.data;
+}
+
+function sessionUnlockAccountFor(locatorInput: SessionUnlockLocator): string {
+  const parsed = sessionUnlockLocatorSchema.safeParse(locatorInput);
+  if (!parsed.success) {
+    throw new KeychainError(
+      'KEYCHAIN_OPERATION_FAILED',
+      'Invalid secure-storage locator.',
+    );
+  }
+  const locator = parsed.data;
+  return `v1:session-unlock:${locator.account}`;
+}
+
+function parseSessionUnlockSecret(secret: Uint8Array): SessionUnlockSecret {
+  const parsed = sessionUnlockSecretSchema.safeParse(secret);
+  if (!parsed.success) {
+    throw new KeychainError(
+      'KEYCHAIN_OPERATION_FAILED',
+      'Session unlock secrets must contain exactly 32 bytes.',
+    );
+  }
+  return parsed.data;
+}
+
+function parseStoredSessionUnlockSecret(secret: Uint8Array): SessionUnlockSecret {
+  const parsed = sessionUnlockSecretSchema.safeParse(secret);
+  if (!parsed.success) {
+    secret.fill(0);
+    throw new KeychainError(
+      'KEYCHAIN_CORRUPTED',
+      'The native credential store returned invalid session-unlock material.',
     );
   }
   return parsed.data;
@@ -366,6 +405,53 @@ export class NativeSessionCredentials implements SessionCredentialPort {
 
   public async delete(
     locator: SessionCredentialLocator,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    return this.#store.delete(locator, signal);
+  }
+}
+
+/**
+ * Native-only storage for local session-unlock wrapping keys. Each entry is
+ * scoped to one derived account name (profile/database binding, never a raw
+ * path) and protected by the operating system credential store — Windows
+ * Credential Manager / macOS Keychain / Linux Secret Service. There is
+ * intentionally no file fallback.
+ */
+export class NativeSessionUnlockStore {
+  readonly #store: NativeSecretStore<SessionUnlockLocator, SessionUnlockSecret>;
+
+  public constructor(
+    createEntry: NativeEntryFactory,
+    service = DEFAULT_KEYCHAIN_SERVICE,
+  ) {
+    assertSafeService(service);
+    this.#store = new NativeSecretStore(
+      createEntry,
+      service,
+      sessionUnlockAccountFor,
+      parseSessionUnlockSecret,
+      parseStoredSessionUnlockSecret,
+    );
+  }
+
+  public async store(
+    locator: SessionUnlockLocator,
+    secret: SessionUnlockSecret,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    return this.#store.store(locator, secret, signal);
+  }
+
+  public async load(
+    locator: SessionUnlockLocator,
+    signal?: AbortSignal,
+  ): Promise<SessionUnlockSecret | null> {
+    return this.#store.load(locator, signal);
+  }
+
+  public async delete(
+    locator: SessionUnlockLocator,
     signal?: AbortSignal,
   ): Promise<void> {
     return this.#store.delete(locator, signal);

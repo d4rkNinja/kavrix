@@ -59,7 +59,15 @@ export interface AppHomeStatus {
   readonly message: string;
 }
 
+export interface AppSessionStatus {
+  readonly enabled: boolean;
+  readonly expired: boolean;
+  readonly createdAt: string | null;
+  readonly ttlHours: number | null;
+}
+
 export interface AppSnapshot {
+  readonly session: AppSessionStatus;
   readonly home: AppHomeStatus;
   readonly profiles: readonly AppProfileSummary[];
   readonly vaults: readonly AppVaultSummary[];
@@ -114,6 +122,10 @@ export type AppBackendAction =
       databaseUrl?: string;
     }>
   | Readonly<{ type: 'lock' }>
+  | Readonly<{ type: 'session-unlock' }>
+  | Readonly<{ type: 'session-enable' }>
+  | Readonly<{ type: 'session-revoke' }>
+  | Readonly<{ type: 'refresh-session' }>
   | Readonly<{ type: 'reveal-credential'; name: string }>
   /** Copy secret to clipboard without returning plaintext to the TUI. */
   | Readonly<{ type: 'copy-credential'; name: string }>
@@ -173,6 +185,7 @@ export interface InteractiveAppBackend {
 
 export function emptySnapshot(notice: string | null = null): AppSnapshot {
   return {
+    session: { enabled: false, expired: false, createdAt: null, ttlHours: null },
     home: {
       profileId: null,
       vaultId: null,
@@ -201,6 +214,7 @@ export function listScreenInventory(): readonly AppScreenId[] {
     'profiles',
     'vaults',
     'credentials',
+    'session',
     'doctor',
     'recovery',
     'run',

@@ -65,6 +65,7 @@ export default defineConfig({
       'apps/cli/test/live-qa-p1-0.2.20.test.ts',
       'apps/cli/test/live-qa-tui-crud.test.ts',
       'apps/cli/test/live-qa-agent-broker.test.ts',
+      'apps/cli/test/live-qa-session-unlock.test.ts',
       'apps/cli/test/agent-broker-deny-audit.test.ts',
       'apps/cli/test/execution-executable.test.ts',
       'apps/cli/test/execution-engine.test.ts',

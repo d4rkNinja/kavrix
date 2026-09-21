@@ -144,6 +144,20 @@ export function classifyCliFailure(error: unknown): Readonly<{
   if (error instanceof LocalCliError) {
     return { message: error.message, exitCode: 1 };
   }
+  if (
+    typeof error === 'object' &&
+    error !== null &&
+    (error as { name?: unknown }).name === 'SessionUnlockError' &&
+    typeof (error as { code?: unknown }).code === 'string'
+  ) {
+    // Tampering is integrity; expiry/configuration is operator setup; an
+    // unavailable OS credential store degrades to the datastore exit code.
+    const code = (error as { code: string }).code;
+    const message = (error as Error).message;
+    if (code === 'tampered') return { message, exitCode: 16 };
+    if (code === 'keychain-unavailable') return { message, exitCode: 15 };
+    return { message, exitCode: 14 };
+  }
   // Bundle/runtime module-load failures are safe to surface: they never carry
   // vault secrets and otherwise collapse to a generic line that hides the fix.
   if (

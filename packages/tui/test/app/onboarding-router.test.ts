@@ -119,9 +119,23 @@ describe('init onboarding router', () => {
       profileId: 'default',
       datastore: 'file',
     });
-    expect(next.state.step).toBe('success');
-    expect(next.state.completed).toBe(true);
-    expect(next.state.completedProfileId).toBe('default');
+    // Create success now lands on the enable-session ask (0.2.24).
+    expect(next.state.step).toBe('enable-session');
+    expect(next.state.completed).toBe(false);
+    expect(next.state.passphrase).toBeNull();
+    expect(next.state.message).toMatch(/Enable OS session unlock/i);
+
+    const enable = transitionOnboarding(next.state, {
+      type: 'backend-result',
+      ok: true,
+      notice: 'Session unlock enabled.',
+      profileId: 'default',
+      datastore: 'file',
+    });
+    expect(enable.state.step).toBe('success');
+    expect(enable.state.completed).toBe(true);
+    expect(enable.state.completedProfileId).toBe('default');
+    expect(enable.state.passphrase).toBeNull();
   });
 
   it('rejects mismatched passphrase confirm', () => {
@@ -333,7 +347,16 @@ describe('init onboarding router', () => {
       profileId: 'default',
       datastore: 'file',
     });
-    expect(next.state.step).toBe('success');
-    expect(next.state.completedRecoveryFile).toBe('/home/user/.kavrix/kavrix.recovery');
+    expect(next.state.step).toBe('enable-session');
+    const finish = transitionOnboarding(next.state, {
+      type: 'backend-result',
+      ok: true,
+      notice: 'ok',
+      profileId: 'default',
+      datastore: 'file',
+    });
+    expect(finish.state.completedRecoveryFile).toBe(
+      '/home/user/.kavrix/kavrix.recovery',
+    );
   });
 });

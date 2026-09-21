@@ -97,6 +97,12 @@ function overlayCopy(
         body: 'Revoke grant? y/n',
         accent: 'yellow',
       };
+    case 'confirm-session-revoke':
+      return {
+        title: 'Remove session',
+        body: 'Remove session unlock? The passphrase will be required again. y/n',
+        accent: 'yellow',
+      };
     case 'confirm-remove-profile':
       return {
         title: 'Remove profile',
@@ -299,7 +305,13 @@ export function AppChrome({
           />
           <StatusPill
             label="lock"
-            value={home.unlocked ? 'open' : 'locked'}
+            value={
+              home.unlocked && state.snapshot.session.enabled
+                ? 'open·session'
+                : home.unlocked
+                  ? 'open'
+                  : 'locked'
+            }
             accent={home.unlocked ? CHROME.success : CHROME.warning}
             color={color}
             ascii={ascii}
@@ -460,6 +472,14 @@ function footerChips(screen: AppRouterState['screen']): readonly Readonly<{
         { keyLabel: 'n', hint: 'create kit', accent: key },
         { keyLabel: 'v', hint: 'verify kit', accent: key },
         { keyLabel: 'x', hint: 'revoke', accent: CHROME.danger },
+        ...commonTail,
+      ];
+    case 'session':
+      return [
+        { keyLabel: 'n', hint: 'enable', accent: key },
+        { keyLabel: 'x', hint: 'remove', accent: CHROME.danger },
+        { keyLabel: 'Enter', hint: 'refresh', accent: key },
+        { keyLabel: 'j/k', hint: 'move', accent: key },
         ...commonTail,
       ];
     case 'doctor':
@@ -796,6 +816,41 @@ export function CredentialsScreen({
   );
 }
 
+export function SessionScreen({
+  state,
+}: Readonly<{ state: AppRouterState }>): ReactElement {
+  const { color, ascii, snapshot } = state;
+  const session = snapshot.session;
+  const rows = session.enabled
+    ? [
+        {
+          id: 'session-state',
+          primary: `${session.expired ? 'EXPIRED' : 'ACTIVE'} session unlock`,
+          secondary: session.expired
+            ? 'Unlock with the passphrase (u), then press n to enable a new session.'
+            : `Created ${session.createdAt ?? 'unknown'} · auto-lock ${String(session.ttlHours ?? 0)}h`,
+        },
+      ]
+    : [];
+  return (
+    <Box flexDirection="column" flexGrow={1}>
+      <ListScreen
+        state={state}
+        title="Session unlock (OS keychain)"
+        accent={CHROME.accent}
+        empty="No session unlock for this profile. Unlock with the passphrase (u), then press n to enable."
+        rows={rows}
+      />
+      <Text {...accentColor(color, CHROME.muted)}>
+        {safe(
+          'n = enable (after passphrase unlock) · x = remove · Enter = refresh status',
+          ascii,
+        )}
+      </Text>
+    </Box>
+  );
+}
+
 export function DoctorScreen({
   state,
 }: Readonly<{ state: AppRouterState }>): ReactElement {
@@ -1065,6 +1120,7 @@ export function HelpScreen({
     'Profiles: Enter use · n file · m mongodb · x remove (key/data files are kept)',
     'Vaults: Enter use · n create a new vault in the selected database (unlock first)',
     'Session: u unlock · l lock (clears revealed state)',
+    'Session unlock: n enable (after passphrase unlock) · x remove · Enter refresh — future u unlocks use the OS credential store',
     'Doctor / heal: d (local health, not key recovery). Recovery kit: n/c create · v verify · Enter/x revoke',
     'Run: p (project-file --environment is CLI-only). Agent: g dry-run.',
     'Policy: n create · x remove · g create grant · r revoke grant · Enter refresh',
@@ -1151,6 +1207,8 @@ export function renderActiveScreen(state: AppRouterState): ReactElement {
       return <VaultsScreen state={state} />;
     case 'credentials':
       return <CredentialsScreen state={state} />;
+    case 'session':
+      return <SessionScreen state={state} />;
     case 'doctor':
       return <DoctorScreen state={state} />;
     case 'recovery':

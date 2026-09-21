@@ -217,6 +217,10 @@ export type LocalCliOptions = Readonly<{
   limit?: string;
   caseSensitive?: boolean;
   allowInsecureTransport?: boolean;
+  /** Unlock with the stored OS session (keychain-gated) instead of prompting. */
+  session?: boolean;
+  /** Session lifetime in hours for `kavrix session enable`. */
+  ttlHours?: string;
 }>;
 
 export function buildLocalCli(): Command {
@@ -553,6 +557,99 @@ export function buildLocalCli(): Command {
   rename.action(async (...args: unknown[]) => {
     const names = getNames(args);
     await handleRename(names[0], names[1], getOptions(args));
+  });
+
+  const sessionCommand = program
+    .command('session')
+    .description(
+      'Manage OS session unlock: keychain-gated convenience sessions for the selected profile.',
+    );
+
+  const sessionEnable = sessionCommand
+    .command('enable')
+    .description(
+      'Seal the unlock material for the selected profile behind the OS credential store.',
+    );
+  addDatastoreProfileSelectionOptions(sessionEnable);
+  sessionEnable
+    .option(
+      '--ttl-hours <hours>',
+      'Session lifetime in hours after enable (default 12; 1-8760).',
+    )
+    .option(
+      '--passphrase-stdin',
+      'Read the key-file passphrase from standard input (never from an argument).',
+    )
+    .option('--json', 'Emit machine-readable output.');
+  sessionEnable.action(async (...args: unknown[]) => {
+    const options = getOptions(args);
+    const target = await currentSessionTarget(options);
+    // Enable must not touch the vault datastore: only the passphrase is read.
+    const input = new LocalSecretInput(process.stdin, process.stderr);
+    const values = await input.read(['passphrase'], options.passphraseStdin === true);
+    const passphrase = requiredSecret(values, 0);
+    const ttlRaw = options.ttlHours;
+    const ttlHours = ttlRaw === undefined ? undefined : Number.parseInt(ttlRaw, 10);
+    if (
+      ttlHours !== undefined &&
+      (!Number.isInteger(ttlHours) || ttlHours < 1 || ttlHours > 8760)
+    ) {
+      throw new LocalCliError('--ttl-hours must be an integer between 1 and 8760.');
+    }
+    const { enableSessionUnlock } = await import('./session-unlock.js');
+    const status = await enableSessionUnlock({
+      target: {
+        profileId: target.profileId,
+        databaseId: target.databaseId,
+        keyFile: target.keyFile,
+      },
+      passphrase,
+      ttlHours,
+    });
+    writeJson({
+      enabled: true,
+      profileId: target.profileId,
+      createdAt: status.createdAt,
+      ttlHours: status.ttlHours,
+    });
+  });
+
+  const sessionStatus = sessionCommand
+    .command('status')
+    .description('Show whether a session unlock is enabled for the selected profile.');
+  addDatastoreProfileSelectionOptions(sessionStatus);
+  sessionStatus.option('--json', 'Emit machine-readable output (the default).');
+  sessionStatus.action(async (...args: unknown[]) => {
+    const options = getOptions(args);
+    const target = await currentSessionTarget(options);
+    const { sessionUnlockStatus } = await import('./session-unlock.js');
+    const status = await sessionUnlockStatus({
+      target: {
+        profileId: target.profileId,
+        databaseId: target.databaseId,
+        keyFile: target.keyFile,
+      },
+    });
+    writeJson({ profileId: target.profileId, ...status });
+  });
+
+  const sessionRevoke = sessionCommand
+    .command('revoke')
+    .description('Remove the stored session unlock for the selected profile.');
+  addDatastoreProfileSelectionOptions(sessionRevoke);
+  sessionRevoke.option('--json', 'Emit machine-readable output (the default).');
+  sessionRevoke.action(async (...args: unknown[]) => {
+    const options = getOptions(args);
+    const target = await currentSessionTarget(options);
+    const { revokeSessionUnlock } = await import('./session-unlock.js');
+    await revokeSessionUnlock({
+      target: {
+        profileId: target.profileId,
+        databaseId: target.databaseId,
+        keyFile: target.keyFile,
+      },
+    });
+    writeJson({ revoked: true, profileId: target.profileId });
   });
 
   const doctor = program
@@ -1327,6 +1424,10 @@ function addDatabaseOptions(command: Command): void {
   command.option(
     '--passphrase-stdin',
     'Read the key-file passphrase from standard input (never from an argument).',
+  );
+  command.option(
+    '--session',
+    'Unlock with the stored OS session (keychain-gated) instead of the passphrase.',
   );
 }
 
@@ -4823,16 +4924,75 @@ async function readSecrets(
       'Use stdin flags for every secret in a command, or use masked prompts for all of them.',
     );
   }
+  // --session replaces the passphrase prompt with the stored OS session
+  // material; everything else (MongoDB URL frames, labels) is read as usual.
+  let sessionPassphrase: string | undefined;
+  let promptKinds = requestedKinds;
+  if (options.session === true) {
+    if (!requestedKinds.includes('passphrase')) {
+      throw new LocalCliError(
+        'This command does not read a passphrase; --session cannot apply.',
+      );
+    }
+    sessionPassphrase = await sessionPassphraseFor(options);
+    promptKinds = requestedKinds.filter((kind) => kind !== 'passphrase');
+  }
   const values =
-    requestedKinds.length === 0 ? [] : await input.read(requestedKinds, anyStdin);
+    promptKinds.length === 0 ? [] : await input.read(promptKinds, anyStdin);
   let index = 0;
   return kinds.map((kind) => {
     if (kind === 'database-url' && datastore === 'file') return '';
+    if (kind === 'passphrase' && sessionPassphrase !== undefined) {
+      return sessionPassphrase;
+    }
     const value = values[index];
     index += 1;
     if (value === undefined) throw new LocalCliError('Secret input is incomplete.');
     return value;
   });
+}
+
+/**
+ * Resolves the stored session material for the selected profile. Fails with
+ * actionable errors when no session exists or the session cannot be trusted.
+ */
+async function sessionPassphraseFor(options: LocalCliOptions): Promise<string> {
+  const { sessionPassphraseForOptions } = await import('./session-unlock-cli.js');
+  const target = await currentSessionTarget(options);
+  return sessionPassphraseForOptions(options, {
+    id: target.profileId,
+    databaseId: target.databaseId,
+    keyFile: target.keyFile,
+  } as Parameters<typeof sessionPassphraseForOptions>[1]);
+}
+
+/** The active profile binding that a session credential is keyed to. */
+async function currentSessionTarget(options: LocalCliOptions): Promise<{
+  readonly profileId: string;
+  readonly databaseId: string | undefined;
+  readonly keyFile: string;
+}> {
+  const { DatastoreProfileRegistry } = await import('./datastore-profiles.js');
+  const registry = await DatastoreProfileRegistry.openIfPresent({
+    ...(options.profileConfigDir === undefined
+      ? {}
+      : { configDirectory: options.profileConfigDir }),
+  });
+  if (registry === null) {
+    throw new LocalCliError('No datastore profile is selected.');
+  }
+  const profile =
+    options.profile === undefined
+      ? await registry.current()
+      : await registry.get(profileIdSchema.parse(options.profile));
+  if (profile === null) {
+    throw new LocalCliError('No datastore profile is selected.');
+  }
+  return {
+    profileId: profile.id,
+    databaseId: profile.databaseId,
+    keyFile: profile.keyFile,
+  };
 }
 
 function requiredSecret(values: readonly string[], index: number): string {

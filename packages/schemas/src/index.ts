@@ -18,6 +18,7 @@ export * from './policy.js';
 export * from './primitives.js';
 export * from './rotation.js';
 export * from './session-lifetime.js';
+export * from './session-unlock.js';
 export * from './sync.js';
 export * from './templates.js';
 export * from './transfer.js';

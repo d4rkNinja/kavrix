@@ -23,6 +23,12 @@ import { copySecretToClipboard } from './tui-clipboard.js';
  * runtime imports so the CLI bundle does not pull Ink into every command.
  */
 export interface CliTuiSnapshot {
+  readonly session: Readonly<{
+    enabled: boolean;
+    expired: boolean;
+    createdAt: string | null;
+    ttlHours: number | null;
+  }>;
   readonly home: {
     readonly profileId: string | null;
     readonly vaultId: string | null;
@@ -117,6 +123,10 @@ export type CliTuiAction =
       databaseUrl?: string;
     }>
   | Readonly<{ type: 'lock' }>
+  | Readonly<{ type: 'session-unlock' }>
+  | Readonly<{ type: 'session-enable' }>
+  | Readonly<{ type: 'session-revoke' }>
+  | Readonly<{ type: 'refresh-session' }>
   | Readonly<{ type: 'reveal-credential'; name: string }>
   | Readonly<{ type: 'copy-credential'; name: string }>
   | Readonly<{ type: 'put-credential'; name: string; value: string }>
@@ -306,6 +316,18 @@ class CliTuiSession {
           this.#notice = 'Session locked; secrets cleared.';
           this.#noticeTone = 'success';
           break;
+        case 'session-unlock':
+          await this.#unlockWithSession();
+          break;
+        case 'session-enable':
+          await this.#sessionEnable();
+          break;
+        case 'session-revoke':
+          await this.#sessionRevoke();
+          break;
+        case 'refresh-session':
+          await this.#refreshSessionStatus();
+          break;
         case 'reveal-credential': {
           const revealed = await this.#reveal(action.name);
           const snapshot = await this.#buildSnapshot();
@@ -403,6 +425,7 @@ class CliTuiSession {
             },
           ];
     return {
+      session: await this.#sessionStatus(),
       home: {
         profileId: current?.id ?? null,
         vaultId: this.#vaultId ?? current?.defaultVaultId ?? null,
@@ -629,6 +652,148 @@ class CliTuiSession {
    * db profile add → db profile use → db init → db vault create → db vault use.
    * Secrets travel only as stdin frames (`--passphrase-stdin`).
    */
+  /** Current session target from the active profile; null when none. */
+  async #sessionTarget(): Promise<{
+    profileId: string;
+    databaseId: string | undefined;
+    keyFile: string;
+  } | null> {
+    const registry = await DatastoreProfileRegistry.openIfPresent({
+      ...(this.#options.profileConfigDir === undefined
+        ? {}
+        : { configDirectory: this.#options.profileConfigDir }),
+    });
+    if (registry === null) return null;
+    const profile = await registry.current();
+    if (profile === null) return null;
+    return {
+      profileId: profile.id,
+      databaseId: profile.databaseId,
+      keyFile: profile.keyFile,
+    };
+  }
+
+  async #sessionStatus(): Promise<{
+    enabled: boolean;
+    expired: boolean;
+    createdAt: string | null;
+    ttlHours: number | null;
+  }> {
+    const target = await this.#sessionTarget();
+    if (target === null) {
+      return { enabled: false, expired: false, createdAt: null, ttlHours: null };
+    }
+    const { sessionUnlockStatus } = await import('./session-unlock.js');
+    try {
+      return await sessionUnlockStatus({
+        target: {
+          profileId: target.profileId,
+          databaseId: target.databaseId,
+          keyFile: target.keyFile,
+        },
+      });
+    } catch {
+      return { enabled: false, expired: false, createdAt: null, ttlHours: null };
+    }
+  }
+
+  async #refreshSessionStatus(): Promise<void> {
+    const status = await this.#sessionStatus();
+    this.#notice = status.enabled
+      ? status.expired
+        ? 'Session unlock has expired; unlock with the passphrase and enable a new session.'
+        : `Session unlock enabled (${String(status.ttlHours ?? 0)}h TTL).`
+      : 'No session unlock for the selected profile; unlock with the passphrase, then enable one on the Session screen.';
+    this.#noticeTone = status.enabled
+      ? status.expired
+        ? 'warning'
+        : 'success'
+      : 'info';
+  }
+
+  async #unlockWithSession(): Promise<void> {
+    const target = await this.#sessionTarget();
+    if (target === null) {
+      throw new Error('Select a profile before using session unlock.');
+    }
+    const { resolveSessionUnlock, SessionUnlockError } =
+      await import('./session-unlock.js');
+    let material: { readonly passphrase: string } | null;
+    try {
+      material = await resolveSessionUnlock({
+        target: {
+          profileId: target.profileId,
+          databaseId: target.databaseId,
+          keyFile: target.keyFile,
+        },
+      });
+    } catch (error) {
+      if (error instanceof SessionUnlockError && error.code === 'expired') {
+        throw new Error(
+          'Session unlock has expired; unlock with the passphrase (u), then enable a new session on the Session screen.',
+          { cause: error },
+        );
+      }
+      if (error instanceof SessionUnlockError && error.code === 'tampered') {
+        throw new Error(
+          'The stored session unlock failed authentication; revoke it on the Session screen and unlock with the passphrase.',
+          { cause: error },
+        );
+      }
+      throw new Error(
+        'The operating system credential store is unavailable; unlock with the passphrase (u).',
+        { cause: error },
+      );
+    }
+    if (material === null) {
+      throw new Error(
+        'No session unlock is enabled; unlock with the passphrase (u), then enable one on the Session screen.',
+      );
+    }
+    await this.#unlock(material.passphrase);
+    this.#notice = 'Unlocked with the OS session (keychain-gated).';
+    this.#noticeTone = 'success';
+  }
+
+  async #sessionEnable(): Promise<void> {
+    if (this.#passphrase === null) {
+      throw new Error('Unlock before enabling session unlock.');
+    }
+    const target = await this.#sessionTarget();
+    if (target === null) {
+      throw new Error('Select a profile before enabling session unlock.');
+    }
+    const { enableSessionUnlock } = await import('./session-unlock.js');
+    await enableSessionUnlock({
+      target: {
+        profileId: target.profileId,
+        databaseId: target.databaseId,
+        keyFile: target.keyFile,
+      },
+      passphrase: this.#passphrase.toString('utf8'),
+    });
+    this.#notice =
+      'Session unlock enabled: future unlocks use the OS credential store (auto-lock applies).';
+    this.#noticeTone = 'success';
+  }
+
+  async #sessionRevoke(): Promise<void> {
+    const target = await this.#sessionTarget();
+    if (target === null) {
+      throw new Error('Select a profile before revoking session unlock.');
+    }
+    const { revokeSessionUnlock } = await import('./session-unlock.js');
+    await revokeSessionUnlock({
+      target: {
+        profileId: target.profileId,
+        databaseId: target.databaseId,
+        keyFile: target.keyFile,
+      },
+    });
+    this.#notice = 'Session unlock revoked; the passphrase is required to unlock.';
+    this.#noticeTone = 'success';
+  }
+
   async #createFileProfile(
     action: Extract<CliTuiAction, { type: 'create-file-profile' }>,
   ): Promise<void> {

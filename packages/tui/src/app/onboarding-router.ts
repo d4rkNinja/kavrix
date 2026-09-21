@@ -34,6 +34,7 @@ export type OnboardingStep =
   | 'mongo-recovery-passphrase-confirm'
   | 'mongo-recovery-file'
   | 'creating'
+  | 'enable-session'
   | 'success'
   | 'error';
 
@@ -64,6 +65,8 @@ export interface OnboardingState {
   readonly width: number;
   readonly height: number;
   readonly quit: boolean;
+  /** True while the post-create session-enable round trip is in flight. */
+  readonly sessionAttempt: boolean;
   readonly completed: boolean;
   readonly completedProfileId: string | null;
   readonly completedDatastore: OnboardingStorage | null;
@@ -120,6 +123,7 @@ export function createInitialOnboardingState(
     height: Math.max(12, options.height ?? 24),
     quit: false,
     completed: false,
+    sessionAttempt: false,
     completedProfileId: null,
     completedDatastore: null,
     completedRecoveryFile: null,
@@ -139,7 +143,9 @@ export function transitionOnboarding(
   }
 
   if (action.type === 'backend-result') {
-    if (action.ok) {
+    // The post-create session-enable round trip never fails setup: the vault
+    // already exists, so any outcome lands on success with guidance.
+    if (state.step === 'enable-session') {
       return unchanged({
         ...state,
         step: 'success',
@@ -147,12 +153,25 @@ export function transitionOnboarding(
         passphrase: null,
         recoveryPassphrase: null,
         databaseUrl: null,
-        message: action.notice ?? 'Vault ready.',
+        message: action.ok
+          ? 'Session unlock enabled — future unlocks use the OS credential store.'
+          : 'Setup complete; session unlock could not be enabled. Enable it later from the Session screen in kavrix tui.',
         error: null,
+        sessionAttempt: false,
         completed: true,
         completedProfileId: action.profileId,
         completedDatastore: action.datastore ?? state.storage,
         completedRecoveryFile: state.recoveryFile,
+      });
+    }
+    if (action.ok) {
+      return unchanged({
+        ...state,
+        step: 'enable-session',
+        query: '',
+        message:
+          'Setup complete. Enable OS session unlock (Windows Hello / keychain)? Enter = yes · Esc = skip',
+        error: null,
       });
     }
     return unchanged({
@@ -188,6 +207,31 @@ function keyTransition(
       quit: true,
       message: 'Setup cancelled.',
     });
+  }
+
+  if (state.step === 'enable-session') {
+    if (key.name === 'return') {
+      return {
+        state: { ...state, sessionAttempt: true, message: 'Enabling session unlock…' },
+        effect: { kind: 'backend', action: { type: 'session-enable' } },
+      };
+    }
+    if (key.name === 'escape' || key.text?.toLowerCase() === 'q') {
+      return unchanged({
+        ...state,
+        step: 'success',
+        query: '',
+        passphrase: null,
+        recoveryPassphrase: null,
+        databaseUrl: null,
+        message:
+          'Setup complete. You can enable session unlock later from the Session screen.',
+        error: null,
+        sessionAttempt: false,
+        completed: true,
+      });
+    }
+    return unchanged(state);
   }
 
   if (state.step === 'success') {
@@ -976,6 +1020,7 @@ const FILE_FOCUS_STEPS: readonly OnboardingStep[] = [
   'file-recovery-passphrase-confirm',
   'file-recovery-file',
   'creating',
+  'enable-session',
   'success',
 ];
 
@@ -992,6 +1037,7 @@ const MONGO_FOCUS_STEPS: readonly OnboardingStep[] = [
   'mongo-recovery-passphrase-confirm',
   'mongo-recovery-file',
   'creating',
+  'enable-session',
   'success',
 ];
 
@@ -1055,6 +1101,8 @@ function onboardingFocusTitle(step: OnboardingStep): string {
       return 'Recovery kit path';
     case 'creating':
       return 'Creating vault';
+    case 'enable-session':
+      return 'Session unlock';
     case 'success':
       return 'Setup complete';
     case 'error':

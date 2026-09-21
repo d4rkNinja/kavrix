@@ -37,6 +37,8 @@ export type DatabaseFlatCommandOptions = Readonly<{
   database?: string;
   collection?: string;
   keyFile?: string;
+  /** Unlock with the stored OS session (keychain-gated) instead of prompting. */
+  session?: boolean;
   routingOverrides?: DatastoreProfileRoutingOverrides;
   databaseUrlStdin?: boolean;
   passphraseStdin?: boolean;
@@ -171,12 +173,28 @@ export async function readDatabaseFlatSecrets(
       `${named} Use stdin flags for every secret in a command, or use masked prompts for all of them.`,
     );
   }
-  const values = await new LocalSecretInput(process.stdin, process.stderr).read(
-    kinds,
-    anyStdin,
-  );
+  let values: readonly string[];
+  let sessionPassphrase: string | undefined;
+  if (options.session === true) {
+    const { sessionPassphraseForOptions } = await import('./session-unlock-cli.js');
+    sessionPassphrase = await sessionPassphraseForOptions(options, profile);
+    const remaining = kinds.filter((kind) => kind !== 'passphrase');
+    values = [
+      ...(remaining.length === 0
+        ? []
+        : await new LocalSecretInput(process.stdin, process.stderr).read(
+            remaining,
+            anyStdin,
+          )),
+    ];
+  } else {
+    values = await new LocalSecretInput(process.stdin, process.stderr).read(
+      kinds,
+      anyStdin,
+    );
+  }
   const offset = profile.datastore === 'mongodb' ? 1 : 0;
-  const passphrase = values[offset];
+  const passphrase = sessionPassphrase ?? values[offset];
   if (passphrase === undefined) {
     throw new DatabaseFlatCommandError('Secret input is incomplete.');
   }

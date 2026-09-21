@@ -40,3 +40,34 @@ export type DeviceUnlockSecret = z.infer<typeof deviceUnlockSecretSchema>;
 export type KeychainLocator = z.infer<typeof keychainLocatorSchema>;
 export type SessionCredentialSecret = z.infer<typeof sessionCredentialSecretSchema>;
 export type SessionCredentialLocator = z.infer<typeof sessionCredentialLocatorSchema>;
+
+/**
+ * Keychain account name for one local session-unlock credential. It is a
+ * opaque, profile-scoped label derived by the CLI (never a raw path or raw
+ * profile id), bounded so keychain backends accept it verbatim.
+ */
+export const sessionUnlockAccountSchema = z
+  .string()
+  .min(16)
+  .max(96)
+  .regex(/^[a-z0-9][a-z0-9._-]*$/u, 'Session unlock account names must be opaque');
+
+/** Raw bytes for one canonical 32-byte session-unlock wrapping key. */
+export const sessionUnlockSecretSchema = z
+  .instanceof(Uint8Array)
+  .refine((value) => value.byteLength === 32, {
+    error: 'Session unlock secrets must contain exactly 32 bytes',
+  })
+  .brand<'SessionUnlockSecret'>();
+
+/** A local session-unlock credential is keyed by its derived account name. */
+export const sessionUnlockLocatorSchema = z
+  .object({
+    version: z.literal(1),
+    purpose: z.literal('session-unlock'),
+    account: sessionUnlockAccountSchema,
+  })
+  .strict();
+
+export type SessionUnlockSecret = z.infer<typeof sessionUnlockSecretSchema>;
+export type SessionUnlockLocator = z.infer<typeof sessionUnlockLocatorSchema>;

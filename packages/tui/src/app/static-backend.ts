@@ -425,6 +425,10 @@ export function createStaticAppBackend(
         case 'use-vault':
         case 'create-vault':
         case 'remove-profile':
+        case 'session-unlock':
+        case 'session-enable':
+        case 'session-revoke':
+        case 'refresh-session':
           snapshot = {
             ...snapshot,
             notice: `${action.type} requires the CLI-hosted vault backend.`,
