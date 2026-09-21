@@ -584,10 +584,6 @@ export function buildLocalCli(): Command {
   sessionEnable.action(async (...args: unknown[]) => {
     const options = getOptions(args);
     const target = await currentSessionTarget(options);
-    // Enable must not touch the vault datastore: only the passphrase is read.
-    const input = new LocalSecretInput(process.stdin, process.stderr);
-    const values = await input.read(['passphrase'], options.passphraseStdin === true);
-    const passphrase = requiredSecret(values, 0);
     const ttlRaw = options.ttlHours;
     const ttlHours = ttlRaw === undefined ? undefined : Number.parseInt(ttlRaw, 10);
     if (
@@ -596,6 +592,10 @@ export function buildLocalCli(): Command {
     ) {
       throw new LocalCliError('--ttl-hours must be an integer between 1 and 8760.');
     }
+    // Enable must not touch the vault datastore: only the passphrase is read.
+    const input = new LocalSecretInput(process.stdin, process.stderr);
+    const values = await input.read(['passphrase'], options.passphraseStdin === true);
+    const passphrase = requiredSecret(values, 0);
     const { enableSessionUnlock } = await import('./session-unlock.js');
     const status = await enableSessionUnlock({
       target: {

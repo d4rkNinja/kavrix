@@ -85,6 +85,62 @@ describe('--session passphrase resolution fail-closed paths', () => {
 });
 
 describe('ensureKavrixConfig self-heal', () => {
+  it('session enable rejects an out-of-range TTL without touching the keychain', async () => {
+    const directory = await createSecureTestDirectory(
+      join(tmpdir(), 'kavrix-session-ttl-'),
+    );
+    directories.push(directory);
+    const registry = await DatastoreProfileRegistry.open({
+      configDirectory: join(directory, 'config'),
+    });
+    await registry.add({
+      id: profileIdSchema.parse('default'),
+      datastore: 'file',
+      dataFile: join(directory, 'data.vault'),
+      keyFile: join(directory, 'owner.key'),
+    });
+    await registry.use(profileIdSchema.parse('default'));
+
+    const result = await runCli(
+      [
+        'session',
+        'enable',
+        '--profile',
+        'default',
+        '--profile-config-dir',
+        join(directory, 'config'),
+        '--ttl-hours',
+        '0',
+        '--passphrase-stdin',
+        '--json',
+      ],
+      ['anything'],
+    );
+    expect(result.code).not.toBe(0);
+    expect(result.stderr).toMatch(/--ttl-hours/i);
+  });
+
+  it('session status with an unknown profile fails with guidance', async () => {
+    const directory = await createSecureTestDirectory(
+      join(tmpdir(), 'kavrix-session-unknown-'),
+    );
+    directories.push(directory);
+    const result = await runCli(
+      [
+        'session',
+        'status',
+        '--profile',
+        'nope',
+        '--profile-config-dir',
+        join(directory, 'config'),
+        '--json',
+      ],
+      '',
+    );
+    expect(result.code).not.toBe(0);
+    expect(result.stderr.length).toBeGreaterThan(0);
+  });
+
   it('session status without any profile fails with guidance', async () => {
     const directory = await createSecureTestDirectory(
       join(tmpdir(), 'kavrix-session-noprofile-'),
