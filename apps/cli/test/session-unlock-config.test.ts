@@ -1,24 +1,11 @@
 import { chmod, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { createSecureTestDirectory } from '../../../packages/key-files/test/secure-temporary-directory.js';
 import { classifyCliFailure } from '../src/cli-errors.js';
 import { SessionUnlockError } from '../src/session-unlock.js';
-import { ensureKavrixConfig } from '../src/kavrix-config.js';
-
-const directories: string[] = [];
-
-afterEach(async () => {
-  const pending = directories.splice(0);
-  await Promise.all(
-    pending.map((directory) =>
-      rm(directory, { force: true, recursive: true }).catch(() => undefined),
-    ),
-  );
-});
+import { ensureKavrixConfig, getKavrixConfigDir } from '../src/kavrix-config.js';
 
 describe('session unlock error classification', () => {
   it('maps session unlock failure codes to stable exit codes', () => {
@@ -42,21 +29,26 @@ describe('session unlock error classification', () => {
 });
 
 describe('ensureKavrixConfig self-heal', () => {
-  it('hardens an existing unsafe kavrix home and config reference', async () => {
-    const directory = await createSecureTestDirectory(
-      join(tmpdir(), 'kavrix-config-heal-'),
+  afterEach(async () => {
+    // Leave the worker's isolated kavrix home hardened for later tests.
+    const { hardenExistingSecureDirectory } = await import('@kavrix/key-files');
+    await hardenExistingSecureDirectory(getKavrixConfigDir()).catch(
+      () => undefined,
     );
-    directories.push(directory);
-    const kavrixHome = join(directory, '.kavrix');
-    await mkdir(kavrixHome, { mode: 0o755 });
+  });
+
+  it('hardens an existing unsafe kavrix home and config reference', async () => {
+    // The vitest isolated-home setup redirects HOME/USERPROFILE per worker,
+    // so getKavrixConfigDir() is a hermetic per-run directory.
+    const kavrixHome = getKavrixConfigDir();
+    await mkdir(kavrixHome, { recursive: true, mode: 0o755 });
     if (process.platform !== 'win32') {
       await chmod(kavrixHome, 0o755);
     }
     const configPath = join(kavrixHome, 'config.toml');
     await writeFile(configPath, '# stale unsafe reference\n', { mode: 0o644 });
     if (process.platform !== 'win32') {
-      const { chmod: rechmod } = await import('node:fs/promises');
-      await rechmod(configPath, 0o644);
+      await chmod(configPath, 0o644);
     }
 
     const path = await ensureKavrixConfig();
@@ -68,12 +60,10 @@ describe('ensureKavrixConfig self-heal', () => {
   });
 
   it('succeeds on a fresh home and creates the onboarding reference', async () => {
-    const directory = await createSecureTestDirectory(
-      join(tmpdir(), 'kavrix-config-fresh-'),
+    const kavrixHome = getKavrixConfigDir();
+    await rm(kavrixHome, { force: true, recursive: true }).catch(
+      () => undefined,
     );
-    directories.push(directory);
-    const kavrixHome = join(directory, '.kavrix');
-    await mkdir(kavrixHome, { mode: 0o700 });
 
     const path = await ensureKavrixConfig();
     expect(path.endsWith('config.toml')).toBe(true);
