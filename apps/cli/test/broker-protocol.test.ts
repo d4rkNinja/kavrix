@@ -6,6 +6,7 @@ import {
   BrokerFrameTooLargeError,
   MAX_FRAME_BYTES,
   NdjsonDecoder,
+  auditCommandName,
   boundedPreview,
   safeCommandName,
   tokensMatch,
@@ -82,5 +83,26 @@ describe('argv sanitization for audit previews', () => {
     const preview = boundedPreview(['1', '2', '3', '4', '5', '6', '7', '8', '9', '10']);
     expect(preview).toHaveLength(8);
     expect(preview).toEqual(['1', '2', '3', '4', '5', '6', '7', '8']);
+  });
+});
+
+describe('auditCommandName', () => {
+  it('reduces full paths to schema-valid bare names', () => {
+    expect(auditCommandName('C:\\Program Files\\nodejs\\node.exe')).toBe('node.exe');
+    expect(auditCommandName('/usr/local/bin/node')).toBe('node');
+    expect(auditCommandName('node')).toBe('node');
+    expect(auditCommandName('./tool.js')).toBe('tool.js');
+  });
+
+  it('bounds length and rejects names that only qualify after replacement', () => {
+    const long = `${'a'.repeat(80)}.exe`;
+    expect(auditCommandName(long)).toHaveLength(64);
+    expect(auditCommandName('a\tb')).toBeUndefined();
+  });
+
+  it('returns undefined for names that cannot qualify for the audit schema', () => {
+    expect(auditCommandName('-leading-dash')).toBeUndefined();
+    expect(auditCommandName('/')).toBeUndefined();
+    expect(auditCommandName('')).toBeUndefined();
   });
 });

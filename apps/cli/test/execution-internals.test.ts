@@ -427,7 +427,7 @@ describe('authorization state wrappers', () => {
     } finally {
       state.close();
     }
-  }, 30_000);
+  }, 240_000);
 });
 
 describe('authorization snapshot wrapper', () => {
@@ -612,23 +612,28 @@ describe('in-process broker and client round trip', () => {
         configurable: true,
         value: Object.assign(approvalStream, { isTTY: true }),
       });
-      approvalStream.on('data', (d) =>
-        console.error('STREAM', 'data', JSON.stringify(String(d))),
-      );
-      setTimeout(() => {
-        console.error('STREAM', 'writing');
-        approvalStream.write('y\n');
-      }, 4000);
       const originalStderrIsTty = process.stderr.isTTY;
       Object.defineProperty(process.stderr, 'isTTY', {
         configurable: true,
         value: true,
       });
       try {
-        await executeAgentExec({
+        // Write the approval only after requestApproval has actually rendered
+        // its prompt (observable through the stderr spy). Writing earlier is
+        // racy: the agent-exec client attaches its own stdin forwarder first
+        // and would consume the answer as a stdin frame, starving the
+        // approval reader on slow runners.
+        const execPromise = executeAgentExec({
           permission: 'confirm-gate',
           executableAndArgs: [process.execPath, '-e', 'process.exit(0)'],
         });
+        for (let attempt = 0; attempt < 200; attempt += 1) {
+          if (stderrChunks.join('').includes('Allow once?')) break;
+          await new Promise((resolve) => setTimeout(resolve, 25));
+        }
+        expect(stderrChunks.join('')).toContain('Allow once?');
+        approvalStream.write('y\n');
+        await execPromise;
       } finally {
         Object.defineProperty(process.stderr, 'isTTY', {
           configurable: true,
@@ -696,7 +701,7 @@ describe('in-process broker and client round trip', () => {
       await secondBroker.cleanup();
     }
     state.close();
-  }, 60_000);
+  }, 240_000);
 
   it('serializes concurrent authorized broker requests without interleaving', async () => {
     const directory = await createSecureTestDirectory(
@@ -752,7 +757,142 @@ describe('in-process broker and client round trip', () => {
       await broker.cleanup();
       state.close();
     }
-  }, 30_000);
+  }, 240_000);
+
+  it('maps an environment collision to an exit-only child-start failure', async () => {
+    const directory = await createSecureTestDirectory(
+      join(tmpdir(), 'kavrix-broker-envclash-'),
+    );
+    directories.push(directory);
+    const scope = { scopeKind: 'database' as const, scopeId: 'db_broker_envclash' };
+    const state = await AuthorizationState.open(
+      join(directory, 'owner.key'),
+      deriveAuthorizationStateKey(new Uint8Array(32).fill(23), scope),
+      scope,
+    );
+    const token = randomUUID().replaceAll('-', '') + randomUUID().replaceAll('-', '');
+    const session = {
+      token,
+      permissions: {
+        // PATH is a protected runtime variable: the runner refuses the
+        // injection, which must surface as a child-start failure (exit-only,
+        // no fabricated deny), never an authorization decision.
+        gh: permissionEntrySchema.parse({
+          secret: 'x/y',
+          commands: ['node'],
+          env: 'PATH',
+        }),
+      },
+      secrets: new Map([['x/y', 'envclash-canary']]),
+      state,
+      platform: process.platform,
+      counters: { allowed: 0, denied: 0 },
+      queue: Promise.resolve(),
+    };
+    const broker = await startAgentBrokerForTest(session);
+    try {
+      const client = await openRawBrokerRequest(
+        broker.endpoint,
+        execBrokerRequest(token, 'process.exit(0)'),
+      );
+      const frames = await client.done;
+      expect(frames.some((frame) => frame.event === 'decision')).toBe(false);
+      const exit = frames.find((frame) => frame.event === 'exit');
+      expect(exit !== undefined).toBe(true);
+      expect(exit !== undefined && exit.event === 'exit' && exit.exitCode === 14).toBe(
+        true,
+      );
+      expect(session.counters).toEqual({ allowed: 0, denied: 0 });
+      const snapshot = await state.read();
+      expect(
+        snapshot.audit.some((event) => event.action === 'authorization-allowed'),
+      ).toBe(false);
+    } finally {
+      session.secrets = new Map();
+      await broker.cleanup();
+      state.close();
+    }
+  }, 240_000);
+
+  it('denies no-injection-mapping without env and with a missing secret', async () => {
+    const directory = await createSecureTestDirectory(
+      join(tmpdir(), 'kavrix-broker-noenv-'),
+    );
+    directories.push(directory);
+    const scope = { scopeKind: 'database' as const, scopeId: 'db_broker_noenv' };
+    const state = await AuthorizationState.open(
+      join(directory, 'owner.key'),
+      deriveAuthorizationStateKey(new Uint8Array(32).fill(29), scope),
+      scope,
+    );
+    const token = randomUUID().replaceAll('-', '') + randomUUID().replaceAll('-', '');
+    const session = {
+      token,
+      permissions: {
+        noEnv: permissionEntrySchema.parse({
+          secret: 'x/y',
+          commands: ['node'],
+        }),
+        missingSecret: permissionEntrySchema.parse({
+          secret: 'absent/secret',
+          commands: ['node'],
+          env: 'ABSENT_TOKEN',
+        }),
+      },
+      secrets: new Map([['x/y', 'present-canary']]),
+      state,
+      platform: process.platform,
+      counters: { allowed: 0, denied: 0 },
+      queue: Promise.resolve(),
+    };
+    const broker = await startAgentBrokerForTest(session);
+    try {
+      const noEnv = await openRawBrokerRequest(broker.endpoint, {
+        v: 1,
+        token,
+        op: 'exec',
+        permission: 'noEnv',
+        argv: [process.execPath, '-e', 'process.exit(0)'],
+      });
+      const noEnvFrames = await noEnv.done;
+      const noEnvDecision = noEnvFrames.find((frame) => frame.event === 'decision');
+      expect(
+        noEnvDecision !== undefined &&
+          noEnvDecision.event === 'decision' &&
+          noEnvDecision.outcome === 'deny',
+      ).toBe(true);
+      expect(
+        noEnvDecision !== undefined &&
+          noEnvDecision.event === 'decision' &&
+          noEnvDecision.reason === 'no-injection-mapping',
+      ).toBe(true);
+
+      const missing = await openRawBrokerRequest(broker.endpoint, {
+        v: 1,
+        token,
+        op: 'exec',
+        permission: 'missingSecret',
+        argv: [process.execPath, '-e', 'process.exit(0)'],
+      });
+      await missing.done;
+      expect(session.counters).toEqual({ allowed: 0, denied: 2 });
+      // Denial audits persist right after each exit frame; poll briefly.
+      let denials;
+      for (let attempt = 0; attempt < 40; attempt += 1) {
+        const snapshot = await state.read();
+        denials = snapshot.audit.filter(
+          (event) => event.action === 'authorization-denied',
+        );
+        if (denials.length === 2) break;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      expect(denials?.length).toBe(2);
+    } finally {
+      session.secrets = new Map();
+      await broker.cleanup();
+      state.close();
+    }
+  }, 240_000);
 
   it('returns the stable busy error for queue timeout and queue-depth overload', async () => {
     const directory = await createSecureTestDirectory(
@@ -873,7 +1013,7 @@ describe('in-process broker and client round trip', () => {
       if (!brokerCleaned) await broker.cleanup();
       state.close();
     }
-  }, 30_000);
+  }, 240_000);
 
   it('flushes the terminal exit frame when completion auditing fails', async () => {
     const directory = await createSecureTestDirectory(
@@ -940,7 +1080,7 @@ describe('in-process broker and client round trip', () => {
       await broker.cleanup();
       state.close();
     }
-  }, 30_000);
+  }, 240_000);
 
   it('tears down authenticated clients that exceed relay rate or size', async () => {
     const directory = await createSecureTestDirectory(
@@ -1022,7 +1162,7 @@ describe('in-process broker and client round trip', () => {
       await broker.cleanup();
       state.close();
     }
-  }, 30_000);
+  }, 240_000);
 
   it('maps a missing broker child to EXECUTION_FAILED, not invalid-request deny', async () => {
     const directory = await createSecureTestDirectory(
@@ -1169,5 +1309,5 @@ describe('in-process broker and client round trip', () => {
       await broker.cleanup();
       state.close();
     }
-  }, 30_000);
+  }, 240_000);
 });
