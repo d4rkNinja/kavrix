@@ -158,55 +158,75 @@ foreach ($c in $vault.RetrieveAll()) {
 }
 
 function windowsPort(account: string): SessionUnlockPort {
+  // PasswordVault occasionally rejects operations transiently on loaded
+  // runners (and while shard processes contend for the user vault); retry a
+  // bounded number of times with linear backoff, mirroring the ACL helper.
+  const withRetry = async (script: string, env?: Record<string, string>) => {
+    let lastError: unknown;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        await runCommand(
+          WINDOWS_POWERSHELL_ROOT,
+          [
+            '-NoLogo',
+            '-NoProfile',
+            '-NonInteractive',
+            '-ExecutionPolicy',
+            'Bypass',
+            '-Command',
+            script,
+          ],
+          { ...(env === undefined ? {} : { env }), allowNotFound: true },
+        );
+        return;
+      } catch (error) {
+        lastError = error;
+        await new Promise((resolve) => setTimeout(resolve, 150 * (attempt + 1)));
+      }
+    }
+    throw lastError;
+  };
   return {
     store: async (valueB64) => {
       // The base64 wrapping key rides in the child's own environment (never
       // argv, never a shell): this helper exists to receive exactly this
       // value, and its lifetime is the store operation only.
-      await runCommand(
-        WINDOWS_POWERSHELL_ROOT,
-        [
-          '-NoLogo',
-          '-NoProfile',
-          '-NonInteractive',
-          '-ExecutionPolicy',
-          'Bypass',
-          '-Command',
-          windowsScript('store', account),
-        ],
-        { env: { KAVRIX_KEYCHAIN_VALUE: valueB64 } },
-      );
+      await withRetry(windowsScript('store', account), {
+        KAVRIX_KEYCHAIN_VALUE: valueB64,
+      });
     },
     load: async () => {
-      const out = await runCommand(
-        WINDOWS_POWERSHELL_ROOT,
-        [
-          '-NoLogo',
-          '-NoProfile',
-          '-NonInteractive',
-          '-ExecutionPolicy',
-          'Bypass',
-          '-Command',
-          windowsScript('load', account),
-        ],
-        { allowNotFound: true },
-      );
-      return out === null || out.length === 0 ? null : out;
+      const script = windowsScript('load', account);
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        try {
+          const out = await runCommand(
+            WINDOWS_POWERSHELL_ROOT,
+            [
+              '-NoLogo',
+              '-NoProfile',
+              '-NonInteractive',
+              '-ExecutionPolicy',
+              'Bypass',
+              '-Command',
+              script,
+            ],
+            { allowNotFound: true },
+          );
+          return out === null || out.length === 0 ? null : out;
+        } catch (error) {
+          if (attempt === 2) {
+            if (error instanceof SessionUnlockError && error.code === 'unavailable') {
+              return null;
+            }
+            throw error;
+          }
+          await new Promise((resolve) => setTimeout(resolve, 150 * (attempt + 1)));
+        }
+      }
+      return null;
     },
     remove: async () => {
-      await runCommand(
-        WINDOWS_POWERSHELL_ROOT,
-        [
-          '-NoLogo',
-          '-NoProfile',
-          '-NonInteractive',
-          '-ExecutionPolicy',
-          'Bypass',
-          '-Command',
-          windowsScript('remove', account),
-        ],
-        { allowNotFound: true },
-      );
+      await withRetry(windowsScript('remove', account));
     },
   };
 }
