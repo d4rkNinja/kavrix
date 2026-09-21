@@ -176,9 +176,7 @@ describe('ensureKavrixConfig self-heal', () => {
       '',
     );
     expect(result.code).not.toBe(0);
-    expect(result.stderr).toMatch(
-      /no session unlock|credential store is unavailable/i,
-    );
+    expect(result.stderr).toMatch(/no session unlock|credential store is unavailable/i);
   });
 
   it('session status without any profile fails with guidance', async () => {
