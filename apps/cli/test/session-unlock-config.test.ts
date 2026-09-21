@@ -141,6 +141,46 @@ describe('ensureKavrixConfig self-heal', () => {
     expect(result.stderr.length).toBeGreaterThan(0);
   });
 
+  it('mongodb list --session fails closed when no session exists', async () => {
+    const directory = await createSecureTestDirectory(
+      join(tmpdir(), 'kavrix-session-mongo-'),
+    );
+    directories.push(directory);
+    const configDir = join(directory, 'config');
+    const registry = await DatastoreProfileRegistry.open({
+      configDirectory: configDir,
+    });
+    await registry.add({
+      id: profileIdSchema.parse('mongo'),
+      datastore: 'mongodb',
+      database: 'kavrix_qa',
+      databaseCollection: 'kavrix_databases',
+      vaultCollection: 'kavrix_vaults',
+      keyFile: join(directory, 'mongo.key'),
+      databaseId: databaseIdSchema.parse('db_mongoqa'),
+      defaultVaultId: vaultIdSchema.parse('vault_mongoqa'),
+    });
+    await registry.use(profileIdSchema.parse('mongo'));
+
+    // Fails at session resolution before any MongoDB connection is attempted.
+    const result = await runCli(
+      [
+        'list',
+        '--profile',
+        'mongo',
+        '--profile-config-dir',
+        configDir,
+        '--session',
+        '--json',
+      ],
+      '',
+    );
+    expect(result.code).not.toBe(0);
+    expect(result.stderr).toMatch(
+      /no session unlock|credential store is unavailable/i,
+    );
+  });
+
   it('session status without any profile fails with guidance', async () => {
     const directory = await createSecureTestDirectory(
       join(tmpdir(), 'kavrix-session-noprofile-'),
