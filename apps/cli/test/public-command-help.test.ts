@@ -151,7 +151,8 @@ describe('public command help contract', () => {
 
     // These counts make intentional public-surface changes explicit while the
     // tree-derived loop below automatically exercises the resulting routes.
-    expect(routes.canonical).toHaveLength(105);
+    // 0.2.24: + session, session enable, session status, session revoke.
+    expect(routes.canonical).toHaveLength(109);
     expect(routes.aliases).toHaveLength(17);
 
     for (const route of [...routes.canonical, ...routes.aliases]) {
