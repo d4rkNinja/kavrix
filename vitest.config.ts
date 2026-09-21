@@ -140,6 +140,13 @@ export default defineConfig({
         // apps/cli/test/self-update.test.ts; remaining platform and registry
         // branches tip the global threshold when large features land together.
         'apps/cli/src/self-update.ts',
+        // Session unlock's OS keychain ports and protected-file flow are
+        // exercised by the live Windows journey (live-qa-session-unlock,
+        // win32-gated) — Linux CI skips it, which would otherwise drop the
+        // global branch threshold below the gate. The crypto core it calls
+        // (packages/crypto/src/session-unlock.ts) stays inside coverage.
+        'apps/cli/src/session-unlock.ts',
+        'apps/cli/src/session-unlock-cli.ts',
       ],
       thresholds: {
         branches: 80,
