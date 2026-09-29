@@ -507,7 +507,7 @@ wrong key, tamper, size limits). TUI coverage in
 `packages/tui/test/app/router.test.ts` (60) and onboarding router updated
 for the enable-session step (16).
 
-## 0.3.0 CI acceptance split
+## 0.2.25 CI acceptance split
 
 No product-behavior changes; the published CLI bits are identical to 0.2.24.
 This release ships the CI change that keeps Windows verify shards test-only:
