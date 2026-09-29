@@ -507,6 +507,30 @@ wrong key, tamper, size limits). TUI coverage in
 `packages/tui/test/app/router.test.ts` (60) and onboarding router updated
 for the enable-session step (16).
 
+## 0.3.0 CI execution parallelism
+
+No product-behavior changes; the published CLI bits are identical to 0.2.24.
+This release ships the CI/test-execution optimization that replaces serial
+Windows verify shards (51–71 minutes each) with bounded-parallel execution:
+
+- Vitest file parallelism is enabled on Windows with an explicit
+  `maxWorkers: 4` budget (`vitest.config.ts`). Files were previously
+  serialized per shard, which capped each Windows CI shard at one file at a
+  time. Safety rests on existing hermeticity: the isolated-home setup gives
+  each worker its own hardened `HOME`/`USERPROFILE`, database/ACL fixtures
+  live under per-worker temporary directories, and the only machine-global
+  resource — the Windows PasswordVault journey
+  (`apps/cli/test/live-qa-session-unlock.test.ts`) — remains sequential
+  because vitest runs a single file inside a single worker. The bounded
+  worker budget prevents oversubscribing 4-vCPU hosted runners, where
+  unbounded parallelism starves real-CLI child processes past their
+  deadlines (verified: the ten starvation-sensitive files pass 134/134 with
+  four workers).
+- The packed-database/all-commands/packed-CLI acceptance steps moved from
+  Windows verify shard 1 into a parallel `windows-acceptance` CI job so they
+  no longer extend the slowest shard, and the verify timeout drops from 90
+  to 45 minutes.
+
 ## Security properties
 
 - plaintext labels, values, DRKs, VRKs, and unlock keys do not cross the storage boundary;

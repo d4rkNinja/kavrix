@@ -38,15 +38,16 @@ jobs:
   verify:
     name: Verify (${{ matrix.label }})
     runs-on: ${{ matrix.runner }}
-    # Windows shards run serially and are file-duration-skewed; retain enough
-    # headroom for the complete security suite instead of cancelling a valid run.
-    timeout-minutes: 90
+    # Windows shards run bounded-parallel test files (see vitest.config.ts
+    # maxWorkers) and remain file-duration-skewed; retain enough headroom for
+    # the complete security suite instead of cancelling a valid run.
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
         # Job-level `if` cannot use `matrix` (GitHub rejects the workflow). Select
         # the PR-trimmed vs full matrix via fromJSON instead of full_ci_only flags.
-        include: ${{ fromJSON(github.event_name == 'pull_request' && '[{"label":"Linux x64","runner":"ubuntu-24.04","expected_arch":"x64"},{"label":"macOS arm64","runner":"macos-15","expected_arch":"arm64"},{"label":"Windows x64 · shard 1/4","runner":"windows-2025","expected_arch":"x64","shard":"1/4","runs_acceptance":true},{"label":"Windows x64 · shard 2/4","runner":"windows-2025","expected_arch":"x64","shard":"2/4"},{"label":"Windows x64 · shard 3/4","runner":"windows-2025","expected_arch":"x64","shard":"3/4"},{"label":"Windows x64 · shard 4/4","runner":"windows-2025","expected_arch":"x64","shard":"4/4"}]' || '[{"label":"Linux x64","runner":"ubuntu-24.04","expected_arch":"x64"},{"label":"Linux arm64","runner":"ubuntu-24.04-arm","expected_arch":"arm64"},{"label":"macOS x64","runner":"macos-15-intel","expected_arch":"x64"},{"label":"macOS arm64","runner":"macos-15","expected_arch":"arm64"},{"label":"Windows x64 · shard 1/4","runner":"windows-2025","expected_arch":"x64","shard":"1/4","runs_acceptance":true},{"label":"Windows x64 · shard 2/4","runner":"windows-2025","expected_arch":"x64","shard":"2/4"},{"label":"Windows x64 · shard 3/4","runner":"windows-2025","expected_arch":"x64","shard":"3/4"},{"label":"Windows x64 · shard 4/4","runner":"windows-2025","expected_arch":"x64","shard":"4/4"}]') }}
+        include: ${{ fromJSON(github.event_name == 'pull_request' && '[{"label":"Linux x64","runner":"ubuntu-24.04","expected_arch":"x64"},{"label":"macOS arm64","runner":"macos-15","expected_arch":"arm64"},{"label":"Windows x64 · shard 1/4","runner":"windows-2025","expected_arch":"x64","shard":"1/4"},{"label":"Windows x64 · shard 2/4","runner":"windows-2025","expected_arch":"x64","shard":"2/4"},{"label":"Windows x64 · shard 3/4","runner":"windows-2025","expected_arch":"x64","shard":"3/4"},{"label":"Windows x64 · shard 4/4","runner":"windows-2025","expected_arch":"x64","shard":"4/4"}]' || '[{"label":"Linux x64","runner":"ubuntu-24.04","expected_arch":"x64"},{"label":"Linux arm64","runner":"ubuntu-24.04-arm","expected_arch":"arm64"},{"label":"macOS x64","runner":"macos-15-intel","expected_arch":"x64"},{"label":"macOS arm64","runner":"macos-15","expected_arch":"arm64"},{"label":"Windows x64 · shard 1/4","runner":"windows-2025","expected_arch":"x64","shard":"1/4"},{"label":"Windows x64 · shard 2/4","runner":"windows-2025","expected_arch":"x64","shard":"2/4"},{"label":"Windows x64 · shard 3/4","runner":"windows-2025","expected_arch":"x64","shard":"3/4"},{"label":"Windows x64 · shard 4/4","runner":"windows-2025","expected_arch":"x64","shard":"4/4"}]') }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
@@ -79,14 +80,38 @@ jobs:
           else
             pnpm test
           fi
+
+  windows-acceptance:
+    name: Windows acceptance
+    runs-on: windows-2025
+    # Packed-database journeys, every-command coverage, and the packed public
+    # CLI smoke test. Split from the verify shards so the acceptance steps add
+    # their duration to a parallel job instead of extending the slowest shard.
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: 11.21.0
+          run_install: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: 24.19.0
+          cache: pnpm
+      - name: Verify runner architecture
+        env:
+          EXPECTED_ARCH: x64
+        shell: bash
+        run: node --input-type=module -e "if (process.arch !== process.env.EXPECTED_ARCH) process.exit(1)"
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
       - name: Exercise packed database profiles, multi-vault storage, and migration
-        if: ${{ matrix.runs_acceptance == true }}
         run: pnpm acceptance:database-container
       - name: Exercise every applicable command through the packed local-file CLI
-        if: ${{ matrix.runs_acceptance == true }}
         run: pnpm acceptance:pre-ci
       - name: Install and smoke-test the packed public CLI
-        if: ${{ matrix.runs_acceptance == true }}
         run: pnpm --filter kavrix --fail-if-no-match package:smoke
 
   runtime-range:
