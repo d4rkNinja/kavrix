@@ -88,7 +88,9 @@ jobs:
     # Packed-database journeys, every-command coverage, and the packed public
     # CLI smoke test. Split from the verify shards so the acceptance steps add
     # their duration to a parallel job instead of extending the slowest shard.
-    timeout-minutes: 30
+    # Observed 27-31+ min across runs on hosted Windows runners; keep verify's
+    # headroom so runner variance cannot cancel a valid run.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
