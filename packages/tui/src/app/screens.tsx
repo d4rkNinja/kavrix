@@ -1,7 +1,7 @@
 import { Box, Text } from 'ink';
 import type { ReactElement } from 'react';
 
-import { resolveMotionPolicy } from '../motion.js';
+import { resolveMotionPolicy, useCursorVisible } from '../motion.js';
 import { resolveProductIdentity } from '../product.js';
 import { BrandBanner } from '../showcase.js';
 import { sanitizeTerminalText, secretMask } from '../terminal-text.js';
@@ -17,6 +17,7 @@ import {
   accentColor,
   CHROME,
   doctorStatusAccent,
+  maskBullets,
   screenAccent,
   toneAccent,
   type AppAccent,
@@ -29,8 +30,10 @@ import {
   MotionEnter,
   NoticeBar,
   Panel,
+  RevealCountdown,
   SelectRow,
   StatusPill,
+  TabNav,
   useListStagger,
 } from './widgets.js';
 
@@ -49,7 +52,7 @@ function overlayCopy(
   pendingName: string | null = null,
 ): Readonly<{ title: string; body: string; accent: AppAccent; hint?: string }> | null {
   if (overlay === 'none') return null;
-  const masked = '*'.repeat(Math.min(query.length, 32));
+  const masked = maskBullets(query.length, ascii);
   const q = safe(query, ascii);
   switch (overlay) {
     case 'credential-detail':
@@ -288,6 +291,20 @@ export function AppChrome({
       : home.vaultId.length > 12
         ? `${home.vaultId.slice(0, 10)}${ellipsis}`
         : home.vaultId;
+  const isDetailOverlay = state.overlay === 'credential-detail';
+  const isConfirmOverlay =
+    overlay !== null &&
+    !isDetailOverlay &&
+    (overlay.title.startsWith('Confirm') ||
+      overlay.title.startsWith('Revoke') ||
+      overlay.title.startsWith('Remove') ||
+      overlay.title.startsWith('Recovery blocked'));
+  const isInputOverlay = overlay !== null && !isConfirmOverlay && !isDetailOverlay;
+  // Blink only while a typing overlay owns the screen; otherwise the clock
+  // would repaint the whole chrome twice a second for nothing.
+  const caret = useCursorVisible(motion && isInputOverlay);
+  const overlayBody = overlay?.body ?? '';
+  const typedBody = isInputOverlay ? overlayBody.replace(/_$/u, '') : overlayBody;
 
   // Prefer content-sized height over pinning to the full TTY rows. Fixed
   // height={rows} + flexGrow panels blank on some maximized TTYs (Ink/Yoga).
@@ -340,9 +357,14 @@ export function AppChrome({
         </Box>
       </Panel>
 
+      <TabNav activeId={state.screen} color={color} ascii={ascii} width={width} />
+
       <Box flexDirection="column" flexGrow={1} paddingX={0} paddingY={0}>
         {overlay === null ? (
-          <MotionEnter enabled={motion && state.sessionReady} key={state.screen}>
+          <MotionEnter
+            enabled={motion && state.sessionReady}
+            key={`${state.screen}:${state.navDirection}`}
+          >
             {children}
           </MotionEnter>
         ) : (
@@ -355,24 +377,57 @@ export function AppChrome({
             animate={motion}
           >
             <Text bold {...accentColor(color, overlay.accent)}>
-              {safe(overlay.body, ascii)}
+              {safe(typedBody, ascii)}
+              {isInputOverlay ? (
+                <Text {...accentColor(color, overlay.accent)}>{caret ? '_' : ' '}</Text>
+              ) : null}
             </Text>
             {overlay.hint === undefined ? null : (
               <Text {...accentColor(color, CHROME.muted)}>
                 {safe(overlay.hint, ascii)}
               </Text>
             )}
-            <Text {...accentColor(color, CHROME.muted)}>
-              {safe(
-                overlay.title.startsWith('Confirm') ||
-                  overlay.title.startsWith('Revoke') ||
-                  overlay.title.startsWith('Remove') ||
-                  overlay.title.startsWith('Recovery blocked')
-                  ? 'y confirm · n/Esc cancel'
-                  : 'Enter continue · Esc cancel',
-                ascii,
+            <Box flexDirection="row" columnGap={1} flexWrap="wrap" marginTop={1}>
+              {isConfirmOverlay ? (
+                <>
+                  <KeyChip
+                    keyLabel="y"
+                    hint="confirm"
+                    color={color}
+                    keyAccent={CHROME.success}
+                  />
+                  <KeyChip
+                    keyLabel="n"
+                    hint="cancel"
+                    color={color}
+                    keyAccent={CHROME.danger}
+                  />
+                  <KeyChip keyLabel="Esc" hint="cancel" color={color} />
+                </>
+              ) : isDetailOverlay ? (
+                <>
+                  <KeyChip
+                    keyLabel="r"
+                    hint="REVEAL"
+                    color={color}
+                    keyAccent={CHROME.danger}
+                  />
+                  <KeyChip keyLabel="c" hint="copy" color={color} />
+                  <KeyChip keyLabel="Esc" hint="close" color={color} />
+                </>
+              ) : (
+                <>
+                  <KeyChip keyLabel="Enter" hint="continue" color={color} />
+                  <KeyChip keyLabel="Esc" hint="cancel" color={color} />
+                  <KeyChip
+                    keyLabel="^V"
+                    hint="paste"
+                    color={color}
+                    keyAccent={CHROME.muted}
+                  />
+                </>
               )}
-            </Text>
+            </Box>
           </ModalFrame>
         )}
       </Box>
@@ -421,6 +476,7 @@ function footerChips(screen: AppRouterState['screen']): readonly Readonly<{
 }>[] {
   const key = CHROME.accent;
   const commonTail = [
+    { keyLabel: 'Tab', hint: 'screens', accent: key },
     { keyLabel: 'Esc', hint: 'home', accent: key },
     { keyLabel: '?', hint: 'help', accent: CHROME.heading },
     { keyLabel: 'q', hint: 'quit', accent: CHROME.danger },
@@ -599,7 +655,7 @@ export function HomeScreen({
       accent={CHROME.accent}
       ascii={ascii}
       color={color}
-      {...(wide ? { flexGrow: 1 } : {})}
+      {...(wide ? { flexGrow: 2 } : {})}
       paddingX={1}
       paddingY={0}
     >
@@ -612,19 +668,28 @@ export function HomeScreen({
       accent={CHROME.accent}
       ascii={ascii}
       color={color}
-      {...(wide ? { flexGrow: 1 } : {})}
+      {...(wide ? { flexGrow: 3, width: '58%' } : {})}
       paddingX={1}
       paddingY={0}
     >
       {(() => {
-        const labelWidth = Math.max(...entries.map((entry) => entry.label.length), 8);
+        const labelOf = (entry: (typeof entries)[number]): string => {
+          const number = APP_MENU.indexOf(entry) + 1;
+          // Only 1-9 are wired as digit shortcuts; later rows keep the slot
+          // so labels stay aligned without advertising dead numbers.
+          return `${number <= 9 ? `${String(number)} ` : '  '}${entry.label}`;
+        };
+        const labelWidth = Math.max(
+          ...entries.map((entry) => labelOf(entry).length),
+          8,
+        );
         return entries.map((entry, index) => {
           const active = index === menuIndex;
           return (
             <SelectRow
               key={entry.id}
               active={active}
-              label={entry.label}
+              label={labelOf(entry)}
               hint={entry.hint}
               accent={entry.accent}
               color={color}
@@ -805,6 +870,12 @@ export function CredentialsScreen({
                     <Text bold {...accentColor(color, CHROME.danger)}>
                       {safe(`REVEAL: ${revealedValue ?? ''}`, ascii)}
                     </Text>
+                    <RevealCountdown
+                      expiresAtMs={state.revealedUntilMs}
+                      nowMs={state.nowMs}
+                      color={color}
+                      ascii={ascii}
+                    />
                   </Panel>
                 ) : null}
               </Box>
@@ -856,6 +927,7 @@ export function DoctorScreen({
 }: Readonly<{ state: AppRouterState }>): ReactElement {
   const { color, ascii, listIndex } = state;
   const rows = state.snapshot.doctor;
+  const pendingAt = useListStagger(rows.length, allowMotion());
   return (
     <Panel
       title="Doctor / heal (local health, not recovery kit)"
@@ -885,6 +957,7 @@ export function DoctorScreen({
               accent={statusAccent}
               color={color}
               ascii={ascii}
+              pending={pendingAt(index)}
             />
           );
         })
@@ -1116,6 +1189,7 @@ export function HelpScreen({
     '',
     '--- Keymap ---',
     'Global: j/k or arrows move, Enter open, Esc Home, q quit',
+    'Screens: Tab / Shift+Tab cycle, digits 1-9 jump (numbers shown in the tab strip)',
     'Credentials: Enter detail · c copy · r reveal · n put · m rename · x remove · / search',
     'Profiles: Enter use · n file · m mongodb · x remove (key/data files are kept)',
     'Vaults: Enter use · n create a new vault in the selected database (unlock first)',

@@ -15,12 +15,14 @@ import {
   type OnboardingState,
   type OnboardingStorage,
 } from './onboarding-router.js';
-import { resolveMotionPolicy } from '../motion.js';
+import { resolveMotionPolicy, useCursorVisible } from '../motion.js';
 import { resolveProductIdentity } from '../product.js';
 import {
   accentColor,
   CHROME,
+  maskBullets,
   resolveAppPresentation,
+  toneGlyph,
   type AppAccent,
 } from './theme.js';
 import {
@@ -28,8 +30,10 @@ import {
   KeyChip,
   LoadingState,
   Panel,
+  ProgressBar,
   SelectRow,
   StatusPill,
+  StepDots,
 } from './widgets.js';
 
 export interface KavrixOnboardingAppProps {
@@ -272,6 +276,7 @@ function OnboardingChrome({
   const { color, ascii, width } = state;
   const focus = onboardingStepFocus(state.step);
   const product = resolveProductIdentity();
+  const caret = useCursorVisible(resolveMotionPolicy().animate);
   const accent: AppAccent =
     state.step === 'success'
       ? CHROME.success
@@ -323,7 +328,23 @@ function OnboardingChrome({
             ascii,
           )}
         </Text>
-        {renderOnboardingBody(state)}
+        <Box flexDirection="row" columnGap={1}>
+          <StepDots
+            index={focus.index - 1}
+            total={focus.total}
+            color={color}
+            ascii={ascii}
+            accent={accent}
+          />
+          <ProgressBar
+            progress={(focus.index - 1) / Math.max(1, focus.total - 1)}
+            width={Math.max(8, Math.min(30, width - 24))}
+            color={color}
+            ascii={ascii}
+            accent={accent}
+          />
+        </Box>
+        {renderOnboardingBody(state, caret)}
       </Box>
 
       <Box flexDirection="row" columnGap={2} paddingX={1}>
@@ -352,9 +373,9 @@ function OnboardingChrome({
   );
 }
 
-function renderOnboardingBody(state: OnboardingState): ReactElement {
+function renderOnboardingBody(state: OnboardingState, caret: boolean): ReactElement {
   const { ascii, color, query } = state;
-  const masked = '*'.repeat(Math.min(query.length, 32));
+  const masked = maskBullets(query.length, ascii);
 
   if (state.step === 'welcome') {
     return (
@@ -377,6 +398,12 @@ function renderOnboardingBody(state: OnboardingState): ReactElement {
         </Text>
         <Text {...accentColor(color, CHROME.muted)}>
           {safe('Secrets stay masked. Press Enter to choose storage.', ascii)}
+        </Text>
+        <Text {...accentColor(color, CHROME.muted)}>
+          {safe(
+            'Steps: storage · profile id · key file · owner passphrase · recovery kit · session unlock.',
+            ascii,
+          )}
         </Text>
       </Panel>
     );
@@ -475,8 +502,15 @@ function renderOnboardingBody(state: OnboardingState): ReactElement {
         paddingY={1}
       >
         <Text bold {...accentColor(color, CHROME.success)}>
-          {safe('SETUP COMPLETE', ascii)}
+          {`${toneGlyph('success', ascii).trim()} ${safe('SETUP COMPLETE', ascii)}`}
         </Text>
+        <ProgressBar
+          progress={1}
+          width={24}
+          color={color}
+          ascii={ascii}
+          accent={CHROME.success}
+        />
         <Text {...accentColor(color, CHROME.success)}>
           {safe(
             `Profile selected: ${state.completedProfileId ?? state.profileId ?? 'default'}`,
@@ -517,8 +551,8 @@ function renderOnboardingBody(state: OnboardingState): ReactElement {
 
   const title = inputTitle(state.step);
   const body = isMaskedStep(state.step)
-    ? `${title}: ${masked}_`
-    : `${title}: ${safe(query, ascii)}_`;
+    ? `${title}: ${masked}`
+    : `${title}: ${safe(query, ascii)}`;
   return (
     <Panel
       title={`ACTIVE · ${title}`}
@@ -530,6 +564,7 @@ function renderOnboardingBody(state: OnboardingState): ReactElement {
     >
       <Text bold {...accentColor(color, CHROME.accent)}>
         {safe(body, ascii)}
+        <Text {...accentColor(color, CHROME.accent)}>{caret ? '_' : ' '}</Text>
       </Text>
       {isMaskedStep(state.step) ? (
         <Text {...accentColor(color, CHROME.muted)}>

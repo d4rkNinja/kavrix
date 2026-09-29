@@ -348,7 +348,7 @@ function mapInkInput(
   if (key.downArrow) return { name: 'down' };
   if (key.leftArrow) return { name: 'left' };
   if (key.rightArrow) return { name: 'right' };
-  if (key.tab) return { name: 'tab' };
+  if (key.tab) return { name: 'tab', shift: key.shift };
   if (key.return) return { name: 'return' };
   if (key.escape) return { name: 'escape' };
   if (key.backspace) return { name: 'backspace' };

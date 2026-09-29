@@ -2,20 +2,29 @@ import { Box, Text } from 'ink';
 import type { ReactElement, ReactNode } from 'react';
 
 import {
+  animatedDots,
+  barFill,
+  clamp01,
   enterOffsetCells,
   MOTION,
+  revealProgress,
+  revealRemainingMs,
   staggerVisibleCount,
+  sweepBarRow,
   useElapsedMs,
   useEnterProgress,
   useMotionFrame,
 } from '../motion.js';
 import { sanitizeTerminalText } from '../terminal-text.js';
+import { APP_MENU, type AppScreenId } from './ids.js';
 import {
   accentColor,
   CHROME,
+  dividerRule,
   panelBorderStyle,
   pointerGlyph,
   sectionTitle,
+  toneGlyph,
   type AppAccent,
 } from './theme.js';
 
@@ -382,13 +391,238 @@ export function LoadingState({
   animate?: boolean;
 }>): ReactElement {
   const frame = useMotionFrame(animate, MOTION.feedbackMs);
+  const elapsedMs = useElapsedMs(animate);
   const spinner = ascii
     ? ['|', '/', '-', '\\'][frame % 4]
     : ['\u280b', '\u2819', '\u2839', '\u2838'][frame % 4];
+  const seconds = Math.floor(elapsedMs / 1_000);
+  // Callers may pass a label that already ends in an ellipsis; dots animate in
+  // its place so the two never stack.
+  const base = safe(label, ascii)
+    .replace(/\u2026$/u, '')
+    .replace(/\.\.\.$/u, '');
   return (
     <Box flexDirection="row" columnGap={1} paddingY={1}>
       <Text {...accentColor(color, CHROME.accent)}>{spinner ?? '|'}</Text>
-      <Text {...accentColor(color, CHROME.muted)}>{safe(label, ascii)}</Text>
+      <Text {...accentColor(color, CHROME.muted)}>
+        {animate ? `${base}${animatedDots(frame)}` : safe(label, ascii)}
+      </Text>
+      {animate && seconds > 0 ? (
+        <Text dimColor {...accentColor(color, CHROME.muted)}>
+          {`${String(seconds)}s`}
+        </Text>
+      ) : null}
+    </Box>
+  );
+}
+
+/** Determinate progress bar (OpenTUI ProgressBar pattern on a cell grid). */
+export function ProgressBar({
+  progress,
+  width = 24,
+  color,
+  ascii,
+  accent = CHROME.accent,
+  label,
+}: Readonly<{
+  progress: number;
+  width?: number;
+  color: boolean;
+  ascii: boolean;
+  accent?: AppAccent;
+  label?: string;
+}>): ReactElement {
+  const pct = Math.round(clamp01(progress) * 100);
+  return (
+    <Box flexDirection="row" columnGap={1}>
+      {label === undefined ? null : (
+        <Text {...accentColor(color, CHROME.muted)}>{safe(label, ascii)}</Text>
+      )}
+      <Text {...accentColor(color, accent)}>{barFill(progress, width, ascii)}</Text>
+      <Text {...accentColor(color, CHROME.muted)}>{`${String(pct)}%`}</Text>
+    </Box>
+  );
+}
+
+/**
+ * Indeterminate sweep for unknown-duration work. The traveling segment is
+ * decorative motion, not a claimed measurement.
+ */
+export function SweepBar({
+  width = 24,
+  color,
+  ascii,
+  animate = false,
+  accent = CHROME.accent,
+}: Readonly<{
+  width?: number;
+  color: boolean;
+  ascii: boolean;
+  animate?: boolean;
+  accent?: AppAccent;
+}>): ReactElement {
+  const frame = useMotionFrame(animate, MOTION.sweepMs);
+  const segment = Math.max(3, Math.floor(width / 5));
+  const row = animate
+    ? sweepBarRow(frame, width, segment, ascii)
+    : barFill(1, width, ascii);
+  return <Text {...accentColor(color, accent)}>{row}</Text>;
+}
+
+/** Wizard position indicator: filled dots up to the current step. */
+export function StepDots({
+  index,
+  total,
+  color,
+  ascii,
+  accent = CHROME.accent,
+}: Readonly<{
+  index: number;
+  total: number;
+  color: boolean;
+  ascii: boolean;
+  accent?: AppAccent;
+}>): ReactElement {
+  const count = Math.max(1, Math.floor(total));
+  const current = Math.max(0, Math.min(count - 1, Math.floor(index)));
+  const filled = ascii ? '#' : '\u25cf';
+  const empty = ascii ? '.' : '\u25cb';
+  const dots = Array.from({ length: count }, (_, position) =>
+    position <= current ? filled : empty,
+  ).join(' ');
+  return (
+    <Text>
+      <Text {...accentColor(color, accent)}>{dots}</Text>
+      <Text
+        {...accentColor(color, CHROME.muted)}
+      >{` ${String(current + 1)}/${String(count)}`}</Text>
+    </Text>
+  );
+}
+
+/** Live countdown for the timed REVEAL window before the value remasks. */
+export function RevealCountdown({
+  expiresAtMs,
+  nowMs,
+  windowMs = MOTION.revealWindowMs,
+  width = 24,
+  color,
+  ascii,
+}: Readonly<{
+  expiresAtMs: number;
+  nowMs: number;
+  windowMs?: number;
+  width?: number;
+  color: boolean;
+  ascii: boolean;
+}>): ReactElement {
+  const remaining = revealRemainingMs(expiresAtMs, nowMs);
+  const seconds = Math.ceil(remaining / 1_000);
+  const bar = barFill(revealProgress(expiresAtMs, nowMs, windowMs), width, ascii);
+  return (
+    <Text {...accentColor(color, CHROME.danger)}>
+      {`${ascii ? '[!] ' : ' \u26a0 '}REVEAL remasks in ${String(seconds)}s ${bar}`}
+    </Text>
+  );
+}
+
+/** Soft full-width divider between content sections. */
+export function Divider({
+  width,
+  color,
+  ascii,
+  accent = CHROME.muted,
+}: Readonly<{
+  width: number;
+  color: boolean;
+  ascii: boolean;
+  accent?: AppAccent;
+}>): ReactElement {
+  return <Text {...accentColor(color, accent)}>{dividerRule(ascii, width)}</Text>;
+}
+
+const TABNAV_MIN_ENTRIES = 4;
+const TABNAV_MIN_WIDTH = 56;
+
+/**
+ * Compact screen tab strip (OpenTUI tab-select pattern). Numbers mirror the
+ * router's digit shortcuts; `Tab`/`Shift+Tab` cycle in listed order. Hides on
+ * narrow terminals instead of wrapping.
+ */
+export function TabNav({
+  activeId,
+  color,
+  ascii,
+  width,
+}: Readonly<{
+  activeId: AppScreenId;
+  color: boolean;
+  ascii: boolean;
+  width: number;
+}>): ReactElement | null {
+  if (width < TABNAV_MIN_WIDTH) return null;
+  const budget = width - 2;
+  const sep = '  ';
+  const kept: readonly {
+    label: string;
+    number: string | null;
+    active: boolean;
+    accent: AppAccent;
+  }[] = (() => {
+    const rows = APP_MENU.map((entry, index) => ({
+      label: sanitizeTerminalText(entry.short ?? entry.label, ascii),
+      number: index < 9 ? String(index + 1) : null,
+      active: entry.id === activeId,
+      accent: entry.accent,
+    }));
+    const cost = (row: (typeof rows)[number], first: boolean): number =>
+      (first ? 0 : sep.length) +
+      (row.number === null ? 0 : row.number.length + 1) +
+      row.label.length;
+    const fits: (typeof rows)[number][] = [];
+    let used = 0;
+    for (const row of rows) {
+      const extra = cost(row, fits.length === 0);
+      if (fits.length >= TABNAV_MIN_ENTRIES && used + extra > budget - 1) break;
+      fits.push(row);
+      used += extra;
+    }
+    if (!fits.some((row) => row.active)) {
+      const active = rows.find((row) => row.active);
+      if (active === undefined) return fits;
+      // Trade the last visible entry for the active one so the current screen
+      // is always highlighted, even at the minimum fit.
+      if (fits.length > 0) fits.pop();
+      fits.push(active);
+    }
+    return fits;
+  })();
+  if (kept.length < TABNAV_MIN_ENTRIES) return null;
+  const truncated = kept.length < APP_MENU.length;
+  return (
+    <Box paddingX={1}>
+      <Text>
+        {kept.map((row, index) => (
+          <Text key={`${row.number ?? ''}${row.label}`}>
+            {index === 0 ? null : (
+              <Text {...accentColor(color, CHROME.muted)}>{sep}</Text>
+            )}
+            <Text
+              bold
+              inverse={row.active && color}
+              dimColor={!row.active}
+              {...accentColor(color, row.active ? row.accent : CHROME.muted)}
+            >
+              {`${row.number === null ? '' : `${row.number} `}${row.label}`}
+            </Text>
+          </Text>
+        ))}
+        {truncated ? (
+          <Text {...accentColor(color, CHROME.muted)}>
+            {ascii ? ' ...' : ' \u2026'}
+          </Text>
+        ) : null}
+      </Text>
     </Box>
   );
 }
@@ -404,9 +638,25 @@ export function NoticeBar({
   color: boolean;
   ascii: boolean;
 }>): ReactElement {
+  const glyph = glyphForAccent(accent, ascii);
   return (
     <Panel accent={accent} ascii={ascii} color={color} paddingX={CHROME.paddingX}>
-      <Text {...accentColor(color, accent)}>{safe(message, ascii)}</Text>
+      <Text {...accentColor(color, accent)}>{`${glyph}${safe(message, ascii)}`}</Text>
     </Panel>
   );
+}
+
+function glyphForAccent(accent: AppAccent, ascii: boolean): string {
+  switch (accent) {
+    case 'green':
+      return toneGlyph('success', ascii);
+    case 'yellow':
+      return toneGlyph('warning', ascii);
+    case 'red':
+      return toneGlyph('error', ascii);
+    case 'cyan':
+      return toneGlyph('info', ascii);
+    default:
+      return toneGlyph('muted', ascii);
+  }
 }

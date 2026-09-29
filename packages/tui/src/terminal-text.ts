@@ -1,5 +1,18 @@
 const REPLACEMENT = '\uFFFD';
 
+/**
+ * Display-only ASCII fallbacks for typographic punctuation so authored copy
+ * degrades to readable separators instead of '?'. Security handling (escape
+ * stripping, control removal) is unchanged; unknown non-ASCII still maps to
+ * '?' in ascii mode.
+ */
+const ASCII_FALLBACK: ReadonlyMap<number, string> = new Map<number, string>([
+  [0x00b7, '-'],
+  [0x2013, '-'],
+  [0x2014, '-'],
+  [0x2026, '...'],
+]);
+
 function isAnsiFinal(code: number): boolean {
   return code >= 0x40 && code <= 0x7e;
 }
@@ -85,7 +98,11 @@ export function sanitizeTerminalText(value: string, ascii = false): string {
       output += ascii ? '?' : REPLACEMENT;
       continue;
     }
-    output += ascii && codePoint > 0x7e ? '?' : String.fromCodePoint(codePoint);
+    if (ascii && codePoint > 0x7e) {
+      output += ASCII_FALLBACK.get(codePoint) ?? '?';
+      continue;
+    }
+    output += String.fromCodePoint(codePoint);
   }
   return output;
 }

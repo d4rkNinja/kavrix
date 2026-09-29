@@ -13,6 +13,16 @@ export const MOTION = {
   staggerCap: 8,
   tickMs: 32,
   splashPulseMs: 180,
+  /** Wordmark line-by-line reveal on the splash (per line). */
+  splashStageMs: 60,
+  /** Underline sweep duration below the splash wordmark. */
+  splashSweepMs: 520,
+  /** Indeterminate sweep cadence for unknown-duration loads. */
+  sweepMs: 90,
+  /** Terminal-standard caret blink cadence for input overlays. */
+  cursorBlinkMs: 530,
+  /** Timed REVEAL window enforced by the backend/session policy. */
+  revealWindowMs: 15_000,
 } as const;
 
 export type MotionEase = 'linear' | 'outQuad' | 'outCubic' | 'outExpo';
@@ -171,4 +181,82 @@ export function enterOffsetCells(progress: number, enabled: boolean): number {
 
 export function enterDimmed(progress: number, enabled: boolean): boolean {
   return enabled && progress < 0.4;
+}
+
+/** Integer character cells for a 0..1 progress across `width` cells. */
+export function progressCells(progress: number, width: number): number {
+  if (width <= 0) return 0;
+  return Math.round(clamp01(progress) * width);
+}
+
+/**
+ * Determinate bar row (OpenTUI ProgressBar pattern on a character grid).
+ * Unicode `█`/`░`; printable ASCII `#`/`-` for --ascii / win32.
+ */
+export function barFill(progress: number, width: number, ascii: boolean): string {
+  const size = Math.max(0, Math.floor(width));
+  const filled = progressCells(progress, size);
+  const head = ascii ? '#' : '\u2588';
+  const rest = ascii ? '-' : '\u2591';
+  return `${head.repeat(filled)}${rest.repeat(Math.max(0, size - filled))}`;
+}
+
+/**
+ * Indeterminate sweep segment for unknown-duration work. A short bright
+ * segment travels across the track and wraps; it is decorative and never
+ * claims a percentage.
+ */
+export function sweepOffset(
+  frame: number,
+  trackWidth: number,
+  segmentWidth: number,
+): number {
+  const track = Math.max(0, Math.floor(trackWidth));
+  const segment = Math.max(1, Math.min(Math.floor(segmentWidth), track));
+  if (track <= segment) return 0;
+  return frame % (track - segment + 1);
+}
+
+export function sweepBarRow(
+  frame: number,
+  trackWidth: number,
+  segmentWidth: number,
+  ascii: boolean,
+): string {
+  const track = Math.max(0, Math.floor(trackWidth));
+  const segment = Math.max(1, Math.min(Math.floor(segmentWidth), track));
+  const offset = sweepOffset(frame, track, segment);
+  const pad = ' '.repeat(offset);
+  const body = ascii
+    ? `[${'='.repeat(Math.max(0, segment - 2))}]`
+    : `\u2588${'\u2593'.repeat(Math.max(0, segment - 2))}\u2588`;
+  const tail = '\u2591'.repeat(Math.max(0, track - offset - segment));
+  return `${pad}${body}${ascii ? tail.replace(/\u2591/gu, '-') : tail}`;
+}
+
+/** Whole seconds left on a timed reveal; never negative. */
+export function revealRemainingMs(expiresAtMs: number, nowMs: number): number {
+  return Math.max(0, expiresAtMs - nowMs);
+}
+
+/** 1 → just revealed, 0 → expired. Drives the countdown bar width. */
+export function revealProgress(
+  expiresAtMs: number,
+  nowMs: number,
+  windowMs: number = MOTION.revealWindowMs,
+): number {
+  if (expiresAtMs <= 0) return 0;
+  return clamp01(revealRemainingMs(expiresAtMs, nowMs) / Math.max(1, windowMs));
+}
+
+/** Animated trailing dots for busy labels (`.`, `..`, `...`). */
+export function animatedDots(frame: number, max = 3): string {
+  if (max <= 0) return '';
+  return '.'.repeat((Math.max(0, frame) % max) + 1);
+}
+
+/** Caret visibility for masked/plain input overlays; static when disabled. */
+export function useCursorVisible(enabled: boolean): boolean {
+  const frame = useMotionFrame(enabled, MOTION.cursorBlinkMs);
+  return !enabled || frame % 2 === 0;
 }

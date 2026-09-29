@@ -8,7 +8,11 @@ export interface AppKey {
     'up' | 'down' | 'left' | 'right' | 'tab' | 'return' | 'escape' | 'backspace';
   readonly text?: string;
   readonly ctrl?: boolean;
+  readonly shift?: boolean;
 }
+
+/** Direction of the last screen navigation, for directional motion. */
+export type AppNavDirection = 'forward' | 'back' | 'none';
 
 export type AppOverlay =
   | 'none'
@@ -98,6 +102,10 @@ export interface AppRouterState {
   readonly credentialFilter: string;
   /** True after the first successful hydrate so motion can start. */
   readonly sessionReady: boolean;
+  /** Clock advanced by `tick` while a timed reveal is on screen. */
+  readonly nowMs: number;
+  /** Direction of the last screen change; drives the transition settle. */
+  readonly navDirection: AppNavDirection;
 }
 
 export type AppRouterEffect =
@@ -190,6 +198,8 @@ export function createInitialAppRouterState(
     quit: false,
     credentialFilter: '',
     sessionReady: false,
+    nowMs: 0,
+    navDirection: 'none',
   };
 }
 
@@ -239,8 +249,13 @@ export function transitionAppRouter(
           revealedName: null,
           revealedValue: null,
           revealedUntilMs: 0,
+          nowMs: action.nowMs,
           message: 'Reveal expired; value cleared from the screen.',
         });
+      }
+      if (state.revealedUntilMs > 0) {
+        // New object every tick so the reveal countdown repaints live.
+        return unchanged({ ...state, nowMs: action.nowMs });
       }
       return unchanged(state);
     case 'key':
@@ -265,6 +280,17 @@ function keyTransition(
 
   if (state.overlay !== 'none') return overlayKey(state, key, nowMs);
 
+  // Tab / Shift+Tab cycle screens in menu order (OpenTUI tab-select pattern).
+  if (key.name === 'tab') {
+    return cycleScreen(state, key.shift === true ? -1 : 1);
+  }
+  // Digits 1-9 jump straight to the numbered screen shown in the tab strip.
+  if (key.text !== undefined && /^[1-9]$/u.test(key.text)) {
+    const target = APP_MENU[Number.parseInt(key.text, 10) - 1]?.id;
+    if (target === undefined || target === state.screen) return unchanged(state);
+    return enterScreen(state, target);
+  }
+
   if (
     key.name === 'escape' &&
     state.revealedName !== null &&
@@ -280,7 +306,13 @@ function keyTransition(
   }
 
   if (key.name === 'escape' && state.screen !== 'home') {
-    return unchanged({ ...state, screen: 'home', listIndex: 0, message: null });
+    return unchanged({
+      ...state,
+      screen: 'home',
+      listIndex: 0,
+      message: null,
+      navDirection: 'back',
+    });
   }
 
   if (key.text?.toLowerCase() === 'u') {
@@ -1717,12 +1749,31 @@ function activateSelection(state: AppRouterState): AppRouterTransition {
   }
 }
 
+/** Tab cycling wraps around the full menu, including Home. */
+function cycleScreen(state: AppRouterState, delta: 1 | -1): AppRouterTransition {
+  const currentIndex = APP_MENU.findIndex((entry) => entry.id === state.screen);
+  const base = currentIndex === -1 ? 0 : currentIndex;
+  const nextIndex = (base + delta + APP_MENU.length) % APP_MENU.length;
+  const target = APP_MENU[nextIndex];
+  if (target === undefined || target.id === state.screen) return unchanged(state);
+  return enterScreen(state, target.id);
+}
+
 function enterScreen(state: AppRouterState, screen: AppScreenId): AppRouterTransition {
+  const fromIndex = APP_MENU.findIndex((entry) => entry.id === state.screen);
+  const toIndex = APP_MENU.findIndex((entry) => entry.id === screen);
+  const navDirection: AppNavDirection =
+    fromIndex === -1 || toIndex === -1 || toIndex === fromIndex
+      ? 'none'
+      : toIndex > fromIndex
+        ? 'forward'
+        : 'back';
   const next = {
     ...state,
     screen,
     listIndex: 0,
     message: null,
+    navDirection,
   };
   if (screen === 'doctor') {
     return effect(next, { kind: 'backend', action: { type: 'run-doctor' } });

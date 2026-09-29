@@ -136,3 +136,47 @@ export function doctorStatusAccent(status: string): AppAccent {
   }
   return 'gray';
 }
+
+/**
+ * Leading status glyph for notice/feedback rows. Unicode keeps wordless
+ * shapes; ASCII stays inside `[OK]`-style printable tokens.
+ */
+export function toneGlyph(tone: AppTone, ascii: boolean): string {
+  switch (tone) {
+    case 'success':
+      return ascii ? '[ok]' : ' \u2713 ';
+    case 'warning':
+      return ascii ? '[!]' : ' \u26a0 ';
+    case 'error':
+      return ascii ? '[x]' : ' \u2715 ';
+    case 'info':
+      return ascii ? '[i]' : ' \u2139 ';
+    case 'muted':
+      return ascii ? ' - ' : ' \u00b7 ';
+  }
+}
+
+/** Variable-length masked-input bullets; ASCII mode keeps `*` only. */
+export function maskBullets(length: number, ascii: boolean, max = 32): string {
+  const unit = ascii ? '*' : '\u2022';
+  return unit.repeat(Math.max(0, Math.min(max, Math.floor(length))));
+}
+
+/** Full-width horizontal rule used as a soft section divider. */
+export function dividerRule(ascii: boolean, width: number): string {
+  const unit = ascii ? '-' : '\u2500';
+  return unit.repeat(Math.max(0, Math.floor(width)));
+}
+
+/**
+ * Section title padded to a full rule so headers anchor the whole panel
+ * width: `─ LABEL ─────────` / `[ LABEL ]` (ASCII keeps its bracket form,
+ * which docs and tests already lock in).
+ */
+export function sectionTitleWide(label: string, ascii: boolean, width: number): string {
+  if (ascii) return sectionTitle(label, ascii);
+  const text = ` \u2500 ${label.toUpperCase()} \u2500 `;
+  const room = Math.floor(width) - text.length;
+  if (room <= 0) return text.trim();
+  return `${text}${'\u2500'.repeat(room)}`;
+}

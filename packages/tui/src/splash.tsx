@@ -1,7 +1,17 @@
 import { Box, Text } from 'ink';
 import type { ReactElement } from 'react';
 
-import { MOTION, resolveMotionPolicy, useMotionFrame } from './motion.js';
+import {
+  applyEase,
+  barFill,
+  MOTION,
+  progressCells,
+  resolveMotionPolicy,
+  staggerVisibleCount,
+  sweepBarRow,
+  useElapsedMs,
+  useMotionFrame,
+} from './motion.js';
 import { sanitizeTerminalText } from './terminal-text.js';
 
 /** Braille spinner frames (unicode mode). */
@@ -85,8 +95,10 @@ export interface SplashScreenProps {
 }
 
 /**
- * Full-viewport animated Kavrix splash. Dual-tone KAV/RIX wordmark, braille
- * (or ASCII `|/-\\`) spinner, tagline, and optional version. Presentation only.
+ * Full-viewport animated Kavrix splash. Dual-tone KAV/RIX wordmark reveals
+ * line-by-line, an eased underline sweeps beneath it, and an indeterminate
+ * segment sweeps a track while the backend hydrates (no claimed percentage).
+ * ASCII mode keeps the same choreography with printable glyphs.
  */
 export function SplashScreen({
   color = true,
@@ -99,6 +111,8 @@ export function SplashScreen({
   void _height;
   const motion = resolveMotionPolicy({ requested: animate });
   const frame = useMotionFrame(motion.animate, MOTION.splashPulseMs);
+  const sweepFrame = useMotionFrame(motion.animate, MOTION.sweepMs);
+  const elapsedMs = useElapsedMs(motion.animate);
   const spinnerFrames = ascii ? SPLASH_ASCII_SPINNER_FRAMES : SPLASH_SPINNER_FRAMES;
   const spinner = spinnerFrames[frame % spinnerFrames.length] ?? '|';
   const kavLines = ascii ? WORDMARK_KAV_ASCII : WORDMARK_KAV;
@@ -112,6 +126,30 @@ export function SplashScreen({
       ? null
       : sanitizeTerminalText(`v${version.replace(/^v/iu, '')}`, ascii);
 
+  const lineCount = kavLines.length;
+  const visibleLines = motion.animate
+    ? staggerVisibleCount(elapsedMs, lineCount, MOTION.splashStageMs, lineCount)
+    : lineCount;
+  const wordmarkWidth = kavLines[0].length + gap.length + rixLines[0].length;
+  const underlineCells = motion.animate
+    ? progressCells(
+        applyEase(elapsedMs / MOTION.splashSweepMs, 'outExpo'),
+        wordmarkWidth,
+      )
+    : wordmarkWidth;
+  const underline = ascii
+    ? '-'.repeat(underlineCells)
+    : '\u2500'.repeat(underlineCells);
+  const trackWidth = Math.min(28, Math.max(16, Math.floor(width / 2)));
+  const track = motion.animate
+    ? sweepBarRow(
+        sweepFrame,
+        trackWidth,
+        Math.max(3, Math.floor(trackWidth / 5)),
+        ascii,
+      )
+    : barFill(1, trackWidth, ascii);
+
   return (
     <Box
       flexDirection="column"
@@ -119,21 +157,23 @@ export function SplashScreen({
       alignItems="center"
       justifyContent="center"
     >
-      <Box flexDirection="column" alignItems="center">
+      <Box flexDirection="column" alignItems="flex-start">
         {kavLines.map((kavLine, index) => {
           const rixLine = rixLines[index] ?? '';
+          const settled = index < visibleLines;
           return (
             <Box key={`wm-${String(index)}`} flexDirection="row">
               <Text bold {...tint(color, kavAccent)}>
-                {kavLine}
+                {settled ? kavLine : ' '.repeat(kavLine.length)}
               </Text>
               <Text>{gap}</Text>
               <Text bold {...tint(color, rixAccent)}>
-                {rixLine}
+                {settled ? rixLine : ' '.repeat(rixLine.length)}
               </Text>
             </Box>
           );
         })}
+        <Text {...tint(color, rixAccent)}>{underline}</Text>
       </Box>
       <Box marginTop={1}>
         <Text {...tint(color, 'gray')}>{safeTagline}</Text>
@@ -145,6 +185,9 @@ export function SplashScreen({
         ) : (
           <Text {...tint(color, 'gray')}>{safeVersion}</Text>
         )}
+      </Box>
+      <Box marginTop={1}>
+        <Text {...tint(color, rixAccent)}>{track}</Text>
       </Box>
     </Box>
   );

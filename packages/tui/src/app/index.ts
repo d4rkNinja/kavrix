@@ -7,6 +7,10 @@ export {
   accentColor,
   resolveAppPresentation,
   toneAccent,
+  toneGlyph,
+  maskBullets,
+  dividerRule,
+  sectionTitleWide,
   pointerGlyph,
   boxLine,
   sectionTitle,
@@ -54,6 +58,12 @@ export {
   ErrorState,
   LoadingState,
   NoticeBar,
+  ProgressBar,
+  SweepBar,
+  StepDots,
+  RevealCountdown,
+  Divider,
+  TabNav,
   useListStagger,
 } from './widgets.js';
 export {

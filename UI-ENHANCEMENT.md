@@ -56,6 +56,55 @@ pnpm --filter kavrix build
 
 ## Animated splash (2026-09-18)
 
-- `kavrix tui` / `kavrix ui` and Ink init onboarding show a centered dual-tone **KAV/RIX** splash with braille spinner (ASCII `|/-\\` when `--ascii` / win32), tagline, and CLI version.
+- `kavrix tui` / `kavrix ui` and Ink init onboarding show a centered dual-tone **KAV/RIX** splash with braille spinner (ASCII `|/-\` when `--ascii` / win32), tagline, and CLI version.
 - Auto-dismiss: backend ready + ≥1.2s, or force at 1.8s. Skip with `--no-splash` or `KAVRIX_TUI_NO_SPLASH=1` (NO_COLOR/CI/non-TTY already skip mount).
 - Presentation only — no mocks. Tests in `packages/tui/test/splash.test.ts`.
+
+## Interaction + motion redesign (2026-09-29)
+
+OpenTUI-skill patterns (tab-select, progress bar, staged reveal, layered
+keys) ported onto the same Ink renderer. No backend/crypto change.
+
+### Navigation
+
+- **Tab strip** under the header lists screens with digit numbers (`1 Home …
+9 Policy …`), inverse-highlights the active screen, truncates with `…` on
+  narrow widths, and hides below 56 columns.
+- **Digits 1-9** jump to the numbered screen from any overlay-free screen;
+  the Home menu rows and Help document the same numbers.
+- **Tab / Shift+Tab** cycle screens forward/backward with wrap-around
+  (Esc keeps its Home semantics).
+- Router tracks `navDirection` so screen transitions can settle differently
+  for forward vs. backward navigation.
+
+### Feedback + progress
+
+- Timed REVEAL shows a live `REVEAL remasks in Ns ██████░░░░` countdown bar
+  (router `tick` advances a `nowMs` clock only while a reveal is visible).
+- New widgets: `ProgressBar` (determinate `█/░`, ASCII `#/-`), `SweepBar`
+  (indeterminate traveling segment — decorative, claims no percentage),
+  `StepDots`, `Divider`, `TabNav`, `RevealCountdown`.
+- Notices lead with tone glyphs (`✓ ⚠ ✕ ℹ` / ASCII `[ok] [!] [x] [i]`).
+- Modal key guides render structured chips: confirm `y/n/Esc`, input
+  `Enter/Esc/^V paste`, detail `r/c/Esc`. Masked input shows `•` bullets
+  (ASCII `*`) with a blinking caret; caret is static under reduced motion.
+- Loading labels animate trailing dots + elapsed seconds (motion-gated).
+- Onboarding: step dots + determinate progress bar beside the ACTIVE cue,
+  completed bar + `✓` on success.
+- Splash: wordmark reveals line-by-line, eased underline sweep, indeterminate
+  sweep track while hydrating; full wordmark still paints in the static
+  (`animate=false`) frame the tests lock.
+
+### ASCII / typography
+
+- Authored punctuation (`·`, `—`, `–`, `…`) degrades to readable ASCII
+  (`-`, `...`) instead of `?`; unknown non-ASCII still fails closed to `?`.
+  Home layout keeps `[ HOME / DASHBOARD ]` on one line; menu numbers only
+  appear for screens that actually have digit shortcuts (1-9).
+
+### Verify
+
+```bash
+pnpm --filter @kavrix/tui test   # includes test/enhancements.test.ts (22 new tests)
+pnpm verify
+```
