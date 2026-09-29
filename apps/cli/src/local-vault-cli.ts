@@ -127,6 +127,10 @@ import {
 import { CLI_VERSION } from './version.js';
 import { applyStdinFrameHelp, registerFramesCommand } from './stdin-frames.js';
 import { registerExecutionCommands, reportJsonFailure } from './execution/register.js';
+import {
+  interactiveDefaultEligible,
+  runDefaultInteractiveAction,
+} from './default-interactive.js';
 import { registerTuiCommand } from './tui-command.js';
 import { registerSelfUpdateCommand } from './self-update.js';
 import {
@@ -944,6 +948,14 @@ function argvRequestsJson(argv: readonly string[]): boolean {
 
 export async function runLocalCli(argv: readonly string[]): Promise<void> {
   try {
+    // Bare `kavrix` on a TTY opens the interactive default: the init
+    // onboarding wizard on a fresh machine, then the TUI. Everything else —
+    // flags, subcommands, unknown words, non-interactive runs — keeps the
+    // classic commander behavior untouched.
+    if (argv.length <= 2 && interactiveDefaultEligible()) {
+      await runDefaultInteractiveAction();
+      return;
+    }
     await buildLocalCli().parseAsync(argv);
   } catch (error) {
     if (argvRequestsJson(argv)) {

@@ -39,12 +39,13 @@ doctor, recovery, and more):
 Video: [`docs/assets/kavrix-tui-demo.mp4`](docs/assets/kavrix-tui-demo.mp4).
 
 ```sh
-kavrix init   # TUI onboarding on an interactive TTY (default)
+kavrix        # interactive TTY: onboarding on first run, then the TUI
+kavrix init   # explicit TUI onboarding (classic prompts with --no-tui)
 kavrix tui    # full interactive app against the real CLI
 ```
 
 Use `kavrix init --no-tui` for classic line prompts, or stdin/explicit routing
-for scripts.
+for scripts. Bare `kavrix` on a non-interactive stream keeps printing help.
 
 ## Run tools without pasting secrets
 
@@ -241,12 +242,14 @@ first paint immediately — including inside CI-like non-interactive terminals �
 instead of blocking on secret prompts:
 
 ```sh
-kavrix init   # TUI onboarding on an interactive TTY (default)
+kavrix        # interactive TTY: onboarding on first run, then the TUI
+kavrix init   # explicit TUI onboarding (classic prompts with --no-tui)
 kavrix tui    # full app: profiles, vaults, credentials, doctor, recovery, …
 ```
 
 Use `kavrix init --no-tui` for classic line prompts, or stdin/explicit routing
-for scripts. A walkthrough is embedded in the [Demo](#demo) section above.
+for scripts. Bare `kavrix` on a non-interactive stream keeps printing help. A
+walkthrough is embedded in the [Demo](#demo) section above.
 
 ### Full CRUD from the TUI (0.2.22)
 

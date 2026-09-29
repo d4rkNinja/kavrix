@@ -86,6 +86,7 @@ export default defineConfig({
       'apps/cli/test/tui-command.test.ts',
       'apps/cli/test/tui-clipboard.test.ts',
       'apps/cli/test/init-tui-onboarding.test.ts',
+      'apps/cli/test/default-interactive.test.ts',
       'packages/schemas/test/database-container.test.ts',
       'packages/schemas/test/**/*.test.ts',
       'packages/core/test/**/*.test.ts',

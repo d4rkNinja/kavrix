@@ -43,12 +43,14 @@ Active release workspaces:
   0.2.20 section and `packages/tui/test/enhancements.test.ts` verify those
   TUI rows; this ledger does not record live-desktop Jr/Mid/Senior proof.
   The renderer remains Ink; it was not rewritten to OpenTUI.
-- `kavrix`: CLI composition, Ink-first recovery-verified local onboarding
-  (`--no-tui` classic), `kavrix tui` session backend, protected `config.toml`
-  reference generation, masked input with field-local validation retries and
-  confirmation-pair recovery, TTY-gated status colors with textual markers,
-  sanitized rendering, credential execution, policy firewall, structured
-  database-vault projection, and npm package.
+- `kavrix`: CLI composition, bare `kavrix` interactive default (onboarding
+  first run, then the TUI; non-interactive keeps help), Ink-first
+  recovery-verified local onboarding (`--no-tui` classic), `kavrix tui`
+  session backend, protected `config.toml` reference generation, masked input
+  with field-local validation retries and confirmation-pair recovery,
+  TTY-gated status colors with textual markers, sanitized rendering,
+  credential execution, policy firewall, structured database-vault
+  projection, and npm package.
 
 The active-versus-parked source boundary and its verification commands are
 recorded in [Active release boundary](active-release-boundary.md). The source
@@ -571,6 +573,33 @@ tests and one broker denial-audit read — reproduce identically on the
 pristine pre-0.2.26 tree in the same environment and pass in isolation or
 on CI runners, so they are environmental, not regressions). Live-desktop
 Jr/Mid/Senior paint proof remains unrecorded, as before.
+
+## 0.2.27 bare `kavrix` interactive default
+
+Typing `kavrix` with no arguments on an interactive TTY now opens the
+product directly instead of printing help:
+
+- Onboarded sessions (a protected profile registry with at least one
+  datastore profile) mount `kavrix tui` immediately.
+- Fresh machines run the same Ink onboarding wizard as interactive
+  `kavrix init` (real profile/vault/recovery creation); a completed wizard
+  prints the SETUP COMPLETE block and then opens the TUI in the same
+  invocation. Cancelled onboarding exits cleanly with a retry hint; a failed
+  wizard surfaces through the standard CLI error path.
+- If stderr is not a TTY (onboarding cannot render there), the TUI still
+  opens and profiles can be created from its Profiles screen.
+- Non-interactive bare `kavrix` (pipes, cron, scripts) keeps the exact
+  classic behavior: help on stderr, exit 0. Subcommands, flags, `--help`,
+  `--version`, and unknown-command failures (exit 2, "did you mean"
+  suggestions) are untouched because the commander program is not modified —
+  the default is intercepted in `runLocalCli` before parse.
+
+Verified by `apps/cli/test/default-interactive.test.ts` (route resolution
+against real registries, TTY eligibility, onboarding→TUI continuation,
+cancel/fail paths, non-TTY help, unknown-command exit 2, `--version`
+passthrough, and a spawned built-CLI help check) plus the neighboring suites
+(`public-command-help`, `launch-routing-guards`, `package`,
+`local-vault-cli-coverage`, `init-onboarding-command`, `datastore-profiles`).
 
 ## Security properties
 
