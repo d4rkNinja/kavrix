@@ -38,10 +38,11 @@ jobs:
   verify:
     name: Verify (${{ matrix.label }})
     runs-on: ${{ matrix.runner }}
-    # Windows shards run bounded-parallel test files (see vitest.config.ts
-    # maxWorkers) and remain file-duration-skewed; retain enough headroom for
-    # the complete security suite instead of cancelling a valid run.
-    timeout-minutes: 45
+    # Windows shards run serially (see vitest.config.ts) and are
+    # file-duration-skewed; retain enough headroom for the complete security
+    # suite instead of cancelling a valid run. Packed-CLI acceptance runs in
+    # the parallel windows-acceptance job and does not extend these shards.
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:

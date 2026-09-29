@@ -10,25 +10,20 @@ const testBoundaryTimeoutMs = process.platform === 'win32' ? 360_000 : 120_000;
 // Every suite must be hermetic: commands fall back to the real per-user
 // datastore profile registry under the home directory, so each worker gets an
 // isolated fake home and can never observe or mutate machine-local Kavrix state.
-// Journey suites spawn real CLI children, and every unlock those children
-// perform pays a memory-hard argon2id derivation. Unbounded file parallelism
-// oversubscribes small hosted runners and starves child deadlines, so Windows
-// gets an explicit worker budget a 4-vCPU runner can honor; other platforms
-// keep the vitest default.
-const windowsMaxWorkers = 4;
-
+// Every suite must be hermetic: commands fall back to the real per-user
+// datastore profile registry under the home directory, so each worker gets an
+// isolated fake home and can never observe or mutate machine-local Kavrix state.
 export default defineConfig({
   test: {
     setupFiles: ['./scripts/test-isolated-home.mjs'],
-    // Files run concurrently on every platform: the isolated-home setup gives
-    // each worker its own hardened HOME/USERPROFILE, all database/ACL fixtures
-    // live under per-worker temporary directories, and the only machine-global
-    // resource — the Windows PasswordVault driven by
-    // live-qa-session-unlock.test.ts — stays sequential because vitest runs a
-    // single file inside a single worker. (Files were previously serialized on
-    // Windows, which capped each CI shard at one file at a time.)
-    fileParallelism: true,
-    ...(process.platform === 'win32' ? { maxWorkers: windowsMaxWorkers } : {}),
+    // Windows files stay serialized: concurrent journey files on 4-vCPU hosted
+    // runners starve the real-CLI children enough that fixture hooks blow past
+    // their 120s cliffs and the agent broker fail-closes live requests as
+    // invalid-request before a decision is sent. Parallel file execution
+    // (bounded maxWorkers) was validated on a 32-core dev machine but reverted
+    // after two CI shards starved; revisit with a split pool that keeps the
+    // child-spawning journeys serial.
+    fileParallelism: process.platform !== 'win32',
     hookTimeout: testBoundaryTimeoutMs,
     include: [
       'apps/cli/test/database-session.test.ts',
