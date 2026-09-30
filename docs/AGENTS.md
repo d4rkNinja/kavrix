@@ -4,8 +4,8 @@ Documentation is part of Kavrix's security contract. Keep it synchronized with
 observable implementation evidence and downgrade claims immediately when a gate
 or platform is not verified.
 
-- Use `docs/implementation-status.md` as the factual feature ledger. Distinguish
-  implemented, verified, in-progress, planned, and blocked work.
+- Distinguish implemented, verified, in-progress, planned, and blocked work in
+  every documentation page. Never present planned work as shipped.
 - Describe zero-knowledge boundaries precisely. Never claim the product protects
   against a compromised unlocked host, same-user malware, keylogging, screen or
   clipboard capture, administrator access, or server deletion/withholding.
@@ -23,4 +23,5 @@ or platform is not verified.
 
 Before a release claim, reconcile the README, architecture, threat model,
 cryptography, data model, CLI/TUI guides, self-hosting guide, security testing,
-release guide, and implementation-status ledger with the final verified tree.
+release guide, and user-facing guides (features, getting started, glossary,
+command reference) with the final verified tree.

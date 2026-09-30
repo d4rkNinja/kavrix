@@ -232,7 +232,6 @@ Deep security docs on GitHub:
 
 - [Threat model](https://github.com/d4rkNinja/kavrix/blob/main/docs/threat-model.md)
 - [Cryptography](https://github.com/d4rkNinja/kavrix/blob/main/docs/cryptography.md)
-- [Implementation status](https://github.com/d4rkNinja/kavrix/blob/main/docs/implementation-status.md)
 
 ## Limitations
 

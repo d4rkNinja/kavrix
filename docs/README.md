@@ -17,6 +17,9 @@ remains a command reference and is not loaded automatically.
 
 ## Getting Started
 
+- [Features](features.md): what Kavrix does, in plain language.
+- [Getting started](getting-started.md): task-based walkthroughs — first vault, secrets, `run`, policies, grants, agents, recovery.
+- [Glossary](glossary.md): every term (DRK, VRK, anchor, sidecar, …) defined.
 - [Command guide](cli-reference.md): profiles, `run`, policies, grants, agents, credentials, and recovery.
 - [Direct CLI model](direct-access-cli.md): why no Kavrix server is required.
 - [Terminal output and Ink TUI](tui-guide.md): sanitized output and interactive firewall management.
@@ -25,7 +28,7 @@ remains a command reference and is not loaded automatically.
 ## Secrets Firewall
 
 - [Command guide — run / policy / grant / audit](cli-reference.md): scoped secret execution and authorization surface.
-- [Implementation status](implementation-status.md): factual supported surface and known limits.
+- [Threat model](threat-model.md): intended protections, exclusions, and known limits.
 
 ## Authorization
 
@@ -37,7 +40,6 @@ remains a command reference and is not loaded automatically.
 ## AI Agents
 
 - [Command guide — AI agent credential firewall](cli-reference.md): `kavrix agent run` / `agent exec` broker model.
-- [Implementation status](implementation-status.md): agent firewall verification notes.
 
 ## Vaults & Storage
 
@@ -58,10 +60,18 @@ remains a command reference and is not loaded automatically.
 
 ## Reference
 
+- [Features](features.md)
+- [Glossary](glossary.md)
 - [Architecture](architecture.md)
-- [Implementation status](implementation-status.md)
 - [Release procedure](release.md): local preflight, trusted publication, and recovery reruns.
 - [Active release boundary](active-release-boundary.md)
+- Release notes: [post-0.2.0 hardening](release-notes-post-0.2.0-hardening.md),
+  [0.2.20](release-notes-0.2.20.md), [0.2.21](release-notes-0.2.21.md),
+  [0.2.22](release-notes-0.2.22.md), [0.2.23](release-notes-0.2.23.md),
+  [0.2.24](release-notes-0.2.24.md), [0.2.25](release-notes-0.2.25.md),
+  [0.2.26](release-notes-0.2.26.md), [0.2.27](release-notes-0.2.27.md),
+  [0.2.28](release-notes-0.2.28.md), [0.2.29](release-notes-0.2.29.md);
+  earlier lines keep their own `release-notes-0.2.x.md` files.
 
 Run `kavrix <command> --help` for the command options installed with a specific
 version. Documentation must not override the executable's safety checks.

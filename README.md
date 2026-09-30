@@ -474,13 +474,16 @@ Details: [threat model](docs/threat-model.md),
   because launching them requires shell argument re-parsing; invoke real
   executables.
 
-See [implementation status](docs/implementation-status.md) for the full factual
-ledger of what is implemented and verified.
+The [threat model](docs/threat-model.md) records the intended protections,
+exclusions, and rollback handling in full.
 
 ## Documentation
 
 Start with the [documentation index](docs/README.md):
 
+- [Features](docs/features.md) — what Kavrix does, in plain language
+- [Getting started](docs/getting-started.md) — task-based walkthroughs
+- [Glossary](docs/glossary.md) — every term, defined
 - [Command guide](docs/cli-reference.md)
 - [Threat model](docs/threat-model.md)
 - [Recovery guide](docs/backup-and-recovery.md)

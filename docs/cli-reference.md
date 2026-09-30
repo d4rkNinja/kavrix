@@ -691,6 +691,45 @@ from administrators, same-user malware, keyloggers, terminal/clipboard capture,
 process-memory inspection, swap, or crash dumps. Losing all matching owner keys
 and database recovery kits is unrecoverable.
 
+## 15. Encrypted database backup
+
+`kavrix backup` seals the whole database file of a local-file profile into one
+passphrase-protected archive document, so a backup copy exists even when
+every key file and recovery kit is lost. It answers the unrecoverable-by-design
+rule: Kavrix never holds your keys, so only your own copies protect you.
+
+```sh
+kavrix backup create --file ./work.backup.json --profile work
+kavrix backup verify --file ./work.backup.json
+kavrix backup restore --file ./work.backup.json --data-file ./restored.kavrix
+```
+
+- `create` asks for a new backup passphrase (minimum 16 bytes, confirmed
+  twice, masked). The archive is one JSON document sealed with
+  XChaCha20-Poly1305 under an Argon2id-derived key; the header — including
+  the opaque database identity and exact length — is authenticated
+  associated data, so the archive cannot be relabeled, truncated, or
+  spliced. The archive file is created atomically with owner-only
+  permissions and is never overwritten without `--overwrite`.
+- `verify` authenticates the archive and reports database ID, sealed byte
+  length, and creation time without writing anything. A wrong passphrase
+  and a modified archive are deliberately indistinguishable (generic
+  authentication failure, exit 10); malformed or unknown documents fail
+  with exit 16 before any key derivation.
+- `restore` authenticates and writes the database file to a new
+  destination (same create/`--overwrite` rules). The restored file is the
+  same database: bind a profile to it with `kavrix db profile add --datastore
+  file --data-file <path> --key-file <key-path>` and the original owner key
+  unlocks it, or recover ownership with `kavrix db recovery use` and a
+  database recovery kit.
+- Secrets are accepted only through masked prompts or stdin frames
+  (`kavrix frames "backup create"`); no secret travels through argv, and
+  database plaintext exists only in memory during create/restore.
+- Scope: local-file datastore profiles only; MongoDB archive backup is not
+  available yet. Archives are bounded to 128 MiB of database plaintext.
+  Keep archives and their passphrase on separate protected media from the
+  owner key and recovery kits.
+
 ## Advanced destructive operation
 
 The whole-vault destruction command is intentionally absent from normal help,

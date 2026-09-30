@@ -76,9 +76,9 @@ or platform adapters. UI and commands call use cases instead of databases.
   and package-content checks before release claims.
 - Preserve stable CLI output and exit codes. Non-interactive output is ANSI-free
   and redacts secrets unless a separately guarded unsafe flow is explicit.
-- Keep `docs/implementation-status.md` factual: a feature is complete only when
-  observable tests pass. Record security decisions and honest limitations as
-  implementation proceeds.
+- A feature is complete only when observable tests pass. Record security
+  decisions and honest limitations as implementation proceeds, and never
+  document planned or retired commands as available.
 - Keep changes focused and preserve unrelated work. Never lower an assertion to
   hide a defect.
 

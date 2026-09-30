@@ -5,8 +5,9 @@ for developers, applications, and AI agents. It authorizes scoped secret
 execution (policies, grants, agent brokers) and encrypts credential labels and
 values in the local CLI process before writing authenticated ciphertext to a
 protected local database file or directly to the operator's MongoDB. Security
-claims here are limited to the implementation and evidence recorded in
-[docs/implementation-status.md](./docs/implementation-status.md).
+claims here are limited to the implementation recorded in this repository's
+[threat model](./docs/threat-model.md) and
+[cryptography](./docs/cryptography.md) documentation.
 
 The supported product does not run a Kavrix API server, sync service, account
 system, or device-enrollment flow. MongoDB is a direct storage adapter, not a
