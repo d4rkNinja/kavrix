@@ -601,6 +601,14 @@ passthrough, and a spawned built-CLI help check) plus the neighboring suites
 (`public-command-help`, `launch-routing-guards`, `package`,
 `local-vault-cli-coverage`, `init-onboarding-command`, `datastore-profiles`).
 
+0.2.27 also refreshes the transitive devDependency `brace-expansion` to
+5.0.12 through a scoped `pnpm-workspace.yaml` override after two new
+high-severity DoS advisories (GHSA-qhr7-859c-m2p7, GHSA-6j4f-fj2g-mc7p)
+landed in the eslint toolchain chain between 0.2.26 and this release;
+`pnpm audit --audit-level high` (the publish gate) is clean again and the
+shipped CLI package never contained the vulnerable code (devDependency
+chain only).
+
 ## Security properties
 
 - plaintext labels, values, DRKs, VRKs, and unlock keys do not cross the storage boundary;
