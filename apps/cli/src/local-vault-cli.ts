@@ -138,6 +138,7 @@ import {
   writeInitTuiOnboardingComplete,
 } from './init-tui-onboarding.js';
 import { registerStructuredVaultCommands } from './structured-vault-commands.js';
+import { registerBackupCommands } from './backup-command.js';
 import {
   authenticationFailure,
   credentialMissing,
@@ -850,6 +851,7 @@ export function buildLocalCli(): Command {
   registerExecutionCommands(program);
   registerTuiCommand(program);
   registerStructuredVaultCommands(program);
+  registerBackupCommands(program);
   registerFramesCommand(program);
   registerSelfUpdateCommand(program);
   applyStdinFrameHelp(program);

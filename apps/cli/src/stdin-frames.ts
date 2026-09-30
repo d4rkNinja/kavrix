@@ -85,6 +85,10 @@ export const STDIN_FRAME_CONTRACTS: Readonly<Record<string, string>> = Object.fr
     'source-passphrase, expected-source-label, destination-passphrase, destination-passphrase-confirm, database-label, vault-label',
   destroy:
     'passphrase[, mongodb-url], "DESTROY <vaultId>", "DELETE REVISION <rev> <challenge>"',
+  'backup create': 'backup-passphrase, backup-passphrase-confirm',
+  'backup verify': 'backup-passphrase',
+  'backup restore': 'backup-passphrase',
+  'import env': '[mongodb-url with --database-url-stdin,] passphrase',
 });
 
 /** Adds the exact frame contract to a command's help description. */

@@ -719,7 +719,7 @@ kavrix backup restore --file ./work.backup.json --data-file ./restored.kavrix
 - `restore` authenticates and writes the database file to a new
   destination (same create/`--overwrite` rules). The restored file is the
   same database: bind a profile to it with `kavrix db profile add --datastore
-  file --data-file <path> --key-file <key-path>` and the original owner key
+file --data-file <path> --key-file <key-path>` and the original owner key
   unlocks it, or recover ownership with `kavrix db recovery use` and a
   database recovery kit.
 - Secrets are accepted only through masked prompts or stdin frames

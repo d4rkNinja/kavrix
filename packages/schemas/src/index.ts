@@ -6,6 +6,7 @@ export * from './cli-contract.js';
 export * from './collaboration.js';
 export * from './encrypted-records.js';
 export * from './content-hash.js';
+export * from './database-backup-archive.js';
 export * from './database-container.js';
 export * from './fields.js';
 export * from './history.js';

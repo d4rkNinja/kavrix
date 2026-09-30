@@ -16,3 +16,4 @@ export * from './secretstream.js';
 export * from './session-unlock.js';
 export * from './slots.js';
 export * from './state-envelope.js';
+export * from './backup-envelope.js';
