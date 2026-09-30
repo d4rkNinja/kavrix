@@ -80,6 +80,8 @@ export interface AppSnapshot {
   readonly agentStatus: string;
   readonly notice: string | null;
   readonly noticeTone: AppTone;
+  /** Active TUI theme id; hosts report the effective (flag/env/persisted) choice. */
+  readonly theme: string;
 }
 
 export type AppBackendAction =
@@ -166,7 +168,8 @@ export type AppBackendAction =
       maxUses?: number;
     }>
   | Readonly<{ type: 'grant-revoke'; grantId: string }>
-  | Readonly<{ type: 'refresh-browse' }>;
+  | Readonly<{ type: 'refresh-browse' }>
+  | Readonly<{ type: 'set-theme'; themeId: string }>;
 
 export type AppBackendResult = Readonly<{
   snapshot: AppSnapshot;
@@ -205,6 +208,7 @@ export function emptySnapshot(notice: string | null = null): AppSnapshot {
     agentStatus: '',
     notice,
     noticeTone: notice === null ? 'muted' : 'info',
+    theme: 'gold',
   };
 }
 

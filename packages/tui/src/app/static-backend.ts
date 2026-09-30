@@ -29,6 +29,14 @@ export function createStaticAppBackend(
     async dispatch(action: AppBackendAction): Promise<AppBackendResult> {
       await Promise.resolve();
       switch (action.type) {
+        case 'set-theme':
+          snapshot = {
+            ...snapshot,
+            theme: action.themeId,
+            notice: `Theme saved: ${action.themeId}.`,
+            noticeTone: 'success',
+          };
+          return { snapshot };
         case 'refresh':
         case 'run-doctor':
         case 'refresh-policy':

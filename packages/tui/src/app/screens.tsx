@@ -18,7 +18,9 @@ import {
   CHROME,
   doctorStatusAccent,
   maskBullets,
+  pointerGlyph,
   screenAccent,
+  THEMES,
   toneAccent,
   type AppAccent,
 } from './theme.js';
@@ -39,6 +41,53 @@ import {
 
 function safe(value: string, ascii: boolean): string {
   return sanitizeTerminalText(value, ascii);
+}
+
+/**
+ * Theme picker rows: one line per installed theme, numbered like the tab
+ * strip, cursor-marked, with each label painted in its own theme accent so
+ * the row previews the palette. The committed theme carries an active tag.
+ */
+function ThemePickerRows({
+  color,
+  ascii,
+  cursor,
+  activeId,
+}: Readonly<{
+  color: boolean;
+  ascii: boolean;
+  cursor: number;
+  activeId: string;
+}>): ReactElement {
+  const pointer = pointerGlyph(ascii);
+  return (
+    <Box flexDirection="column">
+      {THEMES.map((theme, index) => {
+        const selected = index === cursor;
+        const active = theme.id === activeId;
+        return (
+          <Box key={theme.id} flexDirection="column">
+            <Box flexDirection="row" columnGap={1}>
+              <Text {...accentColor(color, CHROME.muted)}>
+                {selected ? pointer : ' '}
+                {String(index + 1)}{' '}
+              </Text>
+              <Text bold={selected} {...accentColor(color, theme.accent)}>
+                {safe(theme.label, ascii)}
+              </Text>
+              {active ? (
+                <Text {...accentColor(color, CHROME.muted)}>[active]</Text>
+              ) : null}
+            </Box>
+            <Text {...accentColor(color, CHROME.muted)}>
+              {' '.repeat(4)}
+              {safe(theme.description, ascii)}
+            </Text>
+          </Box>
+        );
+      })}
+    </Box>
+  );
 }
 
 function allowMotion(): boolean {
@@ -117,6 +166,13 @@ function overlayCopy(
         title: 'New vault',
         body: `Vault label: ${q}_`,
         accent: CHROME.accent,
+      };
+    case 'theme-picker':
+      return {
+        title: 'Theme',
+        body: '(theme list)',
+        accent: CHROME.accent,
+        hint: 'Arrow keys or 1-5 preview live; Enter applies and saves; Esc restores.',
       };
     case 'input-search':
       return { title: 'Search', body: `Search: ${q}_`, accent: CHROME.accent };
@@ -292,6 +348,7 @@ export function AppChrome({
         ? `${home.vaultId.slice(0, 10)}${ellipsis}`
         : home.vaultId;
   const isDetailOverlay = state.overlay === 'credential-detail';
+  const isThemePicker = state.overlay === 'theme-picker';
   const isConfirmOverlay =
     overlay !== null &&
     !isDetailOverlay &&
@@ -376,8 +433,16 @@ export function AppChrome({
             width={width}
             animate={motion}
           >
+            {isThemePicker ? (
+              <ThemePickerRows
+                color={color}
+                ascii={ascii}
+                cursor={state.themeCursor}
+                activeId={state.themeId}
+              />
+            ) : null}
             <Text bold {...accentColor(color, overlay.accent)}>
-              {safe(typedBody, ascii)}
+              {safe(isThemePicker ? '' : typedBody, ascii)}
               {isInputOverlay ? (
                 <Text {...accentColor(color, overlay.accent)}>{caret ? '_' : ' '}</Text>
               ) : null}

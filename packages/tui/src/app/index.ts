@@ -4,7 +4,14 @@ export * from './router.js';
 export { prioritizeFooterChips } from './screens.js';
 export {
   CHROME,
+  THEMES,
+  TUI_THEME_IDS,
   accentColor,
+  activeTuiTheme,
+  activeTuiThemeId,
+  applyTuiTheme,
+  defaultThemeForPlatform,
+  isThemeId,
   resolveAppPresentation,
   toneAccent,
   toneGlyph,
@@ -19,6 +26,8 @@ export {
   doctorStatusAccent,
   type AppAccent,
   type PanelBorderStyle,
+  type ThemeId,
+  type TuiTheme,
 } from './theme.js';
 export * from './static-backend.js';
 export {

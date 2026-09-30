@@ -135,7 +135,10 @@ the passphrase always still works — nothing about it is weakened.
 credentials, policies, grants, recovery, doctor, and session unlock, with
 secrets masked by default and reveal explicitly guarded (`r` then `y`, with a
 visible countdown). Screens are reachable by number or Tab, long lists have
-`/` search, and motion respects your reduced-motion setting.
+`/` search, and motion respects your reduced-motion setting. Press `t` to
+switch between five color themes (Gold, Ocean, Magma, Forest, Violet) with
+a live preview — your choice is saved, or set it per launch with
+`kavrix tui --theme`.
 
 ## Housekeeping
 

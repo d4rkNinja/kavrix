@@ -55,6 +55,17 @@ paint. Footer chips overflow on narrow terminals; Enter/detail, Esc, and q stay
 preferred. Large credential lists render a bounded window and `/` search filters
 client-side. Escape remasks a REVEAL and returns focus to the credentials list.
 
+## Themes
+
+The TUI ships five color themes: Classic Gold (the Kavrix signature), Deep
+Ocean, Magma, Forest, and Violet Dusk. Press `t` on any screen to open the
+picker — arrows or 1-5 preview a theme live, `Enter` applies and saves it,
+`Esc` restores. The choice persists in `~/.kavrix/tui-theme.json`; override
+for one session with `kavrix tui --theme <id>` or `KAVRIX_TUI_THEME`. The
+default is Deep Ocean on Windows and Classic Gold elsewhere. Semantic
+status colors stay fixed in every theme, and `NO_COLOR` still disables all
+color.
+
 ## Storage showcase
 
 The active `@kavrix/tui` workspace also keeps a read-only storage docs /

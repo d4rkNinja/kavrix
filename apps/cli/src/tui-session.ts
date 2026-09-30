@@ -1,13 +1,18 @@
 import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
+import { existsSync } from 'node:fs';
 import { lstat, realpath } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+
+import { z } from 'zod';
 
 import { zeroize } from '@kavrix/crypto';
 import {
   ensureSecureDirectory,
   hardenExistingSecureDirectory,
+  readProtectedJsonDocument,
+  writeProtectedJsonDocument,
 } from '@kavrix/key-files';
 import { profileIdSchema } from '@kavrix/schemas';
 
@@ -82,6 +87,8 @@ export interface CliTuiSnapshot {
   readonly agentStatus: string;
   readonly notice: string | null;
   readonly noticeTone: 'info' | 'success' | 'warning' | 'error' | 'muted';
+  /** Effective TUI theme id (flag/env/persisted/platform default). */
+  readonly theme: string;
 }
 
 export type CliTuiAction =
@@ -166,7 +173,8 @@ export type CliTuiAction =
       maxUses?: number;
     }>
   | Readonly<{ type: 'grant-revoke'; grantId: string }>
-  | Readonly<{ type: 'refresh-browse' }>;
+  | Readonly<{ type: 'refresh-browse' }>
+  | Readonly<{ type: 'set-theme'; themeId: string }>;
 
 export interface CliTuiBackend {
   load(): Promise<CliTuiSnapshot>;
@@ -185,6 +193,8 @@ const require = createRequire(import.meta.url);
 export interface CliTuiSessionOptions {
   readonly profileConfigDir?: string;
   readonly ascii?: boolean;
+  /** Effective theme resolved by the command layer (flag > env > persisted). */
+  readonly theme?: string;
   binPath?: string;
   /** Optional injectable CLI runner (tests); secrets stay in frames only. */
   readonly commandRunner?: CliTuiCommandRunner;
@@ -247,6 +257,38 @@ async function isSameDirectoryPath(left: string, right: string): Promise<boolean
   }
 }
 
+/** Protected, non-secret TUI preferences stored in the kavrix artifact home. */
+const tuiThemePrefsSchema = z
+  .object({ theme: z.enum(['gold', 'ocean', 'magma', 'forest', 'violet']) })
+  .strict();
+type TuiThemePrefs = z.infer<typeof tuiThemePrefsSchema>;
+
+export const TUI_THEME_IDS = ['gold', 'ocean', 'magma', 'forest', 'violet'] as const;
+
+export function isTuiThemeId(value: string): value is (typeof TUI_THEME_IDS)[number] {
+  return (TUI_THEME_IDS as readonly string[]).includes(value);
+}
+
+function tuiThemePrefsPath(kavrixArtifactDir?: string): string {
+  return join(kavrixArtifactDir ?? getKavrixConfigDir(), 'tui-theme.json');
+}
+
+async function readPersistedTheme(kavrixArtifactDir?: string): Promise<string | null> {
+  try {
+    const document = await readProtectedJsonDocument(
+      tuiThemePrefsPath(kavrixArtifactDir),
+      {
+        schema: tuiThemePrefsSchema,
+        maximumBytes: 4096,
+      },
+    );
+    return document.theme;
+  } catch {
+    // Missing or unreadable preferences fall back to the platform default.
+    return null;
+  }
+}
+
 export function createCliTuiBackend(options: CliTuiSessionOptions = {}): CliTuiBackend {
   const session = new CliTuiSession(options);
   return {
@@ -269,9 +311,22 @@ class CliTuiSession {
   #databaseUrl: Buffer | null = null;
   #notice: string | null = 'Loaded profile registry.';
   #noticeTone: CliTuiSnapshot['noticeTone'] = 'info';
+  #theme: string | null = null;
 
   constructor(options: CliTuiSessionOptions) {
     this.#options = options;
+  }
+
+  /** Effective theme: explicit option, then persisted preference. */
+  async #resolveTheme(): Promise<string> {
+    if (this.#theme !== null) return this.#theme;
+    if (this.#options.theme !== undefined && isTuiThemeId(this.#options.theme)) {
+      this.#theme = this.#options.theme;
+      return this.#theme;
+    }
+    const persisted = await readPersistedTheme(this.#options.kavrixArtifactDir);
+    this.#theme = persisted ?? 'gold';
+    return this.#theme;
   }
 
   async snapshot(): Promise<CliTuiSnapshot> {
@@ -393,6 +448,45 @@ class CliTuiSession {
         case 'refresh-browse':
           await this.#refreshBrowse();
           break;
+        case 'set-theme': {
+          if (!isTuiThemeId(action.themeId)) {
+            this.#notice = 'Unknown theme; nothing changed.';
+            this.#noticeTone = 'error';
+            break;
+          }
+          const previous = this.#theme;
+          this.#theme = action.themeId;
+          try {
+            const artifactHome =
+              this.#options.kavrixArtifactDir ?? getKavrixConfigDir();
+            // An existing kavrix home may predate strict ACLs (and test
+            // scratch lives under world-writable temp roots); harden instead
+            // of re-validating grandparents. Missing homes are created strict.
+            if (existsSync(artifactHome)) {
+              await hardenExistingSecureDirectory(artifactHome);
+            } else {
+              await ensureSecureDirectory(artifactHome);
+            }
+            await writeProtectedJsonDocument(
+              tuiThemePrefsPath(this.#options.kavrixArtifactDir),
+              { theme: action.themeId } satisfies TuiThemePrefs,
+              existsSync(tuiThemePrefsPath(this.#options.kavrixArtifactDir))
+                ? 'replace'
+                : 'create',
+              { schema: tuiThemePrefsSchema, maximumBytes: 4096 },
+            );
+            this.#notice = `Theme saved: ${action.themeId}.`;
+            this.#noticeTone = 'success';
+          } catch (error) {
+            this.#theme = previous;
+            this.#notice =
+              error instanceof Error
+                ? `Theme not saved: ${error.message}`
+                : 'Theme not saved.';
+            this.#noticeTone = 'error';
+          }
+          break;
+        }
       }
       return { snapshot: await this.#buildSnapshot() };
     } catch (error) {
@@ -425,6 +519,7 @@ class CliTuiSession {
             },
           ];
     return {
+      theme: await this.#resolveTheme(),
       session: await this.#sessionStatus(),
       home: {
         profileId: current?.id ?? null,

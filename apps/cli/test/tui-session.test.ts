@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs';
 import { chmod, mkdir, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -39,6 +40,62 @@ describe('CliTuiSession mutations (mocked spawn)', () => {
     await registry.use(profileIdSchema.parse('smoke'));
     return dir;
   }
+
+  it('persists the TUI theme selection in the kavrix artifact home', async () => {
+    const configDir = await setupProfile();
+    const kavrixHome = await mkdtemp(join(tmpdir(), 'kavrix-tui-theme-'));
+    dirs.push(kavrixHome);
+    const backend = createCliTuiBackend({
+      profileConfigDir: configDir,
+      kavrixArtifactDir: kavrixHome,
+      commandRunner: async () => '',
+    });
+
+    const initial = await backend.load();
+    expect(initial.theme).toBe('gold');
+
+    const applied = await backend.dispatch({
+      type: 'set-theme',
+      themeId: 'forest',
+    });
+    expect(applied.snapshot.theme).toBe('forest');
+    expect(applied.snapshot.noticeTone).toBe('success');
+
+    // The choice survives a fresh backend over the same artifact home.
+    const reloaded = createCliTuiBackend({
+      profileConfigDir: configDir,
+      kavrixArtifactDir: kavrixHome,
+      commandRunner: async () => '',
+    });
+    expect((await reloaded.load()).theme).toBe('forest');
+
+    // An explicit theme option outranks the persisted preference.
+    const forced = createCliTuiBackend({
+      profileConfigDir: configDir,
+      kavrixArtifactDir: kavrixHome,
+      theme: 'magma',
+      commandRunner: async () => '',
+    });
+    expect((await forced.load()).theme).toBe('magma');
+  });
+
+  it('rejects unknown theme ids without writing preferences', async () => {
+    const configDir = await setupProfile();
+    const kavrixHome = await mkdtemp(join(tmpdir(), 'kavrix-tui-theme-bad-'));
+    dirs.push(kavrixHome);
+    const backend = createCliTuiBackend({
+      profileConfigDir: configDir,
+      kavrixArtifactDir: kavrixHome,
+      commandRunner: async () => '',
+    });
+    const rejected = await backend.dispatch({
+      type: 'set-theme',
+      themeId: 'neon-rainbow',
+    });
+    expect(rejected.snapshot.theme).toBe('gold');
+    expect(rejected.snapshot.noticeTone).toBe('error');
+    expect(existsSync(join(kavrixHome, 'tui-theme.json'))).toBe(false);
+  });
 
   it('unlocks, puts, renames, removes via stdin frames only', async () => {
     const configDir = await setupProfile();

@@ -70,7 +70,8 @@ remains a command reference and is not loaded automatically.
   [0.2.22](release-notes-0.2.22.md), [0.2.23](release-notes-0.2.23.md),
   [0.2.24](release-notes-0.2.24.md), [0.2.25](release-notes-0.2.25.md),
   [0.2.26](release-notes-0.2.26.md), [0.2.27](release-notes-0.2.27.md),
-  [0.2.28](release-notes-0.2.28.md), [0.2.29](release-notes-0.2.29.md);
+  [0.2.28](release-notes-0.2.28.md), [0.2.29](release-notes-0.2.29.md),
+  [0.2.30](release-notes-0.2.30.md);
   earlier lines keep their own `release-notes-0.2.x.md` files.
 
 Run `kavrix <command> --help` for the command options installed with a specific

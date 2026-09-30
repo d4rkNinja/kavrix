@@ -1,6 +1,13 @@
 import { APP_MENU, type AppScreenId } from './ids.js';
 import type { AppBackendAction, AppSnapshot } from './backend.js';
 import { emptySnapshot } from './backend.js';
+import {
+  applyTuiTheme,
+  activeTuiThemeId,
+  isThemeId,
+  THEMES,
+  type ThemeId,
+} from './theme.js';
 import { defaultFileProfilePaths, defaultMongoProfilePaths } from './paths.js';
 
 export interface AppKey {
@@ -57,7 +64,8 @@ export type AppOverlay =
   | 'input-grant-ttl'
   | 'input-agent-name'
   | 'input-agent-config'
-  | 'credential-detail';
+  | 'credential-detail'
+  | 'theme-picker';
 
 export interface AppRouterState {
   readonly screen: AppScreenId;
@@ -106,6 +114,10 @@ export interface AppRouterState {
   readonly nowMs: number;
   /** Direction of the last screen change; drives the transition settle. */
   readonly navDirection: AppNavDirection;
+  /** Committed theme id; the chrome module tokens are kept in sync with it. */
+  readonly themeId: ThemeId;
+  /** Cursor row inside the theme picker overlay. */
+  readonly themeCursor: number;
 }
 
 export type AppRouterEffect =
@@ -200,6 +212,8 @@ export function createInitialAppRouterState(
     sessionReady: false,
     nowMs: 0,
     navDirection: 'none',
+    themeId: activeTuiThemeId(),
+    themeCursor: 0,
   };
 }
 
@@ -208,20 +222,23 @@ export function transitionAppRouter(
   action: AppRouterAction,
 ): AppRouterTransition {
   switch (action.type) {
-    case 'hydrate':
+    case 'hydrate': {
+      const hydrated = adoptSnapshotTheme(state, action.snapshot);
       return unchanged({
-        ...state,
+        ...hydrated,
         snapshot: action.snapshot,
         message: action.snapshot.notice,
         sessionReady: true,
       });
+    }
     case 'backend-result': {
       const revealedName =
         action.revealedSecret === undefined
           ? state.revealedName
           : state.pendingRevealName;
+      const themed = adoptSnapshotTheme(state, action.snapshot);
       return unchanged({
-        ...state,
+        ...themed,
         snapshot: action.snapshot,
         message: action.snapshot.notice ?? state.message,
         pendingRevealName:
@@ -261,6 +278,35 @@ export function transitionAppRouter(
     case 'key':
       return keyTransition(state, action.key, action.nowMs);
   }
+}
+
+/** Moves the picker cursor and live-previews the highlighted theme. */
+function themePickerCursor(state: AppRouterState, cursor: number): AppRouterTransition {
+  const clamped = Math.min(Math.max(0, cursor), THEMES.length - 1);
+  const theme = THEMES[clamped];
+  if (theme === undefined) return unchanged(state);
+  applyTuiTheme(theme.id);
+  return unchanged({
+    ...state,
+    themeCursor: clamped,
+    message: `Previewing ${theme.label} — Enter applies, Esc restores ${themeLabelFor(state.themeId)}.`,
+  });
+}
+
+function themeLabelFor(id: ThemeId): string {
+  return THEMES.find((theme) => theme.id === id)?.label ?? id;
+}
+
+/** Adopts a host-reported theme id and keeps chrome tokens in sync. */
+function adoptSnapshotTheme(
+  state: AppRouterState,
+  snapshot: AppSnapshot,
+): AppRouterState {
+  if (snapshot.theme === state.themeId || !isThemeId(snapshot.theme)) {
+    return state;
+  }
+  applyTuiTheme(snapshot.theme);
+  return { ...state, themeId: snapshot.theme };
 }
 
 function keyTransition(
@@ -320,6 +366,18 @@ function keyTransition(
   }
   if (key.text?.toLowerCase() === 'l') {
     return unchanged({ ...state, overlay: 'confirm-lock' });
+  }
+  if (key.text?.toLowerCase() === 't') {
+    const cursor = Math.max(
+      0,
+      THEMES.findIndex((theme) => theme.id === state.themeId),
+    );
+    return unchanged({
+      ...state,
+      overlay: 'theme-picker',
+      themeCursor: cursor,
+      message: 'Theme picker — arrows or 1-5 preview, Enter applies, Esc cancels.',
+    });
   }
 
   if (state.screen === 'home') return homeKey(state, key);
@@ -1323,6 +1381,36 @@ function overlayKey(
       );
     }
     return appendOverlayText(state, key.text, 512);
+  }
+
+  if (state.overlay === 'theme-picker') {
+    if (key.name === 'escape') {
+      applyTuiTheme(state.themeId);
+      return unchanged({
+        ...state,
+        overlay: 'none',
+        message: 'Theme unchanged.',
+      });
+    }
+    if (key.name === 'up' || key.text === 'k') {
+      return themePickerCursor(state, state.themeCursor - 1);
+    }
+    if (key.name === 'down' || key.text === 'j') {
+      return themePickerCursor(state, state.themeCursor + 1);
+    }
+    if (key.text !== undefined && /^[1-5]$/u.test(key.text)) {
+      return themePickerCursor(state, Number.parseInt(key.text, 10) - 1);
+    }
+    if (key.name === 'return') {
+      const theme = THEMES[state.themeCursor];
+      if (theme === undefined) return unchanged(state);
+      applyTuiTheme(theme.id);
+      return effect(
+        { ...state, overlay: 'none', themeId: theme.id },
+        { kind: 'backend', action: { type: 'set-theme', themeId: theme.id } },
+      );
+    }
+    return unchanged(state);
   }
 
   if (state.overlay === 'input-search' || state.overlay === 'input-run') {

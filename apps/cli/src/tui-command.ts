@@ -2,7 +2,7 @@ import type { Command } from 'commander';
 
 import { LocalCliError } from './cli-error.js';
 import { resolveProfileConfigDirectory } from './profile-config-directory.js';
-import { createCliTuiBackend } from './tui-session.js';
+import { createCliTuiBackend, isTuiThemeId, TUI_THEME_IDS } from './tui-session.js';
 import { terminalColorEnabled } from './terminal-presentation.js';
 import { CLI_VERSION } from './version.js';
 
@@ -21,6 +21,10 @@ export function registerTuiCommand(program: Command): void {
     .option('--color', 'Force color when the terminal supports it.')
     .option('--no-color', 'Disable ANSI color (also honors NO_COLOR).')
     .option('--no-splash', 'Skip the animated startup splash screen.')
+    .option(
+      '--theme <id>',
+      `TUI color theme: ${TUI_THEME_IDS.join(', ')} (also KAVRIX_TUI_THEME; saved from the TUI with t).`,
+    )
     .option('--profile-config-dir <path>', 'Protected profile configuration directory.')
     .option('--config-dir <path>', 'Protected profile configuration directory.')
     .action(async (...args: unknown[]) => {
@@ -35,10 +39,17 @@ export async function runInteractiveTui(
     ascii?: boolean;
     color?: boolean;
     splash?: boolean;
+    theme?: string;
     profileConfigDir?: string;
     configDir?: string;
   }>,
 ): Promise<void> {
+  const themeSource = options.theme ?? process.env['KAVRIX_TUI_THEME'];
+  if (themeSource !== undefined && !isTuiThemeId(themeSource)) {
+    throw new LocalCliError(
+      `Unknown theme "${themeSource}". Choose one of: ${TUI_THEME_IDS.join(', ')}.`,
+    );
+  }
   if (!process.stdin.isTTY || !process.stdout.isTTY) {
     throw new LocalCliError(
       'kavrix tui requires an interactive TTY on stdin and stdout. Use numbered CLI commands for automation.',
@@ -69,8 +80,16 @@ export async function runInteractiveTui(
     options.profileConfigDir,
     options.configDir,
   );
+  if (themeSource !== undefined) {
+    // Apply before mount so the splash and first paint already use the theme.
+    const tuiTheme = (await import('@kavrix/tui')) as unknown as {
+      applyTuiTheme: (id: (typeof TUI_THEME_IDS)[number]) => void;
+    };
+    tuiTheme.applyTuiTheme(themeSource);
+  }
   const backend = createCliTuiBackend({
     ascii,
+    ...(themeSource === undefined ? {} : { theme: themeSource }),
     ...(profileConfigDir === undefined ? {} : { profileConfigDir }),
   });
 

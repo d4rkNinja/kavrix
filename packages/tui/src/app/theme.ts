@@ -7,10 +7,124 @@ export type AppAccent =
 export type PanelBorderStyle = 'round' | 'double' | 'single' | 'classic';
 
 /**
- * Classic-premium chrome tokens. One accent (gold/yellow). Semantic colors
- * stay reserved for success / warning / danger — never rainbow decoration.
+ * Selectable TUI color themes. Each theme is a complete, distinct palette:
+ * primary accent, heading, selection highlight, progress-bar color, and a
+ * panel border style. Semantic status colors (success / warning / danger /
+ * info) stay fixed across themes so `[ok]` / `[!]` / `[x]` rows remain
+ * unambiguous everywhere.
+ *
+ * Themes use the terminal's named ANSI colors rather than hardcoded RGB, so
+ * each palette adapts to the host terminal scheme (Windows Terminal Campbell,
+ * macOS Terminal.app / iTerm2, Linux terminal palettes) instead of fighting
+ * it. `NO_COLOR` and dumb terminals keep the existing colorless behavior.
  */
-export const CHROME = {
+export type ThemeId = 'gold' | 'ocean' | 'magma' | 'forest' | 'violet';
+
+export interface TuiTheme {
+  readonly id: ThemeId;
+  readonly label: string;
+  readonly description: string;
+  readonly accent: AppAccent;
+  readonly heading: AppAccent;
+  readonly selection: AppAccent;
+  readonly bar: AppAccent;
+  readonly panelBorder: 'round' | 'single' | 'double';
+}
+
+export const THEMES: readonly TuiTheme[] = [
+  {
+    id: 'gold',
+    label: 'Classic Gold',
+    description: 'Warm gold accent on quiet white — the Kavrix signature.',
+    accent: 'yellow',
+    heading: 'white',
+    selection: 'cyan',
+    bar: 'yellow',
+    panelBorder: 'round',
+  },
+  {
+    id: 'ocean',
+    label: 'Deep Ocean',
+    description: 'Cool cyan accent with blue headings and square panels.',
+    accent: 'cyan',
+    heading: 'blue',
+    selection: 'blue',
+    bar: 'cyan',
+    panelBorder: 'single',
+  },
+  {
+    id: 'magma',
+    label: 'Magma',
+    description: 'Hot red accent, magenta highlights, heavy double panels.',
+    accent: 'red',
+    heading: 'magenta',
+    selection: 'magenta',
+    bar: 'red',
+    panelBorder: 'double',
+  },
+  {
+    id: 'forest',
+    label: 'Forest',
+    description: 'Calm green accent and green-tinted chrome throughout.',
+    accent: 'green',
+    heading: 'green',
+    selection: 'green',
+    bar: 'green',
+    panelBorder: 'round',
+  },
+  {
+    id: 'violet',
+    label: 'Violet Dusk',
+    description: 'Purple accent with blue selection and framed panels.',
+    accent: 'magenta',
+    heading: 'magenta',
+    selection: 'blue',
+    bar: 'magenta',
+    panelBorder: 'double',
+  },
+];
+
+export const TUI_THEME_IDS: readonly ThemeId[] = THEMES.map((theme) => theme.id);
+
+export function isThemeId(value: string): value is ThemeId {
+  return THEMES.some((theme) => theme.id === value);
+}
+
+/**
+ * Platform default theme. Windows Terminal's Campbell scheme is
+ * blue/cyan-harmonized, so `ocean` is the default there; macOS and Linux
+ * terminals keep the brand `gold`. Users override through the TUI picker,
+ * `kavrix tui --theme`, or `KAVRIX_TUI_THEME`.
+ */
+export function defaultThemeForPlatform(platform: NodeJS.Platform): ThemeId {
+  return platform === 'win32' ? 'ocean' : 'gold';
+}
+
+interface ChromeTokens {
+  accent: AppAccent;
+  heading: AppAccent;
+  muted: AppAccent;
+  success: AppAccent;
+  warning: AppAccent;
+  danger: AppAccent;
+  info: AppAccent;
+  selection: AppAccent;
+  bar: AppAccent;
+  paddingX: number;
+  paddingY: number;
+  modalPaddingX: number;
+  modalPaddingY: number;
+  modalMinWidth: number;
+  modalMaxWidth: number;
+}
+
+/**
+ * Classic-premium chrome tokens for the active theme. One accent per theme;
+ * semantic colors stay reserved for success / warning / danger — never
+ * rainbow decoration. Mutable theme fields are swapped only through
+ * {@link applyTuiTheme}; layout constants never change.
+ */
+export const CHROME: ChromeTokens = {
   accent: 'yellow',
   heading: 'white',
   muted: 'gray',
@@ -18,13 +132,43 @@ export const CHROME = {
   warning: 'yellow',
   danger: 'red',
   info: 'cyan',
+  selection: 'cyan',
+  bar: 'yellow',
   paddingX: 1,
   paddingY: 0,
   modalPaddingX: 2,
   modalPaddingY: 1,
   modalMinWidth: 36,
   modalMaxWidth: 56,
-} as const;
+};
+
+let activeThemeId: ThemeId = defaultThemeForPlatform(process.platform);
+
+applyTuiTheme(activeThemeId);
+
+/** Installs one theme's color tokens as the active chrome. */
+export function applyTuiTheme(id: ThemeId): TuiTheme {
+  const theme = THEMES.find((candidate) => candidate.id === id);
+  if (theme === undefined) {
+    throw new Error(`Unknown TUI theme: ${id}`);
+  }
+  activeThemeId = theme.id;
+  CHROME.accent = theme.accent;
+  CHROME.heading = theme.heading;
+  CHROME.selection = theme.selection;
+  CHROME.bar = theme.bar;
+  return theme;
+}
+
+export function activeTuiThemeId(): ThemeId {
+  return activeThemeId;
+}
+
+export function activeTuiTheme(): TuiTheme {
+  const theme = THEMES.find((candidate) => candidate.id === activeThemeId);
+  if (theme === undefined) throw new Error('No active TUI theme is installed.');
+  return theme;
+}
 
 export function accentColor(
   enabled: boolean,
@@ -90,21 +234,22 @@ export function sectionTitle(label: string, ascii: boolean): string {
 }
 
 /**
- * OpenTUI borderStyle mapping for Ink:
- * - unicode panels → `round` (╭─╮)
- * - unicode modals → `double` (╔═╗)
- * - ascii / win32 / --ascii → `classic` (+-+|) — ASCII-safe single border
+ * OpenTUI borderStyle mapping for Ink. The active theme picks the unicode
+ * panel border; modals always frame with `double` so confirmations stay
+ * visually distinct from panels; ascii / win32 / --ascii degrade to the
+ * `classic` (+-+|) ASCII-safe border regardless of theme.
  */
 export function panelBorderStyle(
   ascii: boolean,
   kind: 'panel' | 'modal' = 'panel',
 ): PanelBorderStyle {
   if (ascii) return 'classic';
-  return kind === 'modal' ? 'double' : 'round';
+  if (kind === 'modal') return 'double';
+  return activeTuiTheme().panelBorder;
 }
 
 /**
- * Per-screen chrome accent. Default is the single gold accent; only
+ * Per-screen chrome accent. Default is the active theme accent; only
  * recovery (danger) and help (neutral) depart from it.
  */
 export function screenAccent(screen: string): AppAccent {
