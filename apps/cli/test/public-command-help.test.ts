@@ -153,7 +153,8 @@ describe('public command help contract', () => {
     // tree-derived loop below automatically exercises the resulting routes.
     // 0.2.24: + session, session enable, session status, session revoke.
     // 0.2.28: + backup, backup create, backup verify, backup restore.
-    expect(routes.canonical).toHaveLength(113);
+    // 0.2.29: + import, import env.
+    expect(routes.canonical).toHaveLength(115);
     expect(routes.aliases).toHaveLength(17);
 
     for (const route of [...routes.canonical, ...routes.aliases]) {

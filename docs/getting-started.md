@@ -54,7 +54,21 @@ printf '%s\n' 'my-passphrase-16b' 'secret-value' \
 `kavrix frames put` prints the exact frame order for any command. Replacing
 an existing credential requires `--overwrite`.
 
-## 3. Run a program with secrets
+## 3. Migrate an existing `.env`
+
+Already keep secrets in a `.env` file? Import it in one guarded command:
+
+```sh
+kavrix import env --file ./.env --prefix prod/
+```
+
+Every variable becomes a credential (`prod/AWS_KEY`, `prod/DATABASE_URL`,
+...). The file is parsed strictly before anything is unlocked, values are
+never echoed, existing credentials fail the import unless `--overwrite` is
+explicit, and on a TTY the command offers to shred and delete the source
+file afterward (`--delete-source` skips the question).
+
+## 4. Run a program with secrets
 
 Inject only what one command needs:
 
@@ -84,7 +98,7 @@ kavrix run --environment development -- npm test
 `--no-config` ignores any `kavrix.yaml` (including a broken one), and
 `--json` captures bounded child output with secrets redacted.
 
-## 4. Guard what a credential may do (policy)
+## 5. Guard what a credential may do (policy)
 
 ```sh
 kavrix policy create github-development \
@@ -99,7 +113,7 @@ would ask for confirmation — without ever decrypting the credential. Once a
 policy covers a credential, `get --reveal` is denied unless the policy
 explicitly allows reveal, and deny entries block every path.
 
-## 5. Give temporary access (grant)
+## 6. Give temporary access (grant)
 
 ```sh
 kavrix grant create production/database --command psql --ttl 15m --max-uses 2
@@ -112,7 +126,7 @@ A grant expires on its own, stops after its maximum uses, and can be revoked
 at any time. `grant show` reports remaining uses and restrictions without
 reading the credential.
 
-## 6. Let an AI agent work without handing it secrets
+## 7. Let an AI agent work without handing it secrets
 
 Declare the agent's permissions in `kavrix.yaml`:
 
@@ -149,7 +163,7 @@ Every request is authorized before any child starts; the secret is injected
 into the authorized child only; and both allow and deny decisions appear in
 `kavrix audit`.
 
-## 7. Stop typing the passphrase
+## 8. Stop typing the passphrase
 
 ```sh
 kavrix session enable     # seals unlock material via the OS credential store
@@ -161,7 +175,7 @@ kavrix session revoke     # remove it; the passphrase always still works
 Sessions expire automatically (default 12 hours). Either half alone — sealed
 file or OS keychain entry — is useless.
 
-## 8. Back up before you need it
+## 9. Back up before you need it
 
 ```sh
 kavrix db recovery create --profile work --recovery-file ./work.database.recovery
@@ -187,7 +201,7 @@ different again) on separate protected media. `verify` proves the archive is
 intact before you rely on it; `restore` writes the database file back, and
 the original owner key still unlocks it.
 
-## 9. When something looks wrong
+## 10. When something looks wrong
 
 ```sh
 kavrix doctor                 # validate the vault, no values revealed

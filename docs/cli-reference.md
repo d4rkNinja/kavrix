@@ -730,6 +730,36 @@ file --data-file <path> --key-file <key-path>` and the original owner key
   Keep archives and their passphrase on separate protected media from the
   owner key and recovery kits.
 
+## 16. Import an existing `.env`
+
+`kavrix import env` turns a strict `.env` file into credentials in the
+selected database vault — the bridge from "my secrets live in `.env`" to
+"Kavrix decides which process receives them":
+
+```sh
+kavrix import env --file ./.env --prefix prod/ --profile work
+kavrix import env --file ./.env --delete-source --json
+```
+
+- The file is parsed strictly: one `KEY=value` per line, optional `export `
+  prefixes, `#` comments and blank lines ignored, values are the literal
+  remainder after the first `=` (no quote stripping, no escapes). The
+  whole document is parsed and every name validated before any unlock
+  material is requested; malformed lines fail with their line number.
+- Every variable becomes one flat credential: the name is the variable
+  name, or the variable under `--prefix <prefix>`. Values are never echoed;
+  the summary prints names and counts only.
+- The import is one atomic vault update. Any existing credential fails the
+  whole import unless `--overwrite` is explicit.
+- Vault selection follows the standard rules (profile default, `--vault`
+  override, fail-closed when neither exists). Database-container profiles
+  only; legacy version 2 vaults are refused.
+- After a fully successful import on a TTY the command offers to delete the
+  source file; `--delete-source` does it without asking. The file is
+  shredded (random overwrite, truncate) before unlink — best effort
+  hygiene, not a guarantee. Declined or failed deletions leave the file
+  untouched and report `sourceDeleted: false`.
+
 ## Advanced destructive operation
 
 The whole-vault destruction command is intentionally absent from normal help,

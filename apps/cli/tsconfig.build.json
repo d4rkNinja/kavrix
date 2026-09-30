@@ -18,6 +18,7 @@
     "src/database-session.ts",
     "src/datastore-profiles.ts",
     "src/backup-command.ts",
+    "src/import-env-command.ts",
     "src/doctor-heal.ts",
     "src/root-datastore.ts",
     "src/profile-config-directory.ts",

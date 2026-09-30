@@ -33,6 +33,9 @@ defined in the [glossary](glossary.md).
 - Everything non-secret stays encrypted too: labels and metadata live inside
   the encrypted payload, never in the clear in the database.
 - Older flat `name → value` records keep working through the same commands.
+- Migrating is one command: `kavrix import env --file ./.env` turns a
+  `.env` file into credentials (guarded parsing, values never echoed, and
+  an offer to shred the source file afterward).
 
 ## Run programs without pasting secrets
 
