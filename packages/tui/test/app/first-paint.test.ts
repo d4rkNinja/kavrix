@@ -128,7 +128,7 @@ describe('TUI first paint reliability', () => {
       { columns: 120 },
     );
     expect(frame.length).toBeGreaterThan(40);
-    expect(frame).toMatch(/product|lock|profile|CredVault|KAVRIX|Navigate|home/i);
+    expect(frame).toMatch(/product|lock|profile|kavrix|Navigate|home/i);
   });
 
   it('paints vault chrome when TTY columns/rows are missing (Mid fixture)', () => {

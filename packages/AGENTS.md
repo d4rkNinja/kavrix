@@ -6,6 +6,9 @@ consumer packages must not duplicate canonical interfaces.
 
 ## Boundaries
 
+The workspace packages are `schemas`, `core`, `crypto`, `storage`, `key-files`,
+`runner`, and `tui`.
+
 - `schemas` owns runtime validation, branded identifiers, wire records, encrypted
   persistence shapes, and types inferred from those schemas.
 - `core` owns framework-free policies, errors, ports, generators, and use cases.
@@ -13,18 +16,17 @@ consumer packages must not duplicate canonical interfaces.
 - `crypto` exposes small, context-bound, misuse-resistant operations. Every
   ciphertext and wrapped key has a version and exact authenticated context.
 - `storage` stores opaque records only and implements core ports with transactional
-  concurrency, idempotency, ordered change feeds, and tombstone semantics.
-- `sync` moves only canonical opaque records and stores rollback anchors through a
-  protected local-state port.
-- `client` owns HTTPS and unlocked-vault orchestration. Secret keys never enter a
-  transport object or server request.
-- `keychain`, `key-files`, `clipboard`, and `runner` are hostile platform
-  boundaries. Use fixed executables/argument arrays, bounded I/O and timeouts,
-  minimal environments, generic errors, and best-effort zeroization.
+  concurrency, idempotency, and tombstone semantics for the local file and
+  MongoDB adapters.
+- `key-files` and `runner` are hostile platform boundaries. Use fixed
+  executables/argument arrays, bounded I/O and timeouts, minimal environments,
+  generic errors, and best-effort zeroization.
 - `tui` renders schema-driven state and emits authorization intents. It does not
   own persistence, cryptography, the clipboard, or authentication policy.
-- `import-export` accepts only authenticated, versioned, bounded formats and
-  publishes a restore only after full verification.
+
+Legacy directories (`client`, `sync`, `keychain`, `clipboard`, `import-export`,
+`local-store`) are not workspace members and are pending removal. Do not import
+from them or treat them as live boundaries.
 
 ## Implementation rules
 

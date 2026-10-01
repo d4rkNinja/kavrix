@@ -6,8 +6,7 @@ canonical packages rather than redefining them here.
 
 ## `apps/cli`
 
-- The public executable is `creds`; keep the product label and command name easy
-  to rename.
+- The product is Kavrix and the public executable is `kavrix`.
 - Commands call use-case ports. They do not import MongoDB, implement encryption,
   or use production fake data.
 - Read secrets only from a masked prompt, an explicitly requested stdin flow, a
@@ -22,19 +21,10 @@ canonical packages rather than redefining them here.
 
 ## `apps/api`
 
-- The API is a zero-knowledge authorization, synchronization, and ciphertext
-  storage service. It must never import a decrypt/unwrap function or receive a
-  portable key, passphrase, recovery key, unwrapped data key, or plaintext vault
-  payload.
-- Infer request and response types from `@kavrix/schemas`; do not declare parallel
-  DTO interfaces.
-- Authenticate and rate-limit before expensive work, validate every body and
-  response, bind all records to the authenticated vault, and return generic
-  authentication errors.
-- Persist bearer-token hashes only. Credential-class transitions must be atomic,
-  replay-bounded, globally unique, and safe under concurrent requests.
-- Production startup is fail-closed: bootstrap is disabled by default, proxy
-  trust is explicit, and errors/logs never expose connection strings or tokens.
+There is no `apps/api` in this repository. Kavrix is local-first: storage is a
+local protected file or the user's own MongoDB deployment, and there is no
+Kavrix-hosted service. Do not create server applications here without an
+explicit architecture decision.
 
 ## Required verification
 

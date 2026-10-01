@@ -6,7 +6,7 @@ import { z } from 'zod';
  * A session is the span of one command invocation that holds a decrypted root
  * key in memory. There is no secret-retaining daemon, so these limits bound a
  * single process rather than a background agent: the shortest useful window is
- * one second, and the ceiling matches the `creds run --timeout` ceiling so a
+ * one second, and the ceiling matches the `kavrix run --timeout` ceiling so a
  * guarded child can never outlive the session that authorized it.
  */
 export const MIN_SESSION_TIMEOUT_MS = 1_000;

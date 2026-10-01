@@ -16,7 +16,7 @@ import {
   type OnboardingStorage,
 } from './onboarding-router.js';
 import { resolveMotionPolicy, useCursorVisible } from '../motion.js';
-import { resolveProductIdentity } from '../product.js';
+import { PRODUCT_LABEL } from '../product.js';
 import {
   accentColor,
   CHROME,
@@ -275,7 +275,6 @@ function OnboardingChrome({
 }: Readonly<{ state: OnboardingState }>): ReactElement {
   const { color, ascii, width } = state;
   const focus = onboardingStepFocus(state.step);
-  const product = resolveProductIdentity();
   const caret = useCursorVisible(resolveMotionPolicy().animate);
   const accent: AppAccent =
     state.step === 'success'
@@ -292,7 +291,7 @@ function OnboardingChrome({
         <Box flexDirection="row" columnGap={1} flexWrap="wrap" marginTop={0}>
           <StatusPill
             label="product"
-            value={product.productLabel}
+            value={PRODUCT_LABEL}
             accent={CHROME.accent}
             color={color}
             ascii={ascii}

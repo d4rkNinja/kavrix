@@ -20,11 +20,7 @@ import {
   useMotionFrame,
   type MotionEase,
 } from '../src/motion.js';
-import {
-  DEFAULT_EXECUTABLE_NAME,
-  DEFAULT_PRODUCT_LABEL,
-  resolveProductIdentity,
-} from '../src/product.js';
+import { EXECUTABLE_NAME, PRODUCT_LABEL } from '../src/product.js';
 import { splashEnabled } from '../src/splash.js';
 
 class TestOutput extends PassThrough {
@@ -285,20 +281,8 @@ describe('motion clocks', () => {
 });
 
 describe('product identity', () => {
-  it('defaults to CredVault / creds and accepts overrides', () => {
-    expect(resolveProductIdentity()).toEqual({
-      productLabel: DEFAULT_PRODUCT_LABEL,
-      executableName: DEFAULT_EXECUTABLE_NAME,
-    });
-    expect(resolveProductIdentity({ productLabel: '  ', executableName: '' })).toEqual({
-      productLabel: 'CredVault',
-      executableName: 'creds',
-    });
-    expect(
-      resolveProductIdentity({ productLabel: 'VaultOne', executableName: 'vo' }),
-    ).toEqual({
-      productLabel: 'VaultOne',
-      executableName: 'vo',
-    });
+  it('is kavrix everywhere — no legacy brand remains', () => {
+    expect(PRODUCT_LABEL).toBe('kavrix');
+    expect(EXECUTABLE_NAME).toBe('kavrix');
   });
 });

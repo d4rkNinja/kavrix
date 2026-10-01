@@ -32,7 +32,6 @@ catalogs:
       version: 4.4.3
 
 overrides:
-  kavrix: link:apps/cli
   brace-expansion@>=4.0.0 <5.0.11: '>=5.0.11'
 
 importers:

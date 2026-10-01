@@ -2,7 +2,7 @@ import { Box, Text } from 'ink';
 import type { ReactElement } from 'react';
 
 import { resolveMotionPolicy, useCursorVisible } from '../motion.js';
-import { resolveProductIdentity } from '../product.js';
+import { PRODUCT_LABEL } from '../product.js';
 import { BrandBanner } from '../showcase.js';
 import { sanitizeTerminalText, secretMask } from '../terminal-text.js';
 import type { AppSnapshot } from './backend.js';
@@ -177,7 +177,11 @@ function overlayCopy(
     case 'input-search':
       return { title: 'Search', body: `Search: ${q}_`, accent: CHROME.accent };
     case 'input-run':
-      return { title: 'Run preview', body: `Run creds: ${q}_`, accent: CHROME.accent };
+      return {
+        title: 'Run preview',
+        body: `Run credentials: ${q}_`,
+        accent: CHROME.accent,
+      };
     case 'input-passphrase':
       return {
         title: 'Unlock vault',
@@ -338,7 +342,6 @@ export function AppChrome({
   const home = state.snapshot.home;
   const accent = screenAccent(state.screen);
   const overlay = overlayCopy(state.overlay, state.query, ascii, state.pendingName);
-  const product = resolveProductIdentity();
   const motion = allowMotion();
   const ellipsis = ascii ? '...' : '…';
   const vaultShort =
@@ -372,7 +375,7 @@ export function AppChrome({
         <Box flexDirection="row" columnGap={1} flexWrap="wrap" marginTop={0}>
           <StatusPill
             label="product"
-            value={product.productLabel}
+            value={PRODUCT_LABEL}
             accent={CHROME.accent}
             color={color}
             ascii={ascii}
@@ -405,7 +408,7 @@ export function AppChrome({
             ascii={ascii}
           />
           <StatusPill
-            label="creds"
+            label="credentials"
             value={String(home.credentialCount)}
             accent={CHROME.heading}
             color={color}
@@ -611,7 +614,7 @@ function footerChips(screen: AppRouterState['screen']): readonly Readonly<{
       ];
     case 'run':
       return [
-        { keyLabel: 'p', hint: 'pick creds', accent: key },
+        { keyLabel: 'p', hint: 'pick credentials', accent: key },
         { keyLabel: 'j/k', hint: 'move', accent: key },
         ...commonTail,
       ];

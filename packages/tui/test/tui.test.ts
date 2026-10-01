@@ -64,7 +64,7 @@ describe('professional screen model', () => {
 
     expect(model.panes.map(({ id }) => id)).toEqual(['groups', 'items', 'details']);
     expect(output.split('\n')).toHaveLength(24);
-    expect(output).toContain('CredVault');
+    expect(output).toContain('kavrix');
     expect(output).toContain('Gmail Work');
     expect(output).toContain('4 fields | 4 item notes | 3 group no');
     expect(output).toContain('Workspace Tenant ID');

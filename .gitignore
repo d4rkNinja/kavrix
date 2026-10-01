@@ -15,5 +15,5 @@ Thumbs.db
 .worktrees/
 .superpowers/
 .kavrix/
-*.cvk
 *.kavrix-backup
+plans/

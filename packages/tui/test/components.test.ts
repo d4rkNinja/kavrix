@@ -102,7 +102,7 @@ describe('Ink components', () => {
       }),
     );
 
-    expect(screen).toContain('CredVault');
+    expect(screen).toContain('kavrix');
     expect(schema).toContain('Password [secret] masked (required, masked)');
     expect(schema).toContain('Username [username] single-line (required)');
     expect(notes).not.toContain('ITEM-NOTE-CANARY');
@@ -230,7 +230,7 @@ describe('Ink components', () => {
     expect(onLocked).toHaveBeenCalledOnce();
     expect(stdin.isRaw).toBe(false);
     const output = Buffer.concat(chunks).toString('utf8');
-    const lockedFrame = output.lastIndexOf('CredVault \u00b7 LOCKED');
+    const lockedFrame = output.lastIndexOf('kavrix \u00b7 LOCKED');
     expect(lockedFrame).toBeGreaterThanOrEqual(0);
     expect(output.slice(lockedFrame)).not.toContain('PASSWORD-CANARY');
   });
