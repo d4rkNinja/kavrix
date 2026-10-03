@@ -17,6 +17,14 @@ export const APP_SCREEN_IDS = [
 
 export type AppScreenId = (typeof APP_SCREEN_IDS)[number];
 
+export const HELP_TOPICS = [
+  'Getting started',
+  'Navigation',
+  'Credentials',
+  'Safety',
+  'Display',
+] as const;
+
 export interface AppMenuEntry {
   readonly id: AppScreenId;
   readonly label: string;

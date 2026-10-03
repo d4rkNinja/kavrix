@@ -1,4 +1,4 @@
-import { APP_MENU, type AppScreenId } from './ids.js';
+import { APP_MENU, HELP_TOPICS, type AppScreenId } from './ids.js';
 import type { AppBackendAction, AppSnapshot } from './backend.js';
 import { emptySnapshot } from './backend.js';
 import {
@@ -71,6 +71,12 @@ export interface AppRouterState {
   readonly screen: AppScreenId;
   readonly menuIndex: number;
   readonly listIndex: number;
+  /**
+   * True once the cursor has been deliberately moved in this screen visit. Row
+   * activation requires it so that entering a list, which always starts on row
+   * zero, cannot double as a confirmation of that row.
+   */
+  readonly listPinned: boolean;
   readonly overlay: AppOverlay;
   readonly query: string;
   readonly ascii: boolean;
@@ -138,6 +144,14 @@ export type AppRouterAction =
     }>
   | Readonly<{ type: 'resize'; width: number; height: number }>
   | Readonly<{ type: 'tick'; nowMs: number }>
+  | Readonly<{ type: 'navigate'; screen: AppScreenId }>
+  | Readonly<{
+      type: 'select-row';
+      index: number;
+      activate?: boolean;
+      nowMs: number;
+    }>
+  | Readonly<{ type: 'select-theme'; index: number }>
   | Readonly<{ type: 'key'; key: AppKey; nowMs: number }>;
 
 /** Clamp missing/zero TTY sizes so Ink/Yoga cannot blank the first frame. */
@@ -180,6 +194,7 @@ export function createInitialAppRouterState(
     screen: 'home',
     menuIndex: 0,
     listIndex: 0,
+    listPinned: false,
     overlay: 'none',
     query: '',
     ascii: options.ascii ?? false,
@@ -224,34 +239,35 @@ export function transitionAppRouter(
   switch (action.type) {
     case 'hydrate': {
       const hydrated = adoptSnapshotTheme(state, action.snapshot);
-      return unchanged({
-        ...hydrated,
-        snapshot: action.snapshot,
-        message: action.snapshot.notice,
-        sessionReady: true,
-      });
+      return unchanged(
+        normalizeSnapshotState({
+          ...hydrated,
+          snapshot: action.snapshot,
+          message: action.snapshot.notice,
+          sessionReady: true,
+        }),
+      );
     }
     case 'backend-result': {
-      const revealedName =
-        action.revealedSecret === undefined
-          ? state.revealedName
-          : state.pendingRevealName;
       const themed = adoptSnapshotTheme(state, action.snapshot);
-      return unchanged({
-        ...themed,
-        snapshot: action.snapshot,
-        message: action.snapshot.notice ?? state.message,
-        pendingRevealName:
-          action.revealedSecret === undefined ? state.pendingRevealName : null,
-        revealedName,
-        revealedValue: action.revealedSecret ?? state.revealedValue,
-        revealedUntilMs:
-          action.revealedSecret === undefined
-            ? state.revealedUntilMs
-            : action.nowMs + 15_000,
-        overlay: 'none',
-        sessionReady: true,
-      });
+      const acceptReveal =
+        action.revealedSecret !== undefined &&
+        state.pendingRevealName !== null &&
+        state.screen === 'credentials' &&
+        action.snapshot.home.unlocked;
+      return unchanged(
+        normalizeSnapshotState({
+          ...themed,
+          snapshot: action.snapshot,
+          message: action.snapshot.notice ?? state.message,
+          pendingRevealName:
+            action.revealedSecret === undefined ? state.pendingRevealName : null,
+          revealedName: acceptReveal ? state.pendingRevealName : state.revealedName,
+          revealedValue: acceptReveal ? action.revealedSecret : state.revealedValue,
+          revealedUntilMs: acceptReveal ? action.nowMs + 15_000 : state.revealedUntilMs,
+          sessionReady: true,
+        }),
+      );
     }
     case 'resize':
       return unchanged({
@@ -275,9 +291,79 @@ export function transitionAppRouter(
         return unchanged({ ...state, nowMs: action.nowMs });
       }
       return unchanged(state);
+    case 'navigate':
+      if (
+        state.overlay !== 'none' ||
+        action.screen === state.screen ||
+        !APP_MENU.some((entry) => entry.id === action.screen)
+      ) {
+        return unchanged(state);
+      }
+      return enterScreen(state, action.screen);
+    case 'select-row':
+      return selectRowIntent(
+        state,
+        action.index,
+        action.activate === true,
+        action.nowMs,
+      );
+    case 'select-theme':
+      if (
+        state.overlay !== 'theme-picker' ||
+        !Number.isInteger(action.index) ||
+        action.index < 0 ||
+        action.index >= THEMES.length
+      ) {
+        return unchanged(state);
+      }
+      return themePickerCursor(state, action.index);
     case 'key':
       return keyTransition(state, action.key, action.nowMs);
   }
+}
+
+/** Keeps refreshed list cursors valid and drops screen secrets once locked. */
+function normalizeSnapshotState(state: AppRouterState): AppRouterState {
+  const normalized = {
+    ...state,
+    listIndex: clamp(state.listIndex, listLength(state)),
+  };
+  if (normalized.snapshot.home.unlocked) return normalized;
+  return {
+    ...normalized,
+    pendingRevealName: null,
+    revealedName: null,
+    revealedValue: null,
+    revealedUntilMs: 0,
+  };
+}
+
+/** Selects a clickable row without creating a second activation path. */
+function selectRowIntent(
+  state: AppRouterState,
+  index: number,
+  activate: boolean,
+  nowMs: number,
+): AppRouterTransition {
+  if (state.overlay !== 'none' || !Number.isInteger(index)) return unchanged(state);
+  const length =
+    state.screen === 'home'
+      ? APP_MENU.filter((entry) => entry.id !== 'home').length
+      : listLength(state);
+  if (index < 0 || index >= length) return unchanged(state);
+  const selected =
+    state.screen === 'home'
+      ? { ...state, menuIndex: index }
+      : {
+          ...state,
+          listIndex: index,
+          // Selecting the row the cursor already sits on is the deliberate act
+          // that authorises the next click to activate it.
+          listPinned: state.listPinned || index === state.listIndex,
+        };
+  return activate
+    ? keyTransition(selected, { name: 'return' }, nowMs)
+    : unchanged(selected);
 }
 
 /** Moves the picker cursor and live-previews the highlighted theme. */
@@ -347,6 +433,7 @@ function keyTransition(
       revealedName: null,
       revealedValue: null,
       revealedUntilMs: 0,
+      pendingRevealName: null,
       message: 'Reveal cleared; value remasked.',
     });
   }
@@ -380,8 +467,17 @@ function keyTransition(
     });
   }
 
+  // `?` opens Help from every screen; the overlay gate above still wins.
+  if (key.text === '?') return helpIntent(state);
+
   if (state.screen === 'home') return homeKey(state, key);
   return screenKey(state, key);
+}
+
+/** Opens Help through the shared screen-entry path without resetting an open topic. */
+function helpIntent(state: AppRouterState): AppRouterTransition {
+  if (state.screen === 'help') return unchanged(state);
+  return enterScreen(state, 'help');
 }
 
 /**
@@ -442,7 +538,6 @@ function homeKey(state: AppRouterState, key: AppKey): AppRouterTransition {
     if (target === undefined) return unchanged(state);
     return enterScreen(state, target.id);
   }
-  if (key.text === '?') return enterScreen(state, 'help');
   if (key.text?.toLowerCase() === 'r') {
     return effect(state, { kind: 'backend', action: { type: 'refresh' } });
   }
@@ -800,6 +895,7 @@ function overlayKey(
           revealedName: null,
           revealedValue: null,
           revealedUntilMs: 0,
+          pendingRevealName: null,
         },
         { kind: 'backend', action: { type: 'lock' } },
       );
@@ -852,6 +948,9 @@ function overlayKey(
       return unchanged({ ...state, query: removeLast(state.query) });
     }
     if (key.name === 'return') {
+      if (state.query.trim().length === 0) {
+        return unchanged({ ...state, message: 'Passphrase cannot be empty.' });
+      }
       const passphrase = state.query;
       const databaseUrl = state.pendingMongoUrl ?? undefined;
       return effect(
@@ -1860,6 +1959,11 @@ function enterScreen(state: AppRouterState, screen: AppScreenId): AppRouterTrans
     ...state,
     screen,
     listIndex: 0,
+    listPinned: false,
+    pendingRevealName: null,
+    revealedName: null,
+    revealedValue: null,
+    revealedUntilMs: 0,
     message: null,
     navDirection,
   };
@@ -1894,6 +1998,8 @@ function listLength(state: AppRouterState): number {
       return state.snapshot.policies.length;
     case 'browse':
       return state.snapshot.browse.length;
+    case 'help':
+      return HELP_TOPICS.length;
     default:
       return 0;
   }

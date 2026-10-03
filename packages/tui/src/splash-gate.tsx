@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type ReactElement } from 'react';
 
 import { resolveMotionPolicy } from './motion.js';
+import { ClickTarget } from './app/mouse.js';
 import {
   SplashScreen,
   shouldDismissSplash,
@@ -67,13 +68,20 @@ export function SplashGate({
   if (!visible) return children;
 
   return (
-    <SplashScreen
-      color={color}
-      ascii={ascii}
-      {...(version === undefined ? {} : { version })}
-      width={width}
-      height={height}
-      animate={resolveMotionPolicy().animate}
-    />
+    <ClickTarget
+      enabled
+      onClick={() => {
+        setVisible(false);
+      }}
+    >
+      <SplashScreen
+        color={color}
+        ascii={ascii}
+        {...(version === undefined ? {} : { version })}
+        width={width}
+        height={height}
+        animate={resolveMotionPolicy().animate}
+      />
+    </ClickTarget>
   );
 }

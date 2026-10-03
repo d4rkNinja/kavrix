@@ -71,6 +71,13 @@ kavrix tui    # full app
 Use `kavrix init --no-tui` for classic line prompts, or stdin/explicit routing
 for scripts.
 
+Version 0.2.34, **TUI refreshed**, adds compact session context, clickable
+tabs/rows/action chips, wheel navigation, bounded lists, and Help topics, and
+paints the workspace full-screen. Mouse input requires a terminal with SGR
+reporting support. Use `kavrix tui --no-mouse` for native selection. Reveal and
+destructive actions retain confirmation. The recording below shows an earlier
+interface.
+
 ![Kavrix TUI demo](media/kavrix-tui-demo.gif)
 
 Full video on GitHub:

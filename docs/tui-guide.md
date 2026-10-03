@@ -42,18 +42,56 @@ Security and presentation rules:
 - Prefer library calls; when the host spawns the CLI, secrets travel only as
   stdin frames — never argv.
 
-Flags: `--ascii`, `--color`, `--no-color`, `--no-splash`, `--profile-config-dir`
+Flags: `--ascii`, `--color`, `--no-color`, `--no-splash`, `--no-mouse`, `--profile-config-dir`
 / `--config-dir`. `KAVRIX_TUI_NO_SPLASH=1` also skips the startup splash.
 
-Chrome is content-sized (not pinned to the full TTY row count) and remounts after
-hydrate, resize, and screen/step changes so first paint stays visible without
-leaving stale Storage/Key-file frames. Onboarding shows an
+Chrome is content-sized, capped below the terminal row count, and remounts after
+hydrate, resize, and screen/step changes. An interactive session paints in the
+terminal's alternate screen and restores the original screen on exit, which also
+keeps mouse hit regions aligned with the live layout. Onboarding shows an
 `ACTIVE n/m — <step>` cue so the focused field is obvious. `kavrix tui` shows a
 Loading… state until vault hydrate completes (or an error/timeout banner if it
 fails). Missing TTY columns/rows fall back to 80×24 so Mid-style fixtures still
-paint. Footer chips overflow on narrow terminals; Enter/detail, Esc, and q stay
-preferred. Large credential lists render a bounded window and `/` search filters
-client-side. Escape remasks a REVEAL and returns focus to the credentials list.
+paint. Footer chips prioritize Enter/detail, Esc, and q on narrow terminals, plus
+`u` unlock while the vault is locked, so the unlock control survives overflow.
+`+N more` reports how many chips are hidden and is not itself clickable; press
+`?` for Help from any screen. Home and data lists render bounded windows; `/`
+search filters client-side. Escape remasks a REVEAL and returns focus to the
+credentials list. Clicking the startup splash skips it.
+
+## Mouse and workflow navigation (0.2.34)
+
+Click a tab or Home destination to open it. Click a credential to open masked
+detail. For profiles and vaults, click to select, then click the selected row to
+use it. Other data rows select without activating a destructive operation. Click
+an action chip to invoke the displayed key action. Click a theme to preview it;
+Enter applies and saves it. Mouse wheel input moves the current selection.
+Reveal, lock, removal, and revocation keep their existing confirmation steps.
+
+Home recommends profile creation, unlock, or credential browsing based on the
+current session. Help has five topics selected with arrows, the wheel, or topic
+chips. While an operation is running, a busy notice appears and duplicate actions
+are blocked. Escape can still cancel an overlay; `q` (outside inputs) or `Ctrl+C`
+exits from anywhere, including an open overlay.
+
+The workspace paints in the terminal's alternate screen and restores your original
+scrollback on exit, so it behaves like a full-screen application rather than an
+inline frame. This is independent of mouse support.
+
+Mouse input uses the SGR protocol, with the legacy X10 encoding also decoded so
+terminals that track clicks but ignore SGR 1006 cannot leak printable mouse
+bytes into masked fields. A control sequence that arrives split by the terminal is
+resolved fail-closed: the incomplete part is discarded rather than typed into a
+masked field, which can cost one keystroke on a very slow link. Wheel input is
+honoured with Shift, Ctrl, or Meta held. This works on Windows, macOS, and Linux
+terminals that support VT output and mouse reporting. Unsupported terminals
+retain keyboard controls. Tracking is disabled by `--no-mouse`,
+`KAVRIX_TUI_MOUSE=0`, `TERM=dumb`, or `INK_SCREEN_READER=true` (the value Ink
+itself reads). Shift+drag usually selects text while tracking is active; the exact
+selection modifier depends on the terminal. Use `--no-mouse` for native selection
+without giving up the full-screen layout. The layout matrix is 40×12, 40×18,
+80×14, 80×24, and 120×36 cells; physical terminal mouse behavior on every OS is
+not established by the headless stream tests.
 
 ## Themes
 

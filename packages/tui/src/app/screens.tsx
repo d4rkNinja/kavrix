@@ -3,10 +3,11 @@ import type { ReactElement } from 'react';
 
 import { resolveMotionPolicy, useCursorVisible } from '../motion.js';
 import { PRODUCT_LABEL } from '../product.js';
-import { BrandBanner } from '../showcase.js';
 import { sanitizeTerminalText, secretMask } from '../terminal-text.js';
 import type { AppSnapshot } from './backend.js';
-import { APP_MENU } from './ids.js';
+import { APP_MENU, HELP_TOPICS } from './ids.js';
+import { useAppInteraction } from './interaction.js';
+import { ClickTarget } from './mouse.js';
 import {
   filteredCredentials,
   visibleListWindow,
@@ -30,10 +31,10 @@ import {
   KeyChip,
   ModalFrame,
   MotionEnter,
-  NoticeBar,
   Panel,
   RevealCountdown,
   SelectRow,
+  SingleLine,
   StatusPill,
   TabNav,
   useListStagger,
@@ -41,6 +42,12 @@ import {
 
 function safe(value: string, ascii: boolean): string {
   return sanitizeTerminalText(value, ascii);
+}
+
+export interface FooterChip {
+  readonly keyLabel: string;
+  readonly hint: string;
+  readonly accent: AppAccent;
 }
 
 /**
@@ -59,6 +66,7 @@ function ThemePickerRows({
   cursor: number;
   activeId: string;
 }>): ReactElement {
+  const interaction = useAppInteraction();
   const pointer = pointerGlyph(ascii);
   return (
     <Box flexDirection="column">
@@ -66,7 +74,13 @@ function ThemePickerRows({
         const selected = index === cursor;
         const active = theme.id === activeId;
         return (
-          <Box key={theme.id} flexDirection="column">
+          <ClickTarget
+            key={theme.id}
+            enabled={interaction.enabled}
+            onClick={() => {
+              interaction.dispatch({ type: 'select-theme', index });
+            }}
+          >
             <Box flexDirection="row" columnGap={1}>
               <Text {...accentColor(color, CHROME.muted)}>
                 {selected ? pointer : ' '}
@@ -79,11 +93,7 @@ function ThemePickerRows({
                 <Text {...accentColor(color, CHROME.muted)}>[active]</Text>
               ) : null}
             </Box>
-            <Text {...accentColor(color, CHROME.muted)}>
-              {' '.repeat(4)}
-              {safe(theme.description, ascii)}
-            </Text>
-          </Box>
+          </ClickTarget>
         );
       })}
     </Box>
@@ -338,6 +348,7 @@ export function AppChrome({
   state: AppRouterState;
   children: ReactElement | ReactElement[];
 }>): ReactElement {
+  const interaction = useAppInteraction();
   const { color, ascii, width } = state;
   const home = state.snapshot.home;
   const accent = screenAccent(state.screen);
@@ -359,27 +370,52 @@ export function AppChrome({
       overlay.title.startsWith('Revoke') ||
       overlay.title.startsWith('Remove') ||
       overlay.title.startsWith('Recovery blocked'));
-  const isInputOverlay = overlay !== null && !isConfirmOverlay && !isDetailOverlay;
+  const isInputOverlay =
+    overlay !== null && !isConfirmOverlay && !isDetailOverlay && !isThemePicker;
   // Blink only while a typing overlay owns the screen; otherwise the clock
   // would repaint the whole chrome twice a second for nothing.
   const caret = useCursorVisible(motion && isInputOverlay);
   const overlayBody = overlay?.body ?? '';
-  const typedBody = isInputOverlay ? overlayBody.replace(/_$/u, '') : overlayBody;
+  const fullTypedBody = isInputOverlay ? overlayBody.replace(/_$/u, '') : overlayBody;
+  const inputCells = Math.max(12, width - 8);
+  const glyphs = Array.from(fullTypedBody);
+  const prefixLength = Math.floor(inputCells / 3);
+  const ellipsisSize = ascii ? 3 : 1;
+  const typedBody =
+    (isInputOverlay || isDetailOverlay) && glyphs.length > inputCells
+      ? `${glyphs.slice(0, prefixLength).join('')}${ascii ? '...' : '…'}${glyphs.slice(-(inputCells - prefixLength - ellipsisSize)).join('')}`
+      : fullTypedBody;
 
   // Prefer content-sized height over pinning to the full TTY rows. Fixed
   // height={rows} + flexGrow panels blank on some maximized TTYs (Ink/Yoga).
+  // The clip budget is the full TTY height: reserving an extra row here used to
+  // cut the footer's bottom border on short-but-legal terminals and leave a
+  // panel rendering as a dangling edge.
   return (
-    <Box flexDirection="column" width={width}>
+    <Box
+      flexDirection="column"
+      width={width}
+      maxHeight={Math.max(1, state.height)}
+      overflow="hidden"
+    >
       <Panel accent={accent} ascii={ascii} color={color} paddingX={1} paddingY={0}>
-        <BrandBanner color={color} ascii={ascii} dualTone />
-        <Box flexDirection="row" columnGap={1} flexWrap="wrap" marginTop={0}>
-          <StatusPill
-            label="product"
-            value={PRODUCT_LABEL}
-            accent={CHROME.accent}
+        <Box flexDirection="row" justifyContent="space-between">
+          <SingleLine bold {...accentColor(color, CHROME.accent)}>
+            {PRODUCT_LABEL} /{' '}
+            {safe(
+              APP_MENU.find((entry) => entry.id === state.screen)?.short ??
+                state.screen,
+              ascii,
+            )}
+          </SingleLine>
+          <KeyChip
+            keyLabel="t"
+            hint="theme"
             color={color}
-            ascii={ascii}
+            disabled={state.overlay !== 'none' || interaction.busy}
           />
+        </Box>
+        <Box flexDirection="row" columnGap={1} overflow="hidden">
           <StatusPill
             label="lock"
             value={
@@ -393,38 +429,41 @@ export function AppChrome({
             color={color}
             ascii={ascii}
           />
-          <StatusPill
-            label="profile"
-            value={home.profileId ?? '-'}
-            accent={CHROME.heading}
-            color={color}
-            ascii={ascii}
-          />
-          <StatusPill
-            label="vault"
-            value={vaultShort}
-            accent={CHROME.heading}
-            color={color}
-            ascii={ascii}
-          />
-          <StatusPill
-            label="credentials"
-            value={String(home.credentialCount)}
-            accent={CHROME.heading}
-            color={color}
-            ascii={ascii}
-          />
+          <SingleLine {...accentColor(color, CHROME.heading)}>
+            {safe(`${home.profileId ?? 'no profile'} / ${vaultShort}`, ascii)}
+          </SingleLine>
+          {width >= 72 ? (
+            <Text {...accentColor(color, CHROME.muted)}>
+              {String(home.credentialCount)} credentials
+            </Text>
+          ) : null}
         </Box>
       </Panel>
 
-      <TabNav activeId={state.screen} color={color} ascii={ascii} width={width} />
+      <TabNav
+        activeId={state.screen}
+        navigable={state.overlay === 'none'}
+        color={color}
+        ascii={ascii}
+        width={width}
+      />
 
-      <Box flexDirection="column" flexGrow={1} paddingX={0} paddingY={0}>
+      <Box
+        flexDirection="column"
+        flexShrink={0}
+        // A modal spends its rows on the frame, so it gets a tighter budget than
+        // the screen body. The confirm/apply row must survive that budget: a
+        // clipped action row leaves the user with no way to tell what Enter does.
+        maxHeight={Math.max(
+          1,
+          state.height - (overlay === null ? 10 : state.height < 20 ? 4 : 7),
+        )}
+        overflow="hidden"
+        paddingX={0}
+        paddingY={0}
+      >
         {overlay === null ? (
-          <MotionEnter
-            enabled={motion && state.sessionReady}
-            key={`${state.screen}:${state.navDirection}`}
-          >
+          <MotionEnter enabled={false} key={`${state.screen}:${state.navDirection}`}>
             {children}
           </MotionEnter>
         ) : (
@@ -434,7 +473,7 @@ export function AppChrome({
             ascii={ascii}
             color={color}
             width={width}
-            animate={motion}
+            animate={false}
           >
             {isThemePicker ? (
               <ThemePickerRows
@@ -450,7 +489,7 @@ export function AppChrome({
                 <Text {...accentColor(color, overlay.accent)}>{caret ? '_' : ' '}</Text>
               ) : null}
             </Text>
-            {overlay.hint === undefined ? null : (
+            {overlay.hint === undefined || state.height < 22 ? null : (
               <Text {...accentColor(color, CHROME.muted)}>
                 {safe(overlay.hint, ascii)}
               </Text>
@@ -470,6 +509,11 @@ export function AppChrome({
                     color={color}
                     keyAccent={CHROME.danger}
                   />
+                  <KeyChip keyLabel="Esc" hint="cancel" color={color} />
+                </>
+              ) : isThemePicker ? (
+                <>
+                  <KeyChip keyLabel="Enter" hint="apply theme" color={color} />
                   <KeyChip keyLabel="Esc" hint="cancel" color={color} />
                 </>
               ) : isDetailOverlay ? (
@@ -506,50 +550,75 @@ export function AppChrome({
 }
 
 function Footer({ state }: Readonly<{ state: AppRouterState }>): ReactElement {
+  const interaction = useAppInteraction();
   const { color, ascii, message, snapshot, width } = state;
-  const notice = message ?? snapshot.notice;
+  const notice = interaction.busy
+    ? 'Working... Please wait.'
+    : (message ?? snapshot.notice);
   const noticeAccent = toneAccent(snapshot.noticeTone);
   const sep = ascii ? ' | ' : ' · ';
-  const chips = prioritizeFooterChips(footerChips(state.screen), width);
+  const chips = prioritizeFooterChips(
+    footerChips(state),
+    width,
+    footerPreferredKeys(state),
+  );
   return (
-    <Box flexDirection="column">
+    <Box flexDirection="column" flexShrink={0}>
       {notice === null ? null : (
-        <NoticeBar message={notice} accent={noticeAccent} color={color} ascii={ascii} />
+        <SingleLine {...accentColor(color, noticeAccent)}>
+          {safe(notice, ascii)}
+        </SingleLine>
       )}
-      <Panel accent={CHROME.muted} ascii={ascii} color={color} paddingX={1}>
-        <Box flexDirection="row" columnGap={1} flexWrap="wrap">
-          {chips.map((chip, index) => (
-            <Box key={`${chip.keyLabel}-${chip.hint}`} flexDirection="row">
-              {index === 0 ? null : (
-                <Text {...accentColor(color, CHROME.muted)}>{sep}</Text>
-              )}
-              <KeyChip
-                keyLabel={chip.keyLabel}
-                hint={chip.hint}
-                color={color}
-                keyAccent={chip.accent}
-              />
-            </Box>
-          ))}
-        </Box>
-      </Panel>
+      {state.overlay !== 'none' ? null : (
+        <Panel accent={CHROME.muted} ascii={ascii} color={color} paddingX={1}>
+          <Box flexDirection="row" columnGap={1} flexWrap="wrap">
+            {chips.map((chip, index) => (
+              <Box key={`${chip.keyLabel}-${chip.hint}`} flexDirection="row">
+                {index === 0 ? null : (
+                  <Text {...accentColor(color, CHROME.muted)}>{sep}</Text>
+                )}
+                <KeyChip
+                  keyLabel={chip.keyLabel}
+                  hint={chip.hint}
+                  color={color}
+                  keyAccent={chip.accent}
+                />
+              </Box>
+            ))}
+          </Box>
+        </Panel>
+      )}
     </Box>
   );
 }
 
-function footerChips(screen: AppRouterState['screen']): readonly Readonly<{
-  keyLabel: string;
-  hint: string;
-  accent: AppAccent;
-}>[] {
+/** A selected profile whose vault is still locked: unlock is the only next step. */
+function vaultLocked(state: AppRouterState): boolean {
+  const home = state.snapshot.home;
+  return home.profileId !== null && !home.unlocked;
+}
+
+function footerChips(state: AppRouterState): readonly FooterChip[] {
   const key = CHROME.accent;
   const commonTail = [
+    { keyLabel: 't', hint: 'theme', accent: key },
     { keyLabel: 'Tab', hint: 'screens', accent: key },
     { keyLabel: 'Esc', hint: 'home', accent: key },
     { keyLabel: '?', hint: 'help', accent: CHROME.heading },
     { keyLabel: 'q', hint: 'quit', accent: CHROME.danger },
   ];
-  switch (screen) {
+  // `u` unlocks from every screen, so the affordance is advertised on all of
+  // them while the vault is locked.
+  const unlockTail: readonly FooterChip[] = vaultLocked(state)
+    ? [{ keyLabel: 'u', hint: 'unlock', accent: key }]
+    : [];
+  switch (state.screen) {
+    case 'help':
+      return [
+        { keyLabel: 'j/k', hint: 'topic', accent: key },
+        ...unlockTail,
+        ...commonTail,
+      ];
     case 'credentials':
       return [
         { keyLabel: 'Enter', hint: 'detail', accent: key },
@@ -560,7 +629,7 @@ function footerChips(screen: AppRouterState['screen']): readonly Readonly<{
         { keyLabel: 'm', hint: 'rename', accent: key },
         { keyLabel: 'x', hint: 'remove', accent: CHROME.danger },
         { keyLabel: '/', hint: 'search', accent: key },
-        { keyLabel: 'u', hint: 'unlock', accent: key },
+        ...unlockTail,
         ...commonTail,
       ];
     case 'profiles':
@@ -570,6 +639,7 @@ function footerChips(screen: AppRouterState['screen']): readonly Readonly<{
         { keyLabel: 'n', hint: 'file', accent: key },
         { keyLabel: 'm', hint: 'mongo', accent: key },
         { keyLabel: 'x', hint: 'remove', accent: CHROME.danger },
+        ...unlockTail,
         ...commonTail,
       ];
     case 'vaults':
@@ -577,7 +647,7 @@ function footerChips(screen: AppRouterState['screen']): readonly Readonly<{
         { keyLabel: 'j/k', hint: 'move', accent: key },
         { keyLabel: 'Enter', hint: 'use', accent: key },
         { keyLabel: 'n', hint: 'new vault', accent: key },
-        { keyLabel: 'u', hint: 'unlock', accent: key },
+        ...unlockTail,
         ...commonTail,
       ];
     case 'policy':
@@ -588,6 +658,7 @@ function footerChips(screen: AppRouterState['screen']): readonly Readonly<{
         { keyLabel: 'x', hint: 'remove policy', accent: CHROME.danger },
         { keyLabel: 'g', hint: 'new grant', accent: key },
         { keyLabel: 'r', hint: 'revoke grant', accent: CHROME.danger },
+        ...unlockTail,
         ...commonTail,
       ];
     case 'recovery':
@@ -596,6 +667,7 @@ function footerChips(screen: AppRouterState['screen']): readonly Readonly<{
         { keyLabel: 'n', hint: 'create kit', accent: key },
         { keyLabel: 'v', hint: 'verify kit', accent: key },
         { keyLabel: 'x', hint: 'revoke', accent: CHROME.danger },
+        ...unlockTail,
         ...commonTail,
       ];
     case 'session':
@@ -604,37 +676,42 @@ function footerChips(screen: AppRouterState['screen']): readonly Readonly<{
         { keyLabel: 'x', hint: 'remove', accent: CHROME.danger },
         { keyLabel: 'Enter', hint: 'refresh', accent: key },
         { keyLabel: 'j/k', hint: 'move', accent: key },
+        ...unlockTail,
         ...commonTail,
       ];
     case 'doctor':
       return [
         { keyLabel: 'd', hint: 'run checks', accent: key },
         { keyLabel: 'j/k', hint: 'move', accent: key },
+        ...unlockTail,
         ...commonTail,
       ];
     case 'run':
       return [
         { keyLabel: 'p', hint: 'pick credentials', accent: key },
         { keyLabel: 'j/k', hint: 'move', accent: key },
+        ...unlockTail,
         ...commonTail,
       ];
     case 'agent':
       return [
         { keyLabel: 'g', hint: 'dry-run', accent: key },
         { keyLabel: 'j/k', hint: 'move', accent: key },
+        ...unlockTail,
         ...commonTail,
       ];
     case 'browse':
       return [
         { keyLabel: 'Enter', hint: 'refresh', accent: key },
         { keyLabel: 'j/k', hint: 'move', accent: key },
+        ...unlockTail,
         ...commonTail,
       ];
     case 'home':
       return [
         { keyLabel: 'j/k', hint: 'move', accent: key },
         { keyLabel: 'Enter', hint: 'open', accent: key },
-        { keyLabel: 'u', hint: 'unlock', accent: key },
+        ...unlockTail,
         { keyLabel: 'l', hint: 'lock', accent: CHROME.warning },
         { keyLabel: 'r', hint: 'refresh', accent: key },
         ...commonTail,
@@ -643,38 +720,40 @@ function footerChips(screen: AppRouterState['screen']): readonly Readonly<{
       return [
         { keyLabel: 'j/k', hint: 'move', accent: key },
         { keyLabel: 'Enter', hint: 'open', accent: key },
-        { keyLabel: 'u', hint: 'unlock', accent: key },
+        ...unlockTail,
         { keyLabel: 'l', hint: 'lock', accent: CHROME.warning },
         ...commonTail,
       ];
   }
 }
 
-const FOOTER_PREFERRED_KEYS = new Set(['Enter', 'Esc', 'q']);
+/** Footer keys that must survive overflow for the current session state. */
+function footerPreferredKeys(state: AppRouterState): ReadonlySet<string> {
+  return vaultLocked(state) ? FOOTER_UNLOCK_PREFERRED_KEYS : FOOTER_PREFERRED_KEYS;
+}
+
+const FOOTER_PREFERRED_KEYS: ReadonlySet<string> = new Set(['Enter', 'Esc', 'q']);
+const FOOTER_UNLOCK_PREFERRED_KEYS: ReadonlySet<string> = new Set([
+  ...FOOTER_PREFERRED_KEYS,
+  'u',
+]);
 
 /** Keep critical keys on small terminals; overflow is summarized. */
 export function prioritizeFooterChips(
-  chips: readonly Readonly<{
-    keyLabel: string;
-    hint: string;
-    accent: AppAccent;
-  }>[],
+  chips: readonly FooterChip[],
   width: number,
-): readonly Readonly<{
-  keyLabel: string;
-  hint: string;
-  accent: AppAccent;
-}>[] {
+  preferredKeys: ReadonlySet<string> = FOOTER_PREFERRED_KEYS,
+): readonly FooterChip[] {
   if (chips.length === 0) return chips;
   const budget = Math.max(20, width - 4);
   const estimate = (chip: Readonly<{ keyLabel: string; hint: string }>): number =>
-    chip.keyLabel.length + chip.hint.length + 4;
+    chip.keyLabel.length + chip.hint.length + 5;
   const overflowCost = estimate({ keyLabel: '+99', hint: 'more' });
   const remainingPreferredCost = (fromIndex: number): number => {
     let cost = 0;
     for (let index = fromIndex; index < chips.length; index += 1) {
       const chip = chips[index];
-      if (chip !== undefined && FOOTER_PREFERRED_KEYS.has(chip.keyLabel)) {
+      if (chip !== undefined && preferredKeys.has(chip.keyLabel)) {
         cost += estimate(chip);
       }
     }
@@ -687,7 +766,7 @@ export function prioritizeFooterChips(
     const chip = chips[index];
     if (chip === undefined) continue;
     const cost = estimate(chip);
-    if (FOOTER_PREFERRED_KEYS.has(chip.keyLabel)) {
+    if (preferredKeys.has(chip.keyLabel)) {
       kept.push(chip);
       used += cost;
       continue;
@@ -713,21 +792,48 @@ export function prioritizeFooterChips(
 export function HomeScreen({
   state,
 }: Readonly<{ state: AppRouterState }>): ReactElement {
+  const interaction = useAppInteraction();
   const { color, ascii, snapshot, menuIndex, width } = state;
   const entries = APP_MENU.filter((entry) => entry.id !== 'home');
   const pendingAt = useListStagger(entries.length, allowMotion());
   const wide = width >= 80;
+  const window = visibleListWindow(
+    entries,
+    menuIndex,
+    Math.max(1, state.height - (wide ? 14 : 15)),
+  );
   const statusPanel = (
     <Panel
       title="Home / Dashboard"
       accent={CHROME.accent}
       ascii={ascii}
       color={color}
-      {...(wide ? { flexGrow: 2 } : {})}
+      {...(wide ? { width: Math.floor((width - 1) * 0.35) } : {})}
       paddingX={1}
       paddingY={0}
     >
       <StatusBlock snapshot={snapshot} color={color} ascii={ascii} />
+      <Text bold {...accentColor(color, CHROME.heading)}>
+        Next step
+      </Text>
+      {snapshot.home.profileId === null ? (
+        <KeyChip keyLabel="2" hint="create a profile" color={color} />
+      ) : vaultLocked(state) ? (
+        <KeyChip keyLabel="u" hint="unlock your vault" color={color} />
+      ) : (
+        <KeyChip keyLabel="4" hint="browse credentials" color={color} />
+      )}
+      {wide && state.height >= 24 ? (
+        <Box flexDirection="column" marginTop={1}>
+          <SingleLine {...accentColor(color, CHROME.muted)}>
+            Secrets stay masked.
+          </SingleLine>
+          <SingleLine {...accentColor(color, CHROME.muted)}>
+            {interaction.mouse ? 'Click / wheel to move' : 'Arrows / Enter to open'}
+          </SingleLine>
+          <KeyChip keyLabel="r" hint="refresh session" color={color} />
+        </Box>
+      ) : null}
     </Panel>
   );
   const navPanel = (
@@ -736,7 +842,7 @@ export function HomeScreen({
       accent={CHROME.accent}
       ascii={ascii}
       color={color}
-      {...(wide ? { flexGrow: 3, width: '58%' } : {})}
+      {...(wide ? { width: width - 1 - Math.floor((width - 1) * 0.35) } : {})}
       paddingX={1}
       paddingY={0}
     >
@@ -745,29 +851,41 @@ export function HomeScreen({
           const number = APP_MENU.indexOf(entry) + 1;
           // Only 1-9 are wired as digit shortcuts; later rows keep the slot
           // so labels stay aligned without advertising dead numbers.
-          return `${number <= 9 ? `${String(number)} ` : '  '}${entry.label}`;
+          return `${number <= 9 ? `${String(number)} ` : '  '}${entry.short ?? entry.label}`;
         };
         const labelWidth = Math.max(
           ...entries.map((entry) => labelOf(entry).length),
           8,
         );
-        return entries.map((entry, index) => {
+        return window.items.map((entry, offset) => {
+          const index = window.start + offset;
           const active = index === menuIndex;
           return (
             <SelectRow
               key={entry.id}
               active={active}
               label={labelOf(entry)}
-              hint={entry.hint}
+              {...(width >= 110 ? { hint: entry.hint } : {})}
               accent={entry.accent}
               color={color}
               ascii={ascii}
               labelWidth={labelWidth}
               pending={pendingAt(index)}
+              onPress={() => {
+                interaction.dispatch({
+                  type: 'select-row',
+                  index,
+                  activate: true,
+                  nowMs: state.nowMs,
+                });
+              }}
             />
           );
         });
       })()}
+      <Text
+        dimColor
+      >{`${String(window.start + 1)}-${String(window.start + window.items.length)} / ${String(entries.length)} destinations`}</Text>
     </Panel>
   );
   if (wide) {
@@ -780,7 +898,16 @@ export function HomeScreen({
   }
   return (
     <Box flexDirection="column" gap={0} flexGrow={1}>
-      {statusPanel}
+      <SingleLine {...accentColor(color, CHROME.muted)}>
+        {safe(
+          snapshot.home.profileId === null
+            ? 'Start: 2 Profiles > create a profile'
+            : vaultLocked(state)
+              ? 'Next: u Unlock your selected vault'
+              : 'Ready: 4 Credentials > choose a secret',
+          ascii,
+        )}
+      </SingleLine>
       {navPanel}
     </Box>
   );
@@ -812,7 +939,9 @@ function StatusBlock({
           {safe(home.datastore ?? '(none)', ascii)}
         </Text>
       </Text>
-      <Text {...accentColor(color, CHROME.muted)}>{safe(home.message, ascii)}</Text>
+      <SingleLine {...accentColor(color, CHROME.muted)}>
+        {safe(home.message, ascii)}
+      </SingleLine>
     </Box>
   );
 }
@@ -833,6 +962,7 @@ export function ProfilesScreen({
           primary: `${profile.id} (${profile.datastore})${profile.selected ? ' *' : ''}`,
           secondary: profile.detail,
         }))}
+        activateRows
       />
       <Text {...accentColor(color, CHROME.muted)}>
         {safe(
@@ -860,6 +990,7 @@ export function VaultsScreen({
           primary: `${vault.id}${vault.selected ? ' *' : ''}`,
           secondary: vault.detail,
         }))}
+        activateRows
       />
       <Text {...accentColor(color, CHROME.muted)}>
         {safe(
@@ -874,9 +1005,13 @@ export function VaultsScreen({
 export function CredentialsScreen({
   state,
 }: Readonly<{ state: AppRouterState }>): ReactElement {
+  const interaction = useAppInteraction();
   const { color, ascii, listIndex, revealedName, revealedValue, snapshot } = state;
   const filtered = filteredCredentials(state);
-  const windowSize = Math.max(6, Math.min(20, state.height - 12));
+  const windowSize = Math.max(
+    1,
+    Math.min(20, Math.floor((state.height - 16 - (revealedName === null ? 0 : 5)) / 2)),
+  );
   const window = visibleListWindow(filtered, listIndex, windowSize);
   const pendingAt = useListStagger(window.items.length, allowMotion());
   return (
@@ -890,7 +1025,7 @@ export function CredentialsScreen({
       >
         <Text {...accentColor(color, CHROME.muted)}>
           {safe(
-            `Values stay masked. Enter opens detail · c copy · r then y REVEAL (15s) · n put. ${String(filtered.length)}/${String(snapshot.credentials.length)} shown${state.credentialFilter.length > 0 ? ` (filter: ${state.credentialFilter})` : ''}.`,
+            `Values stay masked. ${String(filtered.length)}/${String(snapshot.credentials.length)} credentials${state.credentialFilter.length > 0 ? ` / ${state.credentialFilter}` : ''}`,
             ascii,
           )}
         </Text>
@@ -926,6 +1061,14 @@ export function CredentialsScreen({
                   color={color}
                   ascii={ascii}
                   pending={pendingAt(offset)}
+                  onPress={() => {
+                    interaction.dispatch({
+                      type: 'select-row',
+                      index,
+                      activate: true,
+                      nowMs: state.nowMs,
+                    });
+                  }}
                 />
                 {revealed ? (
                   <Panel
@@ -950,6 +1093,11 @@ export function CredentialsScreen({
             );
           })
         )}
+        {filtered.length > 0 ? (
+          <Text
+            dimColor
+          >{`${String(window.start + 1)}-${String(window.start + window.items.length)} / ${String(filtered.length)}  |  / search`}</Text>
+        ) : null}
       </Panel>
     </Box>
   );
@@ -993,8 +1141,10 @@ export function SessionScreen({
 export function DoctorScreen({
   state,
 }: Readonly<{ state: AppRouterState }>): ReactElement {
+  const interaction = useAppInteraction();
   const { color, ascii, listIndex } = state;
   const rows = state.snapshot.doctor;
+  const window = visibleListWindow(rows, listIndex, Math.max(1, state.height - 15));
   const pendingAt = useListStagger(rows.length, allowMotion());
   return (
     <Panel
@@ -1013,7 +1163,8 @@ export function DoctorScreen({
           ascii={ascii}
         />
       ) : (
-        rows.map((check, index) => {
+        window.items.map((check, offset) => {
+          const index = window.start + offset;
           const active = index === listIndex;
           const statusAccent = doctorStatusAccent(check.status);
           return (
@@ -1026,6 +1177,9 @@ export function DoctorScreen({
               color={color}
               ascii={ascii}
               pending={pendingAt(index)}
+              onPress={() => {
+                interaction.dispatch({ type: 'select-row', index, nowMs: state.nowMs });
+              }}
             />
           );
         })
@@ -1075,8 +1229,10 @@ export function RunScreen({
 export function PolicyScreen({
   state,
 }: Readonly<{ state: AppRouterState }>): ReactElement {
+  const interaction = useAppInteraction();
   const { color, ascii, listIndex } = state;
   const rows = state.snapshot.policies;
+  const window = visibleListWindow(rows, listIndex, Math.max(1, state.height - 15));
   const pendingAt = useListStagger(rows.length, allowMotion());
   const statusTag = (status: string): string => `[${status.toUpperCase()}]`;
   return (
@@ -1096,7 +1252,8 @@ export function PolicyScreen({
           ascii={ascii}
         />
       ) : (
-        rows.map((row, index) => {
+        window.items.map((row, offset) => {
+          const index = window.start + offset;
           const active = index === listIndex;
           const inactiveGrant =
             row.kind === 'grant' && row.status !== undefined && row.status !== 'active';
@@ -1119,6 +1276,9 @@ export function PolicyScreen({
               color={color}
               ascii={ascii}
               pending={pendingAt(index)}
+              onPress={() => {
+                interaction.dispatch({ type: 'select-row', index, nowMs: state.nowMs });
+              }}
             />
           );
         })
@@ -1242,34 +1402,55 @@ export function BrowseScreen({
 export function HelpScreen({
   state,
 }: Readonly<{ state: AppRouterState }>): ReactElement {
+  const interaction = useAppInteraction();
   const { color, ascii } = state;
   const lines = [
-    '--- Getting started ---',
-    '1) Profiles: n file or m mongodb, then Enter to select',
-    '2) Unlock with u (paste works in passphrase / URL overlays)',
-    '3) Credentials: Enter detail · n put · c copy (no on-screen plaintext) · r then y REVEAL',
-    '',
-    '--- Copy / paste ---',
-    'Paste into overlays: Ctrl+Shift+V / Cmd+V (bracketed paste; never submits Enter)',
-    'Copy credential: c on Credentials (clipboard clears in ~30s; OSC 52 preferred)',
-    'Terminal select/copy still works (Shift+drag if the terminal needs it)',
-    'Mouse tracking is NOT enabled — OS drag-select is not stolen',
-    '',
-    '--- Keymap ---',
-    'Global: j/k or arrows move, Enter open, Esc Home, q quit',
-    'Screens: Tab / Shift+Tab cycle, digits 1-9 jump (numbers shown in the tab strip)',
-    'Credentials: Enter detail · c copy · r reveal · n put · m rename · x remove · / search',
-    'Profiles: Enter use · n file · m mongodb · x remove (key/data files are kept)',
-    'Vaults: Enter use · n create a new vault in the selected database (unlock first)',
-    'Session: u unlock · l lock (clears revealed state)',
-    'Session unlock: n enable (after passphrase unlock) · x remove · Enter refresh — future u unlocks use the OS credential store',
-    'Doctor / heal: d (local health, not key recovery). Recovery kit: n/c create · v verify · Enter/x revoke',
-    'Run: p (project-file --environment is CLI-only). Agent: g dry-run.',
-    'Policy: n create · x remove · g create grant · r revoke grant · Enter refresh',
-    'Vault context browse: Enter refresh',
-    'Display: a ASCII · NO_COLOR / TERM=dumb disable color · win32 ASCII default',
-    'Motion: KAVRIX_TUI_REDUCED_MOTION=1 skips splash, stagger, and status pulse',
+    'Getting started: 2 Profiles > n file / m MongoDB > Enter use > u unlock.',
+    '4 Credentials: Enter detail / n put / c copy / r then y REVEAL.',
+    'Paste into overlays: Ctrl+Shift+V / Cmd+V. Paste never submits Enter.',
+    'Tab / Shift+Tab cycle; digits 1-9 jump to screens.',
+    'Mouse: click actions / wheel to move. Shift+drag selects terminal text.',
+    'Use --no-mouse for native selection. Run: project-file --environment is CLI-only.',
   ];
+  const topics = [
+    state.width < 60
+      ? [
+          'Getting started: 2 Profiles, then u.',
+          '4 Credentials: Enter detail, c copy.',
+          'Paste: Ctrl+Shift+V / Cmd+V.',
+          'Arrows choose the help topic.',
+        ]
+      : lines,
+    [
+      'Arrows or j/k move; Enter opens.',
+      'Tab / Shift+Tab cycle screens.',
+      'Digits 1-9 jump. Esc goes Home.',
+      'Click tabs, rows, and action chips.',
+      'Profiles / Vaults: select, then use.',
+    ],
+    [
+      'Enter: masked detail. c: copy.',
+      'n: put. m: rename. x: remove.',
+      '/: search names. r then y: REVEAL.',
+      'Reveal remasks after 15 seconds.',
+      'Clipboard copy clears after ~30s.',
+    ],
+    [
+      'u: unlock. l: confirm lock.',
+      'Recovery: n create / v verify.',
+      'Doctor: d checks local health.',
+      'Policy: n create / g grant.',
+      'Revokes and removals ask first.',
+    ],
+    [
+      't: choose theme. Enter saves it.',
+      'a: toggle ASCII borders and text.',
+      'NO_COLOR disables colors.',
+      '--no-mouse: native selection.',
+      'KAVRIX_TUI_REDUCED_MOTION=1',
+    ],
+  ];
+  const topic = Math.max(0, Math.min(HELP_TOPICS.length - 1, state.listIndex));
   return (
     <Panel
       title="Help / Keymap"
@@ -1278,7 +1459,30 @@ export function HelpScreen({
       color={color}
       paddingX={1}
     >
-      {lines.map((line, index) => (
+      <Box flexDirection="row" columnGap={1}>
+        {HELP_TOPICS.map((label, index) => (
+          <KeyChip
+            key={label}
+            keyLabel={index === topic ? '>' : ''}
+            hint={
+              state.width >= 80
+                ? (label.split(' ')[0] ?? label)
+                : (['Start', 'Keys', 'Secrets', 'Safety', 'View'][index] ?? label)
+            }
+            active={index === topic}
+            color={color}
+            onPress={() => {
+              interaction.dispatch({ type: 'select-row', index, nowMs: state.nowMs });
+            }}
+          />
+        ))}
+      </Box>
+      {topic > 0 ? (
+        <Text bold {...accentColor(color, CHROME.heading)}>
+          {HELP_TOPICS[topic]}
+        </Text>
+      ) : null}
+      {(topics[topic] ?? []).map((line, index) => (
         <Text key={`${String(index)}:${line}`}>
           {safe(line.length === 0 ? ' ' : line, ascii)}
         </Text>
@@ -1293,14 +1497,23 @@ function ListScreen({
   accent,
   empty,
   rows,
+  activateRows = false,
 }: Readonly<{
   state: AppRouterState;
   title: string;
   accent: AppAccent;
   empty: string;
   rows: readonly Readonly<{ id: string; primary: string; secondary: string }>[];
+  /**
+   * Enables two-step row activation for lists whose rows change real state, such
+   * as switching the active datastore profile or vault. The first click selects,
+   * and only a click on an already selected row applies.
+   */
+  activateRows?: boolean;
 }>): ReactElement {
+  const interaction = useAppInteraction();
   const { color, ascii, listIndex } = state;
+  const window = visibleListWindow(rows, listIndex, Math.max(1, state.height - 17));
   const pendingAt = useListStagger(rows.length, allowMotion());
   return (
     <Panel
@@ -1319,7 +1532,8 @@ function ListScreen({
           ascii={ascii}
         />
       ) : (
-        rows.map((row, index) => {
+        window.items.map((row, offset) => {
+          const index = window.start + offset;
           const active = index === listIndex;
           return (
             <SelectRow
@@ -1331,10 +1545,23 @@ function ListScreen({
               color={color}
               ascii={ascii}
               pending={pendingAt(index)}
+              onPress={() => {
+                interaction.dispatch({
+                  type: 'select-row',
+                  index,
+                  activate: activateRows && index === listIndex && state.listPinned,
+                  nowMs: state.nowMs,
+                });
+              }}
             />
           );
         })
       )}
+      {rows.length > 0 ? (
+        <Text
+          dimColor
+        >{`${String(window.start + 1)}-${String(window.start + window.items.length)} / ${String(rows.length)}  |  arrows / wheel to move`}</Text>
+      ) : null}
     </Panel>
   );
 }

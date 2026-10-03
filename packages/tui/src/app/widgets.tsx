@@ -1,5 +1,5 @@
 import { Box, Text } from 'ink';
-import type { ReactElement, ReactNode } from 'react';
+import type { ComponentProps, ReactElement, ReactNode } from 'react';
 
 import {
   animatedDots,
@@ -17,6 +17,8 @@ import {
 } from '../motion.js';
 import { sanitizeTerminalText } from '../terminal-text.js';
 import { APP_MENU, type AppScreenId } from './ids.js';
+import { keyForChip, useAppInteraction } from './interaction.js';
+import { ClickTarget } from './mouse.js';
 import {
   accentColor,
   CHROME,
@@ -30,6 +32,20 @@ import {
 
 function safe(value: string, ascii: boolean): string {
   return sanitizeTerminalText(value, ascii);
+}
+
+/** Clip at cell boundaries without Ink inserting a Unicode ellipsis in ASCII mode. */
+export function SingleLine({
+  children,
+  ...props
+}: ComponentProps<typeof Text>): ReactElement {
+  return (
+    <Box height={1} minWidth={0} flexGrow={1} overflow="hidden">
+      <Text {...props} wrap="hard">
+        {children}
+      </Text>
+    </Box>
+  );
 }
 
 export function SectionTitle({
@@ -81,6 +97,7 @@ export function Panel({
   return (
     <Box
       flexDirection="column"
+      flexShrink={0}
       borderStyle={borderStyle}
       {...(color ? { borderColor: accent } : {})}
       {...(flexGrow === undefined ? {} : { flexGrow })}
@@ -136,22 +153,50 @@ export function KeyChip({
   hint,
   color,
   keyAccent = CHROME.accent,
+  onPress,
+  disabled = false,
+  active = false,
 }: Readonly<{
   keyLabel: string;
   hint: string;
   color: boolean;
   keyAccent?: AppAccent;
+  onPress?: () => void;
+  disabled?: boolean;
+  active?: boolean;
 }>): ReactElement {
+  const interaction = useAppInteraction();
+  const key = keyForChip(keyLabel);
+  const press =
+    onPress ??
+    (key === null
+      ? undefined
+      : () => {
+          interaction.press(key);
+        });
   return (
-    <Text>
-      <Text bold {...accentColor(color, keyAccent)}>
-        {keyLabel}
+    <ClickTarget
+      enabled={
+        (interaction.enabled || keyLabel === 'Esc' || keyLabel === 'q') &&
+        !disabled &&
+        press !== undefined
+      }
+      {...(press === undefined ? {} : { onClick: press })}
+    >
+      <Text dimColor={disabled}>
+        <Text bold {...accentColor(color, keyAccent)}>
+          {keyLabel}
+        </Text>
+        <Text
+          bold={active}
+          dimColor={!active}
+          {...accentColor(color, active ? keyAccent : CHROME.muted)}
+        >
+          {' '}
+          {hint}
+        </Text>
       </Text>
-      <Text dimColor {...accentColor(color, CHROME.muted)}>
-        {' '}
-        {hint}
-      </Text>
-    </Text>
+    </ClickTarget>
   );
 }
 
@@ -168,6 +213,7 @@ export function SelectRow({
   ascii,
   labelWidth,
   pending = false,
+  onPress,
 }: Readonly<{
   active: boolean;
   label: string;
@@ -179,7 +225,9 @@ export function SelectRow({
   labelWidth?: number;
   /** Decorative stagger: row is present but not yet visually settled. */
   pending?: boolean;
+  onPress?: () => void;
 }>): ReactElement {
+  const interaction = useAppInteraction();
   const pointer = pointerGlyph(ascii);
   const bar = active ? pointer : ' ';
   const rawLabel = safe(label, ascii);
@@ -189,11 +237,18 @@ export function SelectRow({
       : rawLabel.length >= labelWidth
         ? rawLabel.slice(0, labelWidth)
         : `${rawLabel}${' '.repeat(labelWidth - rawLabel.length)}`;
-  if (active) {
-    return (
-      <Text dimColor={pending}>
-        <Text bold {...accentColor(color, accent)} inverse={color}>
-          {` ${bar} ${paddedLabel} `}
+  return (
+    <ClickTarget
+      enabled={interaction.enabled && onPress !== undefined}
+      {...(onPress === undefined ? {} : { onClick: onPress })}
+    >
+      <SingleLine dimColor={pending || !active}>
+        <Text
+          bold={active}
+          {...accentColor(color, active ? accent : CHROME.muted)}
+          inverse={active && color}
+        >
+          {active ? ` ${bar} ${paddedLabel} ` : `   ${paddedLabel} `}
         </Text>
         {hint === undefined || hint.length === 0 ? null : (
           <Text dimColor {...accentColor(color, CHROME.muted)}>
@@ -201,19 +256,8 @@ export function SelectRow({
             {safe(hint, ascii)}
           </Text>
         )}
-      </Text>
-    );
-  }
-  return (
-    <Text dimColor {...accentColor(color, CHROME.muted)}>
-      {` ${bar} ${paddedLabel}`}
-      {hint === undefined || hint.length === 0 ? null : (
-        <Text dimColor {...accentColor(color, CHROME.muted)}>
-          {'  '}
-          {safe(hint, ascii)}
-        </Text>
-      )}
-    </Text>
+      </SingleLine>
+    </ClickTarget>
   );
 }
 
@@ -269,7 +313,7 @@ export function ModalFrame({
 }>): ReactElement {
   const modalWidth = Math.min(
     CHROME.modalMaxWidth,
-    Math.max(CHROME.modalMinWidth, width - 4),
+    Math.max(1, width - (width < 44 ? 0 : 4)),
   );
   const progress = useEnterProgress(animate, MOTION.enterMs);
   const offset = enterOffsetCells(progress, animate);
@@ -279,7 +323,7 @@ export function ModalFrame({
       justifyContent="center"
       alignItems="center"
       flexDirection="column"
-      paddingY={1}
+      paddingY={0}
       marginTop={offset}
     >
       <Panel
@@ -289,8 +333,8 @@ export function ModalFrame({
         color={color}
         kind="modal"
         width={modalWidth}
-        paddingX={CHROME.modalPaddingX}
-        paddingY={CHROME.modalPaddingY}
+        paddingX={width < 60 ? 1 : CHROME.modalPaddingX}
+        paddingY={0}
       >
         {children}
       </Panel>
@@ -306,6 +350,7 @@ export function CardRow({
   color,
   ascii,
   pending = false,
+  onPress,
 }: Readonly<{
   active: boolean;
   title: string;
@@ -314,28 +359,30 @@ export function CardRow({
   color: boolean;
   ascii: boolean;
   pending?: boolean;
+  onPress?: () => void;
 }>): ReactElement {
+  const interaction = useAppInteraction();
   const pointer = pointerGlyph(ascii);
   return (
-    <Box
-      flexDirection="column"
-      paddingX={1}
-      {...(active && color
-        ? { borderStyle: panelBorderStyle(ascii, 'panel'), borderColor: accent }
-        : {})}
+    <ClickTarget
+      enabled={interaction.enabled && onPress !== undefined}
+      {...(onPress === undefined ? {} : { onClick: onPress })}
     >
-      <Text
-        bold={active}
-        dimColor={pending}
-        {...accentColor(color, active ? accent : CHROME.muted)}
-      >
-        {active ? pointer : ' '} {safe(title, ascii)}
-      </Text>
-      <Text dimColor={pending} {...accentColor(color, CHROME.muted)}>
-        {'   '}
-        {safe(subtitle, ascii)}
-      </Text>
-    </Box>
+      <Box flexDirection="column" paddingX={1}>
+        <SingleLine
+          bold={active}
+          inverse={active && color}
+          dimColor={pending}
+          {...accentColor(color, active ? accent : CHROME.muted)}
+        >
+          {active ? pointer : ' '} {safe(title, ascii)}
+        </SingleLine>
+        <SingleLine dimColor={pending} {...accentColor(color, CHROME.muted)}>
+          {'   '}
+          {safe(subtitle, ascii)}
+        </SingleLine>
+      </Box>
+    </ClickTarget>
   );
 }
 
@@ -547,29 +594,44 @@ const TABNAV_MIN_WIDTH = 56;
 /**
  * Compact screen tab strip (OpenTUI tab-select pattern). Numbers mirror the
  * router's digit shortcuts; `Tab`/`Shift+Tab` cycle in listed order. Hides on
- * narrow terminals instead of wrapping.
+ * narrow terminals instead of wrapping. `navigable` mirrors the router's
+ * navigation gate so the strip stops looking clickable while the router would
+ * reject `navigate` (an open overlay); it defaults to inert because a caller
+ * that has not stated the gate cannot promise the click would navigate.
  */
 export function TabNav({
   activeId,
+  navigable = false,
   color,
   ascii,
   width,
 }: Readonly<{
   activeId: AppScreenId;
+  navigable?: boolean;
   color: boolean;
   ascii: boolean;
   width: number;
 }>): ReactElement | null {
+  const interaction = useAppInteraction();
+  const clickable = interaction.enabled && navigable;
   if (width < TABNAV_MIN_WIDTH) return null;
-  const budget = width - 2;
+  // The row spends `paddingX={1}` on each side, and a truncated strip also needs
+  // one `columnGap` plus one cell for the overflow marker. Budgeting for exactly
+  // those — and charging the marker only when the strip really does truncate —
+  // keeps the last reachable destination instead of dropping it while columns
+  // are still free.
+  const available = width - 2;
+  const overflowCost = 3;
   const sep = '  ';
   const kept: readonly {
+    id: AppScreenId;
     label: string;
     number: string | null;
     active: boolean;
     accent: AppAccent;
   }[] = (() => {
     const rows = APP_MENU.map((entry, index) => ({
+      id: entry.id,
       label: sanitizeTerminalText(entry.short ?? entry.label, ascii),
       number: index < 9 ? String(index + 1) : null,
       active: entry.id === activeId,
@@ -579,50 +641,70 @@ export function TabNav({
       (first ? 0 : sep.length) +
       (row.number === null ? 0 : row.number.length + 1) +
       row.label.length;
-    const fits: (typeof rows)[number][] = [];
-    let used = 0;
-    for (const row of rows) {
-      const extra = cost(row, fits.length === 0);
-      if (fits.length >= TABNAV_MIN_ENTRIES && used + extra > budget - 1) break;
-      fits.push(row);
-      used += extra;
-    }
-    if (!fits.some((row) => row.active)) {
+    const measure = (list: readonly (typeof rows)[number][]): number =>
+      list.reduce((total, row, index) => total + cost(row, index === 0), 0);
+    const fit = (budget: number): (typeof rows)[number][] => {
+      const chosen: (typeof rows)[number][] = [];
+      let used = 0;
+      for (const row of rows) {
+        const extra = cost(row, chosen.length === 0);
+        if (chosen.length >= TABNAV_MIN_ENTRIES && used + extra > budget) break;
+        chosen.push(row);
+        used += extra;
+      }
+      return chosen;
+    };
+    const unreserved = fit(available);
+    const truncates = unreserved.length < rows.length;
+    const budget = truncates ? available - overflowCost : available;
+    const keptRows = truncates ? fit(budget) : unreserved;
+    if (!keptRows.some((row) => row.active)) {
       const active = rows.find((row) => row.active);
-      if (active === undefined) return fits;
+      if (active === undefined) return keptRows;
       // Trade the last visible entry for the active one so the current screen
       // is always highlighted, even at the minimum fit.
-      if (fits.length > 0) fits.pop();
-      fits.push(active);
+      if (keptRows.length > 0) keptRows.pop();
+      keptRows.push(active);
     }
-    return fits;
+    while (keptRows.length > 1 && measure(keptRows) > budget) {
+      const removeAt = keptRows.findLastIndex((row) => !row.active);
+      if (removeAt < 0) break;
+      keptRows.splice(removeAt, 1);
+    }
+    return keptRows;
   })();
   if (kept.length < TABNAV_MIN_ENTRIES) return null;
   const truncated = kept.length < APP_MENU.length;
   return (
-    <Box paddingX={1}>
-      <Text>
-        {kept.map((row, index) => (
-          <Text key={`${row.number ?? ''}${row.label}`}>
-            {index === 0 ? null : (
-              <Text {...accentColor(color, CHROME.muted)}>{sep}</Text>
-            )}
-            <Text
-              bold
-              inverse={row.active && color}
-              dimColor={!row.active}
-              {...accentColor(color, row.active ? row.accent : CHROME.muted)}
-            >
-              {`${row.number === null ? '' : `${row.number} `}${row.label}`}
-            </Text>
+    <Box paddingX={1} height={1} flexDirection="row" columnGap={2} overflow="hidden">
+      {kept.map((row) => (
+        <ClickTarget
+          key={`${row.number ?? ''}${row.label}`}
+          enabled={clickable}
+          onClick={() => {
+            interaction.dispatch({ type: 'navigate', screen: row.id });
+          }}
+        >
+          <Text
+            bold
+            inverse={row.active && color}
+            dimColor={!row.active}
+            {...accentColor(color, row.active ? row.accent : CHROME.muted)}
+          >
+            {`${row.number === null ? '' : `${row.number} `}${row.label}`}
           </Text>
-        ))}
-        {truncated ? (
-          <Text {...accentColor(color, CHROME.muted)}>
-            {ascii ? ' ...' : ' \u2026'}
-          </Text>
-        ) : null}
-      </Text>
+        </ClickTarget>
+      ))}
+      {truncated ? (
+        <ClickTarget
+          enabled={clickable}
+          onClick={() => {
+            interaction.dispatch({ type: 'navigate', screen: 'home' });
+          }}
+        >
+          <Text {...accentColor(color, CHROME.muted)}>{ascii ? '...' : '\u2026'}</Text>
+        </ClickTarget>
+      ) : null}
     </Box>
   );
 }

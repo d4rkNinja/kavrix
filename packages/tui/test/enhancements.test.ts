@@ -141,8 +141,29 @@ describe('screen tab strip', () => {
     expect(frame).toContain('1 Home');
     expect(frame).toContain('2 Profiles');
     expect(frame).toContain('4 Creds');
+    expect(frame).toContain('7 Recovery');
+    // At 80 columns the eight tabs need all 78 usable cells, leaving no room for
+    // the overflow marker. The strip keeps the marker and drops the eighth tab
+    // rather than rendering a marker that `overflow: hidden` would clip away.
+    expect(frame).toContain('…');
+    expect(frame).not.toContain('8 Run');
+    expect(frame).not.toContain('9 Policy');
+  });
+
+  it('spends every free column instead of over-reserving the overflow marker', () => {
+    // 84 columns is the first width where the eighth tab and the marker both
+    // fit. An over-reserved budget silently drops back to seven tabs here.
+    const frame = renderToString(
+      createElement(TabNav, {
+        activeId: 'home',
+        color: false,
+        ascii: false,
+        width: 84,
+      }),
+      { columns: 84 },
+    );
     expect(frame).toContain('8 Run');
-    // Not everything fits at 80 columns; the strip truncates instead of wrapping.
+    expect(frame).toContain('…');
     expect(frame).not.toContain('9 Policy');
   });
 
@@ -341,7 +362,7 @@ describe('rendered feedback widgets', () => {
     const state = createInitialAppRouterState({ width: 80, height: 24, ascii: true });
     const frame = renderToString(createElement(HomeScreen, { state }), { columns: 80 });
     expect(frame).toContain('2 Profiles');
-    expect(frame).toContain('4 Credentials');
+    expect(frame).toContain('4 Creds');
   });
 
   it('documents tab cycling and digit jumps on the help screen', () => {

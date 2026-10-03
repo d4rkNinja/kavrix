@@ -14,6 +14,9 @@ Thumbs.db
 .vscode/
 .worktrees/
 .superpowers/
+/.agents/
+/skills-lock.json
+/.tmp/
 .kavrix/
 *.kavrix-backup
 plans/

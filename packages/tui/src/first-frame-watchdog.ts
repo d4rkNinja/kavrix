@@ -36,6 +36,59 @@ interface WriteFn {
   (chunk: string | Uint8Array, callback?: (error?: Error | null) => void): boolean;
 }
 
+const ESC = '\u001B';
+
+/**
+ * True when a write carries something a human could actually see. Entering the
+ * alternate screen and enabling mouse reporting are longer than the size probe
+ * below yet paint nothing, so a byte count alone would declare a frame that was
+ * never rendered.
+ */
+function carriesVisibleText(chunk: string): boolean {
+  let index = 0;
+  while (index < chunk.length) {
+    const code = chunk.charCodeAt(index);
+    if (code === 0x1b) {
+      const next = chunk[index + 1];
+      if (next === '[') {
+        index += 2;
+        while (index < chunk.length) {
+          const parameter = chunk.charCodeAt(index);
+          if (parameter >= 0x40 && parameter <= 0x7e) {
+            index += 1;
+            break;
+          }
+          index += 1;
+        }
+        continue;
+      }
+      if (next === ']') {
+        index += 2;
+        while (index < chunk.length) {
+          if (chunk[index] === '\u0007') {
+            index += 1;
+            break;
+          }
+          if (chunk[index] === ESC && chunk[index + 1] === '\\') {
+            index += 2;
+            break;
+          }
+          index += 1;
+        }
+        continue;
+      }
+      index += 2;
+      continue;
+    }
+    if (code >= 0x20 && code !== 0x7f) {
+      return true;
+    }
+    index += 1;
+  }
+
+  return false;
+}
+
 /**
  * Wraps `stdout.write` to detect the first non-empty frame. If nothing is
  * written before `timeoutMs`, invokes `onTimeout` so operators see a hard
@@ -63,14 +116,16 @@ export function armFirstFrameWatchdog(
     callback?: (error?: Error | null) => void,
   ): boolean => {
     if (!painted) {
-      const size =
+      const text =
         typeof chunk === 'string'
-          ? chunk.length
+          ? chunk
           : Buffer.isBuffer(chunk)
-            ? chunk.length
-            : 0;
-      // Ignore bare cursor/mode probes under ~4 bytes; real frames are larger.
-      if (size > 4) {
+            ? chunk.toString('utf8')
+            : '';
+      const size = typeof chunk === 'string' ? chunk.length : text.length;
+      // Ignore bare cursor/mode probes under ~4 bytes, and any write that only
+      // carries escape sequences; real frames contain visible text.
+      if (size > 4 && carriesVisibleText(text)) {
         painted = true;
         restore();
       }

@@ -434,8 +434,8 @@ describe('KavrixApp vault-shell first paint', () => {
     await vi.waitFor(
       () => {
         const painted = stripAnsi(Buffer.concat(chunks).toString('utf8'));
-        const last = painted.slice(Math.max(0, painted.lastIndexOf('KAVRIX')));
-        expect(last).toMatch(/profile:mid/i);
+        const last = painted.slice(Math.max(0, painted.lastIndexOf('kavrix /')));
+        expect(last).toMatch(/mid \/ default/i);
         expect(last).toMatch(/Navigate|HOME/i);
         expect(last).not.toMatch(/Loading vault session/i);
       },
@@ -470,7 +470,8 @@ describe('KavrixApp vault-shell first paint', () => {
       () => {
         const painted = stripAnsi(Buffer.concat(chunks).toString('utf8'));
         expect(painted).toMatch(/Hydrate failed/i);
-        expect(painted).toMatch(/mid hydrate failed/i);
+        expect(painted).toMatch(/could not be loaded/i);
+        expect(painted).not.toMatch(/mid hydrate failed/i);
       },
       { timeout: 3_000, interval: 40 },
     );

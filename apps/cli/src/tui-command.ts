@@ -21,6 +21,7 @@ export function registerTuiCommand(program: Command): void {
     .option('--color', 'Force color when the terminal supports it.')
     .option('--no-color', 'Disable ANSI color (also honors NO_COLOR).')
     .option('--no-splash', 'Skip the animated startup splash screen.')
+    .option('--no-mouse', 'Use keyboard navigation and native terminal selection.')
     .option(
       '--theme <id>',
       `TUI color theme: ${TUI_THEME_IDS.join(', ')} (also KAVRIX_TUI_THEME; saved from the TUI with t).`,
@@ -39,6 +40,7 @@ export async function runInteractiveTui(
     ascii?: boolean;
     color?: boolean;
     splash?: boolean;
+    mouse?: boolean;
     theme?: string;
     profileConfigDir?: string;
     configDir?: string;
@@ -103,6 +105,7 @@ export async function runInteractiveTui(
       color?: boolean;
       version?: string;
       noSplash?: boolean;
+      mouse?: boolean;
     }) => {
       waitUntilExit: () => Promise<void>;
       unmount: () => void;
@@ -115,6 +118,7 @@ export async function runInteractiveTui(
     ascii,
     color,
     version: CLI_VERSION,
+    ...(options.mouse === undefined ? {} : { mouse: options.mouse }),
     ...(noSplash ? { noSplash: true } : {}),
   });
   try {

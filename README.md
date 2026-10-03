@@ -251,6 +251,14 @@ Use `kavrix init --no-tui` for classic line prompts, or stdin/explicit routing
 for scripts. Bare `kavrix` on a non-interactive stream keeps printing help. A
 walkthrough is embedded in the [Demo](#demo) section above.
 
+Version 0.2.34, **TUI refreshed**, adds compact session context, a next-step
+dashboard, clickable tabs/rows/action chips, wheel navigation, bounded lists,
+and Help topics. The workspace also paints full-screen and restores the terminal
+on exit. Mouse input requires a terminal with SGR reporting support; use
+`kavrix tui --no-mouse` for native text selection. Reveal and destructive
+actions still require confirmation. The existing demo recordings show an earlier
+interface; see the [current TUI guide](docs/tui-guide.md) for controls.
+
 ### Full CRUD from the TUI (0.2.22)
 
 Every screen now surfaces its actions in the footer, and the flows cover the

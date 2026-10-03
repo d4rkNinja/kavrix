@@ -16,6 +16,13 @@ import { resolveAppPresentation } from './theme.js';
 import { ErrorState, LoadingState } from './widgets.js';
 import { SplashGate } from '../splash-gate.js';
 import { armFirstFrameWatchdog } from '../first-frame-watchdog.js';
+import { AppInteractionProvider } from './interaction.js';
+import { ClickTarget, createMouseInput, MouseProvider } from './mouse.js';
+
+/** Monotonic frame id shared between the router and the mouse decoder. */
+export interface FrameClock {
+  current: number;
+}
 
 export interface KavrixAppProps {
   readonly backend: InteractiveAppBackend;
@@ -25,6 +32,15 @@ export interface KavrixAppProps {
   readonly noSplash?: boolean;
   readonly now?: () => number;
   readonly onQuit?: () => void;
+  readonly mouse?: boolean;
+  /** Shared with the mouse decoder so a click can be matched to a frame. */
+  readonly frameClock?: FrameClock;
+  /**
+   * Releases terminal input modes. Called the moment a quit is requested, before
+   * Ink restores the primary screen, so the shell never regains the terminal
+   * with mouse reporting still enabled.
+   */
+  readonly releaseInput?: () => void;
 }
 
 export function KavrixApp({
@@ -35,6 +51,9 @@ export function KavrixApp({
   noSplash,
   now = Date.now,
   onQuit,
+  mouse = false,
+  frameClock,
+  releaseInput,
 }: KavrixAppProps): ReactElement {
   const { stdout } = useStdout();
   const { exit } = useApp();
@@ -45,6 +64,9 @@ export function KavrixApp({
   const [backendReady, setBackendReady] = useState(false);
   const [hydrateError, setHydrateError] = useState<string | null>(null);
   const [paintEpoch, setPaintEpoch] = useState(0);
+  const [busy, setBusy] = useState(false);
+  const busyRef = useRef(false);
+  const mountedRef = useRef(true);
   const [state, setState] = useState(() => {
     const size = ensureTtySize(stdout);
     return createInitialAppRouterState({
@@ -58,15 +80,22 @@ export function KavrixApp({
   const backendRef = useRef(backend);
   const onQuitRef = useRef(onQuit);
   const exitRef = useRef(exit);
+  const releaseInputRef = useRef(releaseInput);
+  const ownClock = useRef<FrameClock>({ current: 0 });
+  const clock = frameClock ?? ownClock.current;
   const dispatchRef = useRef<(action: AppRouterAction) => void>(() => undefined);
   backendRef.current = backend;
   onQuitRef.current = onQuit;
   exitRef.current = exit;
+  releaseInputRef.current = releaseInput;
 
   const runBackend = useCallback(
     async (action: AppBackendAction): Promise<void> => {
+      busyRef.current = true;
+      setBusy(true);
       try {
         const result = await backendRef.current.dispatch(action);
+        if (!mountedRef.current || stateRef.current.quit) return;
         dispatchRef.current({
           type: 'backend-result',
           snapshot: result.snapshot,
@@ -76,6 +105,7 @@ export function KavrixApp({
           nowMs: now(),
         });
       } catch {
+        if (!mountedRef.current || stateRef.current.quit) return;
         dispatchRef.current({
           type: 'backend-result',
           snapshot: {
@@ -85,6 +115,9 @@ export function KavrixApp({
           },
           nowMs: now(),
         });
+      } finally {
+        busyRef.current = false;
+        if (mountedRef.current) setBusy(false);
       }
     },
     [now],
@@ -92,11 +125,30 @@ export function KavrixApp({
 
   const dispatch = useCallback(
     (action: AppRouterAction): void => {
+      const isIntent =
+        action.type === 'key' ||
+        action.type === 'navigate' ||
+        action.type === 'select-row' ||
+        action.type === 'select-theme';
+      const isExit =
+        action.type === 'key' &&
+        (action.key.name === 'escape' ||
+          (action.key.ctrl === true && action.key.text === 'c') ||
+          (action.key.text === 'q' && stateRef.current.overlay === 'none'));
+      if (
+        isIntent &&
+        (!backendReady || hydrateError !== null || busyRef.current) &&
+        !isExit
+      )
+        return;
       const previousScreen = stateRef.current.screen;
       const previousOverlay = stateRef.current.overlay;
       const next = transitionAppRouter(stateRef.current, action);
       stateRef.current = next.state;
       setState(next.state);
+      // Every repaint invalidates the geometry a mouse report was aimed at, so
+      // the frame id is what decides whether a click is still meaningful.
+      clock.current += 1;
       // Remount chrome after hydrate/resize/navigation — not every keystroke —
       // so Mid fixtures and flaky TTYs cannot keep a blank or stale frame.
       if (
@@ -112,9 +164,16 @@ export function KavrixApp({
         void runBackend(next.effect.action);
       }
     },
-    [runBackend],
+    [backendReady, hydrateError, runBackend],
   );
   dispatchRef.current = dispatch;
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -133,18 +192,16 @@ export function KavrixApp({
       .then((snapshot) => {
         if (cancelled || settled) return;
         settled = true;
-        dispatch({ type: 'hydrate', snapshot });
+        dispatchRef.current({ type: 'hydrate', snapshot });
         setBackendReady(true);
         setPaintEpoch((epoch) => epoch + 1);
       })
-      .catch((error: unknown) => {
+      .catch(() => {
         if (cancelled || settled) return;
         settled = true;
-        const message =
-          error instanceof Error && error.message.trim().length > 0
-            ? error.message
-            : 'Vault session hydrate failed.';
-        setHydrateError(message);
+        setHydrateError(
+          'Vault session could not be loaded. Press q to quit and check your profile configuration.',
+        );
         setBackendReady(true);
         setPaintEpoch((epoch) => epoch + 1);
       });
@@ -152,7 +209,7 @@ export function KavrixApp({
       cancelled = true;
       clearTimeout(timeout);
     };
-  }, [dispatch]);
+  }, []);
 
   useEffect(() => {
     // Kick Ink's first paint; some TTYs stay blank until a second frame.
@@ -192,6 +249,11 @@ export function KavrixApp({
   useEffect(() => {
     if (!state.quit) return;
     onQuitRef.current?.();
+    // Hand the terminal back before Ink restores the primary screen, not after.
+    // Waiting until `waitUntilExit` resolves leaves the shell sitting in the
+    // restored buffer with mouse reporting still on, so a click typed at the
+    // prompt would arrive as a mouse report.
+    releaseInputRef.current?.();
     exitRef.current();
   }, [state.quit]);
 
@@ -203,6 +265,7 @@ export function KavrixApp({
   // Bracketed paste arrives here (not via useInput) so multi-char paste never
   // looks like Enter. Overlay fields append the full sanitized string once.
   usePaste((text) => {
+    if (!stateRef.current.overlay.startsWith('input-')) return;
     const cleaned = sanitizePasteText(text);
     if (cleaned.length === 0) return;
     dispatch({ type: 'key', key: { text: cleaned }, nowMs: now() });
@@ -228,20 +291,43 @@ export function KavrixApp({
     );
 
   return (
-    <SplashGate
-      color={presentation.color}
-      ascii={presentation.ascii}
-      {...(version === undefined ? {} : { version })}
-      {...(noSplash === undefined ? {} : { noSplash })}
-      width={state.width}
-      height={state.height}
-      ready={backendReady}
-      now={now}
+    <AppInteractionProvider
+      value={{
+        dispatch,
+        press: (key) => {
+          dispatch({ type: 'key', key, nowMs: now() });
+        },
+        enabled: backendReady && hydrateError === null && !busy,
+        mouse,
+        busy,
+      }}
     >
-      <AppChrome key={`chrome-${state.screen}-${String(paintEpoch)}`} state={state}>
-        {body}
-      </AppChrome>
-    </SplashGate>
+      <ClickTarget
+        enabled={backendReady && !busy && state.overlay === 'none'}
+        onScroll={(delta) => {
+          dispatch({
+            type: 'key',
+            key: { name: delta < 0 ? 'up' : 'down' },
+            nowMs: now(),
+          });
+        }}
+      >
+        <SplashGate
+          color={presentation.color}
+          ascii={presentation.ascii}
+          {...(version === undefined ? {} : { version })}
+          {...(noSplash === undefined ? {} : { noSplash })}
+          width={state.width}
+          height={state.height}
+          ready={backendReady}
+          now={now}
+        >
+          <AppChrome key={`chrome-${state.screen}-${String(paintEpoch)}`} state={state}>
+            {body}
+          </AppChrome>
+        </SplashGate>
+      </ClickTarget>
+    </AppInteractionProvider>
   );
 }
 
@@ -253,6 +339,7 @@ export interface MountKavrixAppOptions {
   readonly color?: boolean;
   readonly version?: string;
   readonly noSplash?: boolean;
+  readonly mouse?: boolean;
 }
 
 export interface KavrixAppHandle {
@@ -267,10 +354,36 @@ export function mountKavrixApp(options: MountKavrixAppOptions): KavrixAppHandle 
     ...(options.color === undefined ? {} : { color: options.color }),
   });
   const stdout = options.stdout ?? process.stdout;
+  // Ink itself ignores the alternate screen outside interactive TTY sessions, so
+  // fullscreen stays independent of mouse support: `--no-mouse` keeps native text
+  // selection without demoting the UI to an inline, scrollback-eating frame.
+  // Screen-reader output is line oriented and cannot compose with a full-screen
+  // repaint, so it is the one opt-out. Ink reads INK_SCREEN_READER as 'true'.
+  const screenReader = process.env['INK_SCREEN_READER'] === 'true';
+  const alternateScreen = !screenReader && process.env['TERM'] !== 'dumb';
+  const frameClock: FrameClock = { current: 0 };
+  const mouse = createMouseInput({
+    stdin: options.stdin ?? process.stdin,
+    stdout,
+    enabled:
+      options.mouse !== false &&
+      process.env['KAVRIX_TUI_MOUSE'] !== '0' &&
+      alternateScreen,
+    getFrame: () => frameClock.current,
+  });
   ensureTtySize(stdout);
   // Ink 7 skips live frames under CI=1 even on a real TTY (xfce4-terminal stays
   // blank while the process lives). Force interactive and fail loudly if the
   // first frame never arrives.
+  let instance: ReturnType<typeof render> | undefined;
+  const restoreTerminal = (): void => {
+    // Release terminal input modes before Ink restores the primary screen, so
+    // no report can arrive in an encoding the decoder has already stopped
+    // filtering and the shell never inherits a live mouse reporter.
+    mouse.dispose();
+    instance?.unmount();
+    instance = undefined;
+  };
   const watchdog = armFirstFrameWatchdog({
     stdout,
     label: 'kavrix tui',
@@ -281,36 +394,58 @@ export function mountKavrixApp(options: MountKavrixAppOptions): KavrixAppHandle 
         // ignore
       }
       process.exitCode = 1;
+      // A blank mount is still holding the alternate screen, a hidden cursor,
+      // and raw input. Leaving them behind strands the user in an unusable
+      // terminal, so the timeout path tears the session down before exiting.
+      watchdog.dispose();
+      restoreTerminal();
     },
   });
-  const instance = render(
-    <KavrixApp
-      backend={options.backend}
-      ascii={presentation.ascii}
-      color={presentation.color}
-      {...(options.version === undefined ? {} : { version: options.version })}
-      {...(options.noSplash === undefined ? {} : { noSplash: options.noSplash })}
-    />,
-    {
-      stdout,
-      stdin: options.stdin ?? process.stdin,
-      exitOnCtrlC: false,
-      patchConsole: false,
-      interactive: true,
-    },
-  );
+  try {
+    instance = render(
+      <MouseProvider controller={mouse}>
+        <KavrixApp
+          backend={options.backend}
+          ascii={presentation.ascii}
+          color={presentation.color}
+          mouse={mouse.enabled}
+          frameClock={frameClock}
+          releaseInput={() => {
+            mouse.dispose();
+          }}
+          {...(options.version === undefined ? {} : { version: options.version })}
+          {...(options.noSplash === undefined ? {} : { noSplash: options.noSplash })}
+        />
+      </MouseProvider>,
+      {
+        stdout,
+        stdin: mouse.stdin,
+        exitOnCtrlC: false,
+        patchConsole: false,
+        interactive: true,
+        alternateScreen,
+      },
+    );
+  } catch (error) {
+    watchdog.dispose();
+    mouse.dispose();
+    throw error;
+  }
+  const shutdown = (): void => {
+    watchdog.dispose();
+    restoreTerminal();
+  };
   return {
     waitUntilExit: async () => {
+      const active = instance;
+      if (active === undefined) return;
       try {
-        await instance.waitUntilExit();
+        await active.waitUntilExit();
       } finally {
-        watchdog.dispose();
+        shutdown();
       }
     },
-    unmount: () => {
-      watchdog.dispose();
-      instance.unmount();
-    },
+    unmount: shutdown,
   };
 }
 
@@ -342,8 +477,15 @@ function mapInkInput(
     backspace: boolean;
     ctrl: boolean;
     shift: boolean;
+    name?: string;
   }>,
 ): AppKey | null {
+  // Ink reports Ctrl+C as the raw byte with `key.name === 'c'`. Without this the
+  // control byte reaches the router as `text: '\x03'`, which matches no exit
+  // path, and the documented Ctrl+C quit silently does nothing.
+  if (input === '\u0003' || (key.ctrl && key.name === 'c')) {
+    return { text: 'c', ctrl: true };
+  }
   if (key.upArrow) return { name: 'up' };
   if (key.downArrow) return { name: 'down' };
   if (key.leftArrow) return { name: 'left' };

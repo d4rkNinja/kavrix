@@ -188,7 +188,38 @@ export type CliTuiCommandRunner = (
   frames: readonly string[],
 ) => Promise<string>;
 
+/**
+ * Bounded outcomes for one spawned `kavrix` child. A deadline that expires is
+ * not an exit code: the child was terminated before it finished, so the caller
+ * must report a stopped operation rather than the CLI's own diagnostics.
+ */
+type CliCommandOutcome =
+  | Readonly<{ kind: 'exited'; exitCode: number | null }>
+  | Readonly<{ kind: 'spawn-failed'; error: Error }>
+  | Readonly<{ kind: 'timed-out' }>;
+
 const require = createRequire(import.meta.url);
+
+/**
+ * Hard ceiling on one `kavrix` child. Every TUI intent awaits a child, and
+ * `packages/tui` keeps the whole interface busy until the backend settles, so an
+ * unbounded child (native keychain prompt, stalled MongoDB handshake, OS
+ * dialog) freezes the terminal with no way back. Sixty seconds clears the
+ * slowest honest work — Argon2id key derivation, a replica-set handshake, a
+ * recovery-kit round trip — while still converting a wedge into an honest
+ * notice.
+ */
+export const TUI_COMMAND_TIMEOUT_MS = 60_000;
+
+/**
+ * Upper bound for a caller-supplied deadline. Without a ceiling a safe-integer
+ * override such as `Number.MAX_SAFE_INTEGER` passes validation while removing
+ * the bound entirely, which is exactly what the deadline exists to prevent.
+ */
+export const MAX_TUI_COMMAND_TIMEOUT_MS = 600_000;
+
+/** Grace between the polite termination and the forced kill of a wedged child. */
+export const TUI_COMMAND_KILL_GRACE_MS = 1_000;
 
 export interface CliTuiSessionOptions {
   readonly profileConfigDir?: string;
@@ -200,6 +231,8 @@ export interface CliTuiSessionOptions {
   readonly commandRunner?: CliTuiCommandRunner;
   /** Injectable kavrix artifact home (~/.kavrix) for tests; defaults to homedir. */
   readonly kavrixArtifactDir?: string;
+  /** Per-child deadline override; must be a positive integer or the run fails closed. */
+  readonly commandTimeoutMs?: number;
 }
 
 /**
@@ -2298,6 +2331,7 @@ class CliTuiSession {
       return this.#options.commandRunner(args, frames);
     }
     const bin = this.#binPath();
+    const timeoutMs = this.#commandTimeoutMs();
     const env = { ...process.env };
     delete env['FORCE_COLOR'];
     const child = spawn(process.execPath, [bin, ...args], {
@@ -2309,19 +2343,83 @@ class CliTuiSession {
     const stderr: Buffer[] = [];
     child.stdout.on('data', (chunk: Buffer) => stdout.push(chunk));
     child.stderr.on('data', (chunk: Buffer) => stderr.push(chunk));
+    // A child that exits before the frames are drained makes the pipe write fail
+    // with EPIPE. Without a listener that surfaces as an uncaught exception and
+    // takes the whole TUI down, so the write failure is absorbed here and the
+    // exit code below is what decides the outcome.
+    child.stdin.on('error', () => undefined);
     const payload = frames.map((frame) => `${frame}\n`).join('');
     child.stdin.end(payload, 'utf8');
-    const code = await new Promise<number | null>((resolve, reject) => {
-      child.on('error', reject);
-      child.on('close', (exitCode) => {
-        resolve(exitCode);
+    const outcome = await new Promise<CliCommandOutcome>((resolve) => {
+      let settled = false;
+      let forceKill: ReturnType<typeof setTimeout> | undefined;
+
+      const deadline = setTimeout(() => {
+        // Bounded child execution: a native keychain prompt, a stalled MongoDB
+        // handshake, or an OS dialog never reaches `close`, which would hold the
+        // TUI's busy flag forever and drop every intent. Terminate first and
+        // settle second so the UI is released even if the child ignores the
+        // signal, then escalate if it is still alive after the grace.
+        child.kill('SIGTERM');
+        forceKill = setTimeout(() => {
+          child.kill('SIGKILL');
+        }, TUI_COMMAND_KILL_GRACE_MS);
+        settle({ kind: 'timed-out' });
+      }, timeoutMs);
+
+      // `once` listeners detach themselves, so a child that outlives the
+      // deadline leaves nothing attached; `settled` keeps the late `close` or
+      // `error` from resolving a second time.
+      child.once('error', (error) => {
+        disarmForceKill();
+        settle({ kind: 'spawn-failed', error });
       });
+      child.once('close', (exitCode) => {
+        disarmForceKill();
+        settle({ kind: 'exited', exitCode });
+      });
+
+      function settle(result: CliCommandOutcome): void {
+        if (settled) return;
+        settled = true;
+        clearTimeout(deadline);
+        resolve(result);
+      }
+
+      function disarmForceKill(): void {
+        if (forceKill !== undefined) clearTimeout(forceKill);
+      }
     });
-    if (code !== 0) {
+    if (outcome.kind === 'timed-out') {
+      throw new Error(
+        'Kavrix command did not finish in time and was stopped. Check for a blocked system prompt or an unreachable datastore, then retry.',
+      );
+    }
+    if (outcome.kind === 'spawn-failed') {
+      throw outcome.error;
+    }
+    if (outcome.exitCode !== 0) {
       const detail = Buffer.concat(stderr).toString('utf8').trim() || 'CLI failed.';
       throw new Error(detail.split('\n')[0] ?? 'CLI failed.');
     }
     return Buffer.concat(stdout).toString('utf8');
+  }
+
+  #commandTimeoutMs(): number {
+    const configured = this.#options.commandTimeoutMs;
+    if (configured === undefined) return TUI_COMMAND_TIMEOUT_MS;
+    // Fail closed: an out-of-range override must never restore an unbounded or
+    // effectively unbounded child, and the rejected value is never echoed into
+    // the notice. The ceiling bounds a caller that passes something like
+    // Number.MAX_SAFE_INTEGER, which is a safe integer but not a real deadline.
+    if (
+      !Number.isSafeInteger(configured) ||
+      configured <= 0 ||
+      configured > MAX_TUI_COMMAND_TIMEOUT_MS
+    ) {
+      throw new Error('Invalid command timeout configuration.');
+    }
+    return configured;
   }
 }
 

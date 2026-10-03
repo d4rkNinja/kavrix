@@ -1020,7 +1020,7 @@ describe('help and credentials UX', () => {
     expect(frameText).toMatch(/Getting started/i);
     expect(frameText).toMatch(/Paste into overlays/i);
     expect(frameText).toMatch(/c copy/i);
-    expect(frameText).toMatch(/Mouse tracking is NOT enabled/i);
+    expect(frameText).toMatch(/click actions.*wheel/i);
   });
 
   it('shows unlock empty-state guidance on credentials', () => {
@@ -1168,10 +1168,16 @@ describe('0.2.22 TUI CRUD discoverability and new flows', () => {
     expect(cancelled.state.overlay).toBe('none');
   });
 
-  it('help documents the new vault and profile keys', () => {
-    const frameText = frame(navigateToScreen(hydrate(), 'help'));
-    expect(frameText).toMatch(/Vaults: Enter use · n create/i);
-    expect(frameText).toMatch(/x remove \(key\/data files are kept\)/i);
+  it('help exposes profile and vault guidance in the Navigation topic', () => {
+    const help = navigateToScreen(hydrate(), 'help');
+    const navigation = transitionAppRouter(help, {
+      type: 'select-row',
+      index: 1,
+      nowMs: 0,
+    }).state;
+    const frameText = frame(navigation);
+    expect(frameText).toMatch(/Profiles \/ Vaults: select, then use/i);
+    expect(frameText).toMatch(/Click tabs, rows, and action chips/i);
   });
 });
 

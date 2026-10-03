@@ -159,6 +159,58 @@ describe('armFirstFrameWatchdog', () => {
     expect(watchdog.sawFrame()).toBe(true);
   });
 
+  it('does not mistake alternate-screen and mouse mode sets for a frame', () => {
+    const stdout = new TestStdout();
+    const watchdog = armFirstFrameWatchdog({
+      stdout,
+      label: 'test-modes',
+      timeoutMs: 5_000,
+    });
+    handles.push(watchdog);
+
+    stdout.write('\u001B[?1049h');
+    expect(watchdog.sawFrame()).toBe(false);
+    stdout.write('\u001B[?25l');
+    expect(watchdog.sawFrame()).toBe(false);
+    stdout.write('\u001B[?1000h\u001B[?1006h');
+    expect(watchdog.sawFrame()).toBe(false);
+    stdout.write('\u001B[2K\u001B[1A\u001B[G');
+    expect(watchdog.sawFrame()).toBe(false);
+
+    stdout.write('\u001B[2K\u001B[1Akavrix\u001B[?25l');
+    expect(watchdog.sawFrame()).toBe(true);
+  });
+
+  it('accepts a frame whose visible text is shorter than a mode set', () => {
+    const stdout = new TestStdout();
+    const watchdog = armFirstFrameWatchdog({
+      stdout,
+      label: 'test-short-frame',
+      timeoutMs: 5_000,
+    });
+    handles.push(watchdog);
+
+    stdout.write('\u001B[2K\u001B[1Ahi\n');
+    expect(watchdog.sawFrame()).toBe(true);
+  });
+
+  it('fires onTimeout when only mode sets are written before timeoutMs', () => {
+    vi.useFakeTimers();
+    const stdout = new TestStdout();
+    const onTimeout = vi.fn();
+    const watchdog = armFirstFrameWatchdog({
+      stdout,
+      label: 'test-modes-timeout',
+      timeoutMs: 50,
+      onTimeout,
+    });
+    handles.push(watchdog);
+
+    stdout.write('\u001B[?1049h\u001B[?25l');
+    vi.advanceTimersByTime(50);
+    expect(onTimeout).toHaveBeenCalledTimes(1);
+  });
+
   it('swallows stderr write failures when onTimeout is omitted', () => {
     vi.useFakeTimers();
     const stdout = new TestStdout();
