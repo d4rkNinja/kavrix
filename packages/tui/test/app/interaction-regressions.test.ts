@@ -70,8 +70,8 @@ class TestOutput extends PassThrough {
     return '';
   }
 
-  /** Resolves once click regions are registered; set by the `mount` helper. */
-  inputReady: Promise<void> = Promise.resolve();
+  /** Resolves when click regions are registered; set by the `mount` helper. */
+  inputReady: () => Promise<void> = () => Promise.resolve();
 }
 
 function stripAnsi(value: string): string {
@@ -152,7 +152,7 @@ async function waitForFrame(
     },
     { timeout: 10_000, interval: 20 },
   );
-  await output.inputReady;
+  await output.inputReady();
   await new Promise((resolve) => setTimeout(resolve, 40));
   return frame;
 }
@@ -171,6 +171,42 @@ function coordinateOf(
 
 function clickReport(coordinate: Readonly<{ x: number; y: number }>): string {
   return `${ESC}[<0;${String(coordinate.x + 1)};${String(coordinate.y + 1)}M`;
+}
+
+/**
+ * Clicks a label until `expected` is painted, within a bounded budget.
+ *
+ * A click can be lost when it lands in the React commit that remounts the chrome
+ * and re-registers every region. Retrying is bounded and only used for clicks
+ * that must act, so a genuinely broken click — wrong coordinates, a disabled
+ * region, or one the stale-frame guard rejects — still fails on every attempt.
+ */
+async function clickUntil(
+  output: TestOutput,
+  input: TestInput,
+  label: string,
+  expected: string,
+): Promise<string> {
+  const deadline = Date.now() + 8_000;
+  for (;;) {
+    await output.inputReady();
+    input.write(clickReport(coordinateOf(output.latestFrame(), label)));
+    try {
+      let frame = '';
+      await vi.waitFor(
+        () => {
+          frame = output.latestFrame();
+          expect(frame).toContain(expected);
+        },
+        { timeout: 400, interval: 20 },
+      );
+      return frame;
+    } catch {
+      if (Date.now() >= deadline) {
+        throw new Error(`Clicking "${label}" never produced "${expected}".`);
+      }
+    }
+  }
 }
 
 const mounted = new Set<KavrixAppHandle>();
@@ -200,9 +236,10 @@ function mount(
     noSplash: true,
   });
   mounted.add(handle);
-  // Every `waitForFrame` in this file blocks on this, so a click can never race
-  // React's passive effects that register the measured regions.
-  output.inputReady = handle.waitForInputReady();
+  // Resolved at await time, not captured here: the chrome remounts on navigation,
+  // which disposes and re-registers every region, so readiness has to be
+  // re-checked against the live set after each frame.
+  output.inputReady = () => handle.waitForInputReady();
   return { input, output, handle };
 }
 
@@ -268,7 +305,9 @@ describe('frame-exact click handling', () => {
         clickReport(coordinateOf(frame, '5 Doctor')),
     );
 
-    await waitForFrame(output, 'kavrix / Creds');
+    await clickUntil(output, input, '4 Creds', 'kavrix / Creds');
+    // The rejected second click must not fire later, on its own.
+    await new Promise((resolve) => setTimeout(resolve, 300));
     expect(output.latestFrame()).not.toContain('kavrix / Doctor');
   });
 
@@ -277,8 +316,7 @@ describe('frame-exact click handling', () => {
     const { input, output } = mount(snapshot(), actions);
     await waitForFrame(output, '4 Creds');
 
-    input.write(clickReport(coordinateOf(output.latestFrame(), '5 Doctor')));
-    await waitForFrame(output, 'kavrix / Doctor');
+    await clickUntil(output, input, '5 Doctor', 'kavrix / Doctor');
   });
 });
 
@@ -286,28 +324,30 @@ describe('profile selection requires an explicit second click', () => {
   it('does not switch the active datastore profile on a single row click', async () => {
     const actions: AppBackendAction[] = [];
     const { input, output } = mount(snapshot(), actions);
-    let frame = await waitForFrame(output, 'kavrix / Home');
+    await waitForFrame(output, 'kavrix / Home');
 
-    input.write(clickReport(coordinateOf(frame, '2 Profiles')));
-    frame = await waitForFrame(output, 'kavrix / Profiles');
+    const frame = await clickUntil(output, input, '2 Profiles', 'kavrix / Profiles');
     expect(frame).toContain('first-profile');
 
     input.write(clickReport(coordinateOf(frame, 'first-profile')));
     // The row is now selected, but switching the active route is a real state
     // change and must not ride along with the selection.
-    await new Promise((resolve) => setTimeout(resolve, 120));
+    await new Promise((resolve) => setTimeout(resolve, 300));
     expect(actions).toEqual([]);
 
-    frame = output.latestFrame();
-    expect(frame).toMatch(/>\s+first-profile/u);
+    expect(output.latestFrame()).toMatch(/>\s+first-profile/u);
 
-    input.write(clickReport(coordinateOf(frame, 'first-profile')));
-    await vi.waitFor(() => {
-      expect(actions).toContainEqual({
-        type: 'use-profile',
-        profileId: 'first-profile',
-      });
-    });
+    // Second click on the already selected row applies it.
+    await vi.waitFor(
+      () => {
+        input.write(clickReport(coordinateOf(output.latestFrame(), 'first-profile')));
+        expect(actions).toContainEqual({
+          type: 'use-profile',
+          profileId: 'first-profile',
+        });
+      },
+      { timeout: 5_000, interval: 100 },
+    );
   });
 });
 

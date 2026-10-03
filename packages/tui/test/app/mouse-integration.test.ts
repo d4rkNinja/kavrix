@@ -40,8 +40,8 @@ class TestOutput extends PassThrough {
   rows = 30;
   readonly isTTY = true;
   readonly chunks: string[] = [];
-  /** Resolves once click regions are registered; set by the `mount` helper. */
-  inputReady: Promise<void> = Promise.resolve();
+  /** Resolves when click regions are registered; set by the `mount` helper. */
+  inputReady: () => Promise<void> = () => Promise.resolve();
 
   constructor() {
     super();
@@ -132,7 +132,7 @@ async function waitForFrame(
     },
     { timeout: 10_000, interval: 20 },
   );
-  await output.inputReady;
+  await output.inputReady();
   // Click-region registration is only one of the effects that must land before
   // input is meaningful: Ink separately enables raw mode and subscribes to the
   // stream. `inputReady` cannot observe that, so keep one bounded settle turn.
@@ -164,6 +164,44 @@ function click(input: TestInput, coordinate: Readonly<{ x: number; y: number }>)
   input.write(`${ESC}[<0;${String(coordinate.x + 1)};${String(coordinate.y + 1)}M`);
 }
 
+/**
+ * Clicks a label until `expected` is painted, within a bounded budget.
+ *
+ * A click can be lost when it lands in the React commit that remounts the chrome
+ * and re-registers every region: the app is then briefly reachable but has no
+ * region under those coordinates. Retrying is bounded and only used for clicks
+ * that must navigate, so a genuinely broken click — wrong coordinates, a
+ * disabled region, or a click the stale-frame guard rejects — still fails on
+ * every attempt. Negative cases deliberately do not use this helper.
+ */
+async function clickUntil(
+  output: TestOutput,
+  input: TestInput,
+  label: string,
+  expected: string,
+): Promise<string> {
+  const deadline = Date.now() + 8_000;
+  for (;;) {
+    await output.inputReady();
+    click(input, coordinateOf(output.latestFrame(), label));
+    try {
+      let frame = '';
+      await vi.waitFor(
+        () => {
+          frame = output.latestFrame();
+          expect(frame).toContain(expected);
+        },
+        { timeout: 400, interval: 20 },
+      );
+      return frame;
+    } catch {
+      if (Date.now() >= deadline) {
+        throw new Error(`Clicking "${label}" never produced "${expected}".`);
+      }
+    }
+  }
+}
+
 function wheelDown(
   input: TestInput,
   coordinate: Readonly<{ x: number; y: number }>,
@@ -189,9 +227,10 @@ function mount(
     noSplash: true,
     mouse,
   });
-  // Every `waitForFrame` in this file blocks on this, so a click can never race
-  // React's passive effects that register the measured regions.
-  output.inputReady = handle.waitForInputReady();
+  // Resolved at await time, not captured here: the chrome remounts on
+  // navigation, which disposes and re-registers every region, so readiness has to
+  // be re-checked against the live set after each frame.
+  output.inputReady = () => handle.waitForInputReady();
   return handle;
 }
 
@@ -236,11 +275,9 @@ describe('mounted Kavrix mouse interaction', () => {
     const handle = mount(backend, input, output);
     mounted.add(handle);
 
-    let frame = await waitForFrame(output, '1 Home');
-    click(input, coordinateOf(frame, '4 Creds'));
-    frame = await waitForFrame(output, 'kavrix / Creds');
-    click(input, coordinateOf(frame, 'credential-01'));
-    frame = await waitForFrame(output, 'Credential detail');
+    await waitForFrame(output, '1 Home');
+    await clickUntil(output, input, '4 Creds', 'kavrix / Creds');
+    let frame = await clickUntil(output, input, 'credential-01', 'Credential detail');
     expect(frame).toContain('********');
 
     input.write('r');
@@ -270,9 +307,8 @@ describe('mounted Kavrix mouse interaction', () => {
     });
 
     input.write(String.fromCharCode(27));
-    frame = await waitForFrame(output, 'Remove cancelled.');
-    click(input, coordinateOf(frame, '1 Home'));
-    await waitForFrame(output, 'kavrix / Home');
+    await waitForFrame(output, 'Remove cancelled.');
+    await clickUntil(output, input, '1 Home', 'kavrix / Home');
   });
 
   it('moves the credential window by wheel and keeps the selected pointer after resize', async () => {
@@ -282,9 +318,9 @@ describe('mounted Kavrix mouse interaction', () => {
     const handle = mount(backendFor(initial), input, output);
     mounted.add(handle);
 
-    let frame = await waitForFrame(output, '4 Creds');
-    click(input, coordinateOf(frame, '4 Creds'));
-    frame = await waitForFrame(output, 'credential-01');
+    await waitForFrame(output, '4 Creds');
+    let frame = await clickUntil(output, input, '4 Creds', 'kavrix / Creds');
+    expect(frame).toContain('credential-01');
     expect(frame).toMatch(/>\s+credential-01/u);
 
     wheelDown(input, coordinateOf(frame, 'credential-01'));

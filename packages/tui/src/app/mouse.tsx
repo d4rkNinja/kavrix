@@ -87,10 +87,11 @@ export interface MouseInput {
   readonly stdin: NodeJS.ReadStream;
   readonly enabled: boolean;
   /**
-   * Resolves once React has committed and the first measured click region is
-   * registered, or immediately when tracking is disabled. Region handlers are
-   * installed from passive effects, so input delivered before that flush would
-   * otherwise land on nothing and be silently dropped.
+   * Resolves once click regions are registered *as of this call*, or immediately
+   * when tracking is disabled. Region handlers are installed from passive
+   * effects, so input delivered before that flush lands on nothing. The chrome
+   * remounts on navigation, which disposes and re-registers every region, so this
+   * re-checks the live set instead of latching a one-shot readiness flag.
    */
   readonly whenInteractive: () => Promise<void>;
   registerRegion(region: Omit<MouseRegion, 'order'>): () => void;
@@ -495,14 +496,14 @@ export function createMouseInput(options: MouseInputOptions): MouseInput {
   let order = 0;
   let disposed = false;
   let pendingTimer: NodeJS.Timeout | undefined;
-  let markInteractive: (() => void) | undefined;
-  const interactive = new Promise<void>((resolve) => {
-    if (!enabled) {
+  const regionWaiters: (() => void)[] = [];
+  const settleRegionWaiters = (): void => {
+    if (regionWaiters.length === 0) return;
+    const waiters = regionWaiters.splice(0, regionWaiters.length);
+    for (const resolve of waiters) {
       resolve();
-      return;
     }
-    markInteractive = resolve;
-  });
+  };
 
   Object.defineProperties(filteredInput, {
     isTTY: { value: options.stdin.isTTY },
@@ -612,8 +613,7 @@ export function createMouseInput(options: MouseInputOptions): MouseInput {
     disposed = true;
     clearPendingTimer();
     // Never leave an awaiter pending across teardown.
-    markInteractive?.();
-    markInteractive = undefined;
+    settleRegionWaiters();
     process.removeListener('exit', onProcessExit);
     options.stdin.removeListener('data', consume);
     options.stdin.removeListener('end', onEnd);
@@ -667,12 +667,18 @@ export function createMouseInput(options: MouseInputOptions): MouseInput {
   return {
     stdin: filteredInput as unknown as NodeJS.ReadStream,
     enabled,
-    whenInteractive: () => interactive,
+    whenInteractive: () =>
+      // A disposed controller has no future registration, so resolve rather than
+      // hang; a caller awaiting readiness during teardown gets a clean answer.
+      enabled && !disposed && regions.size === 0
+        ? new Promise<void>((resolve) => {
+            regionWaiters.push(resolve);
+          })
+        : Promise.resolve(),
     registerRegion(region) {
       const registered: MouseRegion = { ...region, order: order++ };
       regions.add(registered);
-      markInteractive?.();
-      markInteractive = undefined;
+      settleRegionWaiters();
       return () => regions.delete(registered);
     },
     dispose,

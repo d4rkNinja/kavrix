@@ -56,8 +56,8 @@ class TestOutput extends PassThrough {
     return '';
   }
 
-  /** Resolves once click regions are registered; set by the mount helper. */
-  inputReady: Promise<void> = Promise.resolve();
+  /** Resolves when click regions are registered; set by the mount helper. */
+  inputReady: () => Promise<void> = () => Promise.resolve();
 }
 
 function stripAnsi(value: string): string {
@@ -128,7 +128,7 @@ async function waitForFrame(
   // land with nothing to hit. `inputReady` resolves when that registration
   // happened; the bounded settle covers Ink's separate raw-mode and stdin
   // subscription effect, which that signal cannot observe.
-  await output.inputReady;
+  await output.inputReady();
   await new Promise((resolve) => setTimeout(resolve, 60));
   return frame;
 }
@@ -174,7 +174,7 @@ function mount(
     noSplash: true,
     mouse: true,
   });
-  output.inputReady = handle.waitForInputReady();
+  output.inputReady = () => handle.waitForInputReady();
   return handle;
 }
 
