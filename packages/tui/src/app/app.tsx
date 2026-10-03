@@ -344,6 +344,11 @@ export interface MountKavrixAppOptions {
 
 export interface KavrixAppHandle {
   waitUntilExit: () => Promise<void>;
+  /**
+   * Resolves once click regions are measured and registered, so a caller driving
+   * synthetic pointer input cannot race React's passive effects.
+   */
+  waitForInputReady: () => Promise<void>;
   unmount: () => void;
 }
 
@@ -446,6 +451,7 @@ export function mountKavrixApp(options: MountKavrixAppOptions): KavrixAppHandle 
       }
     },
     unmount: shutdown,
+    waitForInputReady: () => mouse.whenInteractive(),
   };
 }
 

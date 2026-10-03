@@ -86,6 +86,13 @@ export interface MouseInputOptions {
 export interface MouseInput {
   readonly stdin: NodeJS.ReadStream;
   readonly enabled: boolean;
+  /**
+   * Resolves once React has committed and the first measured click region is
+   * registered, or immediately when tracking is disabled. Region handlers are
+   * installed from passive effects, so input delivered before that flush would
+   * otherwise land on nothing and be silently dropped.
+   */
+  readonly whenInteractive: () => Promise<void>;
   registerRegion(region: Omit<MouseRegion, 'order'>): () => void;
   dispose(): void;
 }
@@ -488,6 +495,14 @@ export function createMouseInput(options: MouseInputOptions): MouseInput {
   let order = 0;
   let disposed = false;
   let pendingTimer: NodeJS.Timeout | undefined;
+  let markInteractive: (() => void) | undefined;
+  const interactive = new Promise<void>((resolve) => {
+    if (!enabled) {
+      resolve();
+      return;
+    }
+    markInteractive = resolve;
+  });
 
   Object.defineProperties(filteredInput, {
     isTTY: { value: options.stdin.isTTY },
@@ -596,6 +611,9 @@ export function createMouseInput(options: MouseInputOptions): MouseInput {
 
     disposed = true;
     clearPendingTimer();
+    // Never leave an awaiter pending across teardown.
+    markInteractive?.();
+    markInteractive = undefined;
     process.removeListener('exit', onProcessExit);
     options.stdin.removeListener('data', consume);
     options.stdin.removeListener('end', onEnd);
@@ -649,9 +667,12 @@ export function createMouseInput(options: MouseInputOptions): MouseInput {
   return {
     stdin: filteredInput as unknown as NodeJS.ReadStream,
     enabled,
+    whenInteractive: () => interactive,
     registerRegion(region) {
       const registered: MouseRegion = { ...region, order: order++ };
       regions.add(registered);
+      markInteractive?.();
+      markInteractive = undefined;
       return () => regions.delete(registered);
     },
     dispose,

@@ -55,6 +55,9 @@ class TestOutput extends PassThrough {
 
     return '';
   }
+
+  /** Resolves once click regions are registered; set by the mount helper. */
+  inputReady: Promise<void> = Promise.resolve();
 }
 
 function stripAnsi(value: string): string {
@@ -118,10 +121,14 @@ async function waitForFrame(
         }
       }
     },
-    { timeout: 3_000, interval: 20 },
+    { timeout: 10_000, interval: 20 },
   );
-  // Ink can paint before React has flushed passive effects that register
-  // measured click regions. Wait one bounded post-commit turn before input.
+  // Ink can paint before React has flushed the passive effects that measure and
+  // register click regions, so a click sent straight after the first frame can
+  // land with nothing to hit. `inputReady` resolves when that registration
+  // happened; the bounded settle covers Ink's separate raw-mode and stdin
+  // subscription effect, which that signal cannot observe.
+  await output.inputReady;
   await new Promise((resolve) => setTimeout(resolve, 60));
   return frame;
 }
@@ -158,7 +165,7 @@ function mount(
   vi.stubEnv('TERM', 'xterm-256color');
   vi.stubEnv('KAVRIX_TUI_MOUSE', '1');
   vi.stubEnv('INK_SCREEN_READER', '');
-  return mountKavrixApp({
+  const handle = mountKavrixApp({
     backend,
     stdin: input as unknown as NodeJS.ReadStream,
     stdout: output as unknown as NodeJS.WriteStream,
@@ -167,6 +174,8 @@ function mount(
     noSplash: true,
     mouse: true,
   });
+  output.inputReady = handle.waitForInputReady();
+  return handle;
 }
 
 const mounted = new Set<KavrixAppHandle>();

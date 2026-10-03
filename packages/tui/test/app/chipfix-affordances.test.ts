@@ -193,15 +193,27 @@ class RecordingMouse implements MouseInput {
   readonly stdin = new PassThrough() as unknown as NodeJS.ReadStream;
   readonly enabled = true;
   readonly regions = new Set<RecordedRegion>();
+  #markReady: (() => void) | undefined;
+  readonly interactive = new Promise<void>((resolve) => {
+    this.#markReady = resolve;
+  });
+
+  whenInteractive(): Promise<void> {
+    return this.interactive;
+  }
 
   registerRegion(region: RecordedRegion): () => void {
     this.regions.add(region);
+    this.#markReady?.();
+    this.#markReady = undefined;
     return () => {
       this.regions.delete(region);
     };
   }
 
   dispose(): void {
+    this.#markReady?.();
+    this.#markReady = undefined;
     this.regions.clear();
   }
 }

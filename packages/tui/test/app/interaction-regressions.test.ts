@@ -69,6 +69,9 @@ class TestOutput extends PassThrough {
 
     return '';
   }
+
+  /** Resolves once click regions are registered; set by the `mount` helper. */
+  inputReady: Promise<void> = Promise.resolve();
 }
 
 function stripAnsi(value: string): string {
@@ -125,6 +128,14 @@ function backendFor(
   };
 }
 
+/**
+ * Ink can paint a frame before React has flushed the passive effects that
+ * measure and register click regions, so a click sent right after the first
+ * frame can land with nothing to hit. `output.inputReady` resolves when that
+ * registration actually happened, which is deterministic; the bounded sleep
+ * this keeps covers Ink's separate raw-mode and stdin subscription effect, which
+ * that signal cannot observe.
+ */
 async function waitForFrame(
   output: TestOutput,
   expected: string | RegExp,
@@ -139,8 +150,9 @@ async function waitForFrame(
         expect(frame).toMatch(expected);
       }
     },
-    { timeout: 3_000, interval: 20 },
+    { timeout: 10_000, interval: 20 },
   );
+  await output.inputReady;
   await new Promise((resolve) => setTimeout(resolve, 40));
   return frame;
 }
@@ -188,6 +200,9 @@ function mount(
     noSplash: true,
   });
   mounted.add(handle);
+  // Every `waitForFrame` in this file blocks on this, so a click can never race
+  // React's passive effects that register the measured regions.
+  output.inputReady = handle.waitForInputReady();
   return { input, output, handle };
 }
 

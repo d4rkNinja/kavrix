@@ -40,6 +40,8 @@ class TestOutput extends PassThrough {
   rows = 30;
   readonly isTTY = true;
   readonly chunks: string[] = [];
+  /** Resolves once click regions are registered; set by the `mount` helper. */
+  inputReady: Promise<void> = Promise.resolve();
 
   constructor() {
     super();
@@ -102,6 +104,18 @@ function backendFor(
   };
 }
 
+/**
+ * Waits for the painted frame that already carries the hydrated session, so
+ * measured cell coordinates are never taken from the pre-hydrate Loading frame
+ * (which has a different row layout).
+ *
+ * It then blocks on `output.inputReady`. Ink can paint a frame before React has
+ * flushed the passive effects that measure and register click regions, so a
+ * click sent straight after the first frame can land with nothing to hit.
+ * `waitForInputReady()` resolves when that registration actually happened, which
+ * is deterministic; the bounded sleep this replaces was not, because a loaded
+ * parallel runner stretches the gap arbitrarily.
+ */
 async function waitForFrame(
   output: TestOutput,
   expected: string | RegExp,
@@ -116,10 +130,12 @@ async function waitForFrame(
         expect(frame).toMatch(expected);
       }
     },
-    { timeout: 3_000, interval: 20 },
+    { timeout: 10_000, interval: 20 },
   );
-  // Ink can paint before React has flushed passive effects that register
-  // measured click regions. Wait one bounded post-commit turn before input.
+  await output.inputReady;
+  // Click-region registration is only one of the effects that must land before
+  // input is meaningful: Ink separately enables raw mode and subscribes to the
+  // stream. `inputReady` cannot observe that, so keep one bounded settle turn.
   await new Promise((resolve) => setTimeout(resolve, 40));
   return frame;
 }
@@ -164,7 +180,7 @@ function mount(
   vi.stubEnv('TERM', 'xterm-256color');
   vi.stubEnv('KAVRIX_TUI_MOUSE', '1');
   vi.stubEnv('INK_SCREEN_READER', '');
-  return mountKavrixApp({
+  const handle = mountKavrixApp({
     backend,
     stdin: input as unknown as NodeJS.ReadStream,
     stdout: output as unknown as NodeJS.WriteStream,
@@ -173,6 +189,10 @@ function mount(
     noSplash: true,
     mouse,
   });
+  // Every `waitForFrame` in this file blocks on this, so a click can never race
+  // React's passive effects that register the measured regions.
+  output.inputReady = handle.waitForInputReady();
+  return handle;
 }
 
 function deferredResult(): Readonly<{
