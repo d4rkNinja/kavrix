@@ -388,12 +388,23 @@ describe('mounted Kavrix mouse interaction', () => {
     const frame = await waitForFrame(output, '5 Doctor');
     expect(output.allOutput()).toContain(`${ESC}[?1000h${ESC}[?1006h`);
     expect(input.isRaw).toBe(true);
-    const doctor = coordinateOf(frame, '5 Doctor');
-    const report = `${ESC}[<0;${String(doctor.x + 1)};${String(doctor.y + 1)}M`;
-    input.write(report + report);
-    await vi.waitFor(() => {
-      expect(dispatch).toHaveBeenCalledOnce();
-    });
+
+    // Both reports must arrive in one read for this to be a duplicate-click test,
+    // so the pair cannot be retried the way a single navigating click can. The
+    // first pair can still be lost to the commit that re-registers regions, so
+    // keep sending it until one lands. Once the backend is busy the router
+    // rejects further clicks, which is the property under test, so the count
+    // still settles at exactly one.
+    await vi.waitFor(
+      () => {
+        const doctor = coordinateOf(output.latestFrame(), '5 Doctor');
+        const report = `${ESC}[<0;${String(doctor.x + 1)};${String(doctor.y + 1)}M`;
+        input.write(report + report);
+        expect(dispatch).toHaveBeenCalledOnce();
+      },
+      { timeout: 8_000, interval: 150 },
+    );
+    expect(frame).toContain('5 Doctor');
     expect(dispatch).toHaveBeenCalledWith({ type: 'run-doctor' });
     expect(input.isRaw).toBe(true);
 

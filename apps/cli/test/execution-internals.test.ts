@@ -627,9 +627,16 @@ describe('in-process broker and client round trip', () => {
           permission: 'confirm-gate',
           executableAndArgs: [process.execPath, '-e', 'process.exit(0)'],
         });
-        for (let attempt = 0; attempt < 200; attempt += 1) {
+        // This is a real in-process broker round trip: a client spawn, a token
+        // exchange, and a confirmation prompt. The old 5s budget was shorter than
+        // a loaded Windows CI shard takes to get there, and the test then failed on
+        // the denial that follows a missing prompt rather than on the prompt
+        // itself. The assertion is unchanged; only the wait is bounded higher.
+        const promptDeadlineMs = 60_000;
+        const startedAt = Date.now();
+        while (Date.now() - startedAt < promptDeadlineMs) {
           if (stderrChunks.join('').includes('Allow once?')) break;
-          await new Promise((resolve) => setTimeout(resolve, 25));
+          await new Promise((resolve) => setTimeout(resolve, 50));
         }
         expect(stderrChunks.join('')).toContain('Allow once?');
         approvalStream.write('y\n');
