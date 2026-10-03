@@ -6,6 +6,7 @@ import chalk from 'chalk';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { SplashGate } from '../src/splash-gate.js';
+import { createMouseInput, MouseProvider } from '../src/app/mouse.js';
 import {
   SplashScreen,
   SPLASH_ASCII_SPINNER_FRAMES,
@@ -236,5 +237,75 @@ describe('SplashGate', () => {
     expect(painted).not.toContain('K   K');
     instance.unmount();
     await instance.waitUntilExit();
+  });
+
+  it('dismisses immediately when the splash is clicked', async () => {
+    class SplashInput extends PassThrough {
+      readonly isTTY = true;
+      setRawMode(): this {
+        return this;
+      }
+      ref(): this {
+        return this;
+      }
+      unref(): this {
+        return this;
+      }
+    }
+
+    const stdout = new TestOutput();
+    const chunks: Buffer[] = [];
+    stdout.on('data', (chunk: Buffer) => chunks.push(chunk));
+    const input = new SplashInput();
+    const mouse = createMouseInput({
+      stdin: input as unknown as NodeJS.ReadStream,
+      stdout: stdout as unknown as NodeJS.WriteStream,
+    });
+
+    const instance = render(
+      createElement(
+        MouseProvider,
+        { controller: mouse },
+        createElement(SplashGate, {
+          color: false,
+          ascii: true,
+          version: '0.2.34',
+          width: 100,
+          height: 28,
+          ready: false,
+          children: createElement(Text, null, 'HOME_CLICKED'),
+        }),
+      ),
+      {
+        stdout: stdout as unknown as NodeJS.WriteStream,
+        stdin: mouse.stdin,
+        interactive: true,
+        exitOnCtrlC: false,
+        patchConsole: false,
+      },
+    );
+
+    try {
+      await instance.waitUntilRenderFlush();
+      // Not ready and not past the minimum: only a click can dismiss it now.
+      expect(stripAnsi(Buffer.concat(chunks).toString('utf8'))).not.toContain(
+        'HOME_CLICKED',
+      );
+      await mouse.whenInteractive();
+
+      input.write('\u001B[<0;10;5M');
+      await vi.waitFor(
+        () => {
+          expect(stripAnsi(Buffer.concat(chunks).toString('utf8'))).toContain(
+            'HOME_CLICKED',
+          );
+        },
+        { timeout: 2_000, interval: 40 },
+      );
+    } finally {
+      mouse.dispose();
+      instance.unmount();
+      await instance.waitUntilExit();
+    }
   });
 });

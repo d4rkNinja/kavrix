@@ -227,4 +227,67 @@ describe('armFirstFrameWatchdog', () => {
     expect(writeErr).toHaveBeenCalled();
     writeErr.mockRestore();
   });
+
+  describe('escape sequences that paint nothing', () => {
+    function watchdogFor(label: string): {
+      stdout: TestStdout;
+      watchdog: { sawFrame: () => boolean; dispose: () => void };
+    } {
+      const stdout = new TestStdout();
+      const watchdog = armFirstFrameWatchdog({
+        stdout,
+        label,
+        timeoutMs: 5_000,
+      });
+      handles.push(watchdog);
+      return { stdout, watchdog };
+    }
+
+    it('ignores an OSC sequence terminated by BEL', () => {
+      const { stdout, watchdog } = watchdogFor('test-osc-bel');
+      // Window-title and clipboard sequences carry text a user never sees on the
+      // grid, so they must not be mistaken for a painted frame.
+      stdout.write('\u001B]0;kavrix\u0007');
+      expect(watchdog.sawFrame()).toBe(false);
+    });
+
+    it('ignores an OSC sequence terminated by ST', () => {
+      const { stdout, watchdog } = watchdogFor('test-osc-st');
+      stdout.write('\u001B]11;rgb:1e1e/1e1e/1e1e\u001B\\');
+      expect(watchdog.sawFrame()).toBe(false);
+    });
+
+    it('ignores an unterminated OSC sequence', () => {
+      const { stdout, watchdog } = watchdogFor('test-osc-open');
+      stdout.write('\u001B]0;never-closed');
+      expect(watchdog.sawFrame()).toBe(false);
+    });
+
+    it('finds visible text after a completed OSC sequence', () => {
+      const { stdout, watchdog } = watchdogFor('test-osc-then-text');
+      stdout.write('\u001B]0;kavrix\u0007');
+      expect(watchdog.sawFrame()).toBe(false);
+      stdout.write('kavrix');
+      expect(watchdog.sawFrame()).toBe(true);
+    });
+
+    it('ignores a two-byte escape that introduces nothing visible', () => {
+      const { stdout, watchdog } = watchdogFor('test-esc-pair');
+      // ESC followed by a single non-CSI byte: consumed as a pair, never text.
+      stdout.write('\u001B\u001B\u001B\u0007\u0000\u0001');
+      expect(watchdog.sawFrame()).toBe(false);
+    });
+
+    it('ignores an unterminated CSI sequence', () => {
+      const { stdout, watchdog } = watchdogFor('test-csi-open');
+      stdout.write('\u001B[2;1;1');
+      expect(watchdog.sawFrame()).toBe(false);
+    });
+
+    it('ignores a chunk of control bytes with no printable character', () => {
+      const { stdout, watchdog } = watchdogFor('test-controls');
+      stdout.write('\u0000\u0001\u001F\u007F');
+      expect(watchdog.sawFrame()).toBe(false);
+    });
+  });
 });
