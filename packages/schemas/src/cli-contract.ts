@@ -1,5 +1,17 @@
 import { z } from 'zod';
 
+/** Non-secret destination preflight shared by the interactive UI and CLI host. */
+export const profileDestinationCheckActionSchema = z
+  .object({
+    type: z.literal('validate-profile-destination'),
+    path: z.string().min(1).max(4096),
+  })
+  .strict();
+
+export type ProfileDestinationCheckAction = Readonly<
+  z.infer<typeof profileDestinationCheckActionSchema>
+>;
+
 /**
  * Stable machine-readable CLI contract. Automation reads exit codes and the
  * JSON error envelope; it must never need to parse human-readable text.

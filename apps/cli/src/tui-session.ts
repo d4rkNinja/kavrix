@@ -2,25 +2,33 @@ import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { existsSync } from 'node:fs';
 import { lstat, realpath } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { z } from 'zod';
 
 import { zeroize } from '@kavrix/crypto';
 import {
+  databaseRevisionAnchorPath,
   ensureSecureDirectory,
   hardenExistingSecureDirectory,
+  PortableKeyFileError,
+  validateSecureFileDestination,
   readProtectedJsonDocument,
   writeProtectedJsonDocument,
 } from '@kavrix/key-files';
-import { profileIdSchema } from '@kavrix/schemas';
+import {
+  profileIdSchema,
+  profileDestinationCheckActionSchema,
+  type ProfileDestinationCheckAction,
+} from '@kavrix/schemas';
 
 import {
   DatastoreProfileRegistry,
   type DatastoreProfile,
 } from './datastore-profiles.js';
 import { getKavrixConfigDir } from './kavrix-config.js';
+import { keyFileGuidance } from './key-file-guidance.js';
 import { copySecretToClipboard } from './tui-clipboard.js';
 
 /**
@@ -93,6 +101,7 @@ export interface CliTuiSnapshot {
 
 export type CliTuiAction =
   | Readonly<{ type: 'refresh' }>
+  | ProfileDestinationCheckAction
   | Readonly<{ type: 'use-profile'; profileId: string }>
   | Readonly<{
       type: 'create-file-profile';
@@ -290,6 +299,34 @@ async function isSameDirectoryPath(left: string, right: string): Promise<boolean
   }
 }
 
+async function preflightProfileArtifacts(
+  dataFile: string | null,
+  keyFile: string,
+  recoveryFile: string,
+  kavrixArtifactDir?: string,
+): Promise<void> {
+  const paths = [
+    ...(dataFile === null ? [] : [dataFile]),
+    keyFile,
+    databaseRevisionAnchorPath(keyFile),
+    ...(recoveryFile.length === 0
+      ? []
+      : [recoveryFile, databaseRevisionAnchorPath(recoveryFile)]),
+  ];
+  await ensureSecureArtifactParents(paths, kavrixArtifactDir);
+  const seen = new Set<string>();
+  for (const path of paths) {
+    const canonical = join(await realpath(dirname(path)), basename(path));
+    const identity = process.platform === 'win32' ? canonical.toLowerCase() : canonical;
+    if (seen.has(identity))
+      throw new Error(
+        'Vault, key, recovery, and anchor destinations must be separate files. Edit the destinations and retry.',
+      );
+    seen.add(identity);
+    await validateSecureFileDestination(path);
+  }
+}
+
 /** Protected, non-secret TUI preferences stored in the kavrix artifact home. */
 const tuiThemePrefsSchema = z
   .object({ theme: z.enum(['gold', 'ocean', 'magma', 'forest', 'violet']) })
@@ -384,6 +421,17 @@ class CliTuiSession {
         case 'create-file-profile':
           await this.#createFileProfile(action);
           break;
+        case 'validate-profile-destination': {
+          const destination = profileDestinationCheckActionSchema.parse(action);
+          await ensureSecureArtifactParents(
+            [destination.path],
+            this.#options.kavrixArtifactDir,
+          );
+          await validateSecureFileDestination(destination.path);
+          this.#notice = 'Destination permissions verified.';
+          this.#noticeTone = 'success';
+          break;
+        }
         case 'create-mongodb-profile':
           await this.#createMongodbProfile(action);
           break;
@@ -524,7 +572,11 @@ class CliTuiSession {
       return { snapshot: await this.#buildSnapshot() };
     } catch (error) {
       this.#notice =
-        error instanceof Error ? error.message : 'Operation failed safely.';
+        error instanceof PortableKeyFileError
+          ? keyFileGuidance(error)
+          : error instanceof Error
+            ? error.message
+            : 'Operation failed safely.';
       this.#noticeTone = 'error';
       return { snapshot: await this.#buildSnapshot() };
     }
@@ -957,8 +1009,10 @@ class CliTuiSession {
     let vaultReady = false;
 
     try {
-      await ensureSecureArtifactParents(
-        [dataFile, keyFile, recoveryFile || null],
+      await preflightProfileArtifacts(
+        dataFile,
+        keyFile,
+        recoveryFile,
         this.#options.kavrixArtifactDir,
       );
       await this.#runTextCommand(
@@ -1069,7 +1123,11 @@ class CliTuiSession {
         await this.#bestEffortRemoveProfile(profileId, configDirArgs);
       }
       const detail =
-        error instanceof Error ? error.message : 'File profile create failed.';
+        error instanceof PortableKeyFileError
+          ? keyFileGuidance(error)
+          : error instanceof Error
+            ? error.message
+            : 'File profile create failed.';
       if (vaultReady) {
         throw error instanceof Error ? error : new Error(detail, { cause: error });
       }
@@ -1136,8 +1194,10 @@ class CliTuiSession {
     let vaultReady = false;
 
     try {
-      await ensureSecureArtifactParents(
-        [keyFile, recoveryFile || null],
+      await preflightProfileArtifacts(
+        null,
+        keyFile,
+        recoveryFile,
         this.#options.kavrixArtifactDir,
       );
       await this.#runTextCommand(
@@ -1260,7 +1320,11 @@ class CliTuiSession {
         await this.#bestEffortRemoveProfile(profileId, configDirArgs);
       }
       const detail =
-        error instanceof Error ? error.message : 'MongoDB profile create failed.';
+        error instanceof PortableKeyFileError
+          ? keyFileGuidance(error)
+          : error instanceof Error
+            ? error.message
+            : 'MongoDB profile create failed.';
       if (vaultReady) {
         throw error instanceof Error ? error : new Error(detail, { cause: error });
       }

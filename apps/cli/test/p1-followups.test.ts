@@ -228,7 +228,9 @@ describe('launch P1 follow-ups', () => {
         'X=EMPTY',
         ...fixture.routingArgs,
         '--',
-        'true',
+        process.execPath,
+        '-e',
+        'process.exit(0)',
       ],
       PASSPHRASE,
     );

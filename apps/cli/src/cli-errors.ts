@@ -6,6 +6,7 @@ import {
 import { PortableKeyFileError } from '@kavrix/key-files';
 
 import { LocalCliError } from './cli-error.js';
+import { keyFileGuidance } from './key-file-guidance.js';
 import { DatabaseFlatCommandError } from './database-flat-commands.js';
 import { DatabaseMigrationError } from './database-migration.js';
 import { DatabaseMigrationCommandError } from './database-migration-command.js';
@@ -123,7 +124,7 @@ export function classifyCliFailure(error: unknown): Readonly<{
       error.code === 'KEY_FILE_NOT_FOUND'
         ? 'The portable key file was not found.'
         : error.code === 'KEY_FILE_UNSAFE'
-          ? 'The portable key file or its parent directory is not safe to use; harden parent permissions to mode 700 (or run `kavrix doctor health --heal`).'
+          ? keyFileGuidance(error)
           : error.message;
     return { message, exitCode: portableKeyFileExitCode(error) };
   }

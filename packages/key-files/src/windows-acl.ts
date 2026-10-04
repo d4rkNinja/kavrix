@@ -124,6 +124,9 @@ foreach ($rule in $rules) {
   $ruleSid = $rule.IdentityReference.Value
   if ([String]::IsNullOrEmpty($ruleSid)) { exit 2 }
   if ($rule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow) { exit 2 }
+  # Inherit-only rules do not grant rights on this parent. Kavrix strips
+  # inheritance from its newly created child before storing protected bytes.
+  if (($rule.PropagationFlags -band [Security.AccessControl.PropagationFlags]::InheritOnly) -ne 0) { continue }
   $hasWriteRights = (([int]$rule.FileSystemRights -band [int]$writeRights) -ne 0)
   if ($hasWriteRights -and $trustedSids -notcontains $ruleSid) { exit 2 }
 }

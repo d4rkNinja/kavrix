@@ -72,6 +72,7 @@ remains a command reference and is not loaded automatically.
   [0.2.26](release-notes-0.2.26.md), [0.2.27](release-notes-0.2.27.md),
   [0.2.28](release-notes-0.2.28.md), [0.2.29](release-notes-0.2.29.md),
   [0.2.30](release-notes-0.2.30.md), [0.2.31](release-notes-0.2.31.md),
+  [0.2.35 — setup destination recovery](release-notes-0.2.35.md);
   [0.2.34 — TUI refreshed](release-notes-0.2.34.md);
   earlier lines keep their own `release-notes-0.2.x.md` files. Versions 0.2.32 and
   0.2.33 were never published; their work ships in 0.2.34.

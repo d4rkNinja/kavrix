@@ -7,6 +7,8 @@
  * usable in tests without a terminal or a TUI dependency.
  */
 
+import { unsafeKeyFileGuidance } from './key-file-guidance.js';
+
 const ANSI_ESCAPE = '\u001b';
 const ANSI_RESET = `${ANSI_ESCAPE}[0m`;
 const MAX_NON_SECRET_INPUT_LENGTH = 4_096;
@@ -742,10 +744,10 @@ function sanitizeStaticIdentifier(value: string): string {
 function destinationValidationMessage(error: unknown): string {
   if (error instanceof InitOnboardingDestinationError) {
     if (error.kind === 'unsafe-default-directory') {
-      return 'Kavrix could not safely use its protected default directory. The parent directory permissions or filesystem protections do not meet the fail-closed vault/key-file policy. Choose vault and key paths inside an existing private directory that only your account can modify.';
+      return `Kavrix could not safely use its protected default directory. ${unsafeKeyFileGuidance()}`;
     }
     if (error.kind === 'unsafe-key-file') {
-      return 'That portable-key path is not private enough. Choose a path inside a directory accessible only to your account, or press Enter to use Kavrix’s protected default.';
+      return `That portable-key path is not private enough. ${unsafeKeyFileGuidance()}`;
     }
     if (error.kind === 'invalid-database') {
       return 'That MongoDB database name is invalid. Use 1–63 letters, numbers, underscores, or hyphens.';

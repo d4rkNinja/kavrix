@@ -46,6 +46,7 @@ export interface OnboardingKey {
 }
 
 export interface OnboardingState {
+  readonly checkingDestination: boolean;
   readonly step: OnboardingStep;
   readonly storage: OnboardingStorage | null;
   readonly storageIndex: 0 | 1;
@@ -103,6 +104,7 @@ export function createInitialOnboardingState(
   }> = {},
 ): OnboardingState {
   return {
+    checkingDestination: false,
     step: 'welcome',
     storage: null,
     storageIndex: 0,
@@ -143,6 +145,17 @@ export function transitionOnboarding(
   }
 
   if (action.type === 'backend-result') {
+    if (state.checkingDestination) {
+      const ready = { ...state, checkingDestination: false };
+      return action.ok
+        ? commitInput(ready, true)
+        : unchanged({
+            ...ready,
+            message:
+              action.notice ??
+              'Choose a protected destination and press Enter to check again.',
+          });
+    }
     // The post-create session-enable round trip never fails setup: the vault
     // already exists, so any outcome lands on success with guidance.
     if (state.step === 'enable-session') {
@@ -193,6 +206,7 @@ function keyTransition(
   state: OnboardingState,
   key: OnboardingKey,
 ): OnboardingTransition {
+  if (state.checkingDestination) return unchanged(state);
   // Never abort mid-create — avoids partial profile corruption from Ctrl+C.
   if (state.step === 'creating') {
     return unchanged({
@@ -250,6 +264,17 @@ function keyTransition(
       return unchanged({ ...state, quit: true });
     }
     if (key.name === 'return' || key.text?.toLowerCase() === 'r') {
+      if (state.storage !== null && state.profileId !== null) {
+        return unchanged({
+          ...state,
+          step: state.storage === 'file' ? 'file-data-file' : 'mongo-key-file',
+          query:
+            state.storage === 'file' ? (state.dataFile ?? '') : (state.keyFile ?? ''),
+          error: null,
+          message:
+            'Review the destinations, then press Enter to check each one. Protected inputs must be entered again.',
+        });
+      }
       return unchanged({
         ...createInitialOnboardingState({
           width: state.width,
@@ -348,7 +373,10 @@ function keyTransition(
   return unchanged(state);
 }
 
-function commitInput(state: OnboardingState): OnboardingTransition {
+function commitInput(
+  state: OnboardingState,
+  destinationValidated = false,
+): OnboardingTransition {
   switch (state.step) {
     case 'file-profile-id': {
       const profileId = state.query.trim() || 'default';
@@ -381,11 +409,12 @@ function commitInput(state: OnboardingState): OnboardingTransition {
       if (pathError !== null) {
         return unchanged({ ...state, message: pathError });
       }
+      if (!destinationValidated) return checkDestination(state, dataFile);
       return unchanged({
         ...state,
         dataFile,
         step: 'file-key-file',
-        query: defaultFileProfilePaths(profileId).keyFile,
+        query: state.keyFile ?? defaultFileProfilePaths(profileId).keyFile,
         message: `Key file for '${profileId}' (Enter accepts default).`,
       });
     }
@@ -404,6 +433,7 @@ function commitInput(state: OnboardingState): OnboardingTransition {
       if (pathError !== null) {
         return unchanged({ ...state, message: pathError });
       }
+      if (!destinationValidated) return checkDestination(state, keyFile);
       return unchanged({
         ...state,
         keyFile,
@@ -498,7 +528,7 @@ function commitInput(state: OnboardingState): OnboardingTransition {
       return unchanged({
         ...state,
         step: 'file-recovery-file',
-        query: defaultRecoveryFilePath(profileId),
+        query: state.recoveryFile ?? defaultRecoveryFilePath(profileId),
         message: `Recovery kit path for '${profileId}' (Enter accepts secure ~/.kavrix default).`,
       });
     }
@@ -527,6 +557,7 @@ function commitInput(state: OnboardingState): OnboardingTransition {
       if (pathError !== null) {
         return unchanged({ ...state, message: pathError });
       }
+      if (!destinationValidated) return checkDestination(state, recoveryFile);
       return effect(
         {
           ...state,
@@ -602,6 +633,7 @@ function commitInput(state: OnboardingState): OnboardingTransition {
       if (pathError !== null) {
         return unchanged({ ...state, message: pathError });
       }
+      if (!destinationValidated) return checkDestination(state, keyFile);
       return unchanged({
         ...state,
         keyFile,
@@ -708,7 +740,7 @@ function commitInput(state: OnboardingState): OnboardingTransition {
       return unchanged({
         ...state,
         step: 'mongo-recovery-file',
-        query: defaultRecoveryFilePath(profileId),
+        query: state.recoveryFile ?? defaultRecoveryFilePath(profileId),
         message: `Recovery kit path for '${profileId}' (Enter accepts secure ~/.kavrix default).`,
       });
     }
@@ -739,6 +771,7 @@ function commitInput(state: OnboardingState): OnboardingTransition {
       if (pathError !== null) {
         return unchanged({ ...state, message: pathError });
       }
+      if (!destinationValidated) return checkDestination(state, recoveryFile);
       return effect(
         {
           ...state,
@@ -768,6 +801,18 @@ function commitInput(state: OnboardingState): OnboardingTransition {
     default:
       return unchanged(state);
   }
+}
+
+function checkDestination(state: OnboardingState, path: string): OnboardingTransition {
+  return effect(
+    {
+      ...state,
+      checkingDestination: true,
+      query: path,
+      message: 'Checking destination permissions before continuing…',
+    },
+    { kind: 'backend', action: { type: 'validate-profile-destination', path } },
+  );
 }
 
 function stepBack(state: OnboardingState): OnboardingTransition {

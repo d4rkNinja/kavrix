@@ -251,6 +251,10 @@ Use `kavrix init --no-tui` for classic line prompts, or stdin/explicit routing
 for scripts. Bare `kavrix` on a non-interactive stream keeps printing help. A
 walkthrough is embedded in the [Demo](#demo) section above.
 
+Version 0.2.35 checks setup destinations early on Windows, Linux, and macOS.
+Permission problems keep the destination editable with repair instructions and
+Enter to recheck. Both file and MongoDB storage require a protected local key.
+
 Version 0.2.34, **TUI refreshed**, adds compact session context, a next-step
 dashboard, clickable tabs/rows/action chips, wheel navigation, bounded lists,
 and Help topics. The workspace also paints full-screen and restores the terminal

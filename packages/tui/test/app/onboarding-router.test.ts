@@ -4,10 +4,176 @@ import {
   createInitialOnboardingState,
   describeOnboardingScreen,
   onboardingStepFocus,
-  transitionOnboarding,
+  transitionOnboarding as rawTransition,
   type OnboardingKey,
   type OnboardingState,
 } from '../../src/app/onboarding-router.js';
+
+// Existing wizard journeys use a successful host preflight. Permission failures
+// and the asynchronous boundary are exercised explicitly below.
+function transitionOnboarding(
+  state: OnboardingState,
+  action: Parameters<typeof rawTransition>[1],
+): ReturnType<typeof rawTransition> {
+  const next = rawTransition(state, action);
+  return next.state.checkingDestination
+    ? rawTransition(next.state, {
+        type: 'backend-result',
+        ok: true,
+        notice: null,
+        profileId: null,
+        datastore: null,
+      })
+    : next;
+}
+
+describe('destination correction before protected input', () => {
+  it.each(['file-recovery-file', 'mongo-recovery-file'] as const)(
+    'keeps %s editable and excludes protected inputs from the preflight action',
+    (step) => {
+      const state = {
+        ...createInitialOnboardingState(),
+        step,
+        profileId: 'default',
+        dataFile: '/private/data',
+        keyFile: '/private/key',
+        database: 'default',
+        databaseUrl: 'test-private-url',
+        passphrase: 'test-owner-passphrase',
+        recoveryPassphrase: 'test-recovery-passphrase',
+        query: '/private/recovery',
+      };
+      const checking = rawTransition(state, { type: 'key', key: { name: 'return' } });
+      expect(checking.effect).toEqual({
+        kind: 'backend',
+        action: { type: 'validate-profile-destination', path: '/private/recovery' },
+      });
+      const rejected = rawTransition(checking.state, {
+        type: 'backend-result',
+        ok: false,
+        notice: 'Choose a new filename.',
+        profileId: null,
+        datastore: null,
+      });
+      expect(rejected.state.step).toBe(step);
+      expect(rejected.effect.kind).toBe('none');
+      const retry = rawTransition(rejected.state, {
+        type: 'key',
+        key: { name: 'return' },
+      });
+      const accepted = rawTransition(retry.state, {
+        type: 'backend-result',
+        ok: true,
+        notice: null,
+        profileId: null,
+        datastore: null,
+      });
+      expect(accepted.state.step).toBe('creating');
+      expect(accepted.effect.kind).toBe('backend');
+      expect(accepted.state.passphrase).toBeNull();
+      expect(accepted.state.recoveryPassphrase).toBeNull();
+      expect(accepted.state.databaseUrl).toBe(
+        step === 'mongo-recovery-file' ? null : state.databaseUrl,
+      );
+    },
+  );
+  it.each(['file', 'mongodb'] as const)(
+    'returns a failed %s setup to destinations while retaining public choices and clearing secrets',
+    (storage) => {
+      const failed = rawTransition(
+        {
+          ...createInitialOnboardingState(),
+          step: 'creating',
+          storage,
+          profileId: 'chosen',
+          database: 'chosen-db',
+          dataFile: '/private/data',
+          keyFile: '/private/key',
+          recoveryFile: '/private/recovery',
+          passphrase: 'test-owner-input',
+          recoveryPassphrase: 'test-recovery-input',
+          databaseUrl: 'test-private-url',
+        },
+        {
+          type: 'backend-result',
+          ok: false,
+          notice: 'Repair folder permissions and retry.',
+          profileId: null,
+          datastore: null,
+        },
+      ).state;
+      const retry = rawTransition(failed, {
+        type: 'key',
+        key: { name: 'return' },
+      }).state;
+      expect(retry.step).toBe(storage === 'file' ? 'file-data-file' : 'mongo-key-file');
+      expect(retry.profileId).toBe('chosen');
+      expect(retry.database).toBe('chosen-db');
+      expect(retry.query).toBe(storage === 'file' ? '/private/data' : '/private/key');
+      expect(retry.recoveryFile).toBe('/private/recovery');
+      expect(retry.passphrase).toBeNull();
+      expect(retry.recoveryPassphrase).toBeNull();
+      expect(retry.databaseUrl).toBeNull();
+    },
+  );
+
+  it.each(['file-key-file', 'mongo-key-file', 'file-data-file'] as const)(
+    'keeps %s editable after unsafe permissions and advances only after a successful recheck',
+    (step) => {
+      const state = {
+        ...createInitialOnboardingState(),
+        step,
+        profileId: 'default',
+        dataFile: '/private/data',
+        database: 'default',
+        query: '/unsafe/key',
+      };
+      const checking = rawTransition(state, { type: 'key', key: { name: 'return' } });
+      expect(checking.effect).toEqual({
+        kind: 'backend',
+        action: { type: 'validate-profile-destination', path: '/unsafe/key' },
+      });
+      expect(checking.state.checkingDestination).toBe(true);
+      expect(
+        rawTransition(checking.state, { type: 'key', key: { name: 'return' } }).effect
+          .kind,
+      ).toBe('none');
+      const rejected = rawTransition(checking.state, {
+        type: 'backend-result',
+        ok: false,
+        notice:
+          'Choose a private folder. Edit the destination and press Enter to check again.',
+        profileId: null,
+        datastore: null,
+      });
+      expect(rejected.state.step).toBe(step);
+      expect(rejected.state.quit).toBe(false);
+      expect(rejected.state.query).toBe('/unsafe/key');
+      expect(rejected.state.message).toContain('private folder');
+      expect(rejected.state.passphrase).toBeNull();
+      expect(rejected.state.databaseUrl).toBeNull();
+      const retry = rawTransition(
+        { ...rejected.state, query: '/private/new-key' },
+        { type: 'key', key: { name: 'return' } },
+      );
+      const accepted = rawTransition(retry.state, {
+        type: 'backend-result',
+        ok: true,
+        notice: null,
+        profileId: null,
+        datastore: null,
+      });
+      expect(accepted.state.step).toBe(
+        step === 'file-data-file'
+          ? 'file-key-file'
+          : step === 'file-key-file'
+            ? 'file-passphrase'
+            : 'mongo-url',
+      );
+      expect(accepted.state.checkingDestination).toBe(false);
+    },
+  );
+});
 
 function press(state: OnboardingState, key: OnboardingKey): OnboardingState {
   return transitionOnboarding(state, { type: 'key', key }).state;

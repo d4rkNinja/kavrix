@@ -1,4 +1,6 @@
 import { existsSync } from 'node:fs';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { chmod, mkdir, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -7,6 +9,7 @@ import { databaseIdSchema, profileIdSchema, vaultIdSchema } from '@kavrix/schema
 import { afterEach, describe, expect, it } from 'vitest';
 
 import {
+  hardenExistingSecureDirectory,
   validateSecureFileDestination,
   verifyWindowsUserOnlyAcl,
 } from '@kavrix/key-files';
@@ -40,6 +43,118 @@ describe('CliTuiSession mutations (mocked spawn)', () => {
     await registry.use(profileIdSchema.parse('smoke'));
     return dir;
   }
+
+  it.each(['file', 'mongodb'] as const)(
+    'preflights %s recovery anchors before any profile mutation or command',
+    async (datastore) => {
+      const configDir = await setupProfile();
+      const artifactDir = await mkdtemp(join(tmpdir(), 'kavrix-create-preflight-'));
+      dirs.push(artifactDir);
+      const recoveryFile = join(artifactDir, 'new.recovery');
+      await writeFile(`${recoveryFile}.database-anchor`, 'public existing marker');
+      let commands = 0;
+      const backend = createCliTuiBackend({
+        profileConfigDir: configDir,
+        commandRunner: async () => {
+          commands += 1;
+          throw new Error('preflight must block all commands');
+        },
+      });
+      const fields = {
+        profileId: 'new-profile',
+        keyFile: join(artifactDir, 'new.key'),
+        passphrase: 'test-owner-passphrase',
+        recoveryFile,
+        recoveryPassphrase: 'test-recovery-passphrase',
+      };
+      const result = await backend.dispatch(
+        datastore === 'file'
+          ? {
+              ...fields,
+              type: 'create-file-profile',
+              dataFile: join(artifactDir, 'new.vault'),
+            }
+          : {
+              ...fields,
+              type: 'create-mongodb-profile',
+              database: 'testdb',
+              databaseUrl: 'mongodb://localhost:27017',
+            },
+      );
+      expect(result.snapshot.noticeTone).toBe('error');
+      expect(result.snapshot.notice).toMatch(/already exists|new filename/i);
+      expect(result.snapshot.home.profileId).toBe('smoke');
+      expect(result.snapshot.profiles.map((profile) => profile.id)).toEqual(['smoke']);
+      expect(commands).toBe(0);
+      expect(existsSync(fields.keyFile)).toBe(false);
+      expect(existsSync(recoveryFile)).toBe(false);
+    },
+  );
+
+  it('checks destinations without invoking commands and lets an existing filename be corrected', async () => {
+    const configDir = await setupProfile();
+    const artifactDir = await mkdtemp(join(tmpdir(), 'kavrix-destination-check-'));
+    dirs.push(artifactDir);
+    let commands = 0;
+    const backend = createCliTuiBackend({
+      profileConfigDir: configDir,
+      commandRunner: async () => {
+        commands += 1;
+        return '';
+      },
+    });
+    const existing = join(artifactDir, 'existing.key');
+    await writeFile(existing, 'public test marker');
+    const rejected = await backend.dispatch({
+      type: 'validate-profile-destination',
+      path: existing,
+    });
+    expect(rejected.snapshot.noticeTone).toBe('error');
+    expect(rejected.snapshot.notice).toMatch(/new filename|not be overwritten/i);
+    const accepted = await backend.dispatch({
+      type: 'validate-profile-destination',
+      path: join(artifactDir, 'new.key'),
+    });
+    expect(accepted.snapshot.noticeTone).toBe('success');
+    expect(commands).toBe(0);
+    expect(existsSync(join(artifactDir, 'new.key'))).toBe(false);
+  });
+
+  it('keeps an unsafe custom parent unchanged and accepts a repaired destination', async () => {
+    const configDir = await setupProfile();
+    const artifactDir = await mkdtemp(join(tmpdir(), 'kavrix-destination-unsafe-'));
+    dirs.push(artifactDir);
+    if (process.platform === 'win32') {
+      await promisify(execFile)(String.raw`C:\Windows\System32\icacls.exe`, [
+        artifactDir,
+        '/grant',
+        '*S-1-1-0:(M)',
+      ]);
+    } else {
+      await chmod(artifactDir, 0o777);
+    }
+    const backend = createCliTuiBackend({
+      profileConfigDir: configDir,
+      commandRunner: async () => {
+        throw new Error('preflight must not spawn');
+      },
+    });
+    const action = {
+      type: 'validate-profile-destination',
+      path: join(artifactDir, 'new.key'),
+    } as const;
+    const rejected = await backend.dispatch(action);
+    expect(rejected.snapshot.noticeTone).toBe('error');
+    expect(rejected.snapshot.notice).toMatch(/mode 700|private folder/i);
+    if (process.platform !== 'win32')
+      expect((await stat(artifactDir)).mode & 0o777).toBe(0o777);
+    else
+      await expect(validateSecureFileDestination(action.path)).rejects.toMatchObject({
+        code: 'KEY_FILE_UNSAFE',
+      });
+    await hardenExistingSecureDirectory(artifactDir);
+    expect((await backend.dispatch(action)).snapshot.noticeTone).toBe('success');
+  });
 
   it('persists the TUI theme selection in the kavrix artifact home', async () => {
     const configDir = await setupProfile();

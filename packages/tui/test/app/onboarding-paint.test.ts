@@ -11,10 +11,26 @@ import {
   createInitialOnboardingState,
   describeOnboardingScreen,
   onboardingStepFocus,
-  transitionOnboarding,
+  transitionOnboarding as rawTransition,
   type OnboardingKey,
   type OnboardingState,
 } from '../../src/app/onboarding-router.js';
+
+function transitionOnboarding(
+  state: OnboardingState,
+  action: Parameters<typeof rawTransition>[1],
+): ReturnType<typeof rawTransition> {
+  const next = rawTransition(state, action);
+  return next.state.checkingDestination
+    ? rawTransition(next.state, {
+        type: 'backend-result',
+        ok: true,
+        notice: null,
+        profileId: null,
+        datastore: null,
+      })
+    : next;
+}
 
 function press(state: OnboardingState, key: OnboardingKey): OnboardingState {
   return transitionOnboarding(state, { type: 'key', key }).state;
@@ -40,6 +56,14 @@ function reachFilePassphrase(): OnboardingState {
 }
 
 describe('init onboarding first paint and focus', () => {
+  it('does not let the showcase backend claim that filesystem permissions were verified', async () => {
+    const result = await createStaticAppBackend().dispatch({
+      type: 'validate-profile-destination',
+      path: '/private/new.key',
+    });
+    expect(result.snapshot.noticeTone).toBe('error');
+    expect(result.snapshot.notice).toContain('cannot verify filesystem permissions');
+  });
   it('paints welcome with an obvious ACTIVE step on tall terminals', () => {
     const state = createInitialOnboardingState({
       width: 120,

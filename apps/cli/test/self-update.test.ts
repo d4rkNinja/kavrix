@@ -80,8 +80,16 @@ describe('detectInstallKind', () => {
     );
     const distBin = join(packageRoot, 'dist', 'bin.js');
     await writeFile(distBin, '');
-    const binLink = join(prefix, 'bin', 'kavrix');
-    await symlink(distBin, binLink);
+    const linkPath = join(prefix, 'bin', 'kavrix');
+    // Windows directory junctions exercise realpath without requiring the
+    // machine-wide file-symlink privilege. POSIX keeps the real CLI symlink.
+    await symlink(
+      process.platform === 'win32' ? packageRoot : distBin,
+      linkPath,
+      process.platform === 'win32' ? 'junction' : 'file',
+    );
+    const binLink =
+      process.platform === 'win32' ? join(linkPath, 'dist', 'bin.js') : linkPath;
     return { prefix, packageRoot, distBin, binLink };
   }
 

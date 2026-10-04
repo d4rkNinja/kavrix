@@ -29,6 +29,15 @@ export function createStaticAppBackend(
     async dispatch(action: AppBackendAction): Promise<AppBackendResult> {
       await Promise.resolve();
       switch (action.type) {
+        case 'validate-profile-destination':
+          return {
+            snapshot: {
+              ...snapshot,
+              notice:
+                'The showcase backend cannot verify filesystem permissions. Use the CLI backend for setup.',
+              noticeTone: 'error',
+            },
+          };
         case 'set-theme':
           snapshot = {
             ...snapshot,

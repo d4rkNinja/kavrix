@@ -27,6 +27,7 @@
     "src/default-interactive.ts",
     "src/cli-error.ts",
     "src/cli-errors.ts",
+    "src/key-file-guidance.ts",
     "src/index.ts",
     "src/init-onboarding.ts",
     "src/init-tui-onboarding.ts",

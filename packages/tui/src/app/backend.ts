@@ -1,3 +1,4 @@
+import type { ProfileDestinationCheckAction } from '@kavrix/schemas';
 import type { AppScreenId } from './ids.js';
 
 export type AppTone = 'info' | 'success' | 'warning' | 'error' | 'muted';
@@ -86,6 +87,7 @@ export interface AppSnapshot {
 
 export type AppBackendAction =
   | Readonly<{ type: 'refresh' }>
+  | ProfileDestinationCheckAction
   | Readonly<{ type: 'use-profile'; profileId: string }>
   | Readonly<{
       type: 'create-file-profile';

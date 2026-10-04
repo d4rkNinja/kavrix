@@ -71,6 +71,10 @@ kavrix tui    # full app
 Use `kavrix init --no-tui` for classic line prompts, or stdin/explicit routing
 for scripts.
 
+Version 0.2.35 checks setup destinations early on Windows, Linux, and macOS.
+Permission problems keep the destination editable with repair instructions and
+Enter to recheck. Both file and MongoDB storage require a protected local key.
+
 Version 0.2.34, **TUI refreshed**, adds compact session context, clickable
 tabs/rows/action chips, wheel navigation, bounded lists, and Help topics, and
 paints the workspace full-screen. Mouse input requires a terminal with SGR

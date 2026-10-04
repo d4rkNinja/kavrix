@@ -137,6 +137,9 @@ export function KavrixOnboardingApp({
       stateRef.current = next.state;
       setState(next.state);
       setPaintEpoch((epoch) => epoch + 1);
+      if (next.effect.kind === 'backend') {
+        void runBackend(next.effect.action);
+      }
     } catch (error) {
       const notice =
         error instanceof Error && error.message.trim().length > 0
@@ -540,7 +543,7 @@ function renderOnboardingBody(state: OnboardingState, caret: boolean): ReactElem
       >
         <ErrorState
           title={state.error ?? 'Setup failed.'}
-          recovery="Enter/r retry · Esc/q quit"
+          recovery="Enter/r review destinations · Esc/q quit"
           color={color}
           ascii={ascii}
         />

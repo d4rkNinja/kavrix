@@ -45,6 +45,7 @@ export default defineConfig({
       'packages/key-files/test/filesystem-coverage.test.ts',
       'packages/key-files/test/filesystem-windows-acl.test.ts',
       'packages/key-files/test/windows-acl.test.ts',
+      'packages/key-files/test/windows-directory-acl.test.ts',
       'packages/storage/test/file-local-vault.test.ts',
       'packages/storage/test/file-encrypted-database.test.ts',
       'packages/storage/test/stale-lock-recovery.test.ts',
