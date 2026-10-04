@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
@@ -25,7 +25,7 @@ describe.runIf(process.platform === 'win32')(
         await expect(verifyWindowsDirectoryAcl(directory)).resolves.toBeUndefined();
         await expect(
           ensureSecureDirectory(join(directory, 'protected-child')),
-        ).resolves.toBe(join(directory, 'protected-child'));
+        ).resolves.toBe(join(await realpath(directory), 'protected-child'));
         await execFileAsync(icacls, [directory, '/grant', '*S-1-1-0:(M)']);
         await expect(verifyWindowsDirectoryAcl(directory)).rejects.toMatchObject({
           code: 'KEY_FILE_UNSAFE',
