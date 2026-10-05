@@ -55,6 +55,8 @@ export default defineConfig({
       'packages/storage/test/mongo-encrypted-database.integration.test.ts',
       'packages/storage/test/mongo-local-vault.test.ts',
       'packages/storage/test/mongo-local-vault-uri.test.ts',
+      'packages/storage/test/mongo-connection-probe.test.ts',
+      'packages/storage/test/mongo-connection-probe.integration.test.ts',
       'packages/storage/test/mongo-collaboration.test.ts',
       'packages/tui/test/**/*.test.ts',
     ],

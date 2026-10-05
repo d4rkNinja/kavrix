@@ -1,4 +1,5 @@
 import { render, useApp, useInput, usePaste, useStdout } from 'ink';
+import { setupProgressSchema, setupToolResultSchema } from '@kavrix/schemas';
 import { useCallback, useEffect, useRef, useState, type ReactElement } from 'react';
 
 import { SplashGate } from '../splash-gate.js';
@@ -112,13 +113,26 @@ export function KavrixOnboardingApp({
 
   const runBackend = useCallback(async (action: AppBackendAction): Promise<void> => {
     try {
-      const result = await backendRef.current.dispatch(action);
+      const result = await backendRef.current.dispatch(action, (progress) => {
+        if (finishedRef.current) return;
+        const parsed = setupProgressSchema.safeParse(progress);
+        if (!parsed.success) return;
+        const next = transitionOnboarding(stateRef.current, {
+          type: 'progress',
+          progress: parsed.data,
+        });
+        stateRef.current = next.state;
+        setState(next.state);
+      });
       if (finishedRef.current) return;
       const ok = result.snapshot.noticeTone === 'success';
       const next = transitionOnboarding(stateRef.current, {
         type: 'backend-result',
         ok,
         notice: result.snapshot.notice,
+        ...(result.setup === undefined
+          ? {}
+          : { setup: setupToolResultSchema.parse(result.setup) }),
         profileId: result.snapshot.home.profileId,
         datastore:
           result.snapshot.home.datastore === 'mongodb'
@@ -134,12 +148,9 @@ export function KavrixOnboardingApp({
       if (next.effect.kind === 'backend') {
         void runBackend(next.effect.action);
       }
-    } catch (error) {
+    } catch {
       if (finishedRef.current) return;
-      const notice =
-        error instanceof Error && error.message.trim().length > 0
-          ? error.message
-          : 'Operation failed safely.';
+      const notice = 'Operation failed safely. Review your settings and retry.';
       const next = transitionOnboarding(stateRef.current, {
         type: 'backend-result',
         ok: false,
@@ -191,6 +202,28 @@ export function KavrixOnboardingApp({
       finishedRef.current = true;
     };
   }, []);
+
+  const busy =
+    state.checkingDestination ||
+    state.pendingTool !== null ||
+    state.step === 'creating' ||
+    state.sessionAttempt;
+  useEffect(() => {
+    if (!busy) return;
+    const started = Date.now();
+    const timer = setInterval(() => {
+      if (finishedRef.current) return;
+      const next = transitionOnboarding(stateRef.current, {
+        type: 'elapsed',
+        seconds: (Date.now() - started) / 1000,
+      });
+      stateRef.current = next.state;
+      setState(next.state);
+    }, 1000);
+    return () => {
+      clearInterval(timer);
+    };
+  }, [busy, state.pendingTool, state.step]);
 
   useEffect(() => {
     // Kick Ink's first paint immediately; some TTYs stay blank until a second frame.
@@ -261,10 +294,12 @@ export function KavrixOnboardingApp({
         press: dispatchKey,
         enabled:
           !state.checkingDestination &&
+          state.pendingTool === null &&
           state.step !== 'creating' &&
           !state.sessionAttempt,
         busy:
           state.checkingDestination ||
+          state.pendingTool !== null ||
           state.step === 'creating' ||
           state.sessionAttempt,
         mouse,
@@ -416,6 +451,9 @@ function mapInkInput(
     return: boolean;
     escape: boolean;
     backspace: boolean;
+    home: boolean;
+    end: boolean;
+    delete: boolean;
     ctrl: boolean;
     shift: boolean;
   }>,
@@ -431,6 +469,9 @@ function mapInkInput(
   if (key.return) return { name: 'return' };
   if (key.escape) return { name: 'escape' };
   if (key.backspace) return { name: 'backspace' };
+  if (key.home) return { name: 'home' };
+  if (key.end) return { name: 'end' };
+  if (key.delete) return { name: 'delete' };
   if (input.length === 0) return null;
   return { text: input, ctrl: key.ctrl };
 }

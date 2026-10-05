@@ -1,9 +1,10 @@
-﻿import { readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { executeAgentRun } from '../src/execution/agent-command.js';
+import { AuthorizationState } from '../src/execution/authorization-state.js';
 import {
   createExecutionFixture,
   destroyFixture,
@@ -23,6 +24,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   await destroyFixture(fixture);
 });
 
@@ -45,16 +47,19 @@ interface AgentObservation {
   readonly failing?: { readonly frames: RecordedFrame[] };
 }
 
-function agentScript(observationFile: string): string {
+function agentScript(observationFile: string, auditMarkers: string): string {
   return [
     'const net = require("node:net");',
     'const fs = require("node:fs");',
+    'const path = require("node:path");',
     `const observationFile = ${JSON.stringify(observationFile)};`,
+    `const auditMarkers = ${JSON.stringify(auditMarkers)};`,
+    'let completedRequests = 0;',
     'const token = process.env.KAVRIX_AGENT_TOKEN ?? "";',
     'const endpoint = process.env.KAVRIX_AGENT_BROKER ?? "";',
     'if (!token || !endpoint) { fs.writeFileSync(observationFile, JSON.stringify({error:"missing-broker-env"})); process.exit(1); }',
-    'function request(permission, argv, overrideToken) {',
-    '  return new Promise((resolve) => {',
+    'async function request(permission, argv, overrideToken) {',
+    '  const result = await new Promise((resolve) => {',
     '    const socket = net.connect(endpoint, () => {',
     '      socket.write(JSON.stringify({ v: 1, token: overrideToken ?? token, op: "exec", permission, argv }) + "\\n");',
     '    });',
@@ -77,6 +82,15 @@ function agentScript(observationFile: string): string {
     '    socket.on("close", () => resolve({ frames, closedWithoutExit: true }));',
     '    socket.on("error", (error) => resolve({ frames, error: String(error) }));',
     '  });',
+    '  if (result.frames.some((frame) => frame.event === "decision")) {',
+    '    const marker = path.join(auditMarkers, String(++completedRequests));',
+    '    const deadline = Date.now() + 60000;',
+    '    while (!fs.existsSync(marker)) {',
+    '      if (Date.now() >= deadline) throw new Error("Audit completion was not observed.");',
+    '      await new Promise((resolve) => setTimeout(resolve, 25));',
+    '    }',
+    '  }',
+    '  return result;',
     '}',
     '(async () => {',
     `  const innerScript = 'const big = "x".repeat(700*1024); const nl = String.fromCharCode(10); process.stdout.write("LEAKED:" + (process.env.GITHUB_TOKEN ?? "") + nl); process.stdout.write(big + nl); process.exitCode = 3;';`,
@@ -145,6 +159,23 @@ describe('kavrix agent firewall', () => {
     );
 
     const observationFile = join(fixture.directory, 'observation.json');
+    const auditMarkers = join(fixture.directory, 'audit-completed');
+    await mkdir(auditMarkers, { mode: 0o700 });
+    let completedAudits = 0;
+    const persistAudit = AuthorizationState.prototype.recordEvent;
+    // Terminal frames precede persisted audit completion. Observe real writes
+    // before the next sequential request instead of racing the busy limit.
+    vi.spyOn(AuthorizationState.prototype, 'recordEvent').mockImplementation(
+      async function (this: AuthorizationState, event) {
+        const result = await persistAudit.call(this, event);
+        if (
+          event.actor === 'agent' &&
+          ['execution-completed', 'authorization-denied'].includes(event.action)
+        )
+          await mkdir(join(auditMarkers, String(++completedAudits)), { mode: 0o700 });
+        return result;
+      },
+    );
     const originalExit = process.exitCode;
 
     const summary = (await withStdinFrames(passphraseFrame(), () =>
@@ -157,7 +188,11 @@ describe('kavrix agent firewall', () => {
         passphraseStdin: true,
         agentName: 'bot',
         config: configFile,
-        executableAndArgs: [process.execPath, '-e', agentScript(observationFile)],
+        executableAndArgs: [
+          process.execPath,
+          '-e',
+          agentScript(observationFile, auditMarkers),
+        ],
       }),
     )) as {
       ran: boolean;

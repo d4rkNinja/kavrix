@@ -1,4 +1,10 @@
-import { profileIdSchema } from '@kavrix/schemas';
+import {
+  profileIdSchema,
+  type SetupToolAction,
+  type SetupToolResult,
+  type SetupProgress,
+} from '@kavrix/schemas';
+import { basename, dirname, join } from 'node:path';
 
 import type { AppBackendAction } from './backend.js';
 import {
@@ -33,6 +39,7 @@ export type OnboardingStep =
   | 'mongo-recovery-passphrase'
   | 'mongo-recovery-passphrase-confirm'
   | 'mongo-recovery-file'
+  | 'review'
   | 'creating'
   | 'enable-session'
   | 'success'
@@ -41,6 +48,15 @@ export type OnboardingStep =
 export type OnboardingKey = Pick<AppKey, 'name' | 'text' | 'ctrl'>;
 
 export interface OnboardingState {
+  readonly cursor: number | null;
+  readonly editingReview: boolean;
+  readonly pendingTool: SetupToolAction['type'] | null;
+  readonly toolView: SetupToolResult | null;
+  readonly folderIndex: number;
+  readonly progress: SetupProgress | null;
+  readonly elapsedSeconds: number;
+  readonly connectionVerified: boolean;
+  readonly destinationRejected: boolean;
   readonly checkingDestination: boolean;
   readonly step: OnboardingStep;
   readonly storage: OnboardingStorage | null;
@@ -78,6 +94,8 @@ export interface OnboardingTransition {
 }
 
 export type OnboardingAction =
+  | Readonly<{ type: 'progress'; progress: SetupProgress }>
+  | Readonly<{ type: 'elapsed'; seconds: number }>
   | Readonly<{ type: 'resize'; width: number; height: number }>
   | Readonly<{ type: 'key'; key: OnboardingKey }>
   | Readonly<{
@@ -86,6 +104,7 @@ export type OnboardingAction =
       notice: string | null;
       profileId: string | null;
       datastore: OnboardingStorage | null;
+      setup?: SetupToolResult;
     }>;
 
 const STORAGE_OPTIONS: readonly OnboardingStorage[] = ['file', 'mongodb'];
@@ -99,6 +118,15 @@ export function createInitialOnboardingState(
   }> = {},
 ): OnboardingState {
   return {
+    cursor: null,
+    editingReview: false,
+    pendingTool: null,
+    toolView: null,
+    folderIndex: 0,
+    progress: null,
+    elapsedSeconds: 0,
+    connectionVerified: false,
+    destinationRejected: false,
     checkingDestination: false,
     step: 'welcome',
     storage: null,
@@ -131,6 +159,33 @@ export function transitionOnboarding(
   state: OnboardingState,
   action: OnboardingAction,
 ): OnboardingTransition {
+  const next = transitionOnboardingState(state, action);
+  return next.state.step === state.step
+    ? next
+    : {
+        ...next,
+        state: {
+          ...next.state,
+          cursor: null,
+          toolView: null,
+          destinationRejected: false,
+          connectionVerified:
+            next.state.step === 'mongo-url' ? false : next.state.connectionVerified,
+        },
+      };
+}
+
+function transitionOnboardingState(
+  state: OnboardingState,
+  action: OnboardingAction,
+): OnboardingTransition {
+  if (action.type === 'progress')
+    return unchanged({ ...state, progress: action.progress });
+  if (action.type === 'elapsed')
+    return unchanged({
+      ...state,
+      elapsedSeconds: Math.max(0, Math.floor(action.seconds)),
+    });
   if (action.type === 'resize') {
     return unchanged({
       ...state,
@@ -140,8 +195,50 @@ export function transitionOnboarding(
   }
 
   if (action.type === 'backend-result') {
+    if (state.pendingTool !== null) {
+      const ready = { ...state, pendingTool: null };
+      const setup = action.setup;
+      const expectedKind =
+        state.pendingTool === 'test-setup-mongodb'
+          ? 'connection'
+          : state.pendingTool === 'repair-setup-directory'
+            ? 'repair'
+            : 'folders';
+      if (setup !== undefined && setup.kind !== expectedKind)
+        return unchanged({
+          ...ready,
+          toolView: null,
+          connectionVerified: false,
+          message: 'Tool returned an unexpected result. Review the settings and retry.',
+        });
+      if (setup?.kind === 'connection')
+        return unchanged({
+          ...ready,
+          connectionVerified: action.ok && setup.status === 'ok',
+          message: action.notice,
+        });
+      if (action.ok && setup !== undefined)
+        return unchanged({
+          ...ready,
+          toolView: setup.kind === 'repair' && setup.mode === 'apply' ? null : setup,
+          folderIndex: 0,
+          message: action.notice,
+          destinationRejected: false,
+        });
+      return unchanged({
+        ...ready,
+        toolView: null,
+        message:
+          action.notice ??
+          'Tool could not complete. Edit the path or choose a secure default.',
+      });
+    }
     if (state.checkingDestination) {
-      const ready = { ...state, checkingDestination: false };
+      const ready = {
+        ...state,
+        checkingDestination: false,
+        destinationRejected: !action.ok,
+      };
       return action.ok
         ? commitInput(ready, true)
         : unchanged({
@@ -201,7 +298,8 @@ function keyTransition(
   state: OnboardingState,
   key: OnboardingKey,
 ): OnboardingTransition {
-  if (state.checkingDestination || state.sessionAttempt) return unchanged(state);
+  if (state.checkingDestination || state.sessionAttempt || state.pendingTool !== null)
+    return unchanged(state);
   // Never abort mid-create — avoids partial profile corruption from Ctrl+C.
   if (state.step === 'creating') {
     return unchanged({
@@ -215,6 +313,58 @@ function keyTransition(
       ...state,
       quit: true,
       message: 'Setup cancelled.',
+    });
+  }
+  if (state.toolView?.kind === 'folders') return folderKey(state, key);
+  if (state.toolView?.kind === 'repair') {
+    if (key.name === 'escape') return unchanged({ ...state, toolView: null });
+    if (key.name === 'return')
+      return setupTool(state, {
+        type: 'repair-setup-directory',
+        path: state.query || defaultPathForStep(state),
+        mode: 'apply',
+      });
+    return unchanged(state);
+  }
+  if (state.step === 'review') return reviewKey(state, key);
+  if (isPathStep(state.step) && key.ctrl) {
+    if (key.text === 'd')
+      return unchanged({
+        ...state,
+        query: defaultPathForStep(state),
+        cursor: null,
+        destinationRejected: false,
+      });
+    if (key.text === 'r')
+      return setupTool(state, {
+        type: 'repair-setup-directory',
+        path: state.query || defaultPathForStep(state),
+        mode: 'preview',
+      });
+    if (key.text === 'b') {
+      const defaultPath = defaultPathForStep(state);
+      const selectedPath = state.query || defaultPath;
+      return setupTool(state, {
+        type: 'browse-setup-folders',
+        // Home exists on a fresh installation; the default artifact directory
+        // is created only when its destination is explicitly validated.
+        path:
+          selectedPath === defaultPath
+            ? dirname(dirname(defaultPath))
+            : dirname(selectedPath),
+      });
+    }
+  }
+  if (state.step === 'mongo-url' && key.ctrl && key.text === 't') {
+    if (!state.query.trim())
+      return unchanged({
+        ...state,
+        message: 'Enter the MongoDB address before testing.',
+      });
+    return setupTool(state, {
+      type: 'test-setup-mongodb',
+      databaseUrl: state.query.trim(),
+      database: state.database ?? 'default',
     });
   }
 
@@ -352,12 +502,32 @@ function keyTransition(
   }
 
   if (isInputStep(state.step)) {
+    if (state.editingReview && key.name === 'escape')
+      return unchanged({ ...state, step: 'review', query: '', editingReview: false });
     if (key.name === 'escape') {
       return stepBack(state);
     }
     if (key.name === 'backspace') {
-      return unchanged({ ...state, query: removeLast(state.query) });
+      return editInput(state, 'backspace');
     }
+    if (key.name === 'delete') return editInput(state, 'delete');
+    if (
+      key.name === 'left' ||
+      key.name === 'right' ||
+      key.name === 'home' ||
+      key.name === 'end'
+    )
+      return editInput(state, key.name);
+    if (key.ctrl && key.text === 'a') return editInput(state, 'home');
+    if (key.ctrl && key.text === 'e') return editInput(state, 'end');
+    if (key.ctrl && key.text === 'u')
+      return unchanged({
+        ...state,
+        query: '',
+        cursor: null,
+        connectionVerified: false,
+      });
+    if (key.ctrl) return unchanged(state);
     if (key.name === 'return') {
       return commitInput(state);
     }
@@ -372,6 +542,7 @@ function commitInput(
   state: OnboardingState,
   destinationValidated = false,
 ): OnboardingTransition {
+  if (state.editingReview) return commitReviewEdit(state, destinationValidated);
   switch (state.step) {
     case 'file-profile-id': {
       const profileId = state.query.trim() || 'default';
@@ -553,29 +724,14 @@ function commitInput(
         return unchanged({ ...state, message: pathError });
       }
       if (!destinationValidated) return checkDestination(state, recoveryFile);
-      return effect(
-        {
-          ...state,
-          recoveryFile,
-          step: 'creating',
-          query: '',
-          passphrase: null,
-          recoveryPassphrase: null,
-          message: `Creating file profile '${profileId}' and recovery kit…`,
-        },
-        {
-          kind: 'backend',
-          action: {
-            type: 'create-file-profile',
-            profileId,
-            dataFile,
-            keyFile,
-            passphrase,
-            recoveryFile,
-            recoveryPassphrase,
-          },
-        },
-      );
+      return unchanged({
+        ...state,
+        recoveryFile,
+        step: 'review',
+        query: '',
+        message:
+          'Review the public settings. Enter creates; choose an Edit control to change a setting. Protected values stay hidden.',
+      });
     }
     case 'mongo-profile-id': {
       const profileId = state.query.trim() || 'default';
@@ -641,6 +797,12 @@ function commitInput(
       if (state.query.trim().length === 0) {
         return unchanged({ ...state, message: 'MongoDB URL cannot be empty.' });
       }
+      if (!state.connectionVerified)
+        return setupTool(state, {
+          type: 'test-setup-mongodb',
+          databaseUrl: state.query.trim(),
+          database: state.database ?? 'default',
+        });
       return unchanged({
         ...state,
         databaseUrl: state.query.trim(),
@@ -767,31 +929,14 @@ function commitInput(
         return unchanged({ ...state, message: pathError });
       }
       if (!destinationValidated) return checkDestination(state, recoveryFile);
-      return effect(
-        {
-          ...state,
-          recoveryFile,
-          step: 'creating',
-          query: '',
-          passphrase: null,
-          recoveryPassphrase: null,
-          databaseUrl: null,
-          message: `Creating MongoDB profile '${profileId}' and recovery kit…`,
-        },
-        {
-          kind: 'backend',
-          action: {
-            type: 'create-mongodb-profile',
-            profileId,
-            database,
-            keyFile,
-            databaseUrl,
-            passphrase,
-            recoveryFile,
-            recoveryPassphrase,
-          },
-        },
-      );
+      return unchanged({
+        ...state,
+        recoveryFile,
+        step: 'review',
+        query: '',
+        message:
+          'Review the public settings. Enter creates; choose an Edit control to change a setting. Protected values stay hidden.',
+      });
     }
     default:
       return unchanged(state);
@@ -807,6 +952,253 @@ function checkDestination(state: OnboardingState, path: string): OnboardingTrans
       message: 'Checking destination permissions before continuing…',
     },
     { kind: 'backend', action: { type: 'validate-profile-destination', path } },
+  );
+}
+
+export function isPathStep(step: OnboardingStep): boolean {
+  return [
+    'file-data-file',
+    'file-key-file',
+    'mongo-key-file',
+    'file-recovery-file',
+    'mongo-recovery-file',
+  ].includes(step);
+}
+
+function defaultPathForStep(state: OnboardingState): string {
+  const id = state.profileId ?? 'default';
+  if (state.step.endsWith('recovery-file')) return defaultRecoveryFilePath(id);
+  if (state.step === 'file-data-file') return defaultFileProfilePaths(id).dataFile;
+  return defaultFileProfilePaths(id).keyFile;
+}
+
+function setupTool(
+  state: OnboardingState,
+  action: SetupToolAction,
+): OnboardingTransition {
+  return effect(
+    {
+      ...state,
+      pendingTool: action.type,
+      elapsedSeconds: 0,
+      message:
+        action.type === 'test-setup-mongodb'
+          ? 'Testing MongoDB connection without creating vault records…'
+          : action.type === 'repair-setup-directory'
+            ? 'Checking the Kavrix repair target…'
+            : 'Reading folder names only…',
+    },
+    { kind: 'backend', action },
+  );
+}
+
+function folderKey(state: OnboardingState, key: OnboardingKey): OnboardingTransition {
+  const view = state.toolView;
+  if (view?.kind !== 'folders') return unchanged(state);
+  if (key.name === 'escape') return unchanged({ ...state, toolView: null });
+  if (key.ctrl && key.text === 's')
+    return unchanged({
+      ...state,
+      query: join(view.directory, basename(state.query || defaultPathForStep(state))),
+      cursor: null,
+      toolView: null,
+      destinationRejected: false,
+      message:
+        'Folder selected. Review the filename, then Enter checks its permissions.',
+    });
+  if (key.name === 'backspace' || (key.ctrl && key.text === 'p'))
+    return setupTool(state, { type: 'browse-setup-folders', path: view.parent });
+  if (key.name === 'up' || key.name === 'down')
+    return unchanged({
+      ...state,
+      folderIndex: Math.max(
+        0,
+        Math.min(
+          view.entries.length - 1,
+          state.folderIndex + (key.name === 'up' ? -1 : 1),
+        ),
+      ),
+    });
+  if (key.name === 'return') {
+    const entry = view.entries[state.folderIndex];
+    return entry === undefined
+      ? unchanged(state)
+      : setupTool(state, { type: 'browse-setup-folders', path: entry.path });
+  }
+  if (key.text !== undefined && /^\d+$/u.test(key.text)) {
+    const index = Number(key.text);
+    if (view.entries[index] !== undefined)
+      return unchanged({ ...state, folderIndex: index });
+  }
+  return unchanged(state);
+}
+
+function editInput(
+  state: OnboardingState,
+  operation: 'left' | 'right' | 'home' | 'end' | 'delete' | 'backspace',
+): OnboardingTransition {
+  const glyphs = Array.from(state.query);
+  let cursor = Math.min(glyphs.length, state.cursor ?? glyphs.length);
+  if (operation === 'left') cursor = Math.max(0, cursor - 1);
+  if (operation === 'right') cursor = Math.min(glyphs.length, cursor + 1);
+  if (operation === 'home') cursor = 0;
+  if (operation === 'end') cursor = glyphs.length;
+  if (operation === 'backspace' && cursor > 0) {
+    glyphs.splice(--cursor, 1);
+  }
+  if (operation === 'delete') glyphs.splice(cursor, 1);
+  return unchanged({
+    ...state,
+    query: glyphs.join(''),
+    cursor,
+    connectionVerified:
+      state.step === 'mongo-url' && ['delete', 'backspace'].includes(operation)
+        ? false
+        : state.connectionVerified,
+  });
+}
+
+function reviewKey(state: OnboardingState, key: OnboardingKey): OnboardingTransition {
+  if (key.name === 'up' || key.name === 'down')
+    return unchanged({
+      ...state,
+      folderIndex: Math.max(
+        0,
+        Math.min(4, state.folderIndex + (key.name === 'down' ? 1 : -1)),
+      ),
+    });
+  if (key.name === 'return') return createReviewedProfile(state);
+  if (key.name === 'escape')
+    return unchanged({
+      ...state,
+      step: state.storage === 'file' ? 'file-recovery-file' : 'mongo-recovery-file',
+      query: state.recoveryFile ?? '',
+    });
+  const edits =
+    state.storage === 'file'
+      ? [
+          { step: 'file-profile-id' as const, value: state.profileId },
+          { step: 'file-data-file' as const, value: state.dataFile },
+          { step: 'file-key-file' as const, value: state.keyFile },
+          { step: 'file-recovery-file' as const, value: state.recoveryFile },
+        ]
+      : [
+          { step: 'mongo-profile-id' as const, value: state.profileId },
+          { step: 'mongo-database' as const, value: state.database },
+          { step: 'mongo-key-file' as const, value: state.keyFile },
+          { step: 'mongo-recovery-file' as const, value: state.recoveryFile },
+        ];
+  const edit = key.text === undefined ? undefined : edits[Number(key.text) - 1];
+  return edit === undefined
+    ? unchanged(state)
+    : unchanged({
+        ...state,
+        step: edit.step,
+        query: edit.value ?? '',
+        editingReview: true,
+        message:
+          'Edit this public setting. Enter validates and returns to review; Escape discards this edit.',
+      });
+}
+
+function commitReviewEdit(
+  state: OnboardingState,
+  validated: boolean,
+): OnboardingTransition {
+  const value = state.query.trim();
+  if (isPathStep(state.step)) {
+    if (validatePathInput(value, 'Destination') !== null)
+      return unchanged({ ...state, message: 'Destination path is invalid.' });
+    if (!validated) return checkDestination(state, value);
+  } else if (state.step.endsWith('profile-id')) {
+    const error = validateProfileId(value);
+    if (error !== null) return unchanged({ ...state, message: error });
+  } else if (!value || value.length > 128 || /[/\\. "$\0]/u.test(value))
+    return unchanged({ ...state, message: 'Database name is invalid.' });
+  const patch = state.step.endsWith('profile-id')
+    ? { profileId: value }
+    : state.step === 'file-data-file'
+      ? { dataFile: value }
+      : state.step.endsWith('key-file')
+        ? { keyFile: value }
+        : state.step.endsWith('recovery-file')
+          ? { recoveryFile: value }
+          : { database: value, connectionVerified: false };
+  return unchanged({
+    ...state,
+    ...patch,
+    step: 'review',
+    query: '',
+    editingReview: false,
+    message: 'Setting updated. Review before creating.',
+  });
+}
+
+function createReviewedProfile(state: OnboardingState): OnboardingTransition {
+  const {
+    profileId,
+    dataFile,
+    keyFile,
+    database,
+    databaseUrl,
+    passphrase,
+    recoveryFile,
+    recoveryPassphrase,
+  } = state;
+  if (
+    profileId === null ||
+    keyFile === null ||
+    passphrase === null ||
+    recoveryFile === null ||
+    recoveryPassphrase === null ||
+    state.storage === null ||
+    (state.storage === 'file' && dataFile === null) ||
+    (state.storage === 'mongodb' && (database === null || databaseUrl === null))
+  )
+    return unchanged({
+      ...state,
+      message: 'Setup is incomplete. Go back and enter the required settings.',
+    });
+  if (state.storage === 'mongodb' && !state.connectionVerified)
+    return setupTool(state, {
+      type: 'test-setup-mongodb',
+      databaseUrl: databaseUrl ?? '',
+      database: database ?? '',
+    });
+  const action: AppBackendAction =
+    state.storage === 'file'
+      ? {
+          type: 'create-file-profile',
+          profileId,
+          dataFile: dataFile ?? '',
+          keyFile,
+          passphrase,
+          recoveryFile,
+          recoveryPassphrase,
+        }
+      : {
+          type: 'create-mongodb-profile',
+          profileId,
+          database: database ?? '',
+          keyFile,
+          databaseUrl: databaseUrl ?? '',
+          passphrase,
+          recoveryFile,
+          recoveryPassphrase,
+        };
+  return effect(
+    {
+      ...state,
+      step: 'creating',
+      query: '',
+      passphrase: null,
+      recoveryPassphrase: null,
+      databaseUrl: null,
+      elapsedSeconds: 0,
+      progress: { stage: 'checking-permissions' },
+      message: 'Creating encrypted storage. Please wait until the operation completes.',
+    },
+    { kind: 'backend', action },
   );
 }
 
@@ -1023,18 +1415,24 @@ function appendText(
   const chunk =
     text.length > 1 ? sanitizePasteText(text) : isPrintable(text) ? text : '';
   if (chunk.length === 0) return unchanged(state);
+  const glyphs = Array.from(state.query);
+  const cursor = Math.min(glyphs.length, state.cursor ?? glyphs.length);
+  let inserted = '';
+  for (const glyph of Array.from(chunk)) {
+    if (state.query.length + inserted.length + glyph.length > limit) break;
+    inserted += glyph;
+  }
+  const input = Array.from(inserted);
   return unchanged({
     ...state,
-    query: `${state.query}${chunk}`.slice(0, limit),
+    query: [...glyphs.slice(0, cursor), ...input, ...glyphs.slice(cursor)].join(''),
+    cursor: cursor + input.length,
+    connectionVerified: state.step === 'mongo-url' ? false : state.connectionVerified,
   });
 }
 
 function isPrintable(value: string | undefined): value is string {
   return typeof value === 'string' && value.length === 1 && !/\p{C}/u.test(value);
-}
-
-function removeLast(value: string): string {
-  return Array.from(value).slice(0, -1).join('');
 }
 
 function unchanged(state: OnboardingState): OnboardingTransition {
@@ -1059,6 +1457,7 @@ const FILE_FOCUS_STEPS: readonly OnboardingStep[] = [
   'file-recovery-passphrase',
   'file-recovery-passphrase-confirm',
   'file-recovery-file',
+  'review',
   'creating',
   'enable-session',
   'success',
@@ -1076,6 +1475,7 @@ const MONGO_FOCUS_STEPS: readonly OnboardingStep[] = [
   'mongo-recovery-passphrase',
   'mongo-recovery-passphrase-confirm',
   'mongo-recovery-file',
+  'review',
   'creating',
   'enable-session',
   'success',
@@ -1084,20 +1484,26 @@ const MONGO_FOCUS_STEPS: readonly OnboardingStep[] = [
 /** Active onboarding step for operators: index, title, and type-here cue. */
 export function onboardingStepFocus(
   step: OnboardingStep,
+  storage?: OnboardingStorage | null,
 ): Readonly<{ index: number; total: number; title: string; cue: string }> {
-  const chain = step.startsWith('mongo') ? MONGO_FOCUS_STEPS : FILE_FOCUS_STEPS;
+  const chain =
+    step.startsWith('mongo') || storage === 'mongodb'
+      ? MONGO_FOCUS_STEPS
+      : FILE_FOCUS_STEPS;
   const index = Math.max(0, chain.indexOf(step));
   const title = onboardingFocusTitle(step);
   const cue =
-    step === 'creating'
-      ? 'PLEASE WAIT — do not type'
-      : step === 'error' || step === 'success'
-        ? 'THIS STEP IS ACTIVE'
-        : step.includes('passphrase') || step === 'mongo-url'
-          ? 'TYPE HERE (masked)'
-          : step === 'storage' || step === 'welcome'
-            ? 'THIS STEP IS ACTIVE'
-            : 'TYPE HERE';
+    step === 'review'
+      ? 'REVIEW SETTINGS - ENTER CREATES'
+      : step === 'creating'
+        ? 'PLEASE WAIT — do not type'
+        : step === 'error' || step === 'success'
+          ? 'THIS STEP IS ACTIVE'
+          : step.includes('passphrase') || step === 'mongo-url'
+            ? 'TYPE HERE (masked)'
+            : step === 'storage' || step === 'welcome'
+              ? 'THIS STEP IS ACTIVE'
+              : 'TYPE HERE';
   return {
     index: step === 'error' ? chain.length : index + 1,
     total: chain.length,
@@ -1139,6 +1545,8 @@ function onboardingFocusTitle(step: OnboardingStep): string {
     case 'file-recovery-file':
     case 'mongo-recovery-file':
       return 'Recovery kit path';
+    case 'review':
+      return 'Review setup';
     case 'creating':
       return 'Creating vault';
     case 'enable-session':
@@ -1154,7 +1562,7 @@ function onboardingFocusTitle(step: OnboardingStep): string {
 
 /** Presentational snapshot for deterministic tests. */
 export function describeOnboardingScreen(state: OnboardingState): string {
-  const focus = onboardingStepFocus(state.step);
+  const focus = onboardingStepFocus(state.step, state.storage);
   return [
     `step=${state.step}`,
     `storage=${state.storage ?? '-'}`,

@@ -1,4 +1,9 @@
-import type { ProfileDestinationCheckAction } from '@kavrix/schemas';
+import type {
+  ProfileDestinationCheckAction,
+  SetupToolAction,
+  SetupToolResult,
+  SetupProgress,
+} from '@kavrix/schemas';
 import type { AppScreenId } from './ids.js';
 
 export type AppTone = 'info' | 'success' | 'warning' | 'error' | 'muted';
@@ -88,6 +93,7 @@ export interface AppSnapshot {
 export type AppBackendAction =
   | Readonly<{ type: 'refresh' }>
   | ProfileDestinationCheckAction
+  | SetupToolAction
   | Readonly<{ type: 'use-profile'; profileId: string }>
   | Readonly<{
       type: 'create-file-profile';
@@ -175,6 +181,7 @@ export type AppBackendAction =
 
 export type AppBackendResult = Readonly<{
   snapshot: AppSnapshot;
+  setup?: SetupToolResult;
   /** Ephemeral revealed secret; never persisted in router state. */
   revealedSecret?: string;
 }>;
@@ -185,7 +192,10 @@ export type AppBackendResult = Readonly<{
  */
 export interface InteractiveAppBackend {
   load(): Promise<AppSnapshot>;
-  dispatch(action: AppBackendAction): Promise<AppBackendResult>;
+  dispatch(
+    action: AppBackendAction,
+    onProgress?: (progress: SetupProgress) => void,
+  ): Promise<AppBackendResult>;
 }
 
 export function emptySnapshot(notice: string | null = null): AppSnapshot {

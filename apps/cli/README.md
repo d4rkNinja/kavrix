@@ -71,6 +71,12 @@ kavrix tui    # full app
 Use `kavrix init --no-tui` for classic line prompts, or stdin/explicit routing
 for scripts.
 
+Version 0.2.37 adds review before creation, confirmed permission repair inside
+Kavrix's own artifact directory, a read-only MongoDB connection test, actual
+creation stages and elapsed time, cursor editing, and a bounded folder browser.
+Clipboard messages state whether clearing is scheduled or unavailable. See the
+[six improvements and limits](https://github.com/d4rkNinja/kavrix/blob/v0.2.37/docs/release-notes-0.2.37.md).
+
 Version 0.2.36 fills the terminal during setup and management, with bottom-pinned
 controls, larger setup click targets, and a progress guide on wide screens. Click
 storage choices and Continue/Back/Help, or use the keyboard. Setup Help (`Ctrl+G`)

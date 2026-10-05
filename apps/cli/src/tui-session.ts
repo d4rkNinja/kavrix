@@ -21,7 +21,11 @@ import {
   profileIdSchema,
   profileDestinationCheckActionSchema,
   type ProfileDestinationCheckAction,
+  type SetupToolAction,
+  type SetupToolResult,
+  type SetupProgress,
 } from '@kavrix/schemas';
+import { runSetupTool, connectionNotice } from './setup-tools.js';
 
 import {
   DatastoreProfileRegistry,
@@ -29,7 +33,7 @@ import {
 } from './datastore-profiles.js';
 import { getKavrixConfigDir } from './kavrix-config.js';
 import { keyFileGuidance } from './key-file-guidance.js';
-import { copySecretToClipboard } from './tui-clipboard.js';
+import { clipboardCopyNotice, copySecretToClipboard } from './tui-clipboard.js';
 
 /**
  * Structural host backend used by `kavrix tui`. Kept free of `@kavrix/tui`
@@ -102,6 +106,7 @@ export interface CliTuiSnapshot {
 export type CliTuiAction =
   | Readonly<{ type: 'refresh' }>
   | ProfileDestinationCheckAction
+  | SetupToolAction
   | Readonly<{ type: 'use-profile'; profileId: string }>
   | Readonly<{
       type: 'create-file-profile';
@@ -189,7 +194,14 @@ export interface CliTuiBackend {
   load(): Promise<CliTuiSnapshot>;
   dispatch(
     action: CliTuiAction,
-  ): Promise<Readonly<{ snapshot: CliTuiSnapshot; revealedSecret?: string }>>;
+    onProgress?: (progress: SetupProgress) => void,
+  ): Promise<
+    Readonly<{
+      snapshot: CliTuiSnapshot;
+      revealedSecret?: string;
+      setup?: SetupToolResult;
+    }>
+  >;
 }
 
 export type CliTuiCommandRunner = (
@@ -363,7 +375,7 @@ export function createCliTuiBackend(options: CliTuiSessionOptions = {}): CliTuiB
   const session = new CliTuiSession(options);
   return {
     load: () => session.snapshot(),
-    dispatch: (action) => session.dispatch(action),
+    dispatch: (action, onProgress) => session.dispatch(action, onProgress),
   };
 }
 
@@ -405,9 +417,35 @@ class CliTuiSession {
 
   async dispatch(
     action: CliTuiAction,
-  ): Promise<Readonly<{ snapshot: CliTuiSnapshot; revealedSecret?: string }>> {
+    onProgress?: (progress: SetupProgress) => void,
+  ): Promise<
+    Readonly<{
+      snapshot: CliTuiSnapshot;
+      revealedSecret?: string;
+      setup?: SetupToolResult;
+    }>
+  > {
     try {
       switch (action.type) {
+        case 'browse-setup-folders':
+        case 'repair-setup-directory':
+        case 'test-setup-mongodb': {
+          const setup = await runSetupTool(
+            action,
+            this.#options.kavrixArtifactDir ?? getKavrixConfigDir(),
+          );
+          this.#noticeTone =
+            setup.kind === 'connection' && setup.status !== 'ok' ? 'error' : 'success';
+          this.#notice =
+            setup.kind === 'connection'
+              ? connectionNotice(setup.status)
+              : setup.kind === 'repair'
+                ? setup.mode === 'preview'
+                  ? 'Review owner-only permissions for this Kavrix folder, then confirm repair.'
+                  : 'Kavrix folder repaired. Recheck the destination to continue.'
+                : 'Choose a folder; its files are not opened.';
+          return { snapshot: await this.#buildSnapshot(), setup };
+        }
         case 'refresh':
           if (this.#passphrase !== null) {
             await this.#refreshCredentialList();
@@ -419,7 +457,7 @@ class CliTuiSession {
           await this.#useProfile(action.profileId);
           break;
         case 'create-file-profile':
-          await this.#createFileProfile(action);
+          await this.#createFileProfile(action, onProgress);
           break;
         case 'validate-profile-destination': {
           const destination = profileDestinationCheckActionSchema.parse(action);
@@ -433,7 +471,7 @@ class CliTuiSession {
           break;
         }
         case 'create-mongodb-profile':
-          await this.#createMongodbProfile(action);
+          await this.#createMongodbProfile(action, onProgress);
           break;
         case 'use-vault':
           await this.#useVault(action.vaultId);
@@ -583,13 +621,14 @@ class CliTuiSession {
   }
 
   async #buildSnapshot(): Promise<CliTuiSnapshot> {
-    const registry = await DatastoreProfileRegistry.openIfPresent({
+    const document = await DatastoreProfileRegistry.snapshotIfPresent({
       ...(this.#options.profileConfigDir === undefined
         ? {}
         : { configDirectory: this.#options.profileConfigDir }),
     });
-    const profiles = registry === null ? [] : await registry.list();
-    const current = registry === null ? null : await registry.current();
+    const profiles = document?.profiles ?? [];
+    const current =
+      profiles.find((profile) => profile.id === document?.current) ?? null;
     const ascii = this.#options.ascii === true;
     const mask = ascii ? '********' : '••••••••';
     const recovery =
@@ -605,7 +644,7 @@ class CliTuiSession {
           ];
     return {
       theme: await this.#resolveTheme(),
-      session: await this.#sessionStatus(),
+      session: await this.#sessionStatus(current),
       home: {
         profileId: current?.id ?? null,
         vaultId: this.#vaultId ?? current?.defaultVaultId ?? null,
@@ -838,13 +877,7 @@ class CliTuiSession {
     databaseId: string | undefined;
     keyFile: string;
   } | null> {
-    const registry = await DatastoreProfileRegistry.openIfPresent({
-      ...(this.#options.profileConfigDir === undefined
-        ? {}
-        : { configDirectory: this.#options.profileConfigDir }),
-    });
-    if (registry === null) return null;
-    const profile = await registry.current();
+    const profile = await this.#currentProfile();
     if (profile === null) return null;
     return {
       profileId: profile.id,
@@ -853,13 +886,22 @@ class CliTuiSession {
     };
   }
 
-  async #sessionStatus(): Promise<{
+  async #sessionStatus(profile?: DatastoreProfile | null): Promise<{
     enabled: boolean;
     expired: boolean;
     createdAt: string | null;
     ttlHours: number | null;
   }> {
-    const target = await this.#sessionTarget();
+    const target =
+      profile === undefined
+        ? await this.#sessionTarget()
+        : profile === null
+          ? null
+          : {
+              profileId: profile.id,
+              databaseId: profile.databaseId,
+              keyFile: profile.keyFile,
+            };
     if (target === null) {
       return { enabled: false, expired: false, createdAt: null, ttlHours: null };
     }
@@ -976,6 +1018,7 @@ class CliTuiSession {
 
   async #createFileProfile(
     action: Extract<CliTuiAction, { type: 'create-file-profile' }>,
+    onProgress?: (progress: SetupProgress) => void,
   ): Promise<void> {
     const profileId = profileIdSchema.parse(action.profileId.trim());
     const dataFile = action.dataFile.trim();
@@ -1009,12 +1052,14 @@ class CliTuiSession {
     let vaultReady = false;
 
     try {
+      onProgress?.({ stage: 'checking-permissions' });
       await preflightProfileArtifacts(
         dataFile,
         keyFile,
         recoveryFile,
         this.#options.kavrixArtifactDir,
       );
+      onProgress?.({ stage: 'creating-storage' });
       await this.#runTextCommand(
         [
           'db',
@@ -1045,6 +1090,7 @@ class CliTuiSession {
       );
 
       // Frames: `kavrix frames "db vault create"` → [mongodb-url,] passphrase, label
+      onProgress?.({ stage: 'creating-vault' });
       const created = await this.#runJsonCommand(
         [
           'db',
@@ -1096,7 +1142,9 @@ class CliTuiSession {
 
       if (wantsRecovery) {
         try {
+          onProgress?.({ stage: 'creating-recovery' });
           await this.#recoveryCreate(recoveryFile, recoveryPassphrase);
+          onProgress?.({ stage: 'verifying-recovery' });
           await this.#recoveryVerify(recoveryFile, recoveryPassphrase);
         } catch (recoveryError) {
           const detail =
@@ -1147,6 +1195,7 @@ class CliTuiSession {
    */
   async #createMongodbProfile(
     action: Extract<CliTuiAction, { type: 'create-mongodb-profile' }>,
+    onProgress?: (progress: SetupProgress) => void,
   ): Promise<void> {
     const profileId = profileIdSchema.parse(action.profileId.trim());
     const database = action.database.trim();
@@ -1194,12 +1243,14 @@ class CliTuiSession {
     let vaultReady = false;
 
     try {
+      onProgress?.({ stage: 'checking-permissions' });
       await preflightProfileArtifacts(
         null,
         keyFile,
         recoveryFile,
         this.#options.kavrixArtifactDir,
       );
+      onProgress?.({ stage: 'creating-storage' });
       await this.#runTextCommand(
         [
           'db',
@@ -1224,6 +1275,7 @@ class CliTuiSession {
         [],
       );
 
+      onProgress?.({ stage: 'connecting' });
       this.#setDatabaseUrl(databaseUrl);
 
       // Frames: db init → [mongodb-url,] label, passphrase, passphrase-confirm
@@ -1241,6 +1293,7 @@ class CliTuiSession {
       );
 
       // Frames: db vault create → [mongodb-url,] passphrase, label
+      onProgress?.({ stage: 'creating-vault' });
       const created = await this.#runJsonCommand(
         [
           'db',
@@ -1292,7 +1345,9 @@ class CliTuiSession {
 
       if (wantsRecovery) {
         try {
+          onProgress?.({ stage: 'creating-recovery' });
           await this.#recoveryCreate(recoveryFile, recoveryPassphrase);
+          onProgress?.({ stage: 'verifying-recovery' });
           await this.#recoveryVerify(recoveryFile, recoveryPassphrase);
         } catch (recoveryError) {
           const detail =
@@ -1427,8 +1482,8 @@ class CliTuiSession {
    */
   async #copyCredential(name: string): Promise<void> {
     const secret = await this.#fetchCredentialValue(name);
-    await copySecretToClipboard(secret);
-    this.#notice = 'Copied (clipboard clears in ~30s)';
+    const clipboard = await copySecretToClipboard(secret);
+    this.#notice = clipboardCopyNotice(clipboard);
     this.#noticeTone = 'success';
   }
 
@@ -2272,13 +2327,14 @@ class CliTuiSession {
   }
 
   async #currentProfile(): Promise<DatastoreProfile | null> {
-    const registry = await DatastoreProfileRegistry.openIfPresent({
+    const document = await DatastoreProfileRegistry.snapshotIfPresent({
       ...(this.#options.profileConfigDir === undefined
         ? {}
         : { configDirectory: this.#options.profileConfigDir }),
     });
-    if (registry === null) return null;
-    return registry.current();
+    return (
+      document?.profiles.find((profile) => profile.id === document.current) ?? null
+    );
   }
 
   #lock(): void {
@@ -2357,12 +2413,7 @@ class CliTuiSession {
     if (this.#options.profileConfigDir !== undefined) {
       args.push('--profile-config-dir', this.#options.profileConfigDir);
     }
-    const registry = await DatastoreProfileRegistry.openIfPresent({
-      ...(this.#options.profileConfigDir === undefined
-        ? {}
-        : { configDirectory: this.#options.profileConfigDir }),
-    });
-    const current = registry === null ? null : await registry.current();
+    const current = await this.#currentProfile();
     if (current !== null) {
       args.push('--profile', current.id);
     }

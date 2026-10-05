@@ -86,6 +86,32 @@ function versionOneDocument(
 }
 
 describe('datastore profiles', () => {
+  it('reads fresh consistent display snapshots without creating an absent registry', async () => {
+    const options = { configDirectory: directory };
+    expect(await DatastoreProfileRegistry.snapshotIfPresent(options)).toBeNull();
+    const routes = await registry();
+    await routes.add(fileProfile());
+    await routes.add(mongoProfile());
+    await routes.use(SECOND_PROFILE_ID);
+    const first = await DatastoreProfileRegistry.snapshotIfPresent(options);
+    expect(first?.current).toBe(SECOND_PROFILE_ID);
+    expect(first?.profiles.map((profile) => profile.id)).toEqual(['local', 'work']);
+    await routes.use(PROFILE_ID);
+    expect((await DatastoreProfileRegistry.snapshotIfPresent(options))?.current).toBe(
+      PROFILE_ID,
+    );
+    expect(first?.current).toBe(SECOND_PROFILE_ID);
+    await writeCanonicalRegistry({ version: 999, profiles: [], current: null });
+    await expect(
+      DatastoreProfileRegistry.snapshotIfPresent(options),
+    ).rejects.toMatchObject({ code: 'PROFILE_INVALID' });
+    expect(
+      await DatastoreProfileRegistry.snapshotIfPresent({
+        configDirectory: join(directory, 'absent'),
+      }),
+    ).toBeNull();
+  });
+
   it('executes every profile CLI command with stable sanitized output', async () => {
     const output: string[] = [];
     const write = vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => {

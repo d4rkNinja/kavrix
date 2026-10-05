@@ -251,6 +251,12 @@ Use `kavrix init --no-tui` for classic line prompts, or stdin/explicit routing
 for scripts. Bare `kavrix` on a non-interactive stream keeps printing help. A
 walkthrough is embedded in the [Demo](#demo) section above.
 
+Version 0.2.37 adds a public review before creating, confirmed permission repair
+inside Kavrix's own artifact directory, a read-only MongoDB connection test,
+actual creation stages and elapsed time, cursor editing, and a bounded folder
+browser. Clipboard messages state whether clearing is scheduled or unavailable.
+See the [six improvements and limits](docs/release-notes-0.2.37.md).
+
 Version 0.2.36 fills the terminal during setup and management, with bottom-pinned
 controls, larger setup click targets, and a progress guide on wide screens. Click
 storage choices and Continue/Back/Help, or use the keyboard. Setup Help (`Ctrl+G`)

@@ -590,6 +590,11 @@ describe('in-process broker and client round trip', () => {
       expect(combined).toContain(`RT:${secretValue}`);
       expect(combined).not.toContain(secretValue.repeat(2));
 
+      // Exit is delivered before completion auditing releases the broker queue.
+      // This sequential policy test must wait for that observable boundary;
+      // otherwise real Windows ACL I/O can trigger the intentional busy limit.
+      await session.queue;
+
       // Denied by a deny entry: decision frame, stderr note, exit code 1.
       // Arguments ride along into the audit argvPreview.
       await executeAgentExec({
@@ -598,6 +603,7 @@ describe('in-process broker and client round trip', () => {
       });
       expect(process.exitCode).toBe(1);
       expect(stderrChunks.join('')).toContain('denied (policy-denied)');
+      await session.queue;
 
       // Confirmation granted through an interactive terminal stub.
       session.permissions['confirm-gate'] = permissionEntrySchema.parse({
@@ -737,7 +743,11 @@ describe('in-process broker and client round trip', () => {
       counters: { allowed: 0, denied: 0 },
       queue: Promise.resolve(),
     };
-    const broker = await startAgentBrokerForTest(session);
+    // Positive serialization includes real sealed audit writes and Windows ACL
+    // verification. Busy-limit behavior has its own explicit short-budget test.
+    const broker = await startAgentBrokerForTest(session, {
+      queueWaitTimeoutMs: 60_000,
+    });
     const order: string[] = [];
     try {
       const first = await openRawBrokerRequest(
@@ -810,6 +820,7 @@ describe('in-process broker and client round trip', () => {
         true,
       );
       expect(session.counters).toEqual({ allowed: 0, denied: 0 });
+      await session.queue;
       const snapshot = await state.read();
       expect(
         snapshot.audit.some((event) => event.action === 'authorization-allowed'),
@@ -874,6 +885,8 @@ describe('in-process broker and client round trip', () => {
           noEnvDecision.reason === 'no-injection-mapping',
       ).toBe(true);
 
+      await session.queue;
+
       const missing = await openRawBrokerRequest(broker.endpoint, {
         v: 1,
         token,
@@ -883,23 +896,12 @@ describe('in-process broker and client round trip', () => {
       });
       await missing.done;
       expect(session.counters).toEqual({ allowed: 0, denied: 2 });
-      // Denial audits persist right after each exit frame; poll briefly and
-      // tolerate reads that race the first sealed-file creation (the file can
-      // briefly not exist on slower runners).
-      let denials;
-      for (let attempt = 0; attempt < 60; attempt += 1) {
-        try {
-          const snapshot = await state.read();
-          denials = snapshot.audit.filter(
-            (event) => event.action === 'authorization-denied',
-          );
-          if (denials.length === 2) break;
-        } catch {
-          // Sealed file not yet published; retry.
-        }
-        await new Promise((resolve) => setTimeout(resolve, 50));
-      }
-      expect(denials?.length).toBe(2);
+      await session.queue;
+      const snapshot = await state.read();
+      const denials = snapshot.audit.filter(
+        (event) => event.action === 'authorization-denied',
+      );
+      expect(denials.length).toBe(2);
     } finally {
       session.secrets = new Map();
       await broker.cleanup();

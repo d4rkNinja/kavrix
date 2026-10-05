@@ -69,10 +69,10 @@ function mount(
   const calls: AppBackendAction[] = [];
   const backend: InteractiveAppBackend = {
     load: () => Promise.resolve(emptySnapshot()),
-    dispatch: (action) => {
+    dispatch: (action, onProgress) => {
       calls.push(action);
       return (
-        dispatch?.(action) ??
+        dispatch?.(action, onProgress) ??
         Promise.resolve({
           snapshot: {
             ...emptySnapshot(),
@@ -99,6 +99,7 @@ function mount(
 async function ready(
   fixture: ReturnType<typeof mount>,
   expected: string,
+  waitForInput = true,
 ): Promise<void> {
   await vi.waitFor(
     () => {
@@ -106,7 +107,7 @@ async function ready(
     },
     { timeout: 5_000 },
   );
-  await fixture.handle.waitForInputReady();
+  if (waitForInput) await fixture.handle.waitForInputReady();
   await new Promise((resolve) => setTimeout(resolve, 40));
 }
 function report(
@@ -132,6 +133,74 @@ async function click(
 }
 
 describe('mounted setup pointer and full-screen controls', () => {
+  it('reviews before creation, streams real stages and elapsed time, and rejects duplicate create clicks', async () => {
+    let complete:
+      | ((result: Awaited<ReturnType<InteractiveAppBackend['dispatch']>>) => void)
+      | undefined;
+    let reportProgress: Parameters<InteractiveAppBackend['dispatch']>[1];
+    const fixture = mount(true, (action, progress) => {
+      if (action.type !== 'create-file-profile')
+        return Promise.resolve({
+          snapshot: {
+            ...emptySnapshot(),
+            noticeTone: 'success',
+            notice: 'Destination checked.',
+          },
+        });
+      reportProgress = progress;
+      return new Promise((resolve) => {
+        complete = resolve;
+      });
+    });
+    await ready(fixture, 'Welcome');
+    await click(fixture, 'Enter start', 'Local encrypted file');
+    await click(fixture, 'Enter continue', 'Profile id:');
+    await click(fixture, 'Enter continue', 'Data file:');
+    await click(fixture, 'Enter continue', 'Key file:');
+    await click(fixture, 'Enter continue', 'Owner passphrase:');
+    const owner = 'mounted-owner-canary';
+    const recovery = 'mounted-recovery-canary';
+    fixture.input.write(owner);
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    await click(fixture, 'Enter continue', 'Confirm owner passphrase:');
+    fixture.input.write(owner);
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    await click(fixture, 'Enter continue', 'Recovery-kit passphrase:');
+    fixture.input.write(recovery);
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    await click(fixture, 'Enter continue', 'Confirm recovery-kit passphrase:');
+    fixture.input.write(recovery);
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    await click(fixture, 'Enter continue', 'Recovery kit path:');
+    await click(fixture, 'Enter continue', 'REVIEW BEFORE CREATING');
+    expect(fixture.calls.some((action) => action.type === 'create-file-profile')).toBe(
+      false,
+    );
+    fixture.input.write(report(fixture, 'Enter create'));
+    await ready(fixture, 'Checking protected destinations', false);
+    reportProgress?.({ stage: 'verifying-recovery' });
+    await ready(fixture, 'Verifying recovery kit', false);
+    await vi.waitFor(
+      () => {
+        expect(fixture.output.frame()).toContain('Elapsed 1s');
+      },
+      {
+        timeout: 2500,
+      },
+    );
+    fixture.input.write('\r\r');
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    expect(
+      fixture.calls.filter((action) => action.type === 'create-file-profile'),
+    ).toHaveLength(1);
+    complete?.({
+      snapshot: { ...emptySnapshot(), noticeTone: 'success', notice: 'Created.' },
+    });
+    await ready(fixture, 'Session unlock');
+    const output = fixture.output.chunks.join('');
+    expect(output).not.toContain(owner);
+    expect(output).not.toContain(recovery);
+  });
   it('uses larger button padding to start, select MongoDB, continue, and quit', async () => {
     const fixture = mount();
     await ready(fixture, 'Welcome');

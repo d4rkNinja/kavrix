@@ -108,6 +108,38 @@ without giving up the full-screen layout. The layout matrix is 40×12, 40×18,
 80×14, 80×24, and 120×36 cells; physical terminal mouse behavior on every OS is
 not established by the headless stream tests.
 
+## Guided setup (0.2.37)
+
+Path fields offer `Ctrl+D` for the secure default, `Ctrl+B` to browse folders,
+and `Ctrl+R` to preview directory permission repair. Enter confirms a repair;
+Escape cancels. Only Kavrix's owned artifact directory can be repaired by this
+control. Other locations require manual repair or a different destination.
+Enter on a path checks it again and retains other answers on rejection.
+
+The browser lists at most 100 folders while scanning at most 1,000 entries.
+Arrows select, Enter opens, `Ctrl+P` moves to the parent, and `Ctrl+S` chooses
+the current folder while preserving the filename. It never reads file contents.
+Secure default paths start browsing at the home folder, so a first installation
+does not require the artifact directory to exist already.
+Inputs support cursor arrows, Home/End, Delete, and `Ctrl+A/E/U`.
+
+MongoDB addresses remain masked. `Ctrl+T` tests the connection; Enter tests an
+unverified address before continuing. Remote connections require TLS; insecure
+TLS options are refused. The probe sends only `ping`, suppresses diagnostics,
+and terminates its isolated worker after 15 seconds. Its success does not prove
+write permissions or future availability.
+
+The final review shows public settings and provides numbered Edit controls.
+Compact terminals scroll the summary with arrows; `Ctrl+G` shows full details.
+Protected answers remain hidden and need not be re-entered after a public edit.
+Enter on this screen starts creation. Creation displays real stages and elapsed
+time, including recovery verification, with duplicate actions blocked.
+
+Clipboard messages distinguish terminal and system copying. Terminal copying
+schedules a best-effort clear after about 30 seconds while Kavrix stays open.
+System copying requires manual clearing. Terminal behavior and clipboard
+history prevent a guarantee that copied values have been removed.
+
 ## Themes
 
 The TUI ships five color themes: Classic Gold (the Kavrix signature), Deep

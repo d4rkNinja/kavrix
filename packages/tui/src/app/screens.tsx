@@ -1474,7 +1474,7 @@ export function HelpScreen({
       'n: put. m: rename. x: remove.',
       '/: search names. r then y: REVEAL.',
       'Reveal remasks after 15 seconds.',
-      'Clipboard copy clears after ~30s.',
+      'Terminal clipboard: best-effort clear after ~30s while Kavrix is open. System clipboard: clear manually.',
     ],
     [
       'u: unlock. l: confirm lock.',

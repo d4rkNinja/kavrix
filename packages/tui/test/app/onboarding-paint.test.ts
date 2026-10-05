@@ -1,6 +1,6 @@
 import { createElement } from 'react';
 import { renderToString } from 'ink';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { createStaticAppBackend } from '../../src/app/static-backend.js';
 import {
@@ -56,6 +56,62 @@ function reachFilePassphrase(): OnboardingState {
 }
 
 describe('init onboarding first paint and focus', () => {
+  it.each([12, 24, 30])(
+    'keeps review controls visible at height %s and omits all protected inputs',
+    (height) => {
+      vi.stubEnv('TERM', 'xterm-256color');
+      vi.stubEnv('INK_SCREEN_READER', '');
+      const state: OnboardingState = {
+        ...createInitialOnboardingState({
+          width: 40,
+          height,
+          ascii: true,
+          color: false,
+        }),
+        step: 'review',
+        storage: 'mongodb',
+        profileId: 'chosen',
+        database: 'chosen-db',
+        keyFile: '/private/key',
+        recoveryFile: '/private/recovery',
+        passphrase: 'owner-canary',
+        recoveryPassphrase: 'recovery-canary',
+        databaseUrl: 'private-uri-canary',
+      };
+      const output = paint(state);
+      expect(output.split('\n')).toHaveLength(height);
+      expect(output).toContain('Enter create');
+      expect(output).toContain('1 profile');
+      expect(output).toContain('4 recovery');
+      expect(output).not.toContain('owner-canary');
+      expect(output).not.toContain('recovery-canary');
+      expect(output).not.toContain('private-uri-canary');
+    },
+  );
+  it('masks protected input on both sides of a moved cursor', () => {
+    const state = {
+      ...createInitialOnboardingState({ ascii: true, color: false }),
+      step: 'mongo-url' as const,
+      query: 'private-uri-canary',
+      cursor: 4,
+    };
+    const output = paint(state);
+    expect(output).toContain('****_');
+    expect(output).not.toContain('private-uri-canary');
+  });
+  it('renders a public operation stage with elapsed time without protected values', () => {
+    const state = {
+      ...createInitialOnboardingState({ ascii: true, color: false }),
+      step: 'creating' as const,
+      progress: { stage: 'verifying-recovery' as const },
+      elapsedSeconds: 7,
+      message: 'private-stage-message-canary',
+    };
+    const output = paint(state);
+    expect(output).toContain('Verifying recovery kit');
+    expect(output).toContain('Elapsed 7s');
+    expect(output).not.toMatch(/\d+%/u);
+  });
   it('does not let the showcase backend claim that filesystem permissions were verified', async () => {
     const result = await createStaticAppBackend().dispatch({
       type: 'validate-profile-destination',
@@ -128,7 +184,13 @@ describe('init onboarding first paint and focus', () => {
     expect(pathFrame).toMatch(/ACTIVE \d+\/\d+/i);
     expect(pathFrame).toMatch(/Recovery kit path/i);
     expect(pathFrame).toMatch(/TYPE HERE/i);
-    const finished = transitionOnboarding(state, {
+    const reviewed = transitionOnboarding(state, {
+      type: 'key',
+      key: { name: 'return' },
+    });
+    expect(reviewed.state.step).toBe('review');
+    expect(paint(reviewed.state)).not.toContain('correct-horse-battery');
+    const finished = transitionOnboarding(reviewed.state, {
       type: 'key',
       key: { name: 'return' },
     });

@@ -8,6 +8,7 @@ import { ClickTarget } from './mouse.js';
 import { TerminalViewport } from './viewport.js';
 import {
   onboardingStepFocus,
+  isPathStep,
   type OnboardingKey,
   type OnboardingState,
 } from './onboarding-router.js';
@@ -49,7 +50,7 @@ export function OnboardingChrome({
 }>): ReactElement {
   const { color, ascii, width, height } = state;
   const interaction = useInputInteraction();
-  const focus = onboardingStepFocus(state.step);
+  const focus = onboardingStepFocus(state.step, state.storage);
   const caret = useCursorVisible(
     resolveMotionPolicy().animate && isMaskedStep(state.step),
   );
@@ -67,8 +68,15 @@ export function OnboardingChrome({
   const pageRows = Math.max(2, height - (compact ? 10 : height >= 24 ? 15 : 11));
   const guidanceLines = wrapGuidance(
     safe(
-      notice ??
-        'Follow the active step. Secrets stay masked; keyboard navigation always works.',
+      'Path controls: Ctrl+D secure default, Ctrl+B browse folders, Ctrl+R review permission repair, Enter recheck. Cursor: arrows, Home/End, Ctrl+A/E/U. Folder browser: Enter open, Ctrl+S choose folder, Ctrl+P parent, Esc back. ' +
+        (state.step === 'review' ? reviewSummary(state).join(' | ') + ' | ' : '') +
+        (state.toolView?.kind === 'repair'
+          ? `Repair directory: ${state.toolView.directory}. Confirmation restricts this Kavrix directory to its owner; file contents remain unchanged. Windows may tighten inherited child access. `
+          : state.toolView?.kind === 'folders'
+            ? `Current folder: ${state.toolView.directory}. `
+            : '') +
+        (notice ??
+          'Follow the active step. Secrets stay masked; keyboard navigation always works.'),
       ascii,
     ),
     Math.max(12, width - 10),
@@ -83,9 +91,15 @@ export function OnboardingChrome({
         ? 'review'
         : state.step === 'success'
           ? 'finish'
-          : compact
-            ? 'next'
-            : 'continue';
+          : state.step === 'review'
+            ? 'create'
+            : state.toolView?.kind === 'repair'
+              ? 'repair'
+              : state.toolView?.kind === 'folders'
+                ? 'open'
+                : compact
+                  ? 'next'
+                  : 'continue';
   const toggleHelp = (): void => {
     invalidateFrame?.();
     setPage(0);
@@ -197,13 +211,15 @@ export function OnboardingChrome({
                   <SingleLine {...accentColor(color, CHROME.muted)}>
                     {safe(focus.cue, ascii)}
                   </SingleLine>
-                  <ProgressBar
-                    progress={(focus.index - 1) / Math.max(1, focus.total - 1)}
-                    width={Math.max(8, Math.min(36, width - 30))}
-                    color={color}
-                    ascii={ascii}
-                    accent={accent}
-                  />
+                  {state.step === 'creating' || state.step === 'error' ? null : (
+                    <ProgressBar
+                      progress={(focus.index - 1) / Math.max(1, focus.total - 1)}
+                      width={Math.max(8, Math.min(36, width - 30))}
+                      color={color}
+                      ascii={ascii}
+                      accent={accent}
+                    />
+                  )}
                 </>
               ) : null}
               <Box flexDirection="column" flexShrink={0} marginTop={compact ? 0 : 1}>
@@ -237,10 +253,63 @@ export function OnboardingChrome({
       </Box>
 
       <Panel accent={CHROME.muted} ascii={ascii} color={color} paddingX={1}>
+        {isPathStep(state.step) ? (
+          <Box flexDirection="row" columnGap={1}>
+            <KeyChip
+              keyLabel="^D"
+              hint="default"
+              color={color}
+              disabled={state.pendingTool !== null}
+              onPress={() => {
+                interaction.press({ text: 'd', ctrl: true });
+              }}
+            />
+            <KeyChip
+              keyLabel="^B"
+              hint="browse"
+              color={color}
+              disabled={state.pendingTool !== null}
+              onPress={() => {
+                interaction.press({ text: 'b', ctrl: true });
+              }}
+            />
+            <KeyChip
+              keyLabel="^R"
+              hint="repair"
+              color={color}
+              disabled={state.pendingTool !== null}
+              onPress={() => {
+                interaction.press({ text: 'r', ctrl: true });
+              }}
+            />
+          </Box>
+        ) : null}
+
+        {state.step === 'review' && state.toolView === null ? (
+          <Box flexDirection="row" columnGap={1}>
+            {[
+              'profile',
+              state.storage === 'file' ? 'data' : 'db',
+              'key',
+              'recovery',
+            ].map((label, index) => (
+              <KeyChip
+                key={label}
+                keyLabel={String(index + 1)}
+                hint={label}
+                color={color}
+                disabled={interaction.busy}
+                onPress={() => {
+                  interaction.press({ text: String(index + 1) });
+                }}
+              />
+            ))}
+          </Box>
+        ) : null}
         <Box flexDirection="row" columnGap={1} flexWrap="wrap">
           <KeyChip
             keyLabel="Enter"
-            button={height >= 24}
+            button={height >= 24 && width >= 60}
             hint={continueHint}
             color={color}
             disabled={interaction.busy}
@@ -251,7 +320,7 @@ export function OnboardingChrome({
           />
           <KeyChip
             keyLabel="Esc"
-            button={height >= 24}
+            button={height >= 24 && width >= 60}
             hint="back"
             color={color}
             disabled={interaction.busy}
@@ -266,13 +335,17 @@ export function OnboardingChrome({
             keyLabel="^G"
             hint="help"
             color={color}
-            button={height >= 24}
+            button={height >= 24 && width >= 60}
             onPress={toggleHelp}
           />
           <KeyChip
             keyLabel="^C"
-            button={height >= 24}
-            hint="quit"
+            button={height >= 24 && width >= 60}
+            hint={
+              compact && (state.step === 'review' || state.toolView !== null)
+                ? ''
+                : 'quit'
+            }
             color={color}
             disabled={interaction.busy}
             keyAccent={CHROME.danger}
@@ -367,7 +440,79 @@ function renderOnboardingBody(
   press: (key: OnboardingKey) => void,
 ): ReactElement {
   const { ascii, color, query } = state;
-  const masked = maskBullets(query.length, ascii);
+  const masked = maskBullets(Array.from(query).length, ascii);
+
+  if (state.toolView?.kind === 'repair') {
+    return (
+      <Panel title="Confirm directory repair" ascii={ascii} color={color} paddingX={1}>
+        <SingleLine>{safe(state.toolView.directory, ascii)}</SingleLine>
+        <Text>
+          Restrict this Kavrix directory to its owner. File contents remain unchanged.
+        </Text>
+        <Text>Enter confirms repair. Esc cancels.</Text>
+      </Panel>
+    );
+  }
+  if (state.toolView?.kind === 'folders') {
+    const view = state.toolView;
+    const rows = Math.max(1, Math.min(8, state.height - 11));
+    const start = Math.max(0, state.folderIndex - rows + 1);
+    return (
+      <Panel title="Choose folder" ascii={ascii} color={color} paddingX={1}>
+        <SingleLine>{safe(view.directory, ascii)}</SingleLine>
+        {view.entries.slice(start, start + rows).map((entry, offset) => (
+          <SelectRow
+            key={entry.path}
+            active={state.folderIndex === start + offset}
+            label={safe(entry.name, ascii)}
+            color={color}
+            ascii={ascii}
+            accent={CHROME.accent}
+            onPress={() => {
+              press({ text: String(start + offset + 1) });
+            }}
+          />
+        ))}
+        <Box flexDirection="row" columnGap={1}>
+          <KeyChip
+            keyLabel="^S"
+            hint="use folder"
+            color={color}
+            onPress={() => {
+              press({ text: 's', ctrl: true });
+            }}
+          />
+          <KeyChip
+            keyLabel="^P"
+            hint="parent"
+            color={color}
+            onPress={() => {
+              press({ text: 'p', ctrl: true });
+            }}
+          />
+        </Box>
+        {view.truncated ? <Text>Listing limited; open a subfolder.</Text> : null}
+      </Panel>
+    );
+  }
+  if (state.step === 'review') {
+    const summary = reviewSummary(state);
+    const rows = state.height < 18 ? 1 : summary.length;
+    const start =
+      state.height < 18 ? Math.min(state.folderIndex, summary.length - rows) : 0;
+    return (
+      <Panel title="Review before creating" ascii={ascii} color={color} paddingX={1}>
+        {summary.slice(start, start + rows).map((line) => (
+          <SingleLine key={line}>{safe(line, ascii)}</SingleLine>
+        ))}
+        {state.height < 18 ? (
+          <Text>Arrows: review all. ^G: full details.</Text>
+        ) : (
+          <Text>Protected inputs entered (hidden). Enter creates.</Text>
+        )}
+      </Panel>
+    );
+  }
 
   if (state.step === 'welcome') {
     return (
@@ -454,13 +599,16 @@ function renderOnboardingBody(
         paddingY={state.height >= 24 ? 1 : 0}
       >
         <LoadingState
-          label={state.message ?? 'Working…'}
+          label={stageLabel(state)}
           color={color}
           ascii={ascii}
           animate={resolveMotionPolicy().animate}
         />
         <Text {...accentColor(color, CHROME.muted)}>
-          {safe('Preparing encrypted storage and verifying your recovery kit…', ascii)}
+          {safe(
+            `Elapsed ${String(state.elapsedSeconds)}s. Recovery is verified before completion.`,
+            ascii,
+          )}
         </Text>
       </Panel>
     );
@@ -560,14 +708,15 @@ function renderOnboardingBody(
   const cells = state.width - (state.width >= 100 && state.height >= 24 ? 34 : 10);
   const room = Math.max(4, cells - prefix.length - 1);
   const glyphs = Array.from(value);
-  const visible =
-    glyphs.length > room
-      ? `${ascii ? '...' : '…'}${glyphs.slice(-(room - (ascii ? 3 : 1))).join('')}`
-      : value;
+  const cursor = Math.max(0, Math.min(state.cursor ?? glyphs.length, glyphs.length));
+  const begin = Math.max(0, cursor - room + 1);
+  const window = glyphs.slice(begin, begin + room - 1);
+  window.splice(cursor - begin, 0, caret ? '_' : ' ');
+  const visible = window.join('');
   const body = prefix + visible;
   return (
     <Panel
-      title={state.height < 18 ? title : `ACTIVE · ${title}`}
+      {...(state.height < 18 ? {} : { title: `ACTIVE · ${title}` })}
       accent={CHROME.accent}
       ascii={ascii}
       color={color}
@@ -576,15 +725,59 @@ function renderOnboardingBody(
     >
       <SingleLine bold {...accentColor(color, CHROME.accent)}>
         {safe(body, ascii)}
-        <Text {...accentColor(color, CHROME.accent)}>{caret ? '_' : ' '}</Text>
       </SingleLine>
       {isMaskedStep(state.step) ? (
         <Text {...accentColor(color, CHROME.muted)}>
           {safe('Paste works (Ctrl+Shift+V / Cmd+V)', ascii)}
         </Text>
       ) : null}
+      {state.step === 'mongo-url' ? (
+        <KeyChip
+          keyLabel="^T"
+          hint={state.connectionVerified ? 'connection verified' : 'test connection'}
+          color={color}
+          disabled={state.pendingTool !== null}
+          onPress={() => {
+            press({ text: 't', ctrl: true });
+          }}
+        />
+      ) : null}
+      {state.pendingTool !== null || state.checkingDestination ? (
+        <Text>Checking… {String(state.elapsedSeconds)}s</Text>
+      ) : null}
     </Panel>
   );
+}
+
+function reviewSummary(state: OnboardingState): string[] {
+  return [
+    `Storage: ${state.storage ?? 'choose'}; profile: ${state.profileId ?? 'default'}`,
+    state.storage === 'file'
+      ? `Data: ${state.dataFile ?? ''}`
+      : `Database: ${state.database ?? ''}; connection: ${state.connectionVerified ? 'verified' : 'needs test'}`,
+    `Key: ${state.keyFile ?? ''}`,
+    `Recovery: ${state.recoveryFile ?? ''}`,
+    `Vault: ${state.profileId ?? 'default'}-vault; protected inputs hidden`,
+  ];
+}
+
+function stageLabel(state: OnboardingState): string {
+  switch (state.progress?.stage) {
+    case 'checking-permissions':
+      return 'Checking protected destinations';
+    case 'connecting':
+      return 'Connecting to MongoDB';
+    case 'creating-storage':
+      return 'Creating encrypted storage';
+    case 'creating-vault':
+      return 'Creating vault';
+    case 'creating-recovery':
+      return 'Creating recovery kit';
+    case 'verifying-recovery':
+      return 'Verifying recovery kit';
+    default:
+      return 'Preparing setup';
+  }
 }
 
 function inputTitle(step: OnboardingState['step']): string {

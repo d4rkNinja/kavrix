@@ -20,6 +20,9 @@ export interface AppKey {
     | 'return'
     | 'escape'
     | 'backspace'
+    | 'home'
+    | 'end'
+    | 'delete'
     | 'help';
   readonly text?: string;
   readonly ctrl?: boolean;

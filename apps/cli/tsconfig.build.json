@@ -56,6 +56,7 @@
     "src/local-vault-cli.ts",
     "src/tui-command.ts",
     "src/tui-session.ts",
+    "src/setup-tools.ts",
     "src/session-unlock.ts",
     "src/session-unlock-cli.ts",
     "src/tui-clipboard.ts",

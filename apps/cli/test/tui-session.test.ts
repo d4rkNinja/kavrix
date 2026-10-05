@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { databaseIdSchema, profileIdSchema, vaultIdSchema } from '@kavrix/schemas';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   hardenExistingSecureDirectory,
@@ -43,6 +43,30 @@ describe('CliTuiSession mutations (mocked spawn)', () => {
     await registry.use(profileIdSchema.parse('smoke'));
     return dir;
   }
+
+  it('builds each screen from one fresh profile snapshot without redundant routing reads', async () => {
+    const configDir = await setupProfile();
+    const snapshot = vi.spyOn(DatastoreProfileRegistry, 'snapshotIfPresent');
+    const open = vi.spyOn(DatastoreProfileRegistry, 'openIfPresent');
+    const list = vi.spyOn(DatastoreProfileRegistry.prototype, 'list');
+    const current = vi.spyOn(DatastoreProfileRegistry.prototype, 'current');
+    try {
+      const backend = createCliTuiBackend({ profileConfigDir: configDir });
+      const first = await backend.load();
+      expect(first.home.profileId).toBe('smoke');
+      expect(first.profiles.find((profile) => profile.selected)?.id).toBe(
+        first.home.profileId,
+      );
+      expect(snapshot).toHaveBeenCalledTimes(1);
+      expect(open).not.toHaveBeenCalled();
+      expect(list).not.toHaveBeenCalled();
+      expect(current).not.toHaveBeenCalled();
+      await backend.load();
+      expect(snapshot).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
 
   it.each(['file', 'mongodb'] as const)(
     'preflights %s recovery anchors before any profile mutation or command',
@@ -413,15 +437,28 @@ describe('CliTuiSession mutations (mocked spawn)', () => {
       },
     });
 
-    const result = await backend.dispatch({
-      type: 'create-file-profile',
-      profileId: 'fresh',
-      dataFile: join(dir, 'db.kavrix'),
-      keyFile: join(dir, 'owner.key'),
-      passphrase: 'correct horse battery staple',
-      recoveryFile,
-      recoveryPassphrase: 'recovery-secret-kit!!',
-    });
+    const stages: string[] = [];
+    const result = await backend.dispatch(
+      {
+        type: 'create-file-profile',
+        profileId: 'fresh',
+        dataFile: join(dir, 'db.kavrix'),
+        keyFile: join(dir, 'owner.key'),
+        passphrase: 'correct horse battery staple',
+        recoveryFile,
+        recoveryPassphrase: 'recovery-secret-kit!!',
+      },
+      (progress) => {
+        stages.push(progress.stage);
+      },
+    );
+    expect(stages).toEqual([
+      'checking-permissions',
+      'creating-storage',
+      'creating-vault',
+      'creating-recovery',
+      'verifying-recovery',
+    ]);
 
     expect(vaultCreated).toBe(true);
     expect(recoveryCreated).toBe(true);
@@ -965,16 +1002,28 @@ describe('CliTuiSession mutations (mocked spawn)', () => {
       },
     });
 
-    const result = await backend.dispatch({
-      type: 'create-mongodb-profile',
-      profileId: 'mongo',
-      database: 'credentials',
-      keyFile: join(dir, 'owner.key'),
-      databaseUrl: mongoUrl,
-      passphrase,
-      databaseLabel: 'mongo-db',
-      vaultLabel: 'mongo-vault',
-    });
+    const stages: string[] = [];
+    const result = await backend.dispatch(
+      {
+        type: 'create-mongodb-profile',
+        profileId: 'mongo',
+        database: 'credentials',
+        keyFile: join(dir, 'owner.key'),
+        databaseUrl: mongoUrl,
+        passphrase,
+        databaseLabel: 'mongo-db',
+        vaultLabel: 'mongo-vault',
+      },
+      (progress) => {
+        stages.push(progress.stage);
+      },
+    );
+    expect(stages).toEqual([
+      'checking-permissions',
+      'creating-storage',
+      'connecting',
+      'creating-vault',
+    ]);
 
     expect(vaultCreated).toBe(true);
     expect(result.snapshot.noticeTone).toBe('success');

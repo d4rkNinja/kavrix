@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, relative, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { smokeOnboarding } from './smoke-onboarding.js';
 
 const cliRoot = fileURLToPath(new URL('..', import.meta.url));
 const npmCommand = process.platform === 'win32' ? process.execPath : 'npm';
@@ -280,6 +281,7 @@ async function main() {
     assert(!sbomText.includes('workspace:'), 'Workspace protocol leaked into the SBOM');
 
     const bin = join(packageRoot, 'dist', 'bin.js');
+    await smokeOnboarding(bin, installRoot);
     const version = run(process.execPath, [bin, '--version'], installRoot);
     assertSafeText(version.stdout + version.stderr, 'kavrix --version output');
     assert(version.stderr.trim() === '', 'kavrix --version wrote to stderr');

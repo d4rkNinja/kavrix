@@ -4,9 +4,18 @@ import { EventEmitter } from 'node:events';
 const clipboardProcess = vi.hoisted(() => ({ spawn: vi.fn() }));
 vi.mock('node:child_process', () => ({ spawn: clipboardProcess.spawn }));
 
-import { copySecretToClipboard } from '../src/tui-clipboard.js';
+import { clipboardCopyNotice, copySecretToClipboard } from '../src/tui-clipboard.js';
 
 describe('copySecretToClipboard', () => {
+  it('reports a scheduled terminal clear honestly and never promises native automatic clearing', () => {
+    expect(clipboardCopyNotice('osc52')).toContain('best-effort');
+    expect(clipboardCopyNotice('osc52')).toContain('while Kavrix stays open');
+    expect(clipboardCopyNotice('system')).toContain(
+      'automatic clearing is unavailable',
+    );
+    expect(clipboardCopyNotice('system')).toContain('Clear it manually');
+    expect(clipboardCopyNotice('system')).not.toContain('30s');
+  });
   const platform = Object.getOwnPropertyDescriptor(process, 'platform');
   afterEach(() => {
     if (platform !== undefined) Object.defineProperty(process, 'platform', platform);

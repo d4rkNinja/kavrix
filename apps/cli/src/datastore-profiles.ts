@@ -277,6 +277,22 @@ export class DatastoreProfileRegistry {
   static async openIfPresent(
     options: DatastoreProfileRegistryOptions = {},
   ): Promise<DatastoreProfileRegistry | null> {
+    return (await this.#openExisting(options))?.registry ?? null;
+  }
+
+  /** Fresh, consistent routing metadata for display; not an authorization cache. */
+  static async snapshotIfPresent(
+    options: DatastoreProfileRegistryOptions = {},
+  ): Promise<DatastoreProfileRegistryDocument | null> {
+    return (await this.#openExisting(options))?.document ?? null;
+  }
+
+  static async #openExisting(
+    options: DatastoreProfileRegistryOptions,
+  ): Promise<Readonly<{
+    registry: DatastoreProfileRegistry;
+    document: DatastoreProfileRegistryDocument;
+  }> | null> {
     const inputDirectory = options.configDirectory ?? defaultConfigDirectory();
     try {
       await lstat(resolve(inputDirectory));
@@ -289,8 +305,8 @@ export class DatastoreProfileRegistry {
       resolveProfilePath(directory, options.fileName),
     );
     if (!(await registryExists(registry.#path))) return null;
-    await registry.#readOrEmpty();
-    return registry;
+    const document = await registry.#readOrEmpty();
+    return { registry, document };
   }
 
   async add(profile: DatastoreProfile): Promise<DatastoreProfile> {

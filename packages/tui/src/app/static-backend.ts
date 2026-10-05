@@ -30,6 +30,9 @@ export function createStaticAppBackend(
       await Promise.resolve();
       switch (action.type) {
         case 'validate-profile-destination':
+        case 'browse-setup-folders':
+        case 'repair-setup-directory':
+        case 'test-setup-mongodb':
           return {
             snapshot: {
               ...snapshot,

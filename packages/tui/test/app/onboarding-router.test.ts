@@ -31,9 +31,11 @@ describe('destination correction before protected input', () => {
   it.each(['file-recovery-file', 'mongo-recovery-file'] as const)(
     'keeps %s editable and excludes protected inputs from the preflight action',
     (step) => {
-      const state = {
+      const state: OnboardingState = {
         ...createInitialOnboardingState(),
         step,
+        storage: step === 'mongo-recovery-file' ? 'mongodb' : 'file',
+        connectionVerified: true,
         profileId: 'default',
         dataFile: '/private/data',
         keyFile: '/private/key',
@@ -68,13 +70,17 @@ describe('destination correction before protected input', () => {
         profileId: null,
         datastore: null,
       });
-      expect(accepted.state.step).toBe('creating');
-      expect(accepted.effect.kind).toBe('backend');
-      expect(accepted.state.passphrase).toBeNull();
-      expect(accepted.state.recoveryPassphrase).toBeNull();
-      expect(accepted.state.databaseUrl).toBe(
-        step === 'mongo-recovery-file' ? null : state.databaseUrl,
-      );
+      expect(accepted.state.step).toBe('review');
+      expect(accepted.effect.kind).toBe('none');
+      const confirmed = rawTransition(accepted.state, {
+        type: 'key',
+        key: { name: 'return' },
+      });
+      expect(confirmed.state.step).toBe('creating');
+      expect(confirmed.effect.kind).toBe('backend');
+      expect(confirmed.state.passphrase).toBeNull();
+      expect(confirmed.state.recoveryPassphrase).toBeNull();
+      expect(confirmed.state.databaseUrl).toBeNull();
     },
   );
   it.each(['file', 'mongodb'] as const)(
@@ -225,7 +231,13 @@ describe('init onboarding router', () => {
     expect(state.step).toBe('file-recovery-file');
     expect(state.query).toMatch(/\.kavrix[/\\]kavrix\.recovery$/);
 
-    const transition = transitionOnboarding(state, {
+    const review = transitionOnboarding(state, {
+      type: 'key',
+      key: { name: 'return' },
+    });
+    expect(review.state.step).toBe('review');
+    expect(review.effect.kind).toBe('none');
+    const transition = transitionOnboarding(review.state, {
       type: 'key',
       key: { name: 'return' },
     });
@@ -374,6 +386,16 @@ describe('init onboarding router', () => {
     state = press(state, { name: 'return' }); // key file
     for (const ch of 'mongodb://127.0.0.1:27017') state = press(state, { text: ch });
     state = press(state, { name: 'return' });
+    expect(state.pendingTool).toBe('test-setup-mongodb');
+    state = rawTransition(state, {
+      type: 'backend-result',
+      ok: true,
+      notice: 'Connection verified.',
+      profileId: null,
+      datastore: null,
+      setup: { kind: 'connection', status: 'ok' },
+    }).state;
+    state = press(state, { name: 'return' });
     expect(state.step).toBe('mongo-passphrase');
     for (const ch of 'correct-horse-battery') state = press(state, { text: ch });
     state = press(state, { name: 'return' });
@@ -385,7 +407,13 @@ describe('init onboarding router', () => {
     for (const ch of 'recovery-horse-battery') state = press(state, { text: ch });
     state = press(state, { name: 'return' });
     expect(state.step).toBe('mongo-recovery-file');
-    const transition = transitionOnboarding(state, {
+    const review = transitionOnboarding(state, {
+      type: 'key',
+      key: { name: 'return' },
+    });
+    expect(review.state.step).toBe('review');
+    expect(review.effect.kind).toBe('none');
+    const transition = transitionOnboarding(review.state, {
       type: 'key',
       key: { name: 'return' },
     });

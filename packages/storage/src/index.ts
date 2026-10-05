@@ -32,6 +32,7 @@ export {
   MongoEncryptedDatabaseStore,
   type MongoEncryptedDatabaseStoreOptions,
 } from './mongo-encrypted-database.js';
+export { probeMongoConnection } from './mongo-connection-probe.js';
 export {
   MongoCollaborativeVaultStore,
   type ActivateCollaborativeGenesisInput,

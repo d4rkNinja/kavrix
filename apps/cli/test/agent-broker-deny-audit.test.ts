@@ -67,19 +67,14 @@ describe('agent broker denial audit', () => {
       expect(process.exitCode).toBe(1);
       expect(stderrChunks.join('')).toContain('denied (policy-denied)');
 
-      // The broker persists the denial after sending the exit frame, so the
-      // client (and this test) can observe the socket close first. Poll the
-      // sealed state briefly instead of racing the write.
-      let denial;
-      for (let attempt = 0; attempt < 40 && denial === undefined; attempt += 1) {
-        const snapshot = await state.read();
-        denial = snapshot.audit.find(
-          (event) => event.action === 'authorization-denied',
-        );
-        if (denial === undefined) {
-          await new Promise((resolve) => setTimeout(resolve, 50));
-        }
-      }
+      // Exit is sent before the sealed audit write completes. Wait for the
+      // broker's observable completion boundary, then require the persisted
+      // event rather than racing real Windows ACL I/O with a short poll.
+      await session.queue;
+      const snapshot = await state.read();
+      const denial = snapshot.audit.find(
+        (event) => event.action === 'authorization-denied',
+      );
       expect(denial).toBeDefined();
       expect(denial?.permissionKey).toBe('prod-db');
       expect(denial?.reason).toBe('policy-denied');

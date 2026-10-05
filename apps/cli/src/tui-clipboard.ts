@@ -8,6 +8,12 @@ import { spawn } from 'node:child_process';
 const CLIPBOARD_CLEAR_MS = 30_000;
 const OSC_CLEAR_TIMERS = new Set<ReturnType<typeof setTimeout>>();
 
+export function clipboardCopyNotice(backend: 'osc52' | 'system'): string {
+  return backend === 'osc52'
+    ? 'Copied via terminal clipboard; best-effort clear scheduled in ~30s while Kavrix stays open.'
+    : 'Copied via system clipboard; automatic clearing is unavailable. Clear it manually after use.';
+}
+
 /** Write UTF-8 text to the terminal clipboard via OSC 52. */
 export function writeOsc52Clipboard(stdout: NodeJS.WriteStream, value: string): void {
   const payload = Buffer.from(value, 'utf8').toString('base64');
@@ -129,8 +135,8 @@ export async function copySecretToClipboard(
   }
 
   await trySystemClipboard(value);
-  // Best-effort delayed clear via OSC when a TTY appears later is skipped;
-  // system clipboard managers vary — message still reports ~30s intent.
+  // Native clipboard clearing is unavailable here; callers must report that
+  // limitation instead of promising the terminal timer for this backend.
   return 'system';
 }
 
