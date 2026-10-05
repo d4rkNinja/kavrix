@@ -1,6 +1,6 @@
 ﻿import { randomUUID } from 'node:crypto';
 import { access as accessPath, mkdtemp, rm, writeFile } from 'node:fs/promises';
-import { connect as netConnect } from 'node:net';
+import { connect as netConnect, Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough, Readable } from 'node:stream';
@@ -594,6 +594,72 @@ describe('in-process broker and client round trip', () => {
       // This sequential policy test must wait for that observable boundary;
       // otherwise real Windows ACL I/O can trigger the intentional busy limit.
       await session.queue;
+
+      // A child may deliberately stop reading while the broker still has input.
+      // Wait for the real fd close, then write: this must not crash the broker
+      // or turn a successful command into a failed authorization.
+      for (const inputFailure of ['EPIPE', 'EIO']) {
+        const closedInput = await openRawBrokerRequest(
+          broker.endpoint,
+          execBrokerRequest(
+            token,
+            inputFailure === 'EPIPE'
+              ? 'require("node:fs").closeSync(0); console.log("INPUT_CLOSED"); setTimeout(() => process.exit(0), 1000)'
+              : 'console.log("INPUT_CLOSED"); setTimeout(() => process.exit(0), 1000)',
+          ),
+        );
+        await closedInput.waitForFrame(
+          (frame) =>
+            frame.event === 'stdout' &&
+            Buffer.from(frame.data, 'base64').toString('utf8').includes('INPUT_CLOSED'),
+        );
+        // Inject the error into the real parent stream for deterministic coverage
+        // on every platform; unrelated socket writes retain their behavior.
+        const originalSocketWrite = Socket.prototype.write;
+        const brokenPipe = vi
+          .spyOn(Socket.prototype, 'write')
+          .mockImplementation(function (this: Socket, ...args: unknown[]) {
+            const chunk = args[0];
+            if (
+              Buffer.isBuffer(chunk) &&
+              chunk.length === 32 * 1024 &&
+              chunk.every((byte) => byte === 120)
+            ) {
+              this.destroy(
+                Object.assign(new Error(secretValue), { code: inputFailure }),
+              );
+              return false;
+            }
+            return Reflect.apply(originalSocketWrite, this, args) as boolean;
+          });
+        try {
+          closedInput.sendFrames([
+            {
+              v: 1,
+              event: 'stdin',
+              data: Buffer.alloc(32 * 1024, 120).toString('base64'),
+            },
+            { v: 1, event: 'close-stdin' },
+          ]);
+          const closedFrames = await closedInput.done;
+          expect(
+            closedFrames.some(
+              (frame) => frame.event === 'decision' && frame.outcome === 'allow',
+            ),
+          ).toBe(true);
+          expect(closedFrames.find((frame) => frame.event === 'exit')).toMatchObject({
+            exitCode: inputFailure === 'EPIPE' ? 0 : 1,
+            signal: null,
+          });
+          expect(decodedStderr(closedFrames)).toBe(
+            inputFailure === 'EPIPE' ? '' : 'kavrix agent: child input failed.\n',
+          );
+          expect(decodedStderr(closedFrames)).not.toContain(secretValue);
+        } finally {
+          brokenPipe.mockRestore();
+        }
+        await session.queue;
+      }
 
       // Denied by a deny entry: decision frame, stderr note, exit code 1.
       // Arguments ride along into the audit argvPreview.

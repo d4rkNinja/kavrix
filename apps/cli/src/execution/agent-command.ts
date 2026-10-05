@@ -101,6 +101,7 @@ const DEFAULT_BROKER_LIMITS: BrokerLimits = {
  */
 const BROKER_BUSY_ERROR = 'kavrix agent: broker busy; retry the request.\n';
 const BROKER_FLOOD_ERROR = 'kavrix agent: broker resource limit exceeded.\n';
+const BROKER_CHILD_INPUT_ERROR = 'kavrix agent: child input failed.\n';
 
 export interface AgentRunOptions extends DatabaseFlatCommandOptions {
   readonly agentName: string;
@@ -1104,6 +1105,27 @@ function wireChildRelay(
   child: ChildProcess,
 ): void {
   context.currentChild = child;
+  let inputClosed = false;
+  const closeInput = (): void => {
+    inputClosed = true;
+    if (context.currentChild !== child || context.terminatedHard) return;
+    context.stdinBackpressured = false;
+    socket.resume();
+  };
+  // A child can close its read end before queued input is written. Handle the
+  // pipe's asynchronous error before flushing that queue; child process error
+  // handlers do not own errors emitted by its stdin stream.
+  child.stdin?.on('error', (error: NodeJS.ErrnoException) => {
+    inputClosed = true;
+    if (context.currentChild !== child || context.terminatedHard) return;
+    if (error.code === 'EPIPE' || error.code === 'ERR_STREAM_DESTROYED') {
+      // Input is now half-closed. Continue draining output and observing exit.
+      closeInput();
+      return;
+    }
+    terminateBrokerConnection(socket, context, BROKER_CHILD_INPUT_ERROR);
+  });
+  child.stdin?.once('close', closeInput);
   const pump = async (
     readable: NodeJS.ReadableStream | null,
     event: 'stdout' | 'stderr',
@@ -1117,7 +1139,12 @@ function wireChildRelay(
     .then(() => pump(child.stderr, 'stderr'))
     .catch(() => undefined);
   const sink = (frame: AgentBrokerClientFrame): void => {
-    if (child.stdin === null || child.stdin.writableEnded) {
+    if (
+      inputClosed ||
+      child.stdin === null ||
+      child.stdin.writableEnded ||
+      child.stdin.destroyed
+    ) {
       return;
     }
     if (frame.event === 'stdin') {

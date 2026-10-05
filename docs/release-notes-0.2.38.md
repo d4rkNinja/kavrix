@@ -19,6 +19,14 @@ First-paint watchdogs, navigation/resize chrome remounts, masked input, explicit
 reveal confirmation, encryption, and protected-file checks remain in place.
 This release adds no runtime dependency or OS-specific executable.
 
+CI also exposed an agent-broker pipe-close race on macOS x64. The relay now owns
+child stdin errors before flushing queued input. A closed input pipe stops
+forwarding and releases backpressure while output and the actual child exit
+continue to be observed. Unexpected input failures terminate the connection with
+a generic error; underlying diagnostics are never forwarded. Regression coverage
+uses a real broker, client, and child, plus deterministic stream-error injection
+to cover both outcomes and a diagnostic canary.
+
 Regression tests cover terminal key-sequence decoding in a mounted Ink session,
 large and filtered lists, terminal height, empty results, overlay isolation,
 duplicate resize reports, countdown frame suppression, and expiry clearing.
