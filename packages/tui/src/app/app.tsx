@@ -19,6 +19,7 @@ import { armFirstFrameWatchdog } from '../first-frame-watchdog.js';
 import { AppInteractionProvider } from './interaction.js';
 import { ClickTarget, createMouseInput, MouseProvider } from './mouse.js';
 import { terminalFullscreenEnabled } from './viewport.js';
+import { createInputReadiness } from './input-readiness.js';
 
 /** Monotonic frame id shared between the router and the mouse decoder. */
 export interface FrameClock {
@@ -370,6 +371,7 @@ export function mountKavrixApp(options: MountKavrixAppOptions): KavrixAppHandle 
   // repaint, so it is the one opt-out. Ink reads INK_SCREEN_READER as 'true'.
   const alternateScreen = terminalFullscreenEnabled();
   const frameClock: FrameClock = { current: 0 };
+  const inputReadiness = createInputReadiness(() => frameClock.current);
   const mouse = createMouseInput({
     stdin: options.stdin ?? process.stdin,
     stdout,
@@ -385,6 +387,7 @@ export function mountKavrixApp(options: MountKavrixAppOptions): KavrixAppHandle 
   // first frame never arrives.
   let instance: ReturnType<typeof render> | undefined;
   const restoreTerminal = (): void => {
+    inputReadiness.dispose();
     // Release terminal input modes before Ink restores the primary screen, so
     // no report can arrive in an encoding the decoder has already stopped
     // filtering and the shell never inherits a live mouse reporter.
@@ -432,10 +435,12 @@ export function mountKavrixApp(options: MountKavrixAppOptions): KavrixAppHandle 
         patchConsole: false,
         interactive: true,
         alternateScreen,
+        onRender: inputReadiness.painted,
       },
     );
   } catch (error) {
     watchdog.dispose();
+    inputReadiness.dispose();
     mouse.dispose();
     throw error;
   }
@@ -454,7 +459,11 @@ export function mountKavrixApp(options: MountKavrixAppOptions): KavrixAppHandle 
       }
     },
     unmount: shutdown,
-    waitForInputReady: () => mouse.whenInteractive(),
+    waitForInputReady: async () => {
+      await inputReadiness.wait();
+      await instance?.waitUntilRenderFlush();
+      await mouse.whenInteractive();
+    },
   };
 }
 

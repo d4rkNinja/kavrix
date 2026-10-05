@@ -50,6 +50,7 @@ const handles = new Set<OnboardingAppHandle>();
 afterEach(() => {
   for (const handle of handles) handle.unmount();
   handles.clear();
+  vi.useRealTimers();
 });
 
 function mount(
@@ -133,6 +134,16 @@ async function click(
 }
 
 describe('mounted setup pointer and full-screen controls', () => {
+  it('flushes resized chrome before reporting input readiness', async () => {
+    const fixture = mount();
+    await ready(fixture, 'Welcome');
+    fixture.output.columns = 70;
+    fixture.output.rows = 20;
+    fixture.output.emit('resize');
+    await fixture.handle.waitForInputReady();
+    expect(fixture.output.frame().split('\n')[0]).toHaveLength(70);
+    await click(fixture, 'Enter start', 'Local encrypted file');
+  });
   it('reviews before creation, streams real stages and elapsed time, and rejects duplicate create clicks', async () => {
     let complete:
       | ((result: Awaited<ReturnType<InteractiveAppBackend['dispatch']>>) => void)
@@ -176,10 +187,16 @@ describe('mounted setup pointer and full-screen controls', () => {
     expect(fixture.calls.some((action) => action.type === 'create-file-profile')).toBe(
       false,
     );
+    // Keep the elapsed-time assertion exact even when a loaded runner delays
+    // the real interval callback past its first second. Only Date is faked;
+    // React scheduling, Ink output, and readiness still use real timers.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const creationTime = Date.now();
     fixture.input.write(report(fixture, 'Enter create'));
     await ready(fixture, 'Checking protected destinations', false);
     reportProgress?.({ stage: 'verifying-recovery' });
     await ready(fixture, 'Verifying recovery kit', false);
+    vi.setSystemTime(creationTime + 1000);
     await vi.waitFor(
       () => {
         expect(fixture.output.frame()).toContain('Elapsed 1s');

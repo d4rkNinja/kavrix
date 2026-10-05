@@ -10,6 +10,7 @@ import type { FrameClock } from './app.js';
 import { InputInteractionProvider } from './interaction.js';
 import { createMouseInput, MouseProvider } from './mouse.js';
 import { terminalFullscreenEnabled } from './viewport.js';
+import { createInputReadiness } from './input-readiness.js';
 import {
   createInitialOnboardingState,
   transitionOnboarding,
@@ -170,6 +171,7 @@ export function KavrixOnboardingApp({
       if (viewInputRef.current?.(key) === true) return;
       const previousStep = stateRef.current.step;
       const next = transitionOnboarding(stateRef.current, { type: 'key', key });
+      if (next.state === stateRef.current && next.effect.kind === 'none') return;
       stateRef.current = next.state;
       setState(next.state);
       clock.current += 1;
@@ -355,6 +357,7 @@ export function mountOnboardingApp(
   ensureTtySize(stdout);
   const alternateScreen = terminalFullscreenEnabled();
   const frameClock: FrameClock = { current: 0 };
+  const inputReadiness = createInputReadiness(() => frameClock.current);
   const mouse = createMouseInput({
     stdin: options.stdin ?? process.stdin,
     stdout,
@@ -366,6 +369,7 @@ export function mountOnboardingApp(
   });
   let instance: ReturnType<typeof render> | undefined;
   const restoreTerminal = (): void => {
+    inputReadiness.dispose();
     mouse.dispose();
     instance?.unmount();
     instance = undefined;
@@ -409,6 +413,7 @@ export function mountOnboardingApp(
         patchConsole: false,
         interactive: true,
         alternateScreen,
+        onRender: inputReadiness.painted,
       },
     );
   } catch (error) {
@@ -435,7 +440,11 @@ export function mountOnboardingApp(
         shutdown();
       }
     },
-    waitForInputReady: () => mouse.whenInteractive(),
+    waitForInputReady: async () => {
+      await inputReadiness.wait();
+      await instance?.waitUntilRenderFlush();
+      await mouse.whenInteractive();
+    },
     unmount: shutdown,
   };
 }

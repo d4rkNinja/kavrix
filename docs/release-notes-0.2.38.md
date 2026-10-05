@@ -19,6 +19,10 @@ First-paint watchdogs, navigation/resize chrome remounts, masked input, explicit
 reveal confirmation, encryption, and protected-file checks remain in place.
 This release adds no runtime dependency or OS-specific executable.
 
+Mounted app input readiness also waits for Ink to flush pending output before
+reporting registered pointer regions. This keeps terminal resize and setup
+automation coordinates aligned with the displayed frame without fixed delays.
+
 CI also exposed an agent-broker pipe-close race on macOS x64. The relay now owns
 child stdin errors before flushing queued input. A closed input pipe stops
 forwarding and releases backpressure while output and the actual child exit
