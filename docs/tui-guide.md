@@ -71,7 +71,12 @@ paint. Footer chips prioritize Enter/detail, Esc, and q on narrow terminals, plu
 `u` unlock while the vault is locked, so the unlock control survives overflow.
 `+N more` reports how many chips are hidden and is not itself clickable; press
 `?` for Help from any screen. Home and data lists render bounded windows; `/`
-search filters client-side. Escape remasks a REVEAL and returns focus to the
+search filters client-side. Home/End select the first/last row; Page Up/Page Down
+jump through lists. Credential paging adapts to terminal height and the visible
+reveal panel, and uses the filtered list. These shortcuts do not act behind input
+or confirmation overlays. Repeated resize reports and ignored keys avoid redundant
+state updates and mouse-frame invalidations. The reveal countdown updates once per displayed second; the expiry check
+still runs every 250ms. Escape remasks a REVEAL and returns focus to the
 credentials list. Clicking the startup splash skips it.
 
 ## Mouse and workflow navigation (0.2.34)

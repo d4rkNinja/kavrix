@@ -145,6 +145,7 @@ export function KavrixApp({
       const previousScreen = stateRef.current.screen;
       const previousOverlay = stateRef.current.overlay;
       const next = transitionAppRouter(stateRef.current, action);
+      if (next.state === stateRef.current && next.effect.kind === 'none') return;
       stateRef.current = next.state;
       setState(next.state);
       // Every repaint invalidates the geometry a mouse report was aimed at, so
@@ -193,6 +194,7 @@ export function KavrixApp({
       .then((snapshot) => {
         if (cancelled || settled) return;
         settled = true;
+        clearTimeout(timeout);
         dispatchRef.current({ type: 'hydrate', snapshot });
         setBackendReady(true);
         setPaintEpoch((epoch) => epoch + 1);
@@ -200,6 +202,7 @@ export function KavrixApp({
       .catch(() => {
         if (cancelled || settled) return;
         settled = true;
+        clearTimeout(timeout);
         setHydrateError(
           'Vault session could not be loaded. Press q to quit and check your profile configuration.',
         );
@@ -481,6 +484,10 @@ function mapInkInput(
     return: boolean;
     escape: boolean;
     backspace: boolean;
+    home: boolean;
+    end: boolean;
+    pageUp: boolean;
+    pageDown: boolean;
     ctrl: boolean;
     shift: boolean;
     name?: string;
@@ -500,6 +507,10 @@ function mapInkInput(
   if (key.return) return { name: 'return' };
   if (key.escape) return { name: 'escape' };
   if (key.backspace) return { name: 'backspace' };
+  if (key.home) return { name: 'home' };
+  if (key.end) return { name: 'end' };
+  if (key.pageUp) return { name: 'page-up' };
+  if (key.pageDown) return { name: 'page-down' };
   if (input.length === 0) return null;
   return { text: input, ctrl: key.ctrl };
 }

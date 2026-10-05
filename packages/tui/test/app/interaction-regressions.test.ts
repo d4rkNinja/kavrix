@@ -243,6 +243,25 @@ function mount(
   return { input, output, handle };
 }
 
+describe('terminal list shortcuts', () => {
+  it('decodes common Home/End and paging sequences into bounded list movement', async () => {
+    const actions: AppBackendAction[] = [];
+    const { input, output } = mount(snapshot({ count: 100 }), actions, { rows: 24 });
+    await waitForFrame(output, 'kavrix /');
+    input.write('4');
+    await waitForFrame(output, 'credential-01');
+    input.write(`${ESC}[6~`);
+    await waitForFrame(output, '3-6 / 100');
+    input.write(`${ESC}[F`);
+    await waitForFrame(output, '97-100 / 100');
+    input.write(`${ESC}[5~`);
+    await waitForFrame(output, '94-97 / 100');
+    input.write(`${ESC}[H`);
+    await waitForFrame(output, '1-4 / 100');
+    expect(actions).toEqual([]);
+  });
+});
+
 describe('Ctrl+C exit', () => {
   it('quits the app instead of leaving the user stuck in a wedged session', async () => {
     const actions: AppBackendAction[] = [];

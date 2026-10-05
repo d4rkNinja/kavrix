@@ -74,6 +74,7 @@ remains a command reference and is not loaded automatically.
   [0.2.30](release-notes-0.2.30.md), [0.2.31](release-notes-0.2.31.md),
   [0.2.35 — setup destination recovery](release-notes-0.2.35.md);
   [0.2.36 — fullscreen setup and pointer controls](release-notes-0.2.36.md);
+  [0.2.38 — responsive TUI and list shortcuts](release-notes-0.2.38.md);
   [0.2.37 — guided setup and honest operation status](release-notes-0.2.37.md);
   [0.2.34 — TUI refreshed](release-notes-0.2.34.md);
   earlier lines keep their own `release-notes-0.2.x.md` files. Versions 0.2.32 and

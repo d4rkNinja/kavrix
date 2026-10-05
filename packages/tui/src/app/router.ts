@@ -22,6 +22,8 @@ export interface AppKey {
     | 'backspace'
     | 'home'
     | 'end'
+    | 'page-up'
+    | 'page-down'
     | 'delete'
     | 'help';
   readonly text?: string;
@@ -276,11 +278,17 @@ export function transitionAppRouter(
           revealedName: acceptReveal ? state.pendingRevealName : state.revealedName,
           revealedValue: acceptReveal ? action.revealedSecret : state.revealedValue,
           revealedUntilMs: acceptReveal ? action.nowMs + 15_000 : state.revealedUntilMs,
+          nowMs: acceptReveal ? action.nowMs : state.nowMs,
           sessionReady: true,
         }),
       );
     }
     case 'resize':
+      if (
+        state.width === Math.max(40, action.width) &&
+        state.height === Math.max(12, action.height)
+      )
+        return unchanged(state);
       return unchanged({
         ...state,
         width: Math.max(40, action.width),
@@ -298,7 +306,13 @@ export function transitionAppRouter(
         });
       }
       if (state.revealedUntilMs > 0) {
-        // New object every tick so the reveal countdown repaints live.
+        // Repaint only when the displayed second changes. Expiry above still
+        // runs on every tick, so suppressing frames never extends a reveal.
+        if (
+          Math.ceil((state.revealedUntilMs - action.nowMs) / 1000) ===
+          Math.ceil((state.revealedUntilMs - state.nowMs) / 1000)
+        )
+          return unchanged(state);
         return unchanged({ ...state, nowMs: action.nowMs });
       }
       return unchanged(state);
@@ -532,6 +546,13 @@ function unlockIntent(state: AppRouterState): AppRouterTransition {
 
 function homeKey(state: AppRouterState, key: AppKey): AppRouterTransition {
   const entries = APP_MENU.filter((entry) => entry.id !== 'home');
+  const jump = listJumpIndex(
+    key,
+    state.menuIndex,
+    entries.length,
+    Math.max(1, state.height - 17),
+  );
+  if (jump !== null) return unchanged({ ...state, menuIndex: jump });
   if (key.name === 'up' || key.text === 'k') {
     return unchanged({
       ...state,
@@ -557,6 +578,12 @@ function homeKey(state: AppRouterState, key: AppKey): AppRouterTransition {
 
 function screenKey(state: AppRouterState, key: AppKey): AppRouterTransition {
   const length = listLength(state);
+  const pageSize =
+    state.screen === 'credentials'
+      ? credentialWindowSize(state)
+      : Math.max(1, state.height - 17);
+  const jump = listJumpIndex(key, state.listIndex, length, pageSize);
+  if (jump !== null) return unchanged({ ...state, listIndex: jump });
   if (key.name === 'up' || key.text === 'k') {
     return unchanged({ ...state, listIndex: clamp(state.listIndex - 1, length) });
   }
@@ -2021,6 +2048,26 @@ function clamp(index: number, length: number): number {
   return Math.max(0, Math.min(index, length - 1));
 }
 
+function listJumpIndex(
+  key: AppKey,
+  index: number,
+  length: number,
+  pageSize: number,
+): number | null {
+  switch (key.name) {
+    case 'home':
+      return 0;
+    case 'end':
+      return clamp(length - 1, length);
+    case 'page-up':
+      return clamp(index - pageSize, length);
+    case 'page-down':
+      return clamp(index + pageSize, length);
+    default:
+      return null;
+  }
+}
+
 function hasControlCharacter(value: string): boolean {
   for (let index = 0; index < value.length; index += 1) {
     const code = value.charCodeAt(index);
@@ -2087,6 +2134,17 @@ export function navigateToScreen(
   screen: AppScreenId,
 ): AppRouterState {
   return { ...state, screen, listIndex: 0, overlay: 'none' };
+}
+
+/** Shared row bound for credential rendering and keyboard paging. */
+export function credentialWindowSize(state: AppRouterState): number {
+  return Math.max(
+    1,
+    Math.min(
+      20,
+      Math.floor((state.height - 16 - (state.revealedName === null ? 0 : 5)) / 2),
+    ),
+  );
 }
 
 /** Credentials visible under the current `/` search filter. */

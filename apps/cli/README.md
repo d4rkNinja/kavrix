@@ -71,6 +71,11 @@ kavrix tui    # full app
 Use `kavrix init --no-tui` for classic line prompts, or stdin/explicit routing
 for scripts.
 
+Version 0.2.38 adds Home/End and Page Up/Page Down navigation in the main TUI,
+skips redundant state updates for ignored input and repeated terminal sizes, and reduces reveal
+countdown redraws. See the
+[changes and limits](https://github.com/d4rkNinja/kavrix/blob/v0.2.38/docs/release-notes-0.2.38.md).
+
 Version 0.2.37 adds review before creation, confirmed permission repair inside
 Kavrix's own artifact directory, a read-only MongoDB connection test, actual
 creation stages and elapsed time, cursor editing, and a bounded folder browser.

@@ -11,6 +11,7 @@ import { ClickTarget } from './mouse.js';
 import { TerminalViewport, terminalFullscreenEnabled } from './viewport.js';
 import {
   filteredCredentials,
+  credentialWindowSize,
   visibleListWindow,
   type AppOverlay,
   type AppRouterState,
@@ -1049,10 +1050,7 @@ export function CredentialsScreen({
   const interaction = useAppInteraction();
   const { color, ascii, listIndex, revealedName, revealedValue, snapshot } = state;
   const filtered = filteredCredentials(state);
-  const windowSize = Math.max(
-    1,
-    Math.min(20, Math.floor((state.height - 16 - (revealedName === null ? 0 : 5)) / 2)),
-  );
+  const windowSize = credentialWindowSize(state);
   const window = visibleListWindow(filtered, listIndex, windowSize);
   const pendingAt = useListStagger(window.items.length, allowMotion());
   return (
@@ -1464,6 +1462,8 @@ export function HelpScreen({
       : lines,
     [
       'Arrows or j/k move; Enter opens.',
+      'Home / End: first / last row.',
+      'PgUp / PgDn: jump through lists.',
       'Tab / Shift+Tab cycle screens.',
       'Digits 1-9 jump. Esc goes Home.',
       'Click tabs, rows, and action chips.',
