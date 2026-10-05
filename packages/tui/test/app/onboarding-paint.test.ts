@@ -102,7 +102,7 @@ describe('init onboarding first paint and focus', () => {
     expect(frame).toMatch(/ACTIVE \d+\/\d+/i);
     expect(frame).toMatch(/Owner passphrase/i);
     expect(frame).toMatch(/TYPE HERE \(masked\)/i);
-    expect(frame).toMatch(/ACTIVE · OWNER PASSPHRASE/i);
+    expect(frame).toMatch(/ACTIVE - OWNER PASSPHRASE/i);
     expect(frame).not.toMatch(/Local encrypted file/i);
     expect(frame).not.toMatch(/Key file:/i);
   });

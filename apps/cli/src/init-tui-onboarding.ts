@@ -9,6 +9,7 @@ export type InitTuiOnboardingOptions = Readonly<{
   color?: boolean;
   /** Commander `--no-splash` sets `splash: false`. */
   splash?: boolean;
+  mouse?: boolean;
   profileConfigDir?: string;
   configDir?: string;
 }>;
@@ -76,6 +77,7 @@ export async function runInitTuiOnboarding(
       color?: boolean;
       version?: string;
       noSplash?: boolean;
+      mouse?: boolean;
     }) => {
       waitUntilExit: () => Promise<InitTuiOnboardingResult>;
       unmount: () => void;
@@ -89,6 +91,7 @@ export async function runInitTuiOnboarding(
     color,
     version: CLI_VERSION,
     ...(noSplash ? { noSplash: true } : {}),
+    ...(options.mouse === undefined ? {} : { mouse: options.mouse }),
   });
   try {
     return await handle.waitUntilExit();

@@ -17,7 +17,7 @@ import {
 } from '../motion.js';
 import { sanitizeTerminalText } from '../terminal-text.js';
 import { APP_MENU, type AppScreenId } from './ids.js';
-import { keyForChip, useAppInteraction } from './interaction.js';
+import { keyForChip, useAppInteraction, useInputInteraction } from './interaction.js';
 import { ClickTarget } from './mouse.js';
 import {
   accentColor,
@@ -40,7 +40,7 @@ export function SingleLine({
   ...props
 }: ComponentProps<typeof Text>): ReactElement {
   return (
-    <Box height={1} minWidth={0} flexGrow={1} overflow="hidden">
+    <Box height={1} minHeight={1} minWidth={0} flexGrow={1} overflow="hidden">
       <Text {...props} wrap="hard">
         {children}
       </Text>
@@ -61,7 +61,7 @@ export function SectionTitle({
 }>): ReactElement {
   return (
     <Text bold {...accentColor(color, accent)}>
-      {sectionTitle(label, ascii)}
+      {sectionTitle(safe(label, ascii), ascii)}
     </Text>
   );
 }
@@ -156,6 +156,7 @@ export function KeyChip({
   onPress,
   disabled = false,
   active = false,
+  button = false,
 }: Readonly<{
   keyLabel: string;
   hint: string;
@@ -164,8 +165,10 @@ export function KeyChip({
   onPress?: () => void;
   disabled?: boolean;
   active?: boolean;
+  /** Larger pointer target for primary controls on roomy terminal layouts. */
+  button?: boolean;
 }>): ReactElement {
-  const interaction = useAppInteraction();
+  const interaction = useInputInteraction();
   const key = keyForChip(keyLabel);
   const press =
     onPress ??
@@ -176,6 +179,8 @@ export function KeyChip({
         });
   return (
     <ClickTarget
+      paddingX={button ? 1 : 0}
+      paddingY={button ? 1 : 0}
       enabled={
         (interaction.enabled || keyLabel === 'Esc' || keyLabel === 'q') &&
         !disabled &&
@@ -227,7 +232,7 @@ export function SelectRow({
   pending?: boolean;
   onPress?: () => void;
 }>): ReactElement {
-  const interaction = useAppInteraction();
+  const interaction = useInputInteraction();
   const pointer = pointerGlyph(ascii);
   const bar = active ? pointer : ' ';
   const rawLabel = safe(label, ascii);

@@ -12,7 +12,15 @@ import { defaultFileProfilePaths, defaultMongoProfilePaths } from './paths.js';
 
 export interface AppKey {
   readonly name?:
-    'up' | 'down' | 'left' | 'right' | 'tab' | 'return' | 'escape' | 'backspace';
+    | 'up'
+    | 'down'
+    | 'left'
+    | 'right'
+    | 'tab'
+    | 'return'
+    | 'escape'
+    | 'backspace'
+    | 'help';
   readonly text?: string;
   readonly ctrl?: boolean;
   readonly shift?: boolean;

@@ -18,6 +18,7 @@ import { SplashGate } from '../splash-gate.js';
 import { armFirstFrameWatchdog } from '../first-frame-watchdog.js';
 import { AppInteractionProvider } from './interaction.js';
 import { ClickTarget, createMouseInput, MouseProvider } from './mouse.js';
+import { terminalFullscreenEnabled } from './viewport.js';
 
 /** Monotonic frame id shared between the router and the mouse decoder. */
 export interface FrameClock {
@@ -364,8 +365,7 @@ export function mountKavrixApp(options: MountKavrixAppOptions): KavrixAppHandle 
   // selection without demoting the UI to an inline, scrollback-eating frame.
   // Screen-reader output is line oriented and cannot compose with a full-screen
   // repaint, so it is the one opt-out. Ink reads INK_SCREEN_READER as 'true'.
-  const screenReader = process.env['INK_SCREEN_READER'] === 'true';
-  const alternateScreen = !screenReader && process.env['TERM'] !== 'dumb';
+  const alternateScreen = terminalFullscreenEnabled();
   const frameClock: FrameClock = { current: 0 };
   const mouse = createMouseInput({
     stdin: options.stdin ?? process.stdin,

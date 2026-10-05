@@ -44,6 +44,7 @@ export default defineConfig({
       'packages/key-files/test/collaboration-*.test.ts',
       'packages/key-files/test/filesystem-coverage.test.ts',
       'packages/key-files/test/filesystem-windows-acl.test.ts',
+      'packages/key-files/test/filesystem-posix-mode.test.ts',
       'packages/key-files/test/windows-acl.test.ts',
       'packages/key-files/test/windows-directory-acl.test.ts',
       'packages/storage/test/file-local-vault.test.ts',

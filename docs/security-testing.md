@@ -15,6 +15,20 @@ and command list.
 
 ## Required local checks
 
+Fullscreen setup regressions exercise mounted pointer streams, padded targets,
+split/stale report filtering, protected-input canaries, resize and mouse-disabled
+keyboard fallback, paged public guidance, and terminal-mode restoration. Layout
+checks cover 40×12, 80×24, and 120×60 viewports and line-oriented screen-reader
+output. These are headless render/input tests; they do not certify physical touch
+support in every terminal.
+
+Portable metadata tests exercise POSIX owner/mode decisions, descriptor cleanup,
+inode swaps, and bounded reads on every host. These model the filesystem port;
+native platform jobs independently verify real ACLs, modes, and symlinks.
+Session-envelope and collaboration contract tests reject malformed records,
+contradictory lifecycles, and approval/transfer tuple swaps. Coverage thresholds
+remain unchanged across hosts.
+
 ```sh
 pnpm install --frozen-lockfile
 pnpm build

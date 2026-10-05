@@ -26,6 +26,12 @@ recovery kit, then opens the terminal UI. Passphrases are asked through
 masked prompts and must be at least 16 bytes. At the end you can optionally
 enable OS session unlock.
 
+The wizard fills the terminal. Click storage choices and the bottom controls, or
+use arrows and Enter. `Ctrl+G` opens paged Help with complete repair instructions;
+Escape closes it without submitting your input. Taps work when your terminal
+translates them into mouse clicks. `kavrix init --no-mouse` keeps keyboard setup
+and native terminal selection.
+
 - Prefer classic line-by-line prompts? `kavrix init --no-tui`
 - Want the UI without onboarding? `kavrix tui`
 - After onboarding, bare `kavrix` opens the TUI directly.

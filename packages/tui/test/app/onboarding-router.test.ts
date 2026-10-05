@@ -498,6 +498,38 @@ describe('init onboarding router', () => {
     );
   });
 
+  it('blocks duplicate session activation and exit while the backend is pending', () => {
+    const initial = {
+      ...createInitialOnboardingState(),
+      step: 'enable-session' as const,
+      completedProfileId: 'default',
+      completedDatastore: 'file' as const,
+    };
+    const pending = transitionOnboarding(initial, {
+      type: 'key',
+      key: { name: 'return' },
+    });
+    expect(pending.effect.kind).toBe('backend');
+    expect(pending.state.sessionAttempt).toBe(true);
+    for (const key of [
+      { name: 'return' as const },
+      { name: 'escape' as const },
+      { text: 'c', ctrl: true },
+    ]) {
+      const repeated = transitionOnboarding(pending.state, { type: 'key', key });
+      expect(repeated.effect.kind).toBe('none');
+      expect(repeated.state).toEqual(pending.state);
+    }
+    const completed = transitionOnboarding(pending.state, {
+      type: 'backend-result',
+      ok: true,
+      notice: 'Session unlock enabled.',
+      profileId: 'default',
+      datastore: 'file',
+    });
+    expect(completed.state.step).toBe('success');
+  });
+
   it('records completedRecoveryFile on backend success', () => {
     const state = {
       ...createInitialOnboardingState(),

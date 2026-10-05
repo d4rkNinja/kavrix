@@ -220,6 +220,7 @@ export type LocalCliOptions = Readonly<{
   ascii?: boolean;
   color?: boolean;
   splash?: boolean;
+  mouse?: boolean;
   limit?: string;
   caseSensitive?: boolean;
   allowInsecureTransport?: boolean;
@@ -297,6 +298,10 @@ export function buildLocalCli(): Command {
     'Disable ANSI color for TUI onboarding (also honors NO_COLOR).',
   );
   init.option('--no-splash', 'Skip the animated startup splash on TUI onboarding.');
+  init.option(
+    '--no-mouse',
+    'Use keyboard navigation and native terminal selection during setup.',
+  );
   addKeyOptions(init);
   init.action(async (...args: unknown[]) => {
     const options = getOptions(args);
@@ -312,6 +317,7 @@ export function buildLocalCli(): Command {
             ? { color: false }
             : {}),
         ...(options.splash === false ? { splash: false } : {}),
+        ...(options.mouse === false ? { mouse: false } : {}),
       });
       if (result.status === 'completed') {
         writeInitTuiOnboardingComplete({

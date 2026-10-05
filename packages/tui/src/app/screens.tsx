@@ -8,6 +8,7 @@ import type { AppSnapshot } from './backend.js';
 import { APP_MENU, HELP_TOPICS } from './ids.js';
 import { useAppInteraction } from './interaction.js';
 import { ClickTarget } from './mouse.js';
+import { TerminalViewport } from './viewport.js';
 import {
   filteredCredentials,
   visibleListWindow,
@@ -386,18 +387,10 @@ export function AppChrome({
       ? `${glyphs.slice(0, prefixLength).join('')}${ascii ? '...' : '…'}${glyphs.slice(-(inputCells - prefixLength - ellipsisSize)).join('')}`
       : fullTypedBody;
 
-  // Prefer content-sized height over pinning to the full TTY rows. Fixed
-  // height={rows} + flexGrow panels blank on some maximized TTYs (Ink/Yoga).
-  // The clip budget is the full TTY height: reserving an extra row here used to
-  // cut the footer's bottom border on short-but-legal terminals and leave a
-  // panel rendering as a dangling edge.
+  // Keep child panels content-sized; a flexible spacer fills the viewport
+  // without stretching their internals or clipping footer actions.
   return (
-    <Box
-      flexDirection="column"
-      width={width}
-      maxHeight={Math.max(1, state.height)}
-      overflow="hidden"
-    >
+    <TerminalViewport width={width} height={state.height}>
       <Panel accent={accent} ascii={ascii} color={color} paddingX={1} paddingY={0}>
         <Box flexDirection="row" justifyContent="space-between">
           <SingleLine bold {...accentColor(color, CHROME.accent)}>
@@ -544,8 +537,9 @@ export function AppChrome({
         )}
       </Box>
 
+      <Box flexGrow={1} minHeight={0} />
       <Footer state={state} />
-    </Box>
+    </TerminalViewport>
   );
 }
 

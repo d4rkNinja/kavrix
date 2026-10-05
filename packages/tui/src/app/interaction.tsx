@@ -18,6 +18,25 @@ const InteractionContext = createContext<AppInteraction>({
   busy: false,
 });
 
+type InputInteraction = Pick<AppInteraction, 'press' | 'enabled' | 'mouse' | 'busy'>;
+const InputContext = createContext<InputInteraction | null>(null);
+
+/** Setup uses keyboard intents without acquiring the main app's navigation port. */
+export function InputInteractionProvider({
+  value,
+  children,
+}: Readonly<{
+  value: InputInteraction;
+  children: ReactNode;
+}>): ReactElement {
+  return <InputContext.Provider value={value}>{children}</InputContext.Provider>;
+}
+
+export function useInputInteraction(): InputInteraction {
+  const app = useAppInteraction();
+  return useContext(InputContext) ?? app;
+}
+
 /** Presentation emits the same guarded intents as keyboard navigation. */
 export function AppInteractionProvider({
   value,

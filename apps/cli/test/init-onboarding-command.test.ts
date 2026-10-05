@@ -480,6 +480,35 @@ describe('root init onboarding composition', () => {
     );
   });
 
+  it.each([
+    ['--no-mouse', { mouse: false }],
+    ['--color', { color: true }],
+    ['--no-color', { color: false }],
+  ] as const)(
+    'forwards %s and the verified recovery result through setup',
+    async (flag, expected) => {
+      vi.mocked(runInitTuiOnboarding).mockResolvedValueOnce({
+        status: 'completed',
+        profileId: 'work',
+        datastore: 'mongodb',
+        recoveryFile: '/protected/work.recovery',
+      });
+      await buildLocalCli().parseAsync(['node', 'kavrix', 'init', flag]);
+      expect(runInitTuiOnboarding).toHaveBeenCalledWith(
+        expect.objectContaining(expected),
+      );
+      expect(writeInitTuiOnboardingComplete).toHaveBeenCalledWith(
+        expect.objectContaining({
+          profileId: 'work',
+          datastore: 'mongodb',
+          recoveryFile: '/protected/work.recovery',
+        }),
+      );
+      expect(guidedMocks.preflight).not.toHaveBeenCalled();
+      expect(guidedMocks.execute).not.toHaveBeenCalled();
+    },
+  );
+
   it('maps TUI cancel to InitOnboardingCancelledError', async () => {
     vi.mocked(runInitTuiOnboarding).mockResolvedValueOnce({ status: 'cancelled' });
     await expect(

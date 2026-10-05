@@ -71,6 +71,13 @@ kavrix tui    # full app
 Use `kavrix init --no-tui` for classic line prompts, or stdin/explicit routing
 for scripts.
 
+Version 0.2.36 fills the terminal during setup and management, with bottom-pinned
+controls, larger setup click targets, and a progress guide on wide screens. Click
+storage choices and Continue/Back/Help, or use the keyboard. Setup Help (`Ctrl+G`)
+pages long repair instructions without submitting the active field. Touch works
+where the terminal translates taps into mouse clicks. Use `kavrix init --no-mouse`
+or `kavrix tui --no-mouse` for native text selection.
+
 Version 0.2.35 checks setup destinations early on Windows, Linux, and macOS.
 Permission problems keep the destination editable with repair instructions and
 Enter to recheck. Both file and MongoDB storage require a protected local key.

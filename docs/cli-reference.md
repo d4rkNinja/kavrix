@@ -22,8 +22,13 @@ command reference and is not loaded automatically.
 ```sh
 kavrix init
 kavrix init --no-tui   # classic guided prompts
+kavrix init --no-mouse # fullscreen setup with keyboard input / native selection
 kavrix tui             # full interactive app after setup
 ```
+
+During setup, `Ctrl+G` opens paged Help; Enter/arrows page and Escape returns to
+the active field. Mouse clicks and supported terminal touch taps select storage
+and activate the displayed controls. Secrets remain masked.
 
 The explicit `db profile` → `db init` → `db vault create` →
 `db vault use` path remains available for MongoDB and advanced routing.

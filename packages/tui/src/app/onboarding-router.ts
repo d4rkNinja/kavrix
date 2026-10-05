@@ -6,7 +6,7 @@ import {
   defaultMongoProfilePaths,
   defaultRecoveryFilePath,
 } from './paths.js';
-import { sanitizePasteText } from './router.js';
+import { sanitizePasteText, type AppKey } from './router.js';
 
 /** Matches @kavrix/crypto MIN_PASSPHRASE_BYTES without pulling crypto into TUI. */
 const MIN_ONBOARDING_PASSPHRASE_BYTES = 16;
@@ -38,12 +38,7 @@ export type OnboardingStep =
   | 'success'
   | 'error';
 
-export interface OnboardingKey {
-  readonly name?:
-    'up' | 'down' | 'left' | 'right' | 'tab' | 'return' | 'escape' | 'backspace';
-  readonly text?: string;
-  readonly ctrl?: boolean;
-}
+export type OnboardingKey = Pick<AppKey, 'name' | 'text' | 'ctrl'>;
 
 export interface OnboardingState {
   readonly checkingDestination: boolean;
@@ -206,7 +201,7 @@ function keyTransition(
   state: OnboardingState,
   key: OnboardingKey,
 ): OnboardingTransition {
-  if (state.checkingDestination) return unchanged(state);
+  if (state.checkingDestination || state.sessionAttempt) return unchanged(state);
   // Never abort mid-create — avoids partial profile corruption from Ctrl+C.
   if (state.step === 'creating') {
     return unchanged({

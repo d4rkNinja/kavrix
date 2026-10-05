@@ -8,10 +8,24 @@ Non-interactive output is ANSI-free.
 ## Interactive onboarding (`kavrix init`)
 
 Bare interactive `kavrix init` mounts Ink onboarding by default when stdin,
-stdout, and stderr are TTYs. It creates a local-file database, default vault,
+stdout, and stderr are TTYs. It creates a file or MongoDB database, default vault,
 and recovery kit through the same real CLI backend as `kavrix tui`. Pass
 `--no-tui` for classic masked line prompts. Explicit routing or stdin flags
 keep the non-interactive / legacy paths.
+
+Setup fills the terminal and keeps its controls at the bottom. Wide screens show
+a progress guide; compact screens prioritize the current field and actions.
+Click a storage row to select it, then click Continue to confirm. Continue, Back,
+Help, and Quit use the same guards as keyboard input. Controls have larger click
+targets when at least 24 rows are available. Touchscreen taps work only when the
+terminal translates them into mouse reports; keyboard input is always available.
+
+Press `Ctrl+G` or click Help for the complete current instructions. Enter, arrows,
+or the wheel page through them; Escape returns to the field. Reading Help never
+submits or changes that field, and protected values are excluded from Help.
+`Ctrl+C` quits except while a destination check or protected create/session
+operation is running. Duplicate actions are blocked until it finishes.
+Use `kavrix init --no-mouse` or `KAVRIX_TUI_MOUSE=0` for native selection.
 
 ## Interactive app (`kavrix tui` / `kavrix ui`)
 
@@ -45,8 +59,9 @@ Security and presentation rules:
 Flags: `--ascii`, `--color`, `--no-color`, `--no-splash`, `--no-mouse`, `--profile-config-dir`
 / `--config-dir`. `KAVRIX_TUI_NO_SPLASH=1` also skips the startup splash.
 
-Chrome is content-sized, capped below the terminal row count, and remounts after
-hydrate, resize, and screen/step changes. An interactive session paints in the
+The viewport fills the terminal row count while child panels remain content-sized,
+with footer controls pinned at the bottom. Chrome remounts after hydrate, resize,
+and screen/step changes. An interactive session paints in the
 terminal's alternate screen and restores the original screen on exit, which also
 keeps mouse hit regions aligned with the live layout. Onboarding shows an
 `ACTIVE n/m — <step>` cue so the focused field is obvious. `kavrix tui` shows a

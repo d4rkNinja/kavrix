@@ -1,40 +1,23 @@
-import { Box, Text, render, useApp, useInput, usePaste, useStdout } from 'ink';
+import { render, useApp, useInput, usePaste, useStdout } from 'ink';
 import { useCallback, useEffect, useRef, useState, type ReactElement } from 'react';
 
-import { BrandBanner } from '../showcase.js';
 import { SplashGate } from '../splash-gate.js';
 import { armFirstFrameWatchdog } from '../first-frame-watchdog.js';
-import { sanitizeTerminalText } from '../terminal-text.js';
 import type { InteractiveAppBackend, AppBackendAction } from './backend.js';
-import { resolveTtySize } from './router.js';
+import { ensureTtySize, resolveTtySize } from './router.js';
+import type { FrameClock } from './app.js';
+import { InputInteractionProvider } from './interaction.js';
+import { createMouseInput, MouseProvider } from './mouse.js';
+import { terminalFullscreenEnabled } from './viewport.js';
 import {
   createInitialOnboardingState,
-  onboardingStepFocus,
   transitionOnboarding,
   type OnboardingKey,
-  type OnboardingState,
   type OnboardingStorage,
 } from './onboarding-router.js';
-import { resolveMotionPolicy, useCursorVisible } from '../motion.js';
-import { PRODUCT_LABEL } from '../product.js';
-import {
-  accentColor,
-  CHROME,
-  maskBullets,
-  resolveAppPresentation,
-  toneGlyph,
-  type AppAccent,
-} from './theme.js';
-import {
-  ErrorState,
-  KeyChip,
-  LoadingState,
-  Panel,
-  ProgressBar,
-  SelectRow,
-  StatusPill,
-  StepDots,
-} from './widgets.js';
+import { resolveAppPresentation } from './theme.js';
+import { OnboardingChrome } from './onboarding-screen.js';
+export { renderOnboardingScreen } from './onboarding-screen.js';
 
 export interface KavrixOnboardingAppProps {
   readonly backend: InteractiveAppBackend;
@@ -43,6 +26,9 @@ export interface KavrixOnboardingAppProps {
   readonly version?: string;
   readonly noSplash?: boolean;
   readonly onComplete?: (result: OnboardingAppResult) => void;
+  readonly mouse?: boolean;
+  readonly frameClock?: FrameClock;
+  readonly releaseInput?: () => void;
 }
 
 export type OnboardingAppResult =
@@ -63,15 +49,13 @@ export interface MountOnboardingAppOptions {
   readonly color?: boolean;
   readonly version?: string;
   readonly noSplash?: boolean;
+  readonly mouse?: boolean;
 }
 
 export interface OnboardingAppHandle {
   waitUntilExit: () => Promise<OnboardingAppResult>;
+  waitForInputReady: () => Promise<void>;
   unmount: () => void;
-}
-
-function safe(value: string, ascii: boolean): string {
-  return sanitizeTerminalText(value, ascii);
 }
 
 export function KavrixOnboardingApp({
@@ -81,6 +65,9 @@ export function KavrixOnboardingApp({
   version,
   noSplash,
   onComplete,
+  mouse = false,
+  frameClock,
+  releaseInput,
 }: KavrixOnboardingAppProps): ReactElement {
   const { stdout } = useStdout();
   const { exit } = useApp();
@@ -107,6 +94,10 @@ export function KavrixOnboardingApp({
   const onCompleteRef = useRef(onComplete);
   const exitRef = useRef(exit);
   const finishedRef = useRef(false);
+  const ownClock = useRef<FrameClock>({ current: 0 });
+  const clock = frameClock ?? ownClock.current;
+  const releaseInputRef = useRef(releaseInput);
+  releaseInputRef.current = releaseInput;
   backendRef.current = backend;
   onCompleteRef.current = onComplete;
   exitRef.current = exit;
@@ -114,6 +105,7 @@ export function KavrixOnboardingApp({
   const finish = useCallback((result: OnboardingAppResult): void => {
     if (finishedRef.current) return;
     finishedRef.current = true;
+    releaseInputRef.current?.();
     onCompleteRef.current?.(result);
     exitRef.current();
   }, []);
@@ -121,6 +113,7 @@ export function KavrixOnboardingApp({
   const runBackend = useCallback(async (action: AppBackendAction): Promise<void> => {
     try {
       const result = await backendRef.current.dispatch(action);
+      if (finishedRef.current) return;
       const ok = result.snapshot.noticeTone === 'success';
       const next = transitionOnboarding(stateRef.current, {
         type: 'backend-result',
@@ -136,11 +129,13 @@ export function KavrixOnboardingApp({
       });
       stateRef.current = next.state;
       setState(next.state);
+      clock.current += 1;
       setPaintEpoch((epoch) => epoch + 1);
       if (next.effect.kind === 'backend') {
         void runBackend(next.effect.action);
       }
     } catch (error) {
+      if (finishedRef.current) return;
       const notice =
         error instanceof Error && error.message.trim().length > 0
           ? error.message
@@ -154,16 +149,19 @@ export function KavrixOnboardingApp({
       });
       stateRef.current = next.state;
       setState(next.state);
+      clock.current += 1;
       setPaintEpoch((epoch) => epoch + 1);
     }
   }, []);
 
   const dispatchKey = useCallback(
     (key: OnboardingKey): void => {
+      if (viewInputRef.current?.(key) === true) return;
       const previousStep = stateRef.current.step;
       const next = transitionOnboarding(stateRef.current, { type: 'key', key });
       stateRef.current = next.state;
       setState(next.state);
+      clock.current += 1;
       // Remount only when the step changes. Remounting on every keystroke
       // left stale Storage / Key-file frames while typing passphrases.
       if (next.state.step !== previousStep) {
@@ -175,6 +173,24 @@ export function KavrixOnboardingApp({
     },
     [runBackend],
   );
+
+  const viewInputRef = useRef<((key: OnboardingKey) => boolean) | null>(null);
+  const registerViewInput = useCallback(
+    (handler: (key: OnboardingKey) => boolean): (() => void) => {
+      viewInputRef.current = handler;
+      return () => {
+        viewInputRef.current = null;
+      };
+    },
+    [],
+  );
+
+  useEffect(() => {
+    finishedRef.current = false;
+    return () => {
+      finishedRef.current = true;
+    };
+  }, []);
 
   useEffect(() => {
     // Kick Ink's first paint immediately; some TTYs stay blank until a second frame.
@@ -195,6 +211,7 @@ export function KavrixOnboardingApp({
       });
       stateRef.current = next.state;
       setState(next.state);
+      clock.current += 1;
       setPaintEpoch((epoch) => epoch + 1);
     };
     stdout.on('resize', resize);
@@ -239,20 +256,39 @@ export function KavrixOnboardingApp({
   });
 
   return (
-    <SplashGate
-      color={presentation.color}
-      ascii={presentation.ascii}
-      {...(version === undefined ? {} : { version })}
-      noSplash={noSplash !== false}
-      width={state.width}
-      height={state.height}
-      ready={splashReady}
+    <InputInteractionProvider
+      value={{
+        press: dispatchKey,
+        enabled:
+          !state.checkingDestination &&
+          state.step !== 'creating' &&
+          !state.sessionAttempt,
+        busy:
+          state.checkingDestination ||
+          state.step === 'creating' ||
+          state.sessionAttempt,
+        mouse,
+      }}
     >
-      <OnboardingChrome
-        key={`onboard-${state.step}-${String(paintEpoch)}`}
-        state={state}
-      />
-    </SplashGate>
+      <SplashGate
+        color={presentation.color}
+        ascii={presentation.ascii}
+        {...(version === undefined ? {} : { version })}
+        noSplash={noSplash !== false}
+        width={state.width}
+        height={state.height}
+        ready={splashReady}
+      >
+        <OnboardingChrome
+          key={`onboard-${state.step}-${String(paintEpoch)}`}
+          state={state}
+          registerViewInput={registerViewInput}
+          invalidateFrame={() => {
+            clock.current += 1;
+          }}
+        />
+      </SplashGate>
+    </InputInteractionProvider>
   );
 }
 
@@ -268,364 +304,7 @@ function sanitizePasteTextLocal(raw: string): string {
   return text;
 }
 
-/** Presentational onboarding chrome for first-paint tests (no Ink hooks). */
-export function renderOnboardingScreen(state: OnboardingState): ReactElement {
-  return <OnboardingChrome state={state} />;
-}
-
-function OnboardingChrome({
-  state,
-}: Readonly<{ state: OnboardingState }>): ReactElement {
-  const { color, ascii, width } = state;
-  const focus = onboardingStepFocus(state.step);
-  const caret = useCursorVisible(resolveMotionPolicy().animate);
-  const accent: AppAccent =
-    state.step === 'success'
-      ? CHROME.success
-      : state.step === 'error'
-        ? CHROME.danger
-        : CHROME.accent;
-
-  // Content-sized height: pinning height={rows} blanks some TTYs (Ink/Yoga).
-  return (
-    <Box flexDirection="column" width={width}>
-      <Panel accent={accent} ascii={ascii} color={color} paddingX={1} paddingY={0}>
-        <BrandBanner color={color} ascii={ascii} dualTone />
-        <Box flexDirection="row" columnGap={1} flexWrap="wrap" marginTop={0}>
-          <StatusPill
-            label="product"
-            value={PRODUCT_LABEL}
-            accent={CHROME.accent}
-            color={color}
-            ascii={ascii}
-          />
-          <StatusPill
-            label="mode"
-            value="init"
-            accent={CHROME.heading}
-            color={color}
-            ascii={ascii}
-          />
-          <StatusPill
-            label="step"
-            value={`${String(focus.index)}/${String(focus.total)} ${focus.title}`}
-            accent={accent}
-            color={color}
-            ascii={ascii}
-          />
-          <StatusPill
-            label="storage"
-            value={state.storage ?? (state.storageIndex === 0 ? 'file?' : 'mongo?')}
-            accent={CHROME.heading}
-            color={color}
-            ascii={ascii}
-          />
-        </Box>
-      </Panel>
-
-      <Box flexDirection="column" flexGrow={1} paddingX={1} paddingY={1}>
-        <Text bold {...accentColor(color, CHROME.warning)}>
-          {safe(
-            `ACTIVE ${String(focus.index)}/${String(focus.total)} - ${focus.title} - ${focus.cue}`,
-            ascii,
-          )}
-        </Text>
-        <Box flexDirection="row" columnGap={1}>
-          <StepDots
-            index={focus.index - 1}
-            total={focus.total}
-            color={color}
-            ascii={ascii}
-            accent={accent}
-          />
-          <ProgressBar
-            progress={(focus.index - 1) / Math.max(1, focus.total - 1)}
-            width={Math.max(8, Math.min(30, width - 24))}
-            color={color}
-            ascii={ascii}
-            accent={accent}
-          />
-        </Box>
-        {renderOnboardingBody(state, caret)}
-      </Box>
-
-      <Box flexDirection="row" columnGap={2} paddingX={1}>
-        <KeyChip keyLabel="Enter" hint="continue" color={color} />
-        <KeyChip
-          keyLabel="Esc"
-          hint="back / cancel"
-          color={color}
-          keyAccent={CHROME.warning}
-        />
-        <KeyChip keyLabel="q" hint="quit" color={color} keyAccent={CHROME.danger} />
-      </Box>
-      {state.message === null && state.error === null ? null : (
-        <Box paddingX={1}>
-          <Text
-            {...accentColor(
-              color,
-              state.error === null ? CHROME.accent : CHROME.danger,
-            )}
-          >
-            {safe(state.error ?? state.message ?? '', ascii)}
-          </Text>
-        </Box>
-      )}
-    </Box>
-  );
-}
-
-function renderOnboardingBody(state: OnboardingState, caret: boolean): ReactElement {
-  const { ascii, color, query } = state;
-  const masked = maskBullets(query.length, ascii);
-
-  if (state.step === 'welcome') {
-    return (
-      <Panel
-        title="Welcome"
-        accent={CHROME.accent}
-        ascii={ascii}
-        color={color}
-        paddingX={1}
-        paddingY={1}
-      >
-        <Text bold {...accentColor(color, CHROME.accent)}>
-          {safe('Initialize a Kavrix vault', ascii)}
-        </Text>
-        <Text {...accentColor(color, CHROME.muted)}>
-          {safe(
-            'Interactive setup creates a real profile, vault, and verified recovery kit.',
-            ascii,
-          )}
-        </Text>
-        <Text {...accentColor(color, CHROME.muted)}>
-          {safe('Secrets stay masked. Press Enter to choose storage.', ascii)}
-        </Text>
-        <Text {...accentColor(color, CHROME.muted)}>
-          {safe(
-            'Steps: storage · profile id · key file · owner passphrase · recovery kit · session unlock.',
-            ascii,
-          )}
-        </Text>
-      </Panel>
-    );
-  }
-
-  if (state.step === 'storage') {
-    return (
-      <Panel
-        title="Storage"
-        accent={CHROME.accent}
-        ascii={ascii}
-        color={color}
-        paddingX={1}
-        paddingY={1}
-      >
-        <SelectRow
-          active={state.storageIndex === 0}
-          label="1  Local encrypted file"
-          hint="Simplest for one device"
-          accent={CHROME.accent}
-          color={color}
-          ascii={ascii}
-        />
-        <SelectRow
-          active={state.storageIndex === 1}
-          label="2  MongoDB"
-          hint="Shared / remote datastore"
-          accent={CHROME.accent}
-          color={color}
-          ascii={ascii}
-        />
-      </Panel>
-    );
-  }
-
-  if (state.step === 'creating') {
-    return (
-      <Panel
-        title="Creating"
-        accent={CHROME.warning}
-        ascii={ascii}
-        color={color}
-        paddingX={1}
-        paddingY={1}
-      >
-        <LoadingState
-          label={state.message ?? 'Working…'}
-          color={color}
-          ascii={ascii}
-          animate={resolveMotionPolicy().animate}
-        />
-        <Text {...accentColor(color, CHROME.muted)}>
-          {safe('Running real CLI create + recovery create/verify…', ascii)}
-        </Text>
-      </Panel>
-    );
-  }
-
-  if (state.step === 'enable-session') {
-    return (
-      <Panel
-        title="Session unlock"
-        accent={CHROME.accent}
-        ascii={state.ascii}
-        color={state.color}
-        paddingX={1}
-        paddingY={1}
-      >
-        <Text bold {...accentColor(state.color, CHROME.success)}>
-          {safe('SETUP COMPLETE', state.ascii)}
-        </Text>
-        <Text>
-          {safe(
-            'Enable OS session unlock? Future unlocks then use Windows Hello / the OS credential store instead of the passphrase.',
-            state.ascii,
-          )}
-        </Text>
-        <Text {...accentColor(state.color, CHROME.muted)}>
-          {safe(
-            'Enter = enable now · Esc = skip (passphrase always still works; enable later from the Session screen)',
-            state.ascii,
-          )}
-        </Text>
-      </Panel>
-    );
-  }
-
-  if (state.step === 'success') {
-    return (
-      <Panel
-        title="Success"
-        accent={CHROME.success}
-        ascii={ascii}
-        color={color}
-        paddingX={1}
-        paddingY={1}
-      >
-        <Text bold {...accentColor(color, CHROME.success)}>
-          {`${toneGlyph('success', ascii).trim()} ${safe('SETUP COMPLETE', ascii)}`}
-        </Text>
-        <ProgressBar
-          progress={1}
-          width={24}
-          color={color}
-          ascii={ascii}
-          accent={CHROME.success}
-        />
-        <Text {...accentColor(color, CHROME.success)}>
-          {safe(
-            `Profile selected: ${state.completedProfileId ?? state.profileId ?? 'default'}`,
-            ascii,
-          )}
-        </Text>
-        {state.completedRecoveryFile !== null ? (
-          <Text {...accentColor(color, CHROME.success)}>
-            {safe(`Recovery kit verified: ${state.completedRecoveryFile}`, ascii)}
-          </Text>
-        ) : null}
-        <Text {...accentColor(color, CHROME.muted)}>
-          {safe('Press Enter to finish, then run: kavrix tui', ascii)}
-        </Text>
-      </Panel>
-    );
-  }
-
-  if (state.step === 'error') {
-    return (
-      <Panel
-        title="Error"
-        accent={CHROME.danger}
-        ascii={ascii}
-        color={color}
-        paddingX={1}
-        paddingY={1}
-      >
-        <ErrorState
-          title={state.error ?? 'Setup failed.'}
-          recovery="Enter/r review destinations · Esc/q quit"
-          color={color}
-          ascii={ascii}
-        />
-      </Panel>
-    );
-  }
-
-  const title = inputTitle(state.step);
-  const body = isMaskedStep(state.step)
-    ? `${title}: ${masked}`
-    : `${title}: ${safe(query, ascii)}`;
-  return (
-    <Panel
-      title={`ACTIVE · ${title}`}
-      accent={CHROME.accent}
-      ascii={ascii}
-      color={color}
-      paddingX={1}
-      paddingY={1}
-    >
-      <Text bold {...accentColor(color, CHROME.accent)}>
-        {safe(body, ascii)}
-        <Text {...accentColor(color, CHROME.accent)}>{caret ? '_' : ' '}</Text>
-      </Text>
-      {isMaskedStep(state.step) ? (
-        <Text {...accentColor(color, CHROME.muted)}>
-          {safe('Paste works (Ctrl+Shift+V / Cmd+V)', ascii)}
-        </Text>
-      ) : null}
-    </Panel>
-  );
-}
-
-function inputTitle(step: OnboardingState['step']): string {
-  switch (step) {
-    case 'file-profile-id':
-    case 'mongo-profile-id':
-      return 'Profile id';
-    case 'file-data-file':
-      return 'Data file';
-    case 'file-key-file':
-    case 'mongo-key-file':
-      return 'Key file';
-    case 'mongo-database':
-      return 'Database name';
-    case 'mongo-url':
-      return 'MongoDB URL';
-    case 'file-passphrase':
-    case 'mongo-passphrase':
-      return 'Owner passphrase';
-    case 'file-passphrase-confirm':
-    case 'mongo-passphrase-confirm':
-      return 'Confirm owner passphrase';
-    case 'file-recovery-passphrase':
-    case 'mongo-recovery-passphrase':
-      return 'Recovery-kit passphrase';
-    case 'file-recovery-passphrase-confirm':
-    case 'mongo-recovery-passphrase-confirm':
-      return 'Confirm recovery-kit passphrase';
-    case 'file-recovery-file':
-    case 'mongo-recovery-file':
-      return 'Recovery kit path';
-    default:
-      return 'Value';
-  }
-}
-
-function isMaskedStep(step: OnboardingState['step']): boolean {
-  return (
-    step === 'file-passphrase' ||
-    step === 'file-passphrase-confirm' ||
-    step === 'file-recovery-passphrase' ||
-    step === 'file-recovery-passphrase-confirm' ||
-    step === 'mongo-url' ||
-    step === 'mongo-passphrase' ||
-    step === 'mongo-passphrase-confirm' ||
-    step === 'mongo-recovery-passphrase' ||
-    step === 'mongo-recovery-passphrase-confirm'
-  );
-}
-
-/** Mounts init onboarding on validated TTY streams. */
+/** Mount setup with the same alternate-screen and protected pointer input as the app. */
 export function mountOnboardingApp(
   options: MountOnboardingAppOptions,
 ): OnboardingAppHandle {
@@ -638,54 +317,91 @@ export function mountOnboardingApp(
     settle = resolve;
   });
   const stdout = options.stdout ?? process.stdout;
+  ensureTtySize(stdout);
+  const alternateScreen = terminalFullscreenEnabled();
+  const frameClock: FrameClock = { current: 0 };
+  const mouse = createMouseInput({
+    stdin: options.stdin ?? process.stdin,
+    stdout,
+    enabled:
+      options.mouse !== false &&
+      process.env['KAVRIX_TUI_MOUSE'] !== '0' &&
+      alternateScreen,
+    getFrame: () => frameClock.current,
+  });
+  let instance: ReturnType<typeof render> | undefined;
+  const restoreTerminal = (): void => {
+    mouse.dispose();
+    instance?.unmount();
+    instance = undefined;
+  };
   const watchdog = armFirstFrameWatchdog({
     stdout,
     label: 'kavrix init',
     onTimeout: (error) => {
       try {
-        process.stderr.write(`${error.message}\n`);
-      } catch {
-        // ignore
+        process.stderr.write(error.message + '\n');
+      } finally {
+        process.exitCode = 1;
+        watchdog.dispose();
+        restoreTerminal();
       }
-      process.exitCode = 1;
     },
   });
-  const instance = render(
-    <KavrixOnboardingApp
-      backend={options.backend}
-      ascii={presentation.ascii}
-      color={presentation.color}
-      {...(options.version === undefined ? {} : { version: options.version })}
-      {...(options.noSplash === undefined ? {} : { noSplash: options.noSplash })}
-      onComplete={(result) => {
-        settle?.(result);
-      }}
-    />,
-    {
-      stdout,
-      stdin: options.stdin ?? process.stdin,
-      exitOnCtrlC: false,
-      patchConsole: false,
-      interactive: true,
-    },
-  );
+  try {
+    instance = render(
+      <MouseProvider controller={mouse}>
+        <KavrixOnboardingApp
+          backend={options.backend}
+          ascii={presentation.ascii}
+          color={presentation.color}
+          mouse={mouse.enabled}
+          frameClock={frameClock}
+          releaseInput={() => {
+            mouse.dispose();
+          }}
+          {...(options.version === undefined ? {} : { version: options.version })}
+          {...(options.noSplash === undefined ? {} : { noSplash: options.noSplash })}
+          onComplete={(result) => {
+            settle?.(result);
+          }}
+        />
+      </MouseProvider>,
+      {
+        stdout,
+        stdin: mouse.stdin,
+        exitOnCtrlC: false,
+        patchConsole: false,
+        interactive: true,
+        alternateScreen,
+      },
+    );
+  } catch (error) {
+    watchdog.dispose();
+    restoreTerminal();
+    throw error;
+  }
+  const shutdown = (): void => {
+    watchdog.dispose();
+    restoreTerminal();
+  };
   return {
     waitUntilExit: async () => {
+      const active = instance;
+      if (active === undefined) return { status: 'cancelled' };
       try {
         return await Promise.race([
           resultPromise,
-          instance
+          active
             .waitUntilExit()
             .then((): OnboardingAppResult => ({ status: 'cancelled' })),
         ]);
       } finally {
-        watchdog.dispose();
+        shutdown();
       }
     },
-    unmount: () => {
-      watchdog.dispose();
-      instance.unmount();
-    },
+    waitForInputReady: () => mouse.whenInteractive(),
+    unmount: shutdown,
   };
 }
 
@@ -704,6 +420,9 @@ function mapInkInput(
     shift: boolean;
   }>,
 ): OnboardingKey | null {
+  if (input === '\u0003' || (key.ctrl && input === 'c'))
+    return { text: 'c', ctrl: true };
+  if (key.ctrl && input === 'g') return { name: 'help' };
   if (key.upArrow) return { name: 'up' };
   if (key.downArrow) return { name: 'down' };
   if (key.leftArrow) return { name: 'left' };

@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import type { ZodType } from 'zod';
 
 import {
   COLLABORATIVE_AUTHORIZATION_WITNESS_FORMAT,
@@ -31,6 +32,7 @@ import {
   collaborationMutationCommitmentSchema,
   collaborationMutationProofSchema,
   collaborationMutationReceiptSchema,
+  collaborationMembershipSchema,
   collaborationVaultDestructionActionSchema,
   collaborationVaultDestructionCoreSchema,
   collaborationVaultDestructionTombstoneSchema,
@@ -46,6 +48,7 @@ import {
   mutationOperationTypeSchema,
   operationDeduplicationTombstoneSchema,
   principalIdentitySchema,
+  publicIdentityExportSchema,
   recipientRollbackAnchorSchema,
   recipientVaultDestructionAnchorSchema,
   transferIntentSchema,
@@ -59,6 +62,13 @@ const signature = (value: number): string => bytes(64, value);
 const timestamp = '2026-01-01T00:00:00.000Z';
 const laterTimestamp = '2026-01-02T00:00:00.000Z';
 const expiryTimestamp = '2026-01-03T00:00:00.000Z';
+
+function expectIssue(schema: ZodType, input: unknown, message: string): void {
+  const result = schema.safeParse(input);
+  expect(result.success).toBe(false);
+  if (result.success) throw new Error('An invalid authorization contract was accepted');
+  expect(result.error.issues.map((issue) => issue.message)).toContain(message);
+}
 
 const stateFence = {
   authorityEpoch: 1,
@@ -796,6 +806,135 @@ const legacyVault = {
 const deviceRegistry = witnessDeviceRegistry;
 
 describe('collaboration schemas', () => {
+  it.each([
+    [
+      { encryptionPublicKey: deviceA.signingPublicKey },
+      'Device signing and encryption public keys must be distinct',
+    ],
+    [
+      { stateChangedAt: '2025-01-01T00:00:00.000Z' },
+      'Device state transition cannot precede creation',
+    ],
+    [{ expiresAt: timestamp }, 'Device expiry must follow creation'],
+    [{ state: 'revoked' }, 'Terminal devices require a retirement timestamp'],
+    [
+      { revokedAt: timestamp },
+      'Non-terminal devices cannot have a retirement timestamp',
+    ],
+    [
+      { state: 'revoked', stateChangedAt: laterTimestamp, revokedAt: timestamp },
+      'Device retirement cannot precede its state transition',
+    ],
+  ] as const)('rejects a contradictory device lifecycle: %s', (patch, message) => {
+    expectIssue(deviceCertificateSchema, { ...deviceA, ...patch }, message);
+  });
+
+  it('accepts retirement only after a device state transition', () => {
+    expect(
+      deviceCertificateSchema.safeParse({
+        ...deviceA,
+        state: 'revoked',
+        stateChangedAt: laterTimestamp,
+        revokedAt: expiryTimestamp,
+      }).success,
+    ).toBe(true);
+  });
+
+  it('binds principal identity, lifecycle, and independent device keys', () => {
+    const identity = {
+      format: 'kavrix-collaborative-principal-identity',
+      protocolVersion: 1,
+      principalId: 'principal-a',
+      identityGeneration: 1,
+      rootSigningPublicKey: key(30),
+      state: 'active',
+      devices: [deviceA],
+      createdAt: timestamp,
+      selfSignature: signature(30),
+    };
+    expect(principalIdentitySchema.safeParse(identity).success).toBe(true);
+    for (const [patch, message] of [
+      [{ devices: [deviceB] }, 'Device certificate belongs to another principal'],
+      [
+        { state: 'revoked', revokedAt: laterTimestamp },
+        'Inactive principals cannot retain active devices',
+      ],
+      [
+        { rootSigningPublicKey: deviceA.signingPublicKey },
+        'Principal root and device keys must be distinct',
+      ],
+      [
+        { rootSigningPublicKey: deviceA.encryptionPublicKey },
+        'Principal root and device keys must be distinct',
+      ],
+      [{ expiresAt: timestamp }, 'Principal expiry must follow creation'],
+      [
+        { revokedAt: laterTimestamp },
+        'Active principals cannot have a revocation timestamp',
+      ],
+      [
+        {
+          state: 'revoked',
+          devices: [{ ...deviceA, state: 'revoked', revokedAt: laterTimestamp }],
+        },
+        'Inactive principals require a revocation timestamp',
+      ],
+    ] as const)
+      expectIssue(principalIdentitySchema, { ...identity, ...patch }, message);
+  });
+
+  it('exports only live devices belonging to the exact public principal', () => {
+    expect(publicIdentityExportSchema.safeParse(publicIdentityB).success).toBe(true);
+    for (const [patch, message] of [
+      [
+        { devices: [deviceA] },
+        'Public device certificate belongs to another principal',
+      ],
+      [
+        { devices: [{ ...deviceB, state: 'revoked', revokedAt: laterTimestamp }] },
+        'Public identity exports cannot contain retired devices',
+      ],
+      [
+        { rootSigningPublicKey: deviceB.signingPublicKey },
+        'Public root and device keys must be distinct',
+      ],
+      [
+        { rootSigningPublicKey: deviceB.encryptionPublicKey },
+        'Public root and device keys must be distinct',
+      ],
+      [{ expiresAt: timestamp }, 'Public identity expiry must follow creation'],
+    ] as const)
+      expectIssue(
+        publicIdentityExportSchema,
+        { ...publicIdentityB, ...patch },
+        message,
+      );
+  });
+
+  it('requires active memberships to retain an independent active device', () => {
+    expect(collaborationMembershipSchema.safeParse(membershipA).success).toBe(true);
+    for (const [patch, message] of [
+      [{ devices: [deviceB] }, 'Membership device belongs to another principal'],
+      [
+        { rootSigningPublicKey: deviceA.signingPublicKey },
+        'Membership root and device keys must be distinct',
+      ],
+      [
+        { rootSigningPublicKey: deviceA.encryptionPublicKey },
+        'Membership root and device keys must be distinct',
+      ],
+      [
+        { removedAt: laterTimestamp },
+        'Active memberships cannot have a removal timestamp',
+      ],
+      [
+        { devices: [{ ...deviceA, state: 'revoked', revokedAt: laterTimestamp }] },
+        'Active memberships require an active device',
+      ],
+      [{ state: 'revoked' }, 'Non-active memberships require a removal timestamp'],
+    ] as const)
+      expectIssue(collaborationMembershipSchema, { ...membershipA, ...patch }, message);
+  });
   it('accepts add-device and strictly binds an exact history compaction input', () => {
     expect(mutationOperationTypeSchema.parse('add-device')).toBe('add-device');
     expect(mutationOperationTypeSchema.safeParse('add-device-unchecked').success).toBe(
@@ -1834,6 +1973,30 @@ describe('collaboration schemas', () => {
       approvals: [],
     };
     expect(approvalRequestSchema.parse(request)).toEqual(request);
+    for (const [patch, message] of [
+      [{ expiresAt: timestamp }, 'Approval request expiry must follow creation'],
+      [
+        { expiresAt: '2027-01-01T00:00:00.000Z' },
+        'Approval request exceeds its maximum lifetime',
+      ],
+      [
+        { state: 'quorum-reached' },
+        'One-additional-owner requests require one approval at quorum',
+      ],
+      [
+        { state: 'consumed' },
+        'Terminal approval requests require a resolution timestamp',
+      ],
+      [
+        { resolvedAt: laterTimestamp },
+        'Open approval requests cannot have a resolution timestamp',
+      ],
+      [
+        { state: 'expired', resolvedAt: timestamp },
+        'Expired approval requests resolve at or after expiry',
+      ],
+    ] as const)
+      expectIssue(approvalRequestSchema, { ...request, ...patch }, message);
     const selfApproval = {
       ...request,
       approvals: [
@@ -1864,6 +2027,41 @@ describe('collaboration schemas', () => {
     if (selfApprovalEvidence === undefined) {
       throw new Error('Expected self-approval fixture evidence.');
     }
+    const peerApproval = {
+      ...selfApprovalEvidence,
+      approverPrincipalId: 'principal-b',
+    };
+    expect(
+      approvalRequestSchema.safeParse({ ...request, approvals: [peerApproval] })
+        .success,
+    ).toBe(true);
+    expectIssue(
+      approvalRequestSchema,
+      { ...request, requiredApprovalPolicy: 'none', approvals: [peerApproval] },
+      'An approval-free policy cannot carry approval evidence',
+    );
+    for (const patch of [
+      { approvalRequestId: 'approval-other' },
+      { operationId: 'operation-other' },
+      { databaseId: 'database-other' },
+      { vaultId: 'vault-other' },
+      { requestDigest: digest(90) },
+      { authorityEpoch: 2 },
+      { databaseDeviceGeneration: 2 },
+      { databaseDeviceRegistryDigest: digest(91) },
+      { documentRevision: 2 },
+      { membershipRevision: 2 },
+      { policyRevision: 2 },
+      { keyEpoch: 2 },
+      { priorHeadDigest: digest(92) },
+      { authorizationStateDigest: digest(93) },
+      { requestingPrincipalId: 'principal-c' },
+    ])
+      expectIssue(
+        approvalRequestSchema,
+        { ...request, approvals: [{ ...peerApproval, ...patch }] },
+        'Approval evidence must bind the exact request tuple',
+      );
     expect(
       approvalRequestSchema.safeParse({
         ...selfApproval,
@@ -1921,6 +2119,83 @@ describe('collaboration schemas', () => {
       },
     };
     expect(transferIntentSchema.parse(transfer)).toEqual(transfer);
+    for (const [patch, message] of [
+      [
+        { recipientPrincipalId: transfer.initiatorPrincipalId },
+        'Ownership transfer cannot target its initiating principal',
+      ],
+      [
+        { recipientDeviceId: transfer.initiatorDeviceId },
+        'Ownership transfer requires distinct initiator and recipient devices',
+      ],
+      [{ expiresAt: timestamp }, 'Transfer expiry must follow creation'],
+      [
+        { expiresAt: '2027-01-01T00:00:00.000Z' },
+        'Transfer intent exceeds its maximum lifetime',
+      ],
+      [
+        { initiatorSignature: undefined },
+        'Initiator signing time requires an initiator signature',
+      ],
+      [{ initiatorSignedAt: undefined }, 'Initiator signature requires a signing time'],
+      [{ state: 'expired' }, 'Terminal transfer intents require a terminal timestamp'],
+      [
+        { terminalAt: laterTimestamp },
+        'Live transfer intents cannot have a terminal timestamp',
+      ],
+      [
+        { state: 'intent-created' },
+        'Intent-created transfers cannot carry initiator signatures',
+      ],
+      [
+        { state: 'intent-created' },
+        'Intent-created transfers cannot carry recipient acceptance',
+      ],
+      [
+        { initiatorSignature: undefined, initiatorSignedAt: undefined },
+        'This transfer state requires an initiator signature',
+      ],
+      [
+        { recipientAcceptance: undefined },
+        'This transfer state requires recipient acceptance',
+      ],
+      [{ state: 'published' }, 'Published transfers require a publication timestamp'],
+      [
+        { publishedAt: laterTimestamp },
+        'Only published transfers may have a publication timestamp',
+      ],
+      [
+        { state: 'expired', terminalAt: timestamp },
+        'Expired transfers terminate at or after expiry',
+      ],
+      [
+        {
+          recipientAcceptance: {
+            ...transfer.recipientAcceptance,
+            acceptedAt: '2025-01-01T00:00:00.000Z',
+          },
+        },
+        'Transfer acceptance must occur inside the intent lifetime',
+      ],
+      [
+        {
+          recipientAcceptance: {
+            ...transfer.recipientAcceptance,
+            acceptedAt: '2027-01-01T00:00:00.000Z',
+          },
+        },
+        'Transfer acceptance must occur inside the intent lifetime',
+      ],
+    ] as const)
+      expectIssue(transferIntentSchema, { ...transfer, ...patch }, message);
+    const unsigned: Record<string, unknown> = { ...transfer, state: 'intent-created' };
+    for (const field of [
+      'initiatorSignature',
+      'initiatorSignedAt',
+      'recipientAcceptance',
+    ])
+      Reflect.deleteProperty(unsigned, field);
+    expect(transferIntentSchema.safeParse(unsigned).success).toBe(true);
     expect(
       transferIntentSchema.safeParse({
         ...transfer,

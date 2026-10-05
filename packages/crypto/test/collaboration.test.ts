@@ -9,6 +9,8 @@ import {
   COLLABORATION_GENESIS_MEMBERSHIP_STATE_DIGEST,
   COLLABORATION_DOMAINS,
   CryptoInputError,
+  computeApprovalRequestDigest,
+  computeKeyEnvelopeSetDigest,
   computeAadMetadataDigest,
   computeAdministrativeActionParametersDigest,
   computeAuthorityDelegationDigest,
@@ -47,6 +49,7 @@ import {
   sealCollaborationVaultRootForDatabaseAuthority,
   sealVaultRootKeyForDevice,
   signApprovalEvidence,
+  signApprovalRequest,
   signAuthorityDelegation,
   signAuthorizationCheckpoint,
   signAuthorizationTransitionAuthority,
@@ -63,6 +66,7 @@ import {
   signOwnershipTransferAcceptance,
   signTransferIntent,
   verifyApprovalEvidence,
+  verifyApprovalRequest,
   verifyAuthorityDelegation,
   verifyAuthorizationCheckpoint,
   verifyAuthorizationTransitionAuthority,
@@ -587,6 +591,101 @@ const tuple = (
   });
 
 describe('collaboration crypto foundation', () => {
+  it.each([
+    ['authority delegation', signAuthorityDelegation, verifyAuthorityDelegation],
+    [
+      'owner transition',
+      signAuthorizationTransitionOwner,
+      verifyAuthorizationTransitionOwner,
+    ],
+    [
+      'authority transition',
+      signAuthorizationTransitionAuthority,
+      verifyAuthorizationTransitionAuthority,
+    ],
+    ['checkpoint', signAuthorizationCheckpoint, verifyAuthorizationCheckpoint],
+    ['enrollment', signEnrollmentReceipt, verifyEnrollmentReceipt],
+    ['discovery', signDiscoveryRecord, verifyDiscoveryRecord],
+    [
+      'mutation commitment',
+      signMutationCommitment,
+      (record: unknown, publicKey: string | Uint8Array) =>
+        verifyMutationCommitment(record, bytes(1, 64), publicKey),
+    ],
+    ['mutation receipt', signMutationReceipt, verifyMutationReceipt],
+    ['finalized link', signFinalizedMutationLink, verifyFinalizedMutationLink],
+    [
+      'migration authority',
+      signMigrationRequestAuthority,
+      verifyMigrationRequestAuthority,
+    ],
+    ['migration owner', signMigrationRequestOwner, verifyMigrationRequestOwner],
+    ['prepared marker', signMigrationPreparedMarker, verifyMigrationPreparedMarker],
+    ['active marker', signMigrationActiveMarker, verifyMigrationActiveMarker],
+    ['approval request', signApprovalRequest, verifyApprovalRequest],
+    ['approval evidence', signApprovalEvidence, verifyApprovalEvidence],
+    ['transfer intent', signTransferIntent, verifyTransferIntent],
+    [
+      'transfer acceptance',
+      signOwnershipTransferAcceptance,
+      verifyOwnershipTransferAcceptance,
+    ],
+  ] as const)(
+    'never signs or authenticates a malformed %s record',
+    async (_label, sign, verify) => {
+      const keys = await generateDeviceSigningKeyPair();
+      try {
+        for (const malformed of [null, undefined, [], {}]) {
+          await expect(async () =>
+            sign(malformed, keys.privateKey),
+          ).rejects.toBeInstanceOf(CryptoInputError);
+          await expect(verify(malformed, keys.publicKeyBase64)).resolves.toBe(false);
+        }
+      } finally {
+        keys.privateKey.fill(0);
+      }
+    },
+  );
+
+  it('rejects supplied invalid approval digest and signature fields before signing', () => {
+    expect(() => computeApprovalRequestDigest({ requestDigest: 'invalid' })).toThrow(
+      CryptoInputError,
+    );
+    expect(() =>
+      computeApprovalRequestDigest({ requesterSignature: 'invalid' }),
+    ).toThrow(CryptoInputError);
+    expect(() => computeKeyEnvelopeSetDigest(null)).toThrow(CryptoInputError);
+    expect(() => computeKeyEnvelopeSetDigest([])).toThrow(CryptoInputError);
+    expect(() => computeKeyEnvelopeSetDigest([{}])).toThrow(CryptoInputError);
+  });
+
+  it('refuses empty payloads, invalid key lengths, and mismatched AAD metadata', async () => {
+    const key = new Uint8Array(32).fill(13);
+    const aad = baseAad();
+    try {
+      await expect(
+        encryptCollaborationEnvelope(new Uint8Array(), key, aad),
+      ).rejects.toBeInstanceOf(CryptoInputError);
+      await expect(
+        encryptCollaborationEnvelope(new Uint8Array([1]), new Uint8Array(31), aad),
+      ).rejects.toBeInstanceOf(CryptoInputError);
+      await expect(
+        encryptCollaborationEnvelope(
+          new Uint8Array([1]),
+          key,
+          collaborationAadSchema.parse({ ...aad, metadataDigest: bytes(9) }),
+        ),
+      ).rejects.toBeInstanceOf(CryptoInputError);
+      await expect(
+        encryptCollaborationEnvelope(new Uint8Array([1]), key, {
+          ...aad,
+          protocolVersion: 2,
+        } as never),
+      ).rejects.toBeInstanceOf(CryptoInputError);
+    } finally {
+      key.fill(0);
+    }
+  });
   it('domain-separates and commits every exact vault-destruction action field', () => {
     const action = collaborationVaultDestructionActionSchema.parse({
       protocolVersion: 1,
