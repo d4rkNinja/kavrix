@@ -1,6 +1,6 @@
 import { createElement } from 'react';
 import { renderToString } from 'ink';
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { emptySnapshot } from '../../src/app/backend.js';
 import { APP_SCREEN_IDS } from '../../src/app/ids.js';
@@ -11,8 +11,22 @@ import {
 } from '../../src/app/router.js';
 import { AppChrome, renderActiveScreen } from '../../src/app/screens.js';
 
-describe('refreshed terminal layout', () => {
+describe.each([
+  ['fullscreen', ''],
+  ['screen reader', 'true'],
+] as const)('refreshed terminal layout (%s)', (_mode, screenReader) => {
+  beforeEach(() => {
+    vi.stubEnv('TERM', 'xterm-256color');
+    vi.stubEnv('INK_SCREEN_READER', screenReader);
+  });
+
+  function expectViewportHeight(lines: string[], height: number): void {
+    if (screenReader === 'true') expect(lines.length).toBeLessThan(height);
+    else expect(lines).toHaveLength(height);
+  }
+
   for (const [width, height] of [
+    [40, 12],
     [40, 18],
     [80, 24],
     [120, 36],
@@ -28,12 +42,14 @@ describe('refreshed terminal layout', () => {
           { columns: width },
         );
         const lines = frame.split('\n');
-        expect(lines.length, screen).toBeLessThan(height);
+        expectViewportHeight(lines, height);
         expect(
           Math.max(...lines.map((line) => line.length)),
           screen,
         ).toBeLessThanOrEqual(width);
         expect(frame, screen).toMatch(/q quit/u);
+        if (screenReader !== 'true')
+          expect(lines.slice(-4).join('\n'), screen).toContain('q quit');
         expect(frame, screen).toMatch(/^[\x20-\x7e\n]*$/u);
       }
     });
@@ -55,8 +71,11 @@ describe('refreshed terminal layout', () => {
           createElement(AppChrome, { state, children: renderActiveScreen(state) }),
           { columns: width },
         );
-        expect(frame.split('\n').length).toBeLessThan(height);
+        const lines = frame.split('\n');
+        expectViewportHeight(lines, height);
         expect(frame).toContain('Esc cancel');
+        if (screenReader !== 'true')
+          expect(lines.slice(-4).join('\n')).toContain('Esc cancel');
         if (key === 't') {
           expect(frame).toContain('Classic Gold');
           expect(frame).toContain('Deep Ocean');
@@ -92,8 +111,11 @@ describe('refreshed terminal layout', () => {
       );
       expect(frame).toContain('> profile-73');
       expect(frame).not.toContain('profile-0 ');
-      expect(frame.split('\n').length).toBeLessThan(height);
+      const lines = frame.split('\n');
+      expectViewportHeight(lines, height);
       expect(frame).toMatch(/q quit/u);
+      if (screenReader !== 'true')
+        expect(lines.slice(-4).join('\n')).toContain('q quit');
       expect(frame).toMatch(/^[\x20-\x7e\n]*$/u);
     });
   }

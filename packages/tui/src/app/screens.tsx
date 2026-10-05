@@ -8,7 +8,7 @@ import type { AppSnapshot } from './backend.js';
 import { APP_MENU, HELP_TOPICS } from './ids.js';
 import { useAppInteraction } from './interaction.js';
 import { ClickTarget } from './mouse.js';
-import { TerminalViewport } from './viewport.js';
+import { TerminalViewport, terminalFullscreenEnabled } from './viewport.js';
 import {
   filteredCredentials,
   visibleListWindow,
@@ -387,59 +387,88 @@ export function AppChrome({
       ? `${glyphs.slice(0, prefixLength).join('')}${ascii ? '...' : '…'}${glyphs.slice(-(inputCells - prefixLength - ellipsisSize)).join('')}`
       : fullTypedBody;
 
+  const fullscreen = terminalFullscreenEnabled();
+  const compactOverlay = overlay !== null && state.height < 16;
+  const overlayActions = (
+    <OverlayActions
+      color={color}
+      compact={compactOverlay}
+      kind={
+        isConfirmOverlay
+          ? 'confirm'
+          : isThemePicker
+            ? 'theme'
+            : isDetailOverlay
+              ? 'detail'
+              : 'input'
+      }
+    />
+  );
+
   // Keep child panels content-sized; a flexible spacer fills the viewport
   // without stretching their internals or clipping footer actions.
   return (
     <TerminalViewport width={width} height={state.height}>
-      <Panel accent={accent} ascii={ascii} color={color} paddingX={1} paddingY={0}>
-        <Box flexDirection="row" justifyContent="space-between">
-          <SingleLine bold {...accentColor(color, CHROME.accent)}>
-            {PRODUCT_LABEL} /{' '}
-            {safe(
-              APP_MENU.find((entry) => entry.id === state.screen)?.short ??
-                state.screen,
-              ascii,
-            )}
-          </SingleLine>
-          <KeyChip
-            keyLabel="t"
-            hint="theme"
-            color={color}
-            disabled={state.overlay !== 'none' || interaction.busy}
-          />
-        </Box>
-        <Box flexDirection="row" columnGap={1} overflow="hidden">
-          <StatusPill
-            label="lock"
-            value={
-              home.unlocked && state.snapshot.session.enabled
-                ? 'open·session'
-                : home.unlocked
-                  ? 'open'
-                  : 'locked'
-            }
-            accent={home.unlocked ? CHROME.success : CHROME.warning}
+      {compactOverlay ? (
+        <SingleLine {...accentColor(color, CHROME.heading)}>
+          {safe(
+            `${PRODUCT_LABEL} / ${home.profileId ?? 'no profile'} / ${vaultShort}`,
+            ascii,
+          )}
+        </SingleLine>
+      ) : (
+        <>
+          <Panel accent={accent} ascii={ascii} color={color} paddingX={1} paddingY={0}>
+            <Box flexDirection="row" justifyContent="space-between">
+              <SingleLine bold {...accentColor(color, CHROME.accent)}>
+                {PRODUCT_LABEL} /{' '}
+                {safe(
+                  APP_MENU.find((entry) => entry.id === state.screen)?.short ??
+                    state.screen,
+                  ascii,
+                )}
+              </SingleLine>
+              <KeyChip
+                keyLabel="t"
+                hint="theme"
+                color={color}
+                disabled={state.overlay !== 'none' || interaction.busy}
+              />
+            </Box>
+            <Box flexDirection="row" columnGap={1} overflow="hidden">
+              <StatusPill
+                label="lock"
+                value={
+                  home.unlocked && state.snapshot.session.enabled
+                    ? 'open·session'
+                    : home.unlocked
+                      ? 'open'
+                      : 'locked'
+                }
+                accent={home.unlocked ? CHROME.success : CHROME.warning}
+                color={color}
+                ascii={ascii}
+              />
+              <SingleLine {...accentColor(color, CHROME.heading)}>
+                {safe(`${home.profileId ?? 'no profile'} / ${vaultShort}`, ascii)}
+              </SingleLine>
+              {width >= 72 ? (
+                <Text {...accentColor(color, CHROME.muted)}>
+                  {String(home.credentialCount)} credentials
+                </Text>
+              ) : null}
+            </Box>
+          </Panel>
+
+          <TabNav
+            activeId={state.screen}
+            navigable={state.overlay === 'none'}
             color={color}
             ascii={ascii}
+            width={width}
           />
-          <SingleLine {...accentColor(color, CHROME.heading)}>
-            {safe(`${home.profileId ?? 'no profile'} / ${vaultShort}`, ascii)}
-          </SingleLine>
-          {width >= 72 ? (
-            <Text {...accentColor(color, CHROME.muted)}>
-              {String(home.credentialCount)} credentials
-            </Text>
-          ) : null}
-        </Box>
-      </Panel>
-
-      <TabNav
-        activeId={state.screen}
-        navigable={state.overlay === 'none'}
-        color={color}
-        ascii={ascii}
-        width={width}
-      />
+        </>
+      )}
 
       <Box
         flexDirection="column"
@@ -449,7 +478,16 @@ export function AppChrome({
         // clipped action row leaves the user with no way to tell what Enter does.
         maxHeight={Math.max(
           1,
-          state.height - (overlay === null ? 10 : state.height < 20 ? 4 : 7),
+          state.height -
+            (compactOverlay
+              ? fullscreen
+                ? 4
+                : 2
+              : overlay === null
+                ? 10
+                : state.height < 20
+                  ? 4
+                  : 7),
         )}
         overflow="hidden"
         paddingX={0}
@@ -476,70 +514,78 @@ export function AppChrome({
                 activeId={state.themeId}
               />
             ) : null}
-            <Text bold {...accentColor(color, overlay.accent)}>
-              {safe(isThemePicker ? '' : typedBody, ascii)}
-              {isInputOverlay ? (
-                <Text {...accentColor(color, overlay.accent)}>{caret ? '_' : ' '}</Text>
-              ) : null}
-            </Text>
+            {isThemePicker ? null : (
+              <Text bold {...accentColor(color, overlay.accent)}>
+                {safe(typedBody, ascii)}
+                {isInputOverlay ? (
+                  <Text {...accentColor(color, overlay.accent)}>
+                    {caret ? '_' : ' '}
+                  </Text>
+                ) : null}
+              </Text>
+            )}
             {overlay.hint === undefined || state.height < 22 ? null : (
               <Text {...accentColor(color, CHROME.muted)}>
                 {safe(overlay.hint, ascii)}
               </Text>
             )}
-            <Box flexDirection="row" columnGap={1} flexWrap="wrap" marginTop={1}>
-              {isConfirmOverlay ? (
-                <>
-                  <KeyChip
-                    keyLabel="y"
-                    hint="confirm"
-                    color={color}
-                    keyAccent={CHROME.success}
-                  />
-                  <KeyChip
-                    keyLabel="n"
-                    hint="cancel"
-                    color={color}
-                    keyAccent={CHROME.danger}
-                  />
-                  <KeyChip keyLabel="Esc" hint="cancel" color={color} />
-                </>
-              ) : isThemePicker ? (
-                <>
-                  <KeyChip keyLabel="Enter" hint="apply theme" color={color} />
-                  <KeyChip keyLabel="Esc" hint="cancel" color={color} />
-                </>
-              ) : isDetailOverlay ? (
-                <>
-                  <KeyChip
-                    keyLabel="r"
-                    hint="REVEAL"
-                    color={color}
-                    keyAccent={CHROME.danger}
-                  />
-                  <KeyChip keyLabel="c" hint="copy" color={color} />
-                  <KeyChip keyLabel="Esc" hint="close" color={color} />
-                </>
-              ) : (
-                <>
-                  <KeyChip keyLabel="Enter" hint="continue" color={color} />
-                  <KeyChip keyLabel="Esc" hint="cancel" color={color} />
-                  <KeyChip
-                    keyLabel="^V"
-                    hint="paste"
-                    color={color}
-                    keyAccent={CHROME.muted}
-                  />
-                </>
-              )}
-            </Box>
+            {fullscreen ? null : overlayActions}
           </ModalFrame>
         )}
       </Box>
 
       <Box flexGrow={1} minHeight={0} />
+      {fullscreen && overlay !== null ? (
+        <Box flexShrink={0} paddingX={1}>
+          {overlayActions}
+        </Box>
+      ) : null}
       <Footer state={state} />
     </TerminalViewport>
+  );
+}
+
+function OverlayActions({
+  color,
+  compact,
+  kind,
+}: Readonly<{
+  color: boolean;
+  compact: boolean;
+  kind: 'confirm' | 'theme' | 'detail' | 'input';
+}>): ReactElement {
+  return (
+    <Box flexDirection="row" columnGap={1} flexWrap="wrap" marginTop={compact ? 0 : 1}>
+      {kind === 'confirm' ? (
+        <>
+          <KeyChip
+            keyLabel="y"
+            hint="confirm"
+            color={color}
+            keyAccent={CHROME.success}
+          />
+          <KeyChip keyLabel="n" hint="cancel" color={color} keyAccent={CHROME.danger} />
+          <KeyChip keyLabel="Esc" hint="cancel" color={color} />
+        </>
+      ) : kind === 'theme' ? (
+        <>
+          <KeyChip keyLabel="Enter" hint="apply theme" color={color} />
+          <KeyChip keyLabel="Esc" hint="cancel" color={color} />
+        </>
+      ) : kind === 'detail' ? (
+        <>
+          <KeyChip keyLabel="r" hint="REVEAL" color={color} keyAccent={CHROME.danger} />
+          <KeyChip keyLabel="c" hint="copy" color={color} />
+          <KeyChip keyLabel="Esc" hint="close" color={color} />
+        </>
+      ) : (
+        <>
+          <KeyChip keyLabel="Enter" hint="continue" color={color} />
+          <KeyChip keyLabel="Esc" hint="cancel" color={color} />
+          <KeyChip keyLabel="^V" hint="paste" color={color} keyAccent={CHROME.muted} />
+        </>
+      )}
+    </Box>
   );
 }
 
@@ -549,6 +595,7 @@ function Footer({ state }: Readonly<{ state: AppRouterState }>): ReactElement {
   const notice = interaction.busy
     ? 'Working... Please wait.'
     : (message ?? snapshot.notice);
+  if (state.overlay !== 'none' && notice === null) return <></>;
   const noticeAccent = toneAccent(snapshot.noticeTone);
   const sep = ascii ? ' | ' : ' · ';
   const chips = prioritizeFooterChips(

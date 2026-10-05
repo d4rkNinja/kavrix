@@ -10,6 +10,41 @@ import type { OnboardingStep } from '../../src/app/onboarding-router.js';
 
 describe('terminal-filling app layouts', () => {
   it.each([
+    ['input-passphrase', true],
+    ['input-put-value', true],
+    ['credential-detail', false],
+    ['confirm-reveal', false],
+    ['input-search', false],
+  ] as const)(
+    'keeps %s dialog controls visible in a compact viewport',
+    (overlay, protectedInput) => {
+      vi.stubEnv('TERM', 'xterm-256color');
+      vi.stubEnv('INK_SCREEN_READER', '');
+      const width = 40;
+      const height = 12;
+      const canary = 'dialog-protected-input-canary';
+      const state = {
+        ...createInitialAppRouterState({ width, height, ascii: true, color: false }),
+        overlay,
+        query: protectedInput ? canary : 'public search',
+      };
+      const frame = renderToString(
+        createElement(AppChrome, { state, children: renderActiveScreen(state) }),
+        { columns: width },
+      );
+      const lines = frame.split('\n');
+      expect(lines).toHaveLength(height);
+      expect(frame).toContain('no profile');
+      expect(lines.slice(-4).join('\n')).toContain('Esc');
+      expect(lines.every((line) => line.length <= width)).toBe(true);
+      expect(frame).not.toContain(canary);
+      if (overlay === 'confirm-reveal') expect(frame).toContain('y confirm');
+      else if (overlay === 'credential-detail') expect(frame).toContain('r REVEAL');
+      else expect(frame).toContain('Enter continue');
+    },
+  );
+
+  it.each([
     [80, 24],
     [120, 60],
     [40, 12],

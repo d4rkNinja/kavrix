@@ -7,6 +7,8 @@
   keep controls visible down to 40×12 cells.
 - Setup uses a quieter header, a focused current-step panel, generous primary
   click targets on taller terminals, and a progress guide on wide screens.
+- Main-app dialogs keep their actions at the bottom. Compact dialogs retain
+  a single-line profile/vault header and keep protected input masked.
 - Setup storage rows and Continue/Back/Help/Quit controls accept mouse clicks.
   Touch taps work when the terminal translates them into mouse reports.
 - `Ctrl+G` or the Help control opens paged public instructions. Enter, arrows,
