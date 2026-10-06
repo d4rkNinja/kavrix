@@ -1,4 +1,4 @@
-﻿import { MongoClient, type ClientSession, type Collection, type Db } from 'mongodb';
+﻿import type { ClientSession, Collection, Db, MongoClient } from 'mongodb';
 
 import {
   databaseIdSchema,
@@ -22,6 +22,12 @@ import {
   type EncryptedDatabaseStore,
   type UpdateVaultInput,
 } from './encrypted-database-store.js';
+import {
+  loadMongoDriver,
+  MONGO_MAX_POOL_SIZE,
+  MONGO_MIN_POOL_SIZE,
+  MONGO_WAIT_QUEUE_TIMEOUT_MS,
+} from './mongo-driver.js';
 import {
   MongoCollaborativeVaultStore,
   type CollaborativeVaultStore,
@@ -140,11 +146,15 @@ export class MongoEncryptedDatabaseStore
     );
     let client: MongoClient | undefined;
     try {
-      client = new MongoClient(uri, {
+      const driver = await loadMongoDriver();
+      client = new driver.MongoClient(uri, {
         connectTimeoutMS: CONNECT_TIMEOUT_MS,
         serverSelectionTimeoutMS: CONNECT_TIMEOUT_MS,
         socketTimeoutMS: SOCKET_TIMEOUT_MS,
         timeoutMS: SOCKET_TIMEOUT_MS,
+        maxPoolSize: MONGO_MAX_POOL_SIZE,
+        minPoolSize: MONGO_MIN_POOL_SIZE,
+        waitQueueTimeoutMS: MONGO_WAIT_QUEUE_TIMEOUT_MS,
         // Strict schemas model absent optionals as JSON omission. Without this,
         // BSON turns an explicitly present `undefined` into `null`, making a
         // value accepted before publication unparsable on readback or replay.

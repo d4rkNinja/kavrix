@@ -1,6 +1,8 @@
 import { Box, Text } from 'ink';
 import type { ComponentProps, ReactElement, ReactNode } from 'react';
+import { useEffect, useState } from 'react';
 
+import { subscribeToFrameClock } from '../frame-clock.js';
 import {
   animatedDots,
   barFill,
@@ -286,12 +288,42 @@ export function MotionEnter({
  * List stagger: every row stays mounted and interactive. Unsettled rows are
  * only dimmed. Keyboard navigation must not change `enabled` mid-move.
  */
+/**
+ * List stagger: every row stays mounted and interactive. Unsettled rows are
+ * only dimmed. Keyboard navigation must not change `enabled` mid-move.
+ *
+ * The stagger owns its clock subscription and stops updating state once every
+ * row has settled, so a list screen does not keep redrawing at the frame
+ * clock's rate for the rest of its lifetime after the entrance finishes. The
+ * shared clock itself is unaffected: this only removes the per-tick state
+ * commit that nothing consumes anymore.
+ */
 export function useListStagger(
   itemCount: number,
   enabled: boolean,
 ): (index: number) => boolean {
-  const elapsedMs = useElapsedMs(enabled);
-  const visible = enabled ? staggerVisibleCount(elapsedMs, itemCount) : itemCount;
+  const [visible, setVisible] = useState(() =>
+    enabled ? staggerVisibleCount(0, itemCount) : itemCount,
+  );
+  useEffect(() => {
+    if (!enabled) {
+      setVisible(itemCount);
+      return undefined;
+    }
+    let settled = itemCount === 0;
+    let lastVisible = -1;
+    const update = (elapsedMs: number): void => {
+      if (settled) return;
+      const next = staggerVisibleCount(elapsedMs, itemCount);
+      if (next !== lastVisible) {
+        lastVisible = next;
+        setVisible(next);
+      }
+      if (next >= itemCount) settled = true;
+    };
+    update(0);
+    return subscribeToFrameClock(update);
+  }, [enabled, itemCount]);
   return (index: number): boolean => enabled && index >= visible;
 }
 

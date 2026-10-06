@@ -4,7 +4,7 @@ import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
-import { isCodedCliError } from '../src/execution/exit-codes.js';
+import { isCodedCliError } from '../src/execution/coded-error.js';
 import {
   environmentMappings,
   loadProjectConfig,

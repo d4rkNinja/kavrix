@@ -2150,14 +2150,41 @@ export function credentialWindowSize(state: AppRouterState): number {
 }
 
 /** Credentials visible under the current `/` search filter. */
+/**
+ * Filtered credential view, memoized by the immutable inputs.
+ *
+ * Called on every filter keystroke and every list navigation from several
+ * transition handlers plus the render path. The credentials array is replaced
+ * (never mutated) when its contents change, so keying on the array identity
+ * plus the normalized filter is exact: a hit can only be served while both
+ * inputs are the objects the result was computed from. The per-array query map
+ * is bounded so a long typing session cannot accumulate entries.
+ */
+const filteredCredentialsByList = new WeakMap<
+  AppRouterState['snapshot']['credentials'],
+  Map<string, AppRouterState['snapshot']['credentials']>
+>();
+const MAX_CREDENTIAL_FILTER_ENTRIES = 32;
+
 export function filteredCredentials(
   state: AppRouterState,
 ): AppRouterState['snapshot']['credentials'] {
+  const credentials = state.snapshot.credentials;
   const query = state.credentialFilter.trim().toLocaleLowerCase();
-  if (query.length === 0) return state.snapshot.credentials;
-  return state.snapshot.credentials.filter((credential) =>
+  if (query.length === 0) return credentials;
+  let byQuery = filteredCredentialsByList.get(credentials);
+  if (byQuery === undefined) {
+    byQuery = new Map();
+    filteredCredentialsByList.set(credentials, byQuery);
+  }
+  const cached = byQuery.get(query);
+  if (cached !== undefined) return cached;
+  const filtered = credentials.filter((credential) =>
     credential.name.toLocaleLowerCase().includes(query),
   );
+  if (byQuery.size >= MAX_CREDENTIAL_FILTER_ENTRIES) byQuery.clear();
+  byQuery.set(query, filtered);
+  return filtered;
 }
 
 /**

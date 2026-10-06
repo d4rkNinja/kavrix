@@ -75,24 +75,43 @@ export function createBackupStagedEntryCommitment(options?: {
 }
 
 /**
+ * Object keys that need no JSON escaping. Quoting such a key directly is
+ * byte-identical to `JSON.stringify` on it, and canonical objects are dominated
+ * by keys of this shape.
+ */
+const UNESCAPED_KEY = /^[A-Za-z_$][A-Za-z0-9_$]*$/u;
+
+/**
  * Deterministic JSON used only for canonical wire-contract digests. Inputs must
  * already have crossed their runtime-schema boundary.
+ *
+ * Canonicalization runs on every persisted digest and on every protected
+ * document read and write, so it accumulates work through string building
+ * rather than intermediate arrays: one array per level is enough to collect
+ * sibling values, and each level sorts its keys once. Output is byte-identical
+ * to a straightforward map/filter/join formulation.
  */
 export function canonicalJson(value: unknown): string {
   if (value === null) return 'null';
-  if (typeof value === 'string' || typeof value === 'boolean') {
+  const kind = typeof value;
+  if (kind === 'string' || kind === 'boolean') {
     return JSON.stringify(value);
   }
-  if (typeof value === 'number') {
+  if (kind === 'number') {
     if (!Number.isFinite(value)) {
       throw new TypeError('Canonical JSON rejects non-finite numbers.');
     }
     return JSON.stringify(value);
   }
   if (Array.isArray(value)) {
-    return `[${value.map((entry) => canonicalJson(entry)).join(',')}]`;
+    let out = '[';
+    for (let index = 0; index < value.length; index += 1) {
+      if (index > 0) out += ',';
+      out += canonicalJson(value[index]);
+    }
+    return `${out}]`;
   }
-  if (typeof value !== 'object') {
+  if (kind !== 'object') {
     throw new TypeError('Canonical JSON accepts only JSON values.');
   }
 
@@ -101,11 +120,32 @@ export function canonicalJson(value: unknown): string {
     throw new TypeError('Canonical JSON rejects non-plain objects.');
   }
   const object = value as Readonly<Record<string, unknown>>;
-  return `{${Object.keys(object)
-    .sort()
-    .filter((key) => object[key] !== undefined)
-    .map((key) => `${JSON.stringify(key)}:${canonicalJson(object[key])}`)
-    .join(',')}}`;
+  const keys = Object.keys(object);
+  // Present in insertion order more often than not, because schemas build their
+  // output in a fixed order; only pay for a sort when the order actually differs.
+  if (!isSorted(keys)) keys.sort();
+
+  let out = '';
+  let written = 0;
+  for (const key of keys) {
+    const entry = object[key];
+    if (entry === undefined) continue;
+    if (written > 0) out += ',';
+    out += UNESCAPED_KEY.test(key) ? `"${key}"` : JSON.stringify(key);
+    out += ':';
+    out += canonicalJson(entry);
+    written += 1;
+  }
+  return `{${out}}`;
+}
+
+function isSorted(keys: readonly string[]): boolean {
+  let previous: string | undefined;
+  for (const key of keys) {
+    if (previous !== undefined && previous > key) return false;
+    previous = key;
+  }
+  return true;
 }
 
 /** The single digest contract used by sync producers and consumers. */

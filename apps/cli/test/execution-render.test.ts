@@ -11,7 +11,7 @@ import {
   renderRecordLines,
   reportJsonFailure,
   text,
-} from '../src/execution/register.js';
+} from '../src/execution/commands.js';
 import {
   addPlannedInjection,
   asAuditReason,

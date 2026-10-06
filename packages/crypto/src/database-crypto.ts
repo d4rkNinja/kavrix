@@ -129,25 +129,80 @@ export function computeDatabaseVaultPayloadMetadataDigest(
 export function canonicalDatabaseAssociatedData(
   associatedData: DatabaseAssociatedData,
 ): Uint8Array {
-  const aad = databaseAssociatedDataSchema.parse(associatedData);
-  const vault =
-    aad.vaultId === undefined
-      ? lengthPrefixed(Uint8Array.of(0))
-      : concat(lengthPrefixed(Uint8Array.of(1)), encodedAscii(aad.vaultId));
-
-  return concat(
-    lengthPrefixed(DATABASE_AAD_DOMAIN),
-    lengthPrefixed(uint32(aad.version)),
-    encodedAscii(aad.databaseId),
-    vault,
-    encodedAscii(aad.entityType),
-    encodedAscii(aad.entityId),
-    encodedAscii(aad.purpose),
-    lengthPrefixed(uint32(aad.schemaVersion)),
-    lengthPrefixed(uint32(aad.keyVersion)),
-    lengthPrefixed(uint64(aad.revision)),
-    encodedAscii(aad.metadataDigest),
+  return canonicalDatabaseAssociatedDataChecked(
+    databaseAssociatedDataSchema.parse(associatedData),
   );
+}
+
+/**
+ * Serializes an already-validated `DatabaseAssociatedData` to its canonical
+ * bytes in one right-sized buffer.
+ *
+ * Only `databaseAssociatedDataSchema.parse` produces the branded parameter
+ * type, and every public entry point runs that parse before calling this, so
+ * skipping the second parse inside is sound. The byte layout is identical to
+ * the fragment-concatenation form this replaces.
+ */
+function canonicalDatabaseAssociatedDataChecked(
+  aad: DatabaseAssociatedData,
+): Uint8Array {
+  const databaseId = asciiBytes(aad.databaseId);
+  const vaultId = aad.vaultId === undefined ? undefined : asciiBytes(aad.vaultId);
+  const entityType = asciiBytes(aad.entityType);
+  const entityId = asciiBytes(aad.entityId);
+  const purpose = asciiBytes(aad.purpose);
+  const metadataDigest = asciiBytes(aad.metadataDigest);
+  const totalLength =
+    4 +
+    DATABASE_AAD_DOMAIN.byteLength +
+    4 +
+    4 +
+    4 +
+    databaseId.byteLength +
+    4 +
+    1 +
+    (vaultId === undefined ? 0 : 4 + vaultId.byteLength) +
+    4 +
+    entityType.byteLength +
+    4 +
+    entityId.byteLength +
+    4 +
+    purpose.byteLength +
+    4 +
+    4 +
+    4 +
+    4 +
+    4 +
+    8 +
+    4 +
+    metadataDigest.byteLength;
+  const output = Buffer.allocUnsafe(totalLength);
+  let offset = 0;
+  offset = writeLengthPrefixed(output, offset, DATABASE_AAD_DOMAIN);
+  offset = writeUint32(output, offset, 4);
+  offset = writeUint32(output, offset, aad.version);
+  offset = writeLengthPrefixedAscii(output, offset, databaseId);
+  // Presence marker is itself length-prefixed: [len=1][0|1], then the vault id
+  // field when present.
+  offset = writeUint32(output, offset, 1);
+  if (vaultId === undefined) {
+    output[offset] = 0;
+    offset += 1;
+  } else {
+    output[offset] = 1;
+    offset = writeLengthPrefixedAscii(output, offset + 1, vaultId);
+  }
+  offset = writeLengthPrefixedAscii(output, offset, entityType);
+  offset = writeLengthPrefixedAscii(output, offset, entityId);
+  offset = writeLengthPrefixedAscii(output, offset, purpose);
+  offset = writeUint32(output, offset, 4);
+  offset = writeUint32(output, offset, aad.schemaVersion);
+  offset = writeUint32(output, offset, 4);
+  offset = writeUint32(output, offset, aad.keyVersion);
+  offset = writeUint32(output, offset, 8);
+  offset = writeBigUint64(output, offset, aad.revision);
+  writeLengthPrefixedAscii(output, offset, metadataDigest);
+  return output;
 }
 
 export async function encryptDatabaseAead(
@@ -160,7 +215,7 @@ export async function encryptDatabaseAead(
     throw new CryptoInputError('Plaintext byte length is outside the supported range');
   }
   const aad = databaseAssociatedDataSchema.parse(associatedData);
-  const aadBytes = canonicalDatabaseAssociatedData(aad);
+  const aadBytes = canonicalDatabaseAssociatedDataChecked(aad);
   const nonce = randomBytes(NONCE_BYTES);
   let ciphertext: Uint8Array | undefined;
   let authenticationTag: Uint8Array | undefined;
@@ -206,8 +261,8 @@ export async function decryptDatabaseAead(
     requireByteLength(key, KEY_BYTES);
     const parsed = databaseAeadEnvelopeSchema.parse(envelope);
     const expected = databaseAssociatedDataSchema.parse(expectedAssociatedData);
-    storedAadBytes = canonicalDatabaseAssociatedData(parsed.aad);
-    expectedAadBytes = canonicalDatabaseAssociatedData(expected);
+    storedAadBytes = canonicalDatabaseAssociatedDataChecked(parsed.aad);
+    expectedAadBytes = canonicalDatabaseAssociatedDataChecked(expected);
     if (!constantTimeEqual(storedAadBytes, expectedAadBytes)) {
       throw new AuthenticationError();
     }
@@ -458,14 +513,12 @@ function deriveDatabaseKek(
   }
   const salt = decodeBase64Url(derivation.salt, { exactBytes: KEY_BYTES });
   try {
-    const result = new Uint8Array(
+    // `hkdfSync` returns a fresh ArrayBuffer for this call, so the view over it
+    // is exclusively owned; copying it again would add an allocation and wipe
+    // per unwrap.
+    return new Uint8Array(
       hkdfSync('sha256', key, salt, Buffer.from(expectedContext, 'ascii'), KEY_BYTES),
-    );
-    try {
-      return Uint8Array.from(result) as KeyEncryptionKey;
-    } finally {
-      zeroize(result);
-    }
+    ) as KeyEncryptionKey;
   } finally {
     zeroize(salt);
   }
@@ -582,32 +635,40 @@ function assertWrappedVaultRootContext(context: DatabaseAssociatedData): void {
   }
 }
 
-function encodedAscii(value: string): Uint8Array {
+function asciiBytes(value: string): Uint8Array {
   if (!ASCII_FIELD.test(value)) {
     throw new CryptoInputError('Associated-data fields must be printable ASCII');
   }
-  return lengthPrefixed(Buffer.from(value, 'ascii'));
+  return Buffer.from(value, 'ascii');
 }
 
-function lengthPrefixed(value: Uint8Array): Uint8Array {
-  return concat(uint32(value.byteLength), value);
+function writeLengthPrefixedAscii(
+  output: Buffer,
+  offset: number,
+  value: Uint8Array,
+): number {
+  return writeLengthPrefixed(output, offset, value);
 }
 
-function uint32(value: number): Uint8Array {
-  const output = Buffer.allocUnsafe(4);
-  output.writeUInt32BE(value);
-  return output;
+function writeLengthPrefixed(
+  output: Buffer,
+  offset: number,
+  value: Uint8Array,
+): number {
+  const next = writeUint32(output, offset, value.byteLength);
+  output.set(value, next);
+  return next + value.byteLength;
 }
 
-function uint64(value: number): Uint8Array {
+function writeUint32(output: Buffer, offset: number, value: number): number {
+  output.writeUInt32BE(value, offset);
+  return offset + 4;
+}
+
+function writeBigUint64(output: Buffer, offset: number, value: number): number {
   if (!Number.isSafeInteger(value) || value < 0) {
     throw new CryptoInputError('Invalid database revision');
   }
-  const output = Buffer.allocUnsafe(8);
-  output.writeBigUInt64BE(BigInt(value));
-  return output;
-}
-
-function concat(...values: readonly Uint8Array[]): Uint8Array {
-  return Buffer.concat(values.map((value) => Buffer.from(value)));
+  output.writeBigUInt64BE(BigInt(value), offset);
+  return offset + 8;
 }

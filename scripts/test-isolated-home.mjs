@@ -17,6 +17,10 @@ if (workerState.__kavrixIsolatedTestHome__ === undefined) {
   process.env.USERPROFILE = isolatedHome;
   process.env.HOME = isolatedHome;
   process.env.XDG_CONFIG_HOME = join(isolatedHome, '.config');
+  // Skip the CLI's concurrent ACL-helper warm-up in workers. Verification
+  // paths are unchanged; this only removes interpreter boot churn that made
+  // heavy Windows suites flaky under parallel workers.
+  process.env.KAVRIX_SKIP_ACL_PREWARM = '1';
   process.once('exit', () => {
     try {
       rmSync(isolatedHome, { recursive: true, force: true, maxRetries: 2 });

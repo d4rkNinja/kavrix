@@ -1,6 +1,13 @@
 import type { FieldDefinition, Note } from '@kavrix/schemas';
 import { Box, Text, useApp, useInput, useStdout } from 'ink';
-import { useCallback, useEffect, useRef, useState, type ReactElement } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactElement,
+} from 'react';
 
 import type { TuiUseCasePort } from './contracts.js';
 import { describeFieldEditor } from './field-registry.js';
@@ -20,12 +27,23 @@ export interface TuiScreenProps {
   readonly nowMs: number;
 }
 
-/** Presentational screen. Keeping it pure makes exact resize/security snapshots deterministic. */
+/**
+ * Presentational screen. Keeping it pure makes exact resize/security snapshots
+ * deterministic.
+ *
+ * The flattened text is memoized because the surrounding app re-renders on
+ * inputs unrelated to this screen — elapsed busy seconds, reveal countdowns,
+ * animation epochs, and mouse geometry — and rebuilding the entire pane layout
+ * for those would repeat identical work on every tick.
+ */
 export function TuiScreen({ state, nowMs }: TuiScreenProps): ReactElement {
-  const model = buildTuiScreenModel(state, nowMs);
+  const text = useMemo(
+    () => renderTuiScreenText(buildTuiScreenModel(state, nowMs)),
+    [state, nowMs],
+  );
   return (
-    <Box width={model.width} height={model.height} overflow="hidden">
-      <Text>{renderTuiScreenText(model)}</Text>
+    <Box width={state.width} height={state.height} overflow="hidden">
+      <Text>{text}</Text>
     </Box>
   );
 }

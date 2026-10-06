@@ -1,12 +1,13 @@
 import {
   CLI_EXIT_CODES,
   cliErrorCodeForRunnerFailure,
-  cliErrorCodeSchema,
   exitCodeForCliError,
-  type CliErrorEnvelope,
   type CliErrorCode,
   type CliExitCode,
-} from '@kavrix/schemas';
+} from '@kavrix/schemas/cli-exit-codes';
+// Type-only: erased at runtime, so the CLI startup graph never evaluates the
+// schema package just to build error envelopes.
+import type { CliErrorEnvelope } from '@kavrix/schemas';
 
 export { CLI_EXIT_CODES };
 
@@ -86,19 +87,6 @@ export function wasJsonReported(error: unknown): boolean {
     typeof error === 'object' &&
     Reflect.get(error, 'jsonReported') === true
   );
-}
-
-export function isCodedCliError(error: unknown): error is CodedCliError {
-  return (
-    error instanceof Error &&
-    error.name === 'CodedCliError' &&
-    'errorCode' in error &&
-    cliErrorCodeSchema.safeParse((error as CodedCliError).errorCode).success
-  );
-}
-
-export function codedExitCode(error: unknown): number | undefined {
-  return isCodedCliError(error) ? error.exitCode : undefined;
 }
 
 export const DEFAULT_FAILURE_EXIT: CliExitCode = CLI_EXIT_CODES.unclassifiedFailure;

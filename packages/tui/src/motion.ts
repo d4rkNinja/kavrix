@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react';
 
+import { FRAME_TICK_MS, subscribeToFrameClock } from './frame-clock.js';
+
 /**
  * OpenTUI-inspired motion tokens, ported to Ink. Character-cell motion only:
  * easing, stagger, and pulse clocks. Keyboard selection never uses these.
@@ -11,7 +13,7 @@ export const MOTION = {
   pulseMs: 200,
   staggerMs: 28,
   staggerCap: 8,
-  tickMs: 32,
+  tickMs: FRAME_TICK_MS,
   splashPulseMs: 180,
   /** Wordmark line-by-line reveal on the splash (per line). */
   splashStageMs: 60,
@@ -112,16 +114,25 @@ export function staggerVisibleCount(
   return revealed >= maxStaggered ? itemCount : revealed;
 }
 
+/**
+ * Counts whole `intervalMs` steps on the shared clock. The returned counter
+ * advances exactly as a dedicated interval would have, but the process runs one
+ * timer instead of one per animation, and no commit happens on ticks where this
+ * particular animation has not actually stepped.
+ */
 export function useMotionFrame(enabled: boolean, intervalMs: number): number {
   const [frame, setFrame] = useState(0);
   useEffect(() => {
     if (!enabled) return undefined;
-    const interval = setInterval(() => {
-      setFrame((value) => value + 1);
-    }, intervalMs);
-    return () => {
-      clearInterval(interval);
-    };
+    let steps = 0;
+    let lastStep = -1;
+    return subscribeToFrameClock((elapsedMs) => {
+      const step = Math.floor(elapsedMs / intervalMs);
+      if (step === lastStep) return;
+      if (lastStep >= 0) steps += step - lastStep;
+      lastStep = step;
+      setFrame(steps);
+    });
   }, [enabled, intervalMs]);
   return frame;
 }
@@ -133,14 +144,10 @@ export function useElapsedMs(enabled: boolean): number {
       setElapsedMs(0);
       return undefined;
     }
-    const startedAt = Date.now();
     setElapsedMs(0);
-    const interval = setInterval(() => {
-      setElapsedMs(Date.now() - startedAt);
-    }, MOTION.tickMs);
-    return () => {
-      clearInterval(interval);
-    };
+    return subscribeToFrameClock((elapsed) => {
+      setElapsedMs(Math.round(elapsed));
+    });
   }, [enabled]);
   return elapsedMs;
 }
@@ -148,6 +155,10 @@ export function useElapsedMs(enabled: boolean): number {
 /**
  * 0→1 ease-out clock. Starts at 1 when disabled so renderToString snapshots
  * stay fully settled. Overlay mounts pass enabled=true to play an entrance.
+ *
+ * The clock keeps driving the value once progress saturates; `enterOffsetCells`
+ * and `enterDimmed` map every settled value to the same output, so subscribers
+ * that only care about the visual result already stopped re-rendering.
  */
 export function useEnterProgress(
   enabled: boolean,
@@ -160,16 +171,11 @@ export function useEnterProgress(
       setProgress(1);
       return undefined;
     }
-    const startedAt = Date.now();
     setProgress(0);
-    const interval = setInterval(() => {
-      const next = applyEase((Date.now() - startedAt) / durationMs, ease);
+    return subscribeToFrameClock((elapsed) => {
+      const next = applyEase(elapsed / durationMs, ease);
       setProgress(next);
-      if (next >= 1) clearInterval(interval);
-    }, MOTION.tickMs);
-    return () => {
-      clearInterval(interval);
-    };
+    });
   }, [enabled, durationMs, ease]);
   return progress;
 }

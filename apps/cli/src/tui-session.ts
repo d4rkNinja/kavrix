@@ -34,6 +34,11 @@ import {
 import { getKavrixConfigDir } from './kavrix-config.js';
 import { keyFileGuidance } from './key-file-guidance.js';
 import { clipboardCopyNotice, copySecretToClipboard } from './tui-clipboard.js';
+import { LocalCliError } from './cli-error.js';
+import { resolveProfileConfigDirectory } from './profile-config-directory.js';
+import { terminalColorEnabled } from './terminal-presentation.js';
+import { isTuiThemeId, TUI_THEME_IDS } from './tui-theme.js';
+import { CLI_VERSION } from './version.js';
 
 /**
  * Structural host backend used by `kavrix tui`. Kept free of `@kavrix/tui`
@@ -345,11 +350,7 @@ const tuiThemePrefsSchema = z
   .strict();
 type TuiThemePrefs = z.infer<typeof tuiThemePrefsSchema>;
 
-export const TUI_THEME_IDS = ['gold', 'ocean', 'magma', 'forest', 'violet'] as const;
-
-export function isTuiThemeId(value: string): value is (typeof TUI_THEME_IDS)[number] {
-  return (TUI_THEME_IDS as readonly string[]).includes(value);
-}
+export { isTuiThemeId, TUI_THEME_IDS } from './tui-theme.js';
 
 function tuiThemePrefsPath(kavrixArtifactDir?: string): string {
   return join(kavrixArtifactDir ?? getKavrixConfigDir(), 'tui-theme.json');
@@ -2818,4 +2819,102 @@ function parsePolicyRows(
     });
   }
   return rows;
+}
+
+/**
+ * Runs the interactive `kavrix tui` session. Lives in this heavy module (and
+ * is dynamically imported by the light `tui` command registration) so CLI
+ * startup never loads the TUI backend stack for non-interactive commands.
+ */
+export async function runInteractiveTui(
+  options: Readonly<{
+    ascii?: boolean;
+    color?: boolean;
+    splash?: boolean;
+    mouse?: boolean;
+    theme?: string;
+    profileConfigDir?: string;
+    configDir?: string;
+  }>,
+): Promise<void> {
+  const themeSource = options.theme ?? process.env['KAVRIX_TUI_THEME'];
+  if (themeSource !== undefined && !isTuiThemeId(themeSource)) {
+    throw new LocalCliError(
+      `Unknown theme "${themeSource}". Choose one of: ${TUI_THEME_IDS.join(', ')}.`,
+    );
+  }
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    throw new LocalCliError(
+      'kavrix tui requires an interactive TTY on stdin and stdout. Use numbered CLI commands for automation.',
+    );
+  }
+
+  const noColorFlag =
+    process.env['NO_COLOR'] !== undefined ||
+    process.argv.includes('--no-color') ||
+    options.color === false;
+  const color =
+    options.color === true
+      ? true
+      : noColorFlag
+        ? false
+        : terminalColorEnabled(process.stdout);
+  const ascii =
+    options.ascii === true ||
+    process.platform === 'win32' ||
+    process.env['TERM'] === 'dumb' ||
+    process.env['TERM'] === undefined;
+  const noSplash =
+    options.splash === false ||
+    process.env['KAVRIX_TUI_NO_SPLASH'] === '1' ||
+    process.env['KAVRIX_TUI_NO_SPLASH'] === 'true';
+
+  const profileConfigDir = resolveProfileConfigDirectory(
+    options.profileConfigDir,
+    options.configDir,
+  );
+  if (themeSource !== undefined) {
+    // Apply before mount so the splash and first paint already use the theme.
+    const tuiTheme = (await import('@kavrix/tui')) as unknown as {
+      applyTuiTheme: (id: (typeof TUI_THEME_IDS)[number]) => void;
+    };
+    tuiTheme.applyTuiTheme(themeSource);
+  }
+  const backend = createCliTuiBackend({
+    ascii,
+    ...(themeSource === undefined ? {} : { theme: themeSource }),
+    ...(profileConfigDir === undefined ? {} : { profileConfigDir }),
+  });
+
+  // Lazy-load Ink/React only for the interactive path (same pattern as showcase).
+  const tui = (await import('@kavrix/tui')) as unknown as {
+    mountKavrixApp: (options: {
+      backend: ReturnType<typeof createCliTuiBackend>;
+      stdout: NodeJS.WriteStream;
+      stdin: NodeJS.ReadStream;
+      ascii?: boolean;
+      color?: boolean;
+      version?: string;
+      noSplash?: boolean;
+      mouse?: boolean;
+    }) => {
+      waitUntilExit: () => Promise<void>;
+      unmount: () => void;
+    };
+  };
+  const handle = tui.mountKavrixApp({
+    backend,
+    stdout: process.stdout,
+    stdin: process.stdin,
+    ascii,
+    color,
+    version: CLI_VERSION,
+    ...(options.mouse === undefined ? {} : { mouse: options.mouse }),
+    ...(noSplash ? { noSplash: true } : {}),
+  });
+  try {
+    await handle.waitUntilExit();
+  } finally {
+    handle.unmount();
+  }
 }

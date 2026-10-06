@@ -28,8 +28,16 @@ export type StateEnvelopeCryptoFields = Readonly<{
 }>;
 
 function canonicalContextBytes(context: AuthorizationEnvelopeContext): Uint8Array {
-  const parsed = authorizationEnvelopeContextSchema.parse(context);
-  const encoded = Buffer.from(canonicalJson(parsed), 'utf8');
+  return canonicalContextBytesChecked(
+    authorizationEnvelopeContextSchema.parse(context),
+  );
+}
+
+/** Serializes an already-parsed context; only parsed values reach this. */
+function canonicalContextBytesChecked(
+  context: AuthorizationEnvelopeContext,
+): Uint8Array {
+  const encoded = Buffer.from(canonicalJson(context), 'utf8');
   const length = Buffer.allocUnsafe(4);
   length.writeUInt32BE(encoded.byteLength);
   return Buffer.concat([STATE_AAD_DOMAIN, length, encoded]);
@@ -104,7 +112,7 @@ export async function decryptStateEnvelope(
       scopeId: parsed.scopeId,
       sequence: parsed.sequence,
     });
-    storedBytes = canonicalContextBytes(declaredContext);
+    storedBytes = canonicalContextBytesChecked(declaredContext);
     expectedBytes = canonicalContextBytes(expectedContext);
     if (!constantTimeEqual(storedBytes, expectedBytes)) {
       throw new AuthenticationError();

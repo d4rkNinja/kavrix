@@ -64,9 +64,35 @@ type ResolvedFileTarget = Readonly<{
 
 type FileIdentity = Readonly<{ dev: bigint; ino: bigint }>;
 
+/**
+ * A filesystem metadata snapshot strong enough to prove "same bytes on disk we
+ * already verified": inode identity plus size, mode, link count, and
+ * nanosecond mtime/ctime. In-place writes, truncation, permission changes, and
+ * link swaps all change at least one field, so a matching snapshot against a
+ * fully verified path is evidence the verified state still holds.
+ */
+type TrustedSnapshot = Readonly<{
+  dev: bigint;
+  ino: bigint;
+  size: bigint;
+  mode: bigint;
+  nlink: bigint;
+  mtimeNs: bigint;
+  ctimeNs: bigint;
+}>;
+
+/**
+ * Paths whose full identity and permission verification is being reused. The
+ * map is owned by one store and holds only paths that were fully verified at
+ * least once.
+ */
+type TrustCache = Map<string, TrustedSnapshot>;
+
 type ReadDocumentResult = Readonly<{
   document: LocalVaultDocument;
   identity: FileIdentity;
+  /** The exact on-disk bytes the document was parsed from. */
+  text: string;
 }>;
 
 export class FileLocalVaultStore implements EncryptedVaultStore {
@@ -75,6 +101,20 @@ export class FileLocalVaultStore implements EncryptedVaultStore {
   readonly #lockPath: string;
   readonly #lockHandle: FileHandle;
   readonly #lockIdentity: FileIdentity;
+  /**
+   * Full identity+permission verification results per path, reusable while the
+   * path's metadata snapshot is unchanged. The store holds the exclusive lock
+   * for its whole lifetime; every check still re-`lstat`s and falls back to
+   * full verification on any snapshot change.
+   */
+  readonly #trustCache: TrustCache = new Map();
+  /**
+   * The most recently read-and-verified document with its file snapshot, or
+   * the document this store last published. Repeat reads are served from this
+   * entry while a fresh `lstat` proves the file bytes are unchanged.
+   */
+  #documentCache:
+    Readonly<{ snapshot: TrustedSnapshot; document: LocalVaultDocument }> | undefined;
   #closed = false;
 
   private constructor(
@@ -112,29 +152,76 @@ export class FileLocalVaultStore implements EncryptedVaultStore {
 
   async ping(): Promise<void> {
     this.#assertOpen();
-    await readDocumentIfPresent(this.#targetPath);
+    await this.#readDocument();
+  }
+
+  /**
+   * Reads the document, serving repeat reads from the verified snapshot while
+   * a fresh `lstat` proves the file is unchanged.
+   *
+   * The store holds the exclusive writer lock for its whole lifetime, so while
+   * the snapshot matches, the bytes on disk are exactly the bytes this store
+   * already parsed and validated. Any snapshot change falls through to the
+   * full verification path, so nothing trusted is ever served without the
+   * evidence that it is unchanged.
+   */
+  async #readDocument(): Promise<ReadDocumentResult | null> {
+    let currentStats: BigIntStats | undefined;
+    try {
+      currentStats = await lstat(this.#targetPath, { bigint: true });
+    } catch {
+      currentStats = undefined;
+    }
+    if (currentStats === undefined) {
+      this.#documentCache = undefined;
+      return null;
+    }
+    const snapshot = snapshotOf(currentStats);
+    const cached = this.#documentCache;
+    if (cached !== undefined && sameSnapshot(cached.snapshot, snapshot)) {
+      return {
+        document: cached.document,
+        identity: identityOf(currentStats),
+        text: '',
+      };
+    }
+    const current = await readDocumentIfPresent(this.#targetPath, this.#trustCache);
+    if (current === null) {
+      this.#documentCache = undefined;
+      return null;
+    }
+    this.#documentCache = { snapshot, document: current.document };
+    return current;
   }
 
   async get(vaultId: string): Promise<LocalVaultDocument | null> {
     this.#assertOpen();
     const id = parseVaultId(vaultId);
-    const current = await readDocumentIfPresent(this.#targetPath);
+    const current = await this.#readDocument();
     return current?.document.id === id ? current.document : null;
   }
 
   async listVaultIds(): Promise<string[]> {
     this.#assertOpen();
-    const current = await readDocumentIfPresent(this.#targetPath);
+    const current = await this.#readDocument();
     return current === null ? [] : [current.document.id];
   }
 
   async create(document: LocalVaultDocument): Promise<void> {
     this.#assertOpen();
     const parsed = parseDocument(document);
-    if ((await readDocumentIfPresent(this.#targetPath)) !== null) {
+    if ((await this.#readDocument()) !== null) {
       throw new FileLocalVaultError('exists');
     }
-    await publishDocument(this.#directoryPath, this.#targetPath, parsed, 'create');
+    await publishDocument(
+      this.#directoryPath,
+      this.#targetPath,
+      parsed,
+      'create',
+      undefined,
+      this.#trustCache,
+    );
+    await this.#notePublishedDocument(parsed);
   }
 
   async update(
@@ -145,7 +232,7 @@ export class FileLocalVaultStore implements EncryptedVaultStore {
     const parsed = parseDocument(document);
     const expected = parseRevision(expectedRevision);
     if (parsed.revision !== expected + 1) throw new FileLocalVaultError('invalid');
-    const current = await readDocumentIfPresent(this.#targetPath);
+    const current = await this.#readDocument();
     if (current?.document.id !== parsed.id || current.document.revision !== expected) {
       throw new FileLocalVaultError('conflict');
     }
@@ -155,7 +242,9 @@ export class FileLocalVaultStore implements EncryptedVaultStore {
       parsed,
       'replace',
       current.identity,
+      this.#trustCache,
     );
+    await this.#notePublishedDocument(parsed);
   }
 
   async delete(
@@ -165,17 +254,23 @@ export class FileLocalVaultStore implements EncryptedVaultStore {
     this.#assertOpen();
     const id = parseVaultId(vaultId);
     const expected = parseRevision(expectedRevision);
-    const current = await readDocumentIfPresent(this.#targetPath);
+    const current = await this.#readDocument();
     if (current?.document.id !== id || current.document.revision !== expected) {
       throw new FileLocalVaultError('conflict');
     }
-    await assertPathIdentity(this.#targetPath, current.identity);
+    await assertPathIdentityCached(
+      this.#targetPath,
+      current.identity,
+      this.#trustCache,
+    );
     try {
       await unlink(this.#targetPath);
       await syncDirectory(this.#directoryPath);
     } catch {
       throw new FileLocalVaultError('operation');
     }
+    this.#documentCache = undefined;
+    this.#trustCache.delete(this.#targetPath);
   }
 
   async close(): Promise<void> {
@@ -191,6 +286,19 @@ export class FileLocalVaultStore implements EncryptedVaultStore {
 
   #assertOpen(): void {
     if (this.#closed) throw new FileLocalVaultError('closed');
+  }
+
+  /**
+   * Records the exact document this store just published, so subsequent reads
+   * are served from verified memory after one confirming `lstat`.
+   */
+  async #notePublishedDocument(document: LocalVaultDocument): Promise<void> {
+    try {
+      const metadata = await lstat(this.#targetPath, { bigint: true });
+      this.#documentCache = { snapshot: snapshotOf(metadata), document };
+    } catch {
+      this.#documentCache = undefined;
+    }
   }
 }
 
@@ -436,7 +544,10 @@ async function releaseLock(
   if (failure) throw new FileLocalVaultError('operation');
 }
 
-async function readDocumentIfPresent(path: string): Promise<ReadDocumentResult | null> {
+async function readDocumentIfPresent(
+  path: string,
+  trust?: TrustCache,
+): Promise<ReadDocumentResult | null> {
   let before;
   try {
     before = await lstat(path, { bigint: true });
@@ -444,14 +555,14 @@ async function readDocumentIfPresent(path: string): Promise<ReadDocumentResult |
     if (fileErrorCode(error) === 'ENOENT') return null;
     throw new FileLocalVaultError('operation');
   }
-  await assertOwnedPermissions(before, path, true);
+  await assertOwnedPermissionsCached(before, path, true, trust);
   const identity = identityOf(before);
   let handle: FileHandle | undefined;
   let contents: Buffer | undefined;
   try {
     handle = await open(path, noFollowReadFlags());
     const opened = await handle.stat({ bigint: true });
-    await assertOwnedPermissions(opened, path, true);
+    await assertOwnedPermissionsCached(opened, path, true, trust);
     if (!sameIdentity(identity, identityOf(opened)))
       throw new FileLocalVaultError('invalid');
     const size = Number(opened.size);
@@ -478,12 +589,12 @@ async function readDocumentIfPresent(path: string): Promise<ReadDocumentResult |
     ) {
       throw new FileLocalVaultError('invalid');
     }
-    await assertPathIdentity(path, identity);
+    await assertPathIdentityCached(path, identity, trust);
     const text = contents.subarray(0, size).toString('utf8');
     const parsed = parseDocument(JSON.parse(text) as unknown);
     if (text !== `${JSON.stringify(parsed)}\n`)
       throw new FileLocalVaultError('invalid');
-    return { document: parsed, identity };
+    return { document: parsed, identity, text };
   } catch (error) {
     if (error instanceof FileLocalVaultError) throw error;
     throw new FileLocalVaultError('invalid');
@@ -499,6 +610,7 @@ async function publishDocument(
   document: LocalVaultDocument,
   mode: 'create' | 'replace',
   expectedIdentity?: FileIdentity,
+  trust?: TrustCache,
 ): Promise<void> {
   const contents = Buffer.from(`${JSON.stringify(document)}\n`, 'utf8');
   if (contents.byteLength > MAX_FILE_LOCAL_VAULT_BYTES) {
@@ -522,7 +634,7 @@ async function publishDocument(
     await handle.writeFile(contents);
     await handle.sync();
     const staged = await handle.stat({ bigint: true });
-    await assertOwnedPermissions(staged, temporaryPath, true);
+    await assertOwnedPermissionsCached(staged, temporaryPath, true, trust);
     if (staged.size !== BigInt(contents.byteLength)) {
       throw new FileLocalVaultError('operation');
     }
@@ -538,7 +650,7 @@ async function publishDocument(
       await unlink(temporaryPath);
     } else {
       if (expectedIdentity === undefined) throw new FileLocalVaultError('operation');
-      await assertPathIdentity(targetPath, expectedIdentity);
+      await assertPathIdentityCached(targetPath, expectedIdentity, trust);
       await rename(temporaryPath, targetPath);
     }
     published = true;
@@ -599,6 +711,51 @@ async function assertPathIdentity(path: string, expected: FileIdentity): Promise
   }
 }
 
+/**
+ * Same contract as `assertOwnedPermissions`, reusing a prior full verification
+ * of `path` while the metadata snapshot is unchanged. The snapshot includes
+ * change time, so permission changes are never silently accepted.
+ */
+async function assertOwnedPermissionsCached(
+  metadata: BigIntStats,
+  path: string,
+  requireFile: boolean,
+  trust?: TrustCache,
+): Promise<void> {
+  if (trust === undefined) return assertOwnedPermissions(metadata, path, requireFile);
+  const snapshot = snapshotOf(metadata);
+  const cached = trust.get(path);
+  if (cached !== undefined && sameSnapshot(cached, snapshot)) return;
+  await assertOwnedPermissions(metadata, path, requireFile);
+  trust.set(path, snapshot);
+}
+
+/**
+ * Same contract as `assertPathIdentity`, reusing a prior full verification
+ * while the metadata snapshot is unchanged.
+ */
+async function assertPathIdentityCached(
+  path: string,
+  expected: FileIdentity,
+  trust?: TrustCache,
+): Promise<void> {
+  if (trust === undefined) return assertPathIdentity(path, expected);
+  let metadata: BigIntStats;
+  try {
+    metadata = await lstat(path, { bigint: true });
+  } catch {
+    throw new FileLocalVaultError('operation');
+  }
+  const snapshot = snapshotOf(metadata);
+  const cached = trust.get(path);
+  if (cached !== undefined && sameSnapshot(cached, snapshot)) return;
+  await assertOwnedPermissions(metadata, path, true);
+  if (!sameIdentity(identityOf(metadata), expected)) {
+    throw new FileLocalVaultError('invalid');
+  }
+  trust.set(path, snapshot);
+}
+
 async function syncDirectory(path: string): Promise<void> {
   let handle: FileHandle | undefined;
   try {
@@ -626,6 +783,30 @@ function identityOf(value: {
   readonly ino: bigint;
 }): FileIdentity {
   return { dev: value.dev, ino: value.ino };
+}
+
+function snapshotOf(value: BigIntStats): TrustedSnapshot {
+  return {
+    dev: value.dev,
+    ino: value.ino,
+    size: value.size,
+    mode: value.mode,
+    nlink: value.nlink,
+    mtimeNs: value.mtimeNs,
+    ctimeNs: value.ctimeNs,
+  };
+}
+
+function sameSnapshot(left: TrustedSnapshot, right: TrustedSnapshot): boolean {
+  return (
+    left.dev === right.dev &&
+    left.ino === right.ino &&
+    left.size === right.size &&
+    left.mode === right.mode &&
+    left.nlink === right.nlink &&
+    left.mtimeNs === right.mtimeNs &&
+    left.ctimeNs === right.ctimeNs
+  );
 }
 
 function sameIdentity(left: FileIdentity, right: FileIdentity): boolean {

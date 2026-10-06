@@ -586,8 +586,26 @@ async function verifyPathStillNamesFile(
   }
 }
 
-async function readBounded(handle: FileHandle, maximumBytes: number): Promise<Buffer> {
-  const output = Buffer.alloc(maximumBytes + 1);
+/**
+ * Reads at most `maximumBytes` bytes.
+ *
+ * `sizeHint` is the file size observed under the caller's identity checks; the
+ * scratch buffer is sized to that plus the one-byte overread probe instead of
+ * the full maximum, so small files no longer allocate (and later wipe) a
+ * maximum-sized buffer. The hint never relaxes any bound: the loop still
+ * refuses to read past `maximumBytes`, and every identity/size check after the
+ * read is unchanged.
+ */
+async function readBounded(
+  handle: FileHandle,
+  maximumBytes: number,
+  sizeHint?: number,
+): Promise<Buffer> {
+  const capacity =
+    sizeHint === undefined
+      ? maximumBytes + 1
+      : Math.min(maximumBytes + 1, Math.max(1, sizeHint + 1));
+  const output = Buffer.alloc(capacity);
   let offset = 0;
   while (offset < output.byteLength) {
     const result = await handle.read(
@@ -625,7 +643,7 @@ export async function readSecureFile(
     }
     await validateRegularFile(targetPath, opened, maximumBytes);
     await verifyPathStillNamesFile(targetPath, before);
-    contents = await readBounded(handle, maximumBytes);
+    contents = await readBounded(handle, maximumBytes, Number(opened.size));
     const afterRead = await handle.stat({ bigint: true });
     if (
       !sameIdentity(opened, afterRead) ||

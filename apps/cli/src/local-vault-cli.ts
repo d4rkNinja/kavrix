@@ -1,3 +1,30 @@
+import {
+  ANSI_BOLD,
+  ANSI_BOLD_CYAN,
+  ANSI_DIM,
+  ANSI_GREEN,
+  ANSI_MAGENTA,
+  ANSI_RESET,
+  ANSI_YELLOW,
+  DEFAULT_DATA_FILE,
+  DEFAULT_DATABASE_PROFILE_COLLECTION,
+  DEFAULT_KEY_FILE,
+  DEFAULT_RECOVERY_FILE,
+  DEFAULT_VAULT_PROFILE_COLLECTION,
+  MAX_LOCAL_PAYLOAD_BYTES,
+  MONGO_COLLECTION_NAME_PATTERN,
+  MONGO_DATABASE_NAME_PATTERN,
+  REDACTED,
+  RESERVED_CREDENTIAL_NAMES,
+  RESERVED_VAULT_IDENTIFIERS,
+  getOptions,
+  type DatastoreProfileCommandOptions,
+  type LocalCliOptions,
+} from './cli-registration.js';
+
+export { buildLocalCli, runLocalCli } from './cli-registration.js';
+export type { LocalCliOptions } from './cli-registration.js';
+
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, realpathSync } from 'node:fs';
 import { realpath } from 'node:fs/promises';
@@ -70,9 +97,7 @@ import {
   MongoLocalVaultStore,
   type EncryptedVaultStore,
 } from '@kavrix/storage';
-import { Command } from 'commander';
 
-import { addDatabaseOwnerCommands } from './database-commands.js';
 import {
   DatabaseFlatCommandError,
   databaseProfileBindingState,
@@ -116,770 +141,26 @@ import {
   LocalSecretInputError,
   type LocalSecretKind,
 } from './local-secrets.js';
-import {
-  INVALID_ROOT_DATASTORE_MESSAGE,
-  addMongoPingDatastoreOption,
-  addRootDatastoreOption,
-  parseRootDatastore,
-  resolveRootDatastore,
-  type RootDatastore,
-} from './root-datastore.js';
 import { CLI_VERSION } from './version.js';
-import { applyStdinFrameHelp, registerFramesCommand } from './stdin-frames.js';
-import { registerExecutionCommands, reportJsonFailure } from './execution/register.js';
-import {
-  interactiveDefaultEligible,
-  runDefaultInteractiveAction,
-} from './default-interactive.js';
-import { registerTuiCommand } from './tui-command.js';
-import { registerSelfUpdateCommand } from './self-update.js';
 import {
   runInitTuiOnboarding,
   writeInitTuiOnboardingComplete,
 } from './init-tui-onboarding.js';
-import { registerStructuredVaultCommands } from './structured-vault-commands.js';
-import { registerBackupCommands } from './backup-command.js';
-import { registerImportCommands } from './import-env-command.js';
 import {
   authenticationFailure,
   credentialMissing,
   datastoreFailure,
-  isCodedCliError,
   securityIntegrityFailure,
-  wasJsonReported,
 } from './execution/exit-codes.js';
+import { isCodedCliError } from './execution/coded-error.js';
 import { enforceRevealPolicy } from './execution/reveal-policy.js';
-import { classifyCliFailure } from './cli-errors.js';
 import { LocalCliError } from './cli-error.js';
+import { resolveRootDatastore, type RootDatastore } from './root-datastore.js';
 import { resolveProfileConfigDirectory } from './profile-config-directory.js';
 import { terminalColorEnabled } from './terminal-presentation.js';
 
-const DEFAULT_KEY_FILE = './kavrix.key';
-const DEFAULT_DATA_FILE = './kavrix.vault';
-const DEFAULT_RECOVERY_FILE = './kavrix.recovery';
-const DEFAULT_COLLECTION = 'kavrix_vaults';
-const DEFAULT_DATABASE_PROFILE_COLLECTION = 'kavrix_databases';
-const DEFAULT_VAULT_PROFILE_COLLECTION = 'kavrix_vaults';
-const DEFAULT_VAULT_ID = 'default';
-const MONGO_DATABASE_NAME_PATTERN = /^[A-Za-z0-9_-]{1,63}$/u;
-const MONGO_COLLECTION_NAME_PATTERN = /^[A-Za-z0-9_-]{1,64}$/u;
-const REDACTED = '[REDACTED]';
-const MAX_LOCAL_PAYLOAD_BYTES = 4 * 1024 * 1024;
-const RESERVED_CREDENTIAL_NAMES = new Set(['__proto__', 'constructor', 'prototype']);
-const RESERVED_VAULT_IDENTIFIERS = new Set(['__proto__', 'constructor', 'prototype']);
-const ANSI_ESCAPE = String.fromCharCode(27);
-const ANSI_RESET = `${ANSI_ESCAPE}[0m`;
-const ANSI_BOLD_CYAN = `${ANSI_ESCAPE}[1;36m`;
-const ANSI_BOLD = `${ANSI_ESCAPE}[1m`;
-const ANSI_DIM = `${ANSI_ESCAPE}[2m`;
-const ANSI_GREEN = `${ANSI_ESCAPE}[32m`;
-const ANSI_MAGENTA = `${ANSI_ESCAPE}[35m`;
-const ANSI_YELLOW = `${ANSI_ESCAPE}[33m`;
-const ANSI_RED = `${ANSI_ESCAPE}[31m`;
-
-export type LocalCliOptions = Readonly<{
-  datastore?: string;
-  dataFile?: string;
-  database?: string;
-  databaseUrlStdin?: boolean;
-  profile?: string;
-  profileConfigDir?: string;
-  sourceProfile?: string;
-  destinationProfile?: string;
-  sourceVault?: string;
-  secretsStdin?: boolean;
-  initialize?: boolean;
-  passphraseStdin?: boolean;
-  newPassphraseStdin?: boolean;
-  recoveryPassphraseStdin?: boolean;
-  valueStdin?: boolean;
-  valueStdinBase64?: boolean;
-  confirmationStdin?: boolean;
-  artifact?: readonly string[];
-  keyFile: string;
-  source?: string;
-  outputKeyFile?: string;
-  destination?: string;
-  recoveryFile?: string;
-  outputRecoveryFile?: string;
-  collection: string;
-  vault: string;
-  vaultWasDefaulted?: true;
-  routingOverrides?: DatastoreProfileRoutingOverrides;
-  overwrite?: boolean;
-  acceptCurrent?: boolean;
-  heal?: boolean;
-  dryRun?: boolean;
-  reveal?: boolean;
-  json?: boolean;
-  /** Explicit legacy version-2 single-vault init (migrate sources only). */
-  legacy?: boolean;
-  /** Commander `--no-tui` sets `tui: false` (default true). */
-  tui?: boolean;
-  /** TUI presentation: `--ascii` / `--color` / `--no-color` / `--no-splash`. */
-  ascii?: boolean;
-  color?: boolean;
-  splash?: boolean;
-  mouse?: boolean;
-  limit?: string;
-  caseSensitive?: boolean;
-  allowInsecureTransport?: boolean;
-  /** Unlock with the stored OS session (keychain-gated) instead of prompting. */
-  session?: boolean;
-  /** Session lifetime in hours for `kavrix session enable`. */
-  ttlHours?: string;
-}>;
-
-export function buildLocalCli(): Command {
-  const program = new Command();
-  program
-    .name('kavrix')
-    .description('Local encrypted credential vault with selectable storage.')
-    .version(CLI_VERSION)
-    .helpCommand(false)
-    .showHelpAfterError()
-    // Intercept parse failures so usage errors carry the documented exit
-    // code 2 instead of commander's default process exit.
-    .exitOverride()
-    .configureOutput({
-      writeOut: (text) =>
-        process.stdout.write(colorizeHelp(text, terminalColorEnabled(process.stdout))),
-      writeErr: (text) =>
-        process.stderr.write(colorizeHelp(text, terminalColorEnabled(process.stderr))),
-    });
-
-  const init = program
-    .command('init')
-    .description(
-      'Create a bound local database vault (Ink TUI on TTY by default). Scripted/--json file init creates a selected datastore profile so put/run work immediately; --no-tui uses classic guided prompts; --legacy keeps version-2 single-vault migrate sources.',
-    );
-  // Root init and CRUD share DEFAULT_ROOT_DATASTORE (file). MongoDB requires
-  // an explicit `--datastore mongodb` choice outside the guided wizard.
-  addRootDatastoreOption(init)
-    .option(
-      '--data-file <path>',
-      'Encrypted local database (or legacy vault) file path.',
-    )
-    .option(
-      '--allow-insecure-transport',
-      'Explicitly permit unencrypted transport to a non-local MongoDB (isolated networks only).',
-    )
-    .option(
-      '--database-url-stdin',
-      'Read the MongoDB connection string from standard input (never from an argument).',
-    )
-    .option('--database <name>', 'MongoDB database name when it is not in the URI.')
-    .option('--collection <name>', 'MongoDB collection name.', DEFAULT_COLLECTION);
-  addDatastoreProfileSelectionOptions(init);
-  init.option(
-    '--passphrase-stdin',
-    'Read the key-file passphrase from standard input (never from an argument).',
-  );
-  init.option(
-    '--recovery-file <path>',
-    'Optional recovery-kit path for scripted file init (adds recovery passphrase frames).',
-  );
-  init.option(
-    '--legacy',
-    'Create a legacy version-2 single-vault (migrate sources only); skips database-container onboarding.',
-  );
-  init.option(
-    '--no-tui',
-    'Use classic guided line prompts instead of Ink TUI onboarding (default on interactive TTY).',
-  );
-  init.option(
-    '--json',
-    'Machine-readable / non-interactive init (skips TUI and classic prompts).',
-  );
-  init.option('--ascii', 'Force printable ASCII borders and glyphs (TUI onboarding).');
-  init.option('--color', 'Force color when the terminal supports it (TUI onboarding).');
-  init.option(
-    '--no-color',
-    'Disable ANSI color for TUI onboarding (also honors NO_COLOR).',
-  );
-  init.option('--no-splash', 'Skip the animated startup splash on TUI onboarding.');
-  init.option(
-    '--no-mouse',
-    'Use keyboard navigation and native terminal selection during setup.',
-  );
-  addKeyOptions(init);
-  init.action(async (...args: unknown[]) => {
-    const options = getOptions(args);
-    if (shouldRunInitTuiOnboarding(options)) {
-      const result = await runInitTuiOnboarding({
-        ...(options.profileConfigDir === undefined
-          ? {}
-          : { profileConfigDir: options.profileConfigDir }),
-        ...(options.ascii === true ? { ascii: true } : {}),
-        ...(options.color === true
-          ? { color: true }
-          : options.color === false
-            ? { color: false }
-            : {}),
-        ...(options.splash === false ? { splash: false } : {}),
-        ...(options.mouse === false ? { mouse: false } : {}),
-      });
-      if (result.status === 'completed') {
-        writeInitTuiOnboardingComplete({
-          color: initOnboardingColorEnabled(),
-          profileId: result.profileId,
-          datastore: result.datastore,
-          ...(result.recoveryFile === undefined
-            ? {}
-            : { recoveryFile: result.recoveryFile }),
-          write: (text) => process.stderr.write(text),
-        });
-        return;
-      }
-      if (result.status === 'cancelled') {
-        throw new InitOnboardingCancelledError();
-      }
-      throw new LocalCliError(result.message);
-    }
-    const guided = shouldRunInitOnboarding(options);
-    if (guided) {
-      const { ensureKavrixConfig, getKavrixConfigPath } =
-        await import('./kavrix-config.js');
-      await ensureKavrixConfig();
-      const reservedPaths = [getKavrixConfigPath()];
-      const destinations = await readGuidedLocalOnboardingDestinations(reservedPaths);
-      const values = await new LocalSecretInput(process.stdin, process.stderr).read(
-        [
-          'database-label',
-          'new-passphrase',
-          'new-passphrase',
-          'vault-label',
-          'recovery-passphrase',
-          'recovery-passphrase',
-        ],
-        false,
-      );
-      const databaseLabel = values[0];
-      const ownerPassphraseValue = values[1];
-      const ownerConfirmation = values[2];
-      const vaultLabel = values[3];
-      const recoveryPassphraseValue = values[4];
-      const recoveryConfirmation = values[5];
-      if (
-        databaseLabel === undefined ||
-        ownerPassphraseValue === undefined ||
-        ownerPassphraseValue !== ownerConfirmation ||
-        vaultLabel === undefined ||
-        recoveryPassphraseValue === undefined ||
-        recoveryPassphraseValue !== recoveryConfirmation
-      ) {
-        throw new DatabaseSessionError('invalid');
-      }
-      const ownerPassphrase = Buffer.from(ownerPassphraseValue, 'utf8');
-      const recoveryPassphrase = Buffer.from(recoveryPassphraseValue, 'utf8');
-      try {
-        const receipt = await executeGuidedLocalOnboarding({
-          ...destinations,
-          reservedPaths,
-          databaseLabel,
-          ownerPassphrase,
-          vaultLabel,
-          recoveryPassphrase,
-        });
-        writeGuidedLocalOnboardingComplete({
-          color: initOnboardingColorEnabled(),
-          profileId: receipt.profileId,
-          write: (text) => process.stderr.write(text),
-        });
-      } finally {
-        zeroize(ownerPassphrase);
-        zeroize(recoveryPassphrase);
-      }
-      return;
-    }
-    await handleInit(options);
-  });
-
-  const destroy = program
-    .command('destroy', { hidden: true })
-    .description('Permanently destroy one authenticated vault and its active files.')
-    .helpOption('-h, --help')
-    .showHelpAfterError(false);
-  addDatabaseOptions(destroy);
-  addKeyOptions(destroy);
-  destroy.option(
-    '--confirmation-stdin',
-    'Read exactly two destruction confirmations from the protected stdin flow.',
-  );
-  destroy.option(
-    '--artifact <path>',
-    'Additional Kavrix key, anchor, or recovery file bound to this vault.',
-    collectOption,
-    [],
-  );
-  destroy.action(async (...args: unknown[]) => {
-    await handleDestroy(getOptions(args));
-  });
-
-  const db = program.command('db').description('Database operations.');
-  addDatastoreProfileCommands(db);
-  addDatabaseOwnerCommands(db);
-  const ping = db
-    .command('ping')
-    .description(
-      'Check direct MongoDB connectivity without unlocking a vault (requires --datastore mongodb).',
-    );
-  addMongoPingOptions(ping);
-  addDatastoreProfileSelectionOptions(ping);
-  ping.action(async (...args: unknown[]) => {
-    await handlePing(getOptions(args), profileRoutingOverrides(args));
-  });
-
-  const migrate = program
-    .command('migrate')
-    .description('Explicit copy-first migrations.');
-  const migrateDatabase = migrate
-    .command('database')
-    .description(
-      'Copy one legacy version 2 vault into an existing database. Prepare a legacy source profile (no databaseId; `kavrix init --legacy --passphrase-stdin` vault+key) and a bound destination (`db init`). Then: `kavrix migrate database --source-profile <legacy> --destination-profile <db> --source-vault <id> --secrets-stdin` with frames from `kavrix frames migrate database`.',
-    );
-  migrateDatabase
-    .requiredOption('--source-profile <id>', 'Legacy version 2 datastore profile.')
-    .requiredOption('--destination-profile <id>', 'Bound database profile.')
-    .requiredOption('--source-vault <id>', 'Legacy source vault identifier.')
-    .option('--profile-config-dir <path>', 'Protected profile configuration directory.')
-    .option('--config-dir <path>', 'Protected profile configuration directory.')
-    .option(
-      '--initialize',
-      'Explicitly initialize an unbound file destination profile.',
-    )
-    .option('--secrets-stdin', 'Read every migration secret from exact stdin frames.')
-    .option(
-      '--allow-insecure-transport',
-      'Explicitly permit unencrypted transport to a non-local MongoDB (isolated networks only).',
-    );
-  migrateDatabase.action(async (...args: unknown[]) => {
-    await handleMigrateDatabase(getOptions(args));
-  });
-
-  const put = program
-    .command('put <name>')
-    .description('Encrypt and store one credential value.');
-  addDatabaseOptions(put);
-  addKeyOptions(put);
-  put.option(
-    '--value-stdin',
-    'Read the credential value from standard input (never from an argument).',
-  );
-  put.option(
-    '--value-stdin-base64',
-    'Read one base64-encoded credential value frame from standard input; supports multi-line values (empty values store but cannot be injected by run).',
-  );
-  put.option('--overwrite', 'Replace an existing credential explicitly.');
-  put.option('--json', 'Emit machine-readable output (the default).');
-  put.action(async (...args: unknown[]) => {
-    await handlePut(getName(args), getOptions(args));
-  });
-
-  const get = program
-    .command('get <name>')
-    .description(
-      'Read one credential value; use --reveal for explicit plaintext output.',
-    )
-    .option('--json', 'Emit masked machine-readable output (the default).');
-  addDatabaseOptions(get);
-  addKeyOptions(get);
-  get.option('--reveal', 'Explicitly print the decrypted value to stdout.');
-  get.action(async (...args: unknown[]) => {
-    await handleGet(getName(args), getOptions(args));
-  });
-
-  const list = program
-    .command('list')
-    .description('List credential names without revealing values.')
-    .option('--json', 'Emit machine-readable output even on a terminal.');
-  addDatabaseOptions(list);
-  addKeyOptions(list);
-  list.action(async (...args: unknown[]) => {
-    await handleList(getOptions(args));
-  });
-
-  const view = program
-    .command('view [name]')
-    .description('Show a readable vault dashboard or one credential card.');
-  addDatabaseOptions(view);
-  addKeyOptions(view);
-  view
-    .option('--reveal', 'Reveal one named credential in an interactive terminal only.')
-    .option('--json', 'Emit masked machine-readable output.');
-  view.action(async (...args: unknown[]) => {
-    await handleView(getOptionalName(args), getOptions(args));
-  });
-
-  const search = program
-    .command('search <pattern>')
-    .description(
-      'Find credential names by glob (*, ?) or substring without searching or revealing values.',
-    )
-    .option('--limit <count>', 'Maximum matches to display.', '50')
-    .option('--json', 'Emit machine-readable output.')
-    .option(
-      '--ignore-case',
-      'Match the pattern case-insensitively (the default).',
-      true,
-    )
-    .option('--case-sensitive', 'Match the pattern case-sensitively.');
-  addDatabaseOptions(search);
-  addKeyOptions(search);
-  search.action(async (...args: unknown[]) => {
-    await handleSearch(getName(args), getOptions(args));
-  });
-
-  const stats = program
-    .command('stats')
-    .description('Show vault health and record statistics without revealing values.');
-  addDatabaseOptions(stats);
-  addKeyOptions(stats);
-  stats.option('--json', 'Emit machine-readable output.');
-  stats.action(async (...args: unknown[]) => {
-    await handleStats(getOptions(args));
-  });
-
-  const remove = program
-    .command('remove <name>')
-    .description('Delete one credential value.')
-    .option('--json', 'Emit machine-readable output (the default).');
-  addDatabaseOptions(remove);
-  addKeyOptions(remove);
-  remove.action(async (...args: unknown[]) => {
-    await handleRemove(getName(args), getOptions(args));
-  });
-
-  const has = program
-    .command('has <name>')
-    .description('Check whether a credential exists without revealing its value.')
-    .option('--json', 'Emit machine-readable output even on a terminal.');
-  addDatabaseOptions(has);
-  addKeyOptions(has);
-  has.action(async (...args: unknown[]) => {
-    await handleHas(getName(args), getOptions(args));
-  });
-
-  const rename = program
-    .command('rename <from> <to>')
-    .description('Rename a credential while keeping its encrypted value.')
-    .option('--json', 'Emit machine-readable output (the default).');
-  addDatabaseOptions(rename);
-  addKeyOptions(rename);
-  rename.action(async (...args: unknown[]) => {
-    const names = getNames(args);
-    await handleRename(names[0], names[1], getOptions(args));
-  });
-
-  const sessionCommand = program
-    .command('session')
-    .description(
-      'Manage OS session unlock: keychain-gated convenience sessions for the selected profile.',
-    );
-
-  const sessionEnable = sessionCommand
-    .command('enable')
-    .description(
-      'Seal the unlock material for the selected profile behind the OS credential store.',
-    );
-  addDatastoreProfileSelectionOptions(sessionEnable);
-  sessionEnable
-    .option(
-      '--ttl-hours <hours>',
-      'Session lifetime in hours after enable (default 12; 1-8760).',
-    )
-    .option(
-      '--passphrase-stdin',
-      'Read the key-file passphrase from standard input (never from an argument).',
-    )
-    .option('--json', 'Emit machine-readable output.');
-  sessionEnable.action(async (...args: unknown[]) => {
-    const options = getOptions(args);
-    const target = await currentSessionTarget(options);
-    const ttlRaw = options.ttlHours;
-    const ttlHours = ttlRaw === undefined ? undefined : Number.parseInt(ttlRaw, 10);
-    if (
-      ttlHours !== undefined &&
-      (!Number.isInteger(ttlHours) || ttlHours < 1 || ttlHours > 8760)
-    ) {
-      throw new LocalCliError('--ttl-hours must be an integer between 1 and 8760.');
-    }
-    // Enable must not touch the vault datastore: only the passphrase is read.
-    const input = new LocalSecretInput(process.stdin, process.stderr);
-    const values = await input.read(['passphrase'], options.passphraseStdin === true);
-    const passphrase = requiredSecret(values, 0);
-    const { enableSessionUnlock } = await import('./session-unlock.js');
-    const status = await enableSessionUnlock({
-      target: {
-        profileId: target.profileId,
-        databaseId: target.databaseId,
-        keyFile: target.keyFile,
-      },
-      passphrase,
-      ttlHours,
-    });
-    writeJson({
-      enabled: true,
-      profileId: target.profileId,
-      createdAt: status.createdAt,
-      ttlHours: status.ttlHours,
-    });
-  });
-
-  const sessionStatus = sessionCommand
-    .command('status')
-    .description('Show whether a session unlock is enabled for the selected profile.');
-  addDatastoreProfileSelectionOptions(sessionStatus);
-  sessionStatus.option('--json', 'Emit machine-readable output (the default).');
-  sessionStatus.action(async (...args: unknown[]) => {
-    const options = getOptions(args);
-    const target = await currentSessionTarget(options);
-    const { sessionUnlockStatus } = await import('./session-unlock.js');
-    const status = await sessionUnlockStatus({
-      target: {
-        profileId: target.profileId,
-        databaseId: target.databaseId,
-        keyFile: target.keyFile,
-      },
-    });
-    writeJson({ profileId: target.profileId, ...status });
-  });
-
-  const sessionRevoke = sessionCommand
-    .command('revoke')
-    .description('Remove the stored session unlock for the selected profile.');
-  addDatastoreProfileSelectionOptions(sessionRevoke);
-  sessionRevoke.option('--json', 'Emit machine-readable output (the default).');
-  sessionRevoke.action(async (...args: unknown[]) => {
-    const options = getOptions(args);
-    const target = await currentSessionTarget(options);
-    const { revokeSessionUnlock } = await import('./session-unlock.js');
-    await revokeSessionUnlock({
-      target: {
-        profileId: target.profileId,
-        databaseId: target.databaseId,
-        keyFile: target.keyFile,
-      },
-    });
-    writeJson({ revoked: true, profileId: target.profileId });
-  });
-
-  const doctor = program
-    .command('doctor')
-    .description('Decrypt and validate the local vault without revealing values.')
-    .option('--json', 'Emit machine-readable output (the default).');
-  addDatabaseOptions(doctor);
-  addKeyOptions(doctor);
-  addDoctorHealOptions(doctor);
-  doctor.action(async (...args: unknown[]) => {
-    const options = getOptions(args);
-    if (options.heal === true) {
-      await handleDoctorHealth(options);
-      return;
-    }
-    await handleDoctor(options);
-  });
-
-  const doctorHealth = doctor
-    .command('health')
-    .description(
-      'Run fail-closed health checks; with --heal, apply safe local-state repairs.',
-    );
-  addDatabaseOptions(doctorHealth);
-  addKeyOptions(doctorHealth);
-  doctorHealth.option(
-    '--accept-current',
-    'Initialize a missing local rollback anchor only after manually verifying the current vault.',
-  );
-  addDoctorHealOptions(doctorHealth);
-  doctorHealth.action(async (...args: unknown[]) => {
-    await handleDoctorHealth(getOptions(args));
-  });
-
-  const recovery = program
-    .command('recovery')
-    .description(
-      'Legacy-vault recovery kits. For database-container profiles (modern init), use `kavrix db recovery`.',
-    );
-  const recoveryCreate = recovery
-    .command('create')
-    .description('Create an encrypted recovery kit for replacing a lost key file.');
-  addDatabaseOptions(recoveryCreate);
-  addKeyOptions(recoveryCreate);
-  recoveryCreate
-    .option('--recovery-file <path>', 'Protected recovery-kit file path.')
-    .option('--json', 'Emit machine-readable output (the default for this command).')
-    .option('--overwrite', 'Replace an existing recovery-kit file explicitly.')
-    .option(
-      '--recovery-passphrase-stdin',
-      'Read the recovery-kit passphrase from standard input.',
-    )
-    .option(
-      '--secrets-stdin',
-      'Alias of --recovery-passphrase-stdin for compatibility (reads the same frames).',
-    );
-  recoveryCreate.action(async (...args: unknown[]) => {
-    await handleRecoveryCreate(getOptions(args));
-  });
-  const recoveryVerify = recovery
-    .command('verify')
-    .description('Verify a protected recovery kit against the current vault.');
-  addDatabaseOnlyOptions(recoveryVerify);
-  addDatastoreProfileSelectionOptions(recoveryVerify);
-  addVaultOption(recoveryVerify);
-  recoveryVerify
-    .option(
-      '--key-file <path>',
-      'Portable-key path whose trusted revision anchor must be present.',
-      DEFAULT_KEY_FILE,
-    )
-    .option('--recovery-file <path>', 'Protected recovery-kit file path.')
-    .option(
-      '--recovery-passphrase-stdin',
-      'Read the recovery-kit passphrase from standard input.',
-    )
-    .option(
-      '--passphrase-stdin',
-      'Alias of --recovery-passphrase-stdin for compatibility.',
-    )
-    .option('--json', 'Emit machine-readable output.');
-  recoveryVerify.action(async (...args: unknown[]) => {
-    await handleRecoveryVerify(getOptions(args));
-  });
-  const recoveryRevoke = recovery
-    .command('revoke <slotId>')
-    .description('Revoke one recovery kit while keeping another active kit available.');
-  addDatabaseOptions(recoveryRevoke);
-  addKeyOptions(recoveryRevoke);
-  recoveryRevoke.action(async (...args: unknown[]) => {
-    await handleRecoveryRevoke(getArgument(args, 'recovery slot ID'), getOptions(args));
-  });
-  const recoveryStatus = recovery
-    .command('status')
-    .description('Show protected recovery-kit counts without revealing secrets.');
-  addDatabaseOnlyOptions(recoveryStatus);
-  addDatastoreProfileSelectionOptions(recoveryStatus);
-  addVaultOption(recoveryStatus);
-  recoveryStatus.option('--json', 'Emit machine-readable output.');
-  recoveryStatus.action(async (...args: unknown[]) => {
-    await handleRecoveryStatus(getOptions(args));
-  });
-  const recoveryUse = recovery
-    .command('use')
-    .description('Use a protected recovery kit to create and bind new keys.');
-  addDatabaseOnlyOptions(recoveryUse);
-  addDatastoreProfileSelectionOptions(recoveryUse);
-  addVaultOption(recoveryUse);
-  recoveryUse
-    .option(
-      '--key-file <path>',
-      'Portable-key path whose trusted revision anchor must be present.',
-      DEFAULT_KEY_FILE,
-    )
-    .option('--recovery-file <path>', 'Protected recovery-kit file path.')
-    .option(
-      '--output-recovery-file <path>',
-      'Destination protected recovery-kit file path.',
-    )
-    .option(
-      '--recovery-passphrase-stdin',
-      'Read the recovery-kit passphrase from standard input.',
-    )
-    .option(
-      '--new-passphrase-stdin',
-      'Read the new key-file passphrase from standard input.',
-    )
-    .option('--output-key-file <path>', 'Destination protected key-file path.')
-    .option('--destination <path>', 'Destination protected key-file path.')
-    .option('--overwrite', 'Replace an existing destination key file explicitly.');
-  recoveryUse.action(async (...args: unknown[]) => {
-    await handleRecoveryUse(getOptions(args));
-  });
-
-  const vault = program
-    .command('vault')
-    .description('Select and inspect encrypted vaults.');
-  const vaultList = vault
-    .command('list')
-    .description('List vault identifiers stored in the selected MongoDB collection.');
-  addDatabaseOnlyOptions(vaultList);
-  addDatastoreProfileSelectionOptions(vaultList);
-  vaultList.option(
-    '--json',
-    'Emit machine-readable output (the default for this command).',
-  );
-  vaultList.action(async (...args: unknown[]) => {
-    await handleVaultList(getOptions(args));
-  });
-  const vaultStatus = vault
-    .command('status')
-    .description('Show non-secret metadata for the selected vault.');
-  addDatabaseOnlyOptions(vaultStatus);
-  addDatastoreProfileSelectionOptions(vaultStatus);
-  addVaultOption(vaultStatus);
-  vaultStatus.action(async (...args: unknown[]) => {
-    await handleVaultStatus(getOptions(args));
-  });
-
-  const key = program
-    .command('key')
-    .description('Protected key-file lifecycle operations.');
-  addKeyOnlyOptions(
-    key
-      .command('status')
-      .description('Verify a protected key file and show non-secret metadata.'),
-  ).action(async (...args: unknown[]) => {
-    await handleKeyStatus(getOptions(args));
-  });
-  addKeyOnlyOptions(
-    key.command('verify').description('Cryptographically verify a protected key file.'),
-  ).action(async (...args: unknown[]) => {
-    await handleKeyStatus(getOptions(args));
-  });
-  for (const name of ['copy', 'replicate', 'assign'] as const) {
-    const description =
-      name === 'copy'
-        ? 'Create another protected key file with the same vault binding; it is not independently revocable.'
-        : `Deprecated alias of \`key copy\`; behavior and output are identical.`;
-    addKeyCopyOptions(key.command(name).description(description)).action(
-      async (...args: unknown[]) => {
-        await handleKeyCopy(getOptions(args));
-      },
-    );
-  }
-  addKeyRewrapOptions(
-    key
-      .command('rewrap')
-      .description('Replace a key-file passphrase without changing its vault binding.'),
-  ).action(async (...args: unknown[]) => {
-    await handleKeyRewrap(getOptions(args));
-  });
-
-  registerExecutionCommands(program);
-  registerTuiCommand(program);
-  registerStructuredVaultCommands(program);
-  registerBackupCommands(program);
-  registerImportCommands(program);
-  registerFramesCommand(program);
-  registerSelfUpdateCommand(program);
-  applyStdinFrameHelp(program);
-
-  const status = program
-    .command('status')
-    .description(
-      'Show the CLI version, selected datastore profile, and active routing mode.',
-    );
-  addDatastoreProfileSelectionOptions(status);
-  status.option('--json', 'Emit machine-readable output even on a terminal.');
-  status.action(async (...args: unknown[]) => {
-    await handleStatus(getOptions(args));
-  });
-
-  return program;
-}
-
 /** Reports non-secret routing facts so scripts can detect the active universe. */
-async function handleStatus(options: LocalCliOptions): Promise<void> {
+export async function handleStatus(options: LocalCliOptions): Promise<void> {
   const configDirectory = options.profileConfigDir ?? defaultProfileConfigDirectory();
   const configDirectoryProvided = options.profileConfigDir !== undefined;
   const registryOptions = { configDirectory };
@@ -950,44 +231,6 @@ async function handleStatus(options: LocalCliOptions): Promise<void> {
   process.stdout.write(lines.join('\n'));
 }
 
-function argvRequestsJson(argv: readonly string[]): boolean {
-  const separator = argv.indexOf('--');
-  const flags = separator === -1 ? argv : argv.slice(0, separator);
-  return flags.includes('--json');
-}
-
-export async function runLocalCli(argv: readonly string[]): Promise<void> {
-  try {
-    // Bare `kavrix` on a TTY opens the interactive default: the init
-    // onboarding wizard on a fresh machine, then the TUI. Everything else —
-    // flags, subcommands, unknown words, non-interactive runs — keeps the
-    // classic commander behavior untouched.
-    if (argv.length <= 2 && interactiveDefaultEligible()) {
-      await runDefaultInteractiveAction();
-      return;
-    }
-    await buildLocalCli().parseAsync(argv);
-  } catch (error) {
-    if (argvRequestsJson(argv)) {
-      reportJsonFailure(error);
-    }
-    const { message, exitCode } = classifyCliFailure(error);
-    if (
-      process.env['KAVRIX_DEBUG_CONNECT'] === '1' &&
-      error instanceof Error &&
-      error.stack
-    ) {
-      process.stderr.write(error.stack + '\n');
-    }
-    // `--json` already wrote the machine envelope to stdout; do not duplicate
-    // the same human report on stderr.
-    if (message.length > 0 && !wasJsonReported(error)) {
-      process.stderr.write(colorizeError(message) + '\n');
-    }
-    process.exitCode = exitCode;
-  }
-}
-
 const AMBIGUOUS_LOCAL_PUBLICATION_MESSAGE =
   'The vault operation may have committed; protected local artifacts were retained. Verify the datastore and files before retrying.';
 
@@ -1016,128 +259,7 @@ interface MutableStoreOperationState {
   mutation: StoreMutationStatus;
 }
 
-type DatastoreProfileCommandOptions = Readonly<{
-  configDir?: string;
-  profileConfigDir?: string;
-  datastore?: string;
-  databaseId?: string;
-  dataFile?: string;
-  database?: string;
-  databaseCollection?: string;
-  vaultCollection?: string;
-  keyFile?: string;
-}>;
-
-function addDatastoreProfileCommands(db: Command): void {
-  const profile = db
-    .command('profile')
-    .description('Manage protected non-secret datastore routing profiles.');
-
-  const add = profile
-    .command('add <id>')
-    .description('Add a datastore route without storing connection credentials.');
-  addProfileConfigOption(add);
-  add.option('--json', 'Emit machine-readable output.');
-  add
-    .requiredOption('--datastore <type>', 'Datastore type: mongodb or file.')
-    .option(
-      '--database-id <id>',
-      'Expected opaque database identifier after initialization.',
-    )
-    .option('--database <name>', 'MongoDB database routing name.')
-    .option('--database-collection <name>', 'MongoDB database document collection.')
-    .option('--vault-collection <name>', 'MongoDB vault document collection.')
-    .option('--data-file <path>', 'Encrypted local database file path.')
-    .requiredOption('--key-file <path>', 'Protected database-owner key file path.');
-  add.action(async (...args: unknown[]) => {
-    await handleProfileAdd(
-      getArgument(args, 'profile ID'),
-      profileCommandOptions(args),
-    );
-  });
-
-  const list = profile
-    .command('list')
-    .description('List registered datastore profiles.');
-  addProfileConfigOption(list);
-  list.option('--json', 'Emit machine-readable output.');
-  list.action(async (...args: unknown[]) => {
-    await handleProfileList(profileCommandOptions(args));
-  });
-
-  const use = profile
-    .command('use <id>')
-    .description('Select one datastore profile without changing its routing.');
-  addProfileConfigOption(use);
-  use.option('--json', 'Emit machine-readable output.');
-  use.action(async (...args: unknown[]) => {
-    await handleProfileUse(
-      getArgument(args, 'profile ID'),
-      profileCommandOptions(args),
-    );
-  });
-
-  const status = profile
-    .command('status')
-    .description('Show the selected non-secret datastore profile.');
-  addProfileConfigOption(status);
-  status.option('--json', 'Emit machine-readable output.');
-  status.action(async (...args: unknown[]) => {
-    await handleProfileStatus(profileCommandOptions(args));
-  });
-
-  const show = profile
-    .command('show')
-    .description('Alias of `db profile status` for compatibility.')
-    .option(
-      '--config-dir <path>',
-      'Protected datastore-profile configuration directory.',
-    )
-    .option(
-      '--profile-config-dir <path>',
-      'Protected datastore-profile configuration directory.',
-    )
-    .option('--json', 'Emit machine-readable output.');
-  show.action(async (...args: unknown[]) => {
-    await handleProfileStatus(profileCommandOptions(args));
-  });
-
-  const remove = profile
-    .command('remove <id>')
-    .description(
-      'Remove one datastore profile; removing the current profile clears selection.',
-    );
-  addProfileConfigOption(remove);
-  remove.option('--json', 'Emit machine-readable output.');
-  remove.action(async (...args: unknown[]) => {
-    await handleProfileRemove(
-      getArgument(args, 'profile ID'),
-      profileCommandOptions(args),
-    );
-  });
-}
-
-function addProfileConfigOption(command: Command): void {
-  // `--config-dir` is the historical spelling for `db profile` subcommands;
-  // `--profile-config-dir` is the shared standard across every other command.
-  command
-    .option(
-      '--config-dir <path>',
-      'Protected datastore-profile configuration directory.',
-    )
-    .option(
-      '--profile-config-dir <path>',
-      'Protected datastore-profile configuration directory.',
-    );
-}
-
-function profileCommandOptions(
-  args: readonly unknown[],
-): DatastoreProfileCommandOptions {
-  return getOptions(args);
-}
-
-async function handleProfileAdd(
+export async function handleProfileAdd(
   id: string,
   options: DatastoreProfileCommandOptions,
 ): Promise<void> {
@@ -1146,7 +268,7 @@ async function handleProfileAdd(
   writeJson({ added: true, profile: profileForOutput(profile) });
 }
 
-async function handleProfileList(
+export async function handleProfileList(
   options: DatastoreProfileCommandOptions,
 ): Promise<void> {
   const registry = await openDatastoreProfileRegistry(options);
@@ -1154,7 +276,7 @@ async function handleProfileList(
   writeJson({ profiles: profiles.map(profileForOutput) });
 }
 
-async function handleProfileUse(
+export async function handleProfileUse(
   id: string,
   options: DatastoreProfileCommandOptions,
 ): Promise<void> {
@@ -1163,7 +285,7 @@ async function handleProfileUse(
   writeJson({ selected: profileForOutput(profile) });
 }
 
-async function handleProfileStatus(
+export async function handleProfileStatus(
   options: DatastoreProfileCommandOptions,
 ): Promise<void> {
   const registry = await openDatastoreProfileRegistry(options);
@@ -1171,7 +293,7 @@ async function handleProfileStatus(
   writeJson({ current: profile === null ? null : profileForOutput(profile) });
 }
 
-async function handleProfileRemove(
+export async function handleProfileRemove(
   id: string,
   options: DatastoreProfileCommandOptions,
 ): Promise<void> {
@@ -1281,54 +403,6 @@ function profileForOutput(profile: DatastoreProfile): Record<string, string> {
       };
 }
 
-function addDatastoreProfileSelectionOptions(command: Command): void {
-  command
-    .option('--profile <id>', 'Use one non-secret datastore profile for this command.')
-    .option(
-      '--config-dir <path>',
-      'Protected datastore-profile configuration directory.',
-    )
-    .option(
-      '--profile-config-dir <path>',
-      'Protected datastore-profile configuration directory.',
-    );
-}
-
-function profileRoutingOverrides(
-  args: readonly unknown[],
-): DatastoreProfileRoutingOverrides & Readonly<{ collection?: string }> {
-  const command = args.at(-1);
-  if (!(command instanceof Command)) return {};
-  const options = getOptions(args);
-  const optionIsExplicit = (key: string): boolean => {
-    const source = command.getOptionValueSource(key);
-    return source !== undefined && source !== 'default';
-  };
-  // Unset options (no Commander default, e.g. db ping --datastore) must not be
-  // treated as explicit empty values — that previously threw a generic
-  // "--datastore must be mongodb or file" instead of the ping-specific hint.
-  const datastore = optionIsExplicit('datastore')
-    ? parseExplicitDatastore(options.datastore)
-    : undefined;
-  return {
-    ...(datastore === undefined ? {} : { datastore }),
-    ...(!optionIsExplicit('dataFile') || options.dataFile === undefined
-      ? {}
-      : { dataFile: options.dataFile }),
-    ...(!optionIsExplicit('database') || options.database === undefined
-      ? {}
-      : { database: options.database }),
-    ...(!optionIsExplicit('collection') ? {} : { collection: options.collection }),
-  };
-}
-
-function parseExplicitDatastore(value: string | undefined): RootDatastore {
-  if (value === undefined) {
-    throw new LocalCliError(INVALID_ROOT_DATASTORE_MESSAGE);
-  }
-  return parseRootDatastore(value);
-}
-
 async function resolveProfileForPing(
   options: LocalCliOptions,
   overrides: DatastoreProfileRoutingOverrides & Readonly<{ collection?: string }>,
@@ -1380,221 +454,7 @@ async function resolveProfileForPing(
   };
 }
 
-function addDatabaseOnlyOptions(command: Command): void {
-  addRootDatastoreOption(command)
-    .option('--data-file <path>', 'Encrypted local vault file path.')
-    .option(
-      '--allow-insecure-transport',
-      'Explicitly permit unencrypted transport to a non-local MongoDB (isolated networks only).',
-    )
-    .option(
-      '--database-url-stdin',
-      'Read the MongoDB connection string from standard input (never from an argument).',
-    )
-    .option('--database <name>', 'MongoDB database name when it is not in the URI.')
-    .option('--collection <name>', 'MongoDB collection name.', DEFAULT_COLLECTION);
-}
-
 /** Mongo-only ping options: no inherited file datastore default in `--help`. */
-function addMongoPingOptions(command: Command): void {
-  addMongoPingDatastoreOption(command)
-    .option('--data-file <path>', 'Encrypted local vault file path.')
-    .option(
-      '--allow-insecure-transport',
-      'Explicitly permit unencrypted transport to a non-local MongoDB (isolated networks only).',
-    )
-    .option(
-      '--database-url-stdin',
-      'Read the MongoDB connection string from standard input (never from an argument).',
-    )
-    .option('--database <name>', 'MongoDB database name when it is not in the URI.')
-    .option('--collection <name>', 'MongoDB collection name.', DEFAULT_COLLECTION);
-}
-
-function colorizeHelp(text: string, enabled: boolean): string {
-  if (!enabled) return text;
-  return text
-    .split('\n')
-    .map((line) => {
-      const trimmed = line.trimStart();
-      if (/^(?:Usage:|Options:|Commands:)/u.test(trimmed)) {
-        return `${ANSI_BOLD_CYAN}${line}${ANSI_RESET}`;
-      }
-      if (trimmed.startsWith('-')) return `${ANSI_YELLOW}${line}${ANSI_RESET}`;
-      if (/^[a-z][a-z0-9-]*(?=\s+(?:\[|<|[A-Z]))/u.test(trimmed)) {
-        return line.replace(
-          /^(\s*)([a-z][a-z0-9-]*)/u,
-          `$1${ANSI_GREEN}$2${ANSI_RESET}`,
-        );
-      }
-      return line;
-    })
-    .join('\n');
-}
-
-function colorizeError(message: string): string {
-  if (!terminalColorEnabled(process.stderr)) return message;
-  if (message.startsWith('error:')) {
-    return `${ANSI_RED}error:${ANSI_RESET}${message.slice('error:'.length)}`;
-  }
-  return `${ANSI_RED}error:${ANSI_RESET} ${message}`;
-}
-
-function addDatabaseOptions(command: Command): void {
-  addDatabaseOnlyOptions(command);
-  addDatastoreProfileSelectionOptions(command);
-  command.option(
-    '--passphrase-stdin',
-    'Read the key-file passphrase from standard input (never from an argument).',
-  );
-  command.option(
-    '--session',
-    'Unlock with the stored OS session (keychain-gated) instead of the passphrase.',
-  );
-}
-
-function addKeyOnlyOptions(command: Command): Command {
-  return command
-    .option('--key-file <path>', 'Protected portable-key file path.', DEFAULT_KEY_FILE)
-    .option('--source <path>', 'Source protected key-file path.')
-    .option(
-      '--passphrase-stdin',
-      'Read the key-file passphrase from standard input (never from an argument).',
-    )
-    .option('--json', 'Emit machine-readable output.');
-}
-
-function addKeyCopyOptions(command: Command): Command {
-  return addKeyOnlyOptions(command)
-    .option('--output-key-file <path>', 'Destination protected key-file path.')
-    .option('--destination <path>', 'Destination protected key-file path.')
-    .option('--overwrite', 'Replace an existing destination key file explicitly.')
-    .option(
-      '--new-passphrase-stdin',
-      'Read the destination key-file passphrase from standard input.',
-    );
-}
-
-function addKeyRewrapOptions(command: Command): Command {
-  return addKeyOnlyOptions(command).option(
-    '--new-passphrase-stdin',
-    'Read the replacement key-file passphrase from standard input.',
-  );
-}
-
-function addKeyOptions(command: Command): void {
-  command.option(
-    '--key-file <path>',
-    'Protected portable-key file path (init without --data-file/--key-file uses ~/.kavrix/; an explicit path including ./kavrix.key is honored).',
-    DEFAULT_KEY_FILE,
-  );
-  addVaultOption(command);
-}
-
-function addDoctorHealOptions(command: Command): void {
-  command
-    .option(
-      '--heal',
-      'Apply safe, reversible local-state repairs (incomplete unbound profiles, dangling selection pointers, owner-only ACL drift).',
-    )
-    .option('--dry-run', 'With --heal, list planned repairs without applying them.');
-}
-
-function addVaultOption(command: Command): void {
-  command.option('--vault <id>', 'Opaque vault identifier.', DEFAULT_VAULT_ID);
-}
-
-function getOptions(args: readonly unknown[]): LocalCliOptions {
-  const last = args.at(-1);
-  if (last instanceof Command) {
-    const hierarchy: Command[] = [];
-    let current: Command | null = last;
-    while (current !== null) {
-      hierarchy.unshift(current);
-      current = current.parent;
-    }
-    const merged: Record<string, unknown> = {};
-    for (const command of hierarchy) {
-      for (const [key, value] of Object.entries(command.opts())) {
-        const source = command.getOptionValueSource(key);
-        if (source !== 'default' || !Object.hasOwn(merged, key)) {
-          merged[key] = value;
-        }
-      }
-    }
-    const profileConfigDir = resolveProfileConfigDirectory(
-      typeof merged['profileConfigDir'] === 'string'
-        ? merged['profileConfigDir']
-        : undefined,
-      typeof merged['configDir'] === 'string' ? merged['configDir'] : undefined,
-    );
-    if (profileConfigDir !== undefined) merged['profileConfigDir'] = profileConfigDir;
-    delete merged['configDir'];
-    const sourceIsExplicit = (key: string): boolean =>
-      hierarchy.some((command) => {
-        const source = command.getOptionValueSource(key);
-        return source !== undefined && source !== 'default';
-      });
-    const options = merged as LocalCliOptions;
-    if (!sourceIsExplicit('vault')) {
-      merged['vaultWasDefaulted'] = true;
-    }
-    merged['routingOverrides'] = {
-      ...(sourceIsExplicit('datastore')
-        ? { datastore: parseExplicitDatastore(options.datastore) }
-        : {}),
-      ...(sourceIsExplicit('dataFile') && options.dataFile !== undefined
-        ? { dataFile: options.dataFile }
-        : {}),
-      ...(sourceIsExplicit('database') && options.database !== undefined
-        ? { database: options.database }
-        : {}),
-      ...(sourceIsExplicit('collection')
-        ? { vaultCollection: options.collection }
-        : {}),
-      ...(sourceIsExplicit('keyFile') ? { keyFile: options.keyFile } : {}),
-    };
-    return merged as LocalCliOptions;
-  }
-  const candidate = args.find((value) => typeof value === 'object' && value !== null);
-  if (candidate === undefined) throw new LocalCliError('Command options are invalid.');
-  return candidate as LocalCliOptions;
-}
-
-function getName(args: readonly unknown[]): string {
-  return getArgument(args, 'credential name');
-}
-
-function getArgument(args: readonly unknown[], label: string): string {
-  const value = args.find((candidate) => typeof candidate === 'string');
-  if (value === undefined || value.length === 0) {
-    throw new LocalCliError(`A ${label} is required.`);
-  }
-  return value;
-}
-
-function getOptionalName(args: readonly unknown[]): string | undefined {
-  const value = args.find((candidate) => typeof candidate === 'string');
-  if (value === undefined || value.length === 0) return undefined;
-  return value;
-}
-
-function getNames(args: readonly unknown[]): readonly [string, string] {
-  const values = args.filter(
-    (candidate): candidate is string => typeof candidate === 'string',
-  );
-  const from = values[0];
-  const to = values[1];
-  if (from === undefined || to === undefined || from.length === 0 || to.length === 0) {
-    throw new LocalCliError('Two credential names are required.');
-  }
-  return [from, to];
-}
-
-function collectOption(value: string, previous: readonly string[]): readonly string[] {
-  return [...previous, value];
-}
-
 const RECOVERY_KIT_KEYS = [
   'authenticationTag',
   'ciphertext',
@@ -2267,7 +1127,7 @@ type DestroyInputs = Readonly<{
   confirmations?: readonly [string, string];
 }>;
 
-async function handleDestroy(options: LocalCliOptions): Promise<void> {
+export async function handleDestroy(options: LocalCliOptions): Promise<void> {
   const datastore = datastoreFrom(options);
   const challenge = randomUUID().replaceAll('-', '').slice(0, 12).toUpperCase();
   let successOutput: Record<string, unknown> | undefined;
@@ -2572,7 +1432,7 @@ async function readVisibleConfirmation(prompt: string): Promise<string> {
   }
 }
 
-async function handlePing(
+export async function handlePing(
   options: LocalCliOptions,
   overrides: DatastoreProfileRoutingOverrides & Readonly<{ collection?: string }> = {},
 ): Promise<void> {
@@ -2598,7 +1458,7 @@ async function handlePing(
   });
 }
 
-async function handleMigrateDatabase(options: LocalCliOptions): Promise<void> {
+export async function handleMigrateDatabase(options: LocalCliOptions): Promise<void> {
   writeJson(await executeDatabaseMigrationCommand(options));
 }
 
@@ -2619,7 +1479,7 @@ async function rejectDatabaseContainerForLegacyRecovery(
   }
 }
 
-async function handlePut(name: string, options: LocalCliOptions): Promise<void> {
+export async function handlePut(name: string, options: LocalCliOptions): Promise<void> {
   validateCredentialName(name);
   const valueKind: LocalSecretKind =
     options.valueStdinBase64 === true ? 'field-value-base64' : 'field-value';
@@ -2679,7 +1539,7 @@ async function handlePut(name: string, options: LocalCliOptions): Promise<void> 
   });
 }
 
-async function handleGet(name: string, options: LocalCliOptions): Promise<void> {
+export async function handleGet(name: string, options: LocalCliOptions): Promise<void> {
   validateCredentialName(name);
   await rejectUnboundDatabaseProfile(options, 'get');
   if (await usesDatabaseContainer(options)) {
@@ -2732,7 +1592,7 @@ async function handleGet(name: string, options: LocalCliOptions): Promise<void> 
   });
 }
 
-async function handleList(options: LocalCliOptions): Promise<void> {
+export async function handleList(options: LocalCliOptions): Promise<void> {
   await rejectUnboundDatabaseProfile(options, 'list');
   if (await usesDatabaseContainer(options)) {
     const values = await readDatabaseFlatSecrets(options, []);
@@ -2802,7 +1662,7 @@ function renderVaultList(
   return lines.join('\n');
 }
 
-async function handleView(
+export async function handleView(
   name: string | undefined,
   options: LocalCliOptions,
 ): Promise<void> {
@@ -2912,7 +1772,10 @@ export function buildSearchMatcher(
   return (name) => regex.test(normalize(name));
 }
 
-async function handleSearch(term: string, options: LocalCliOptions): Promise<void> {
+export async function handleSearch(
+  term: string,
+  options: LocalCliOptions,
+): Promise<void> {
   const normalizedTerm = term.trim();
   if (normalizedTerm.length === 0)
     throw new LocalCliError('A search pattern is required.');
@@ -2981,7 +1844,7 @@ async function handleSearch(term: string, options: LocalCliOptions): Promise<voi
   });
 }
 
-async function handleStats(options: LocalCliOptions): Promise<void> {
+export async function handleStats(options: LocalCliOptions): Promise<void> {
   await rejectUnboundDatabaseProfile(options, 'stats');
   if (await usesDatabaseContainer(options)) {
     const values = await readDatabaseFlatSecrets(options, []);
@@ -3037,7 +1900,10 @@ async function handleStats(options: LocalCliOptions): Promise<void> {
   });
 }
 
-async function handleRemove(name: string, options: LocalCliOptions): Promise<void> {
+export async function handleRemove(
+  name: string,
+  options: LocalCliOptions,
+): Promise<void> {
   validateCredentialName(name);
   await rejectUnboundDatabaseProfile(options, 'remove');
   if (await usesDatabaseContainer(options)) {
@@ -3086,7 +1952,7 @@ async function handleRemove(name: string, options: LocalCliOptions): Promise<voi
   });
 }
 
-async function handleHas(name: string, options: LocalCliOptions): Promise<void> {
+export async function handleHas(name: string, options: LocalCliOptions): Promise<void> {
   validateCredentialName(name);
   const present = (exists: boolean): string =>
     options.json === true || !process.stdout.isTTY
@@ -3126,7 +1992,7 @@ async function handleHas(name: string, options: LocalCliOptions): Promise<void> 
   });
 }
 
-async function handleRename(
+export async function handleRename(
   from: string,
   to: string,
   options: LocalCliOptions,
@@ -3189,7 +2055,7 @@ async function handleRename(
   });
 }
 
-async function handleDoctor(options: LocalCliOptions): Promise<void> {
+export async function handleDoctor(options: LocalCliOptions): Promise<void> {
   await rejectUnboundDatabaseProfile(options, 'doctor');
   if (await usesDatabaseContainer(options)) {
     const values = await readDatabaseFlatSecrets(options, []);
@@ -3229,7 +2095,7 @@ async function handleDoctor(options: LocalCliOptions): Promise<void> {
   });
 }
 
-async function handleDoctorHealth(options: LocalCliOptions): Promise<void> {
+export async function handleDoctorHealth(options: LocalCliOptions): Promise<void> {
   type HealthStatus = 'ok' | 'warning' | 'manual-recovery';
   interface HealthCheck {
     name: string;
@@ -3587,7 +2453,7 @@ async function handleDoctorHealth(options: LocalCliOptions): Promise<void> {
   }
 }
 
-async function handleRecoveryCreate(options: LocalCliOptions): Promise<void> {
+export async function handleRecoveryCreate(options: LocalCliOptions): Promise<void> {
   await rejectDatabaseContainerForLegacyRecovery(options);
   const recoveryFile = requiredOption(options.recoveryFile, '--recovery-file');
   if (options.overwrite !== true) {
@@ -3694,7 +2560,7 @@ async function handleRecoveryCreate(options: LocalCliOptions): Promise<void> {
   writeJson(successOutput);
 }
 
-async function handleRecoveryStatus(options: LocalCliOptions): Promise<void> {
+export async function handleRecoveryStatus(options: LocalCliOptions): Promise<void> {
   await rejectDatabaseContainerForLegacyRecovery(options);
   const values = await readSecrets(['database-url'], options);
   const databaseUrl = requiredSecret(values, 0);
@@ -3724,7 +2590,7 @@ async function handleRecoveryStatus(options: LocalCliOptions): Promise<void> {
   });
 }
 
-async function handleRecoveryRevoke(
+export async function handleRecoveryRevoke(
   slotIdValue: string,
   options: LocalCliOptions,
 ): Promise<void> {
@@ -3781,7 +2647,7 @@ async function handleRecoveryRevoke(
   });
 }
 
-async function handleRecoveryVerify(options: LocalCliOptions): Promise<void> {
+export async function handleRecoveryVerify(options: LocalCliOptions): Promise<void> {
   await rejectDatabaseContainerForLegacyRecovery(options);
   const recoveryFile = requiredOption(options.recoveryFile, '--recovery-file');
   const values = await readSecrets(['database-url', 'recovery-passphrase'], options);
@@ -3830,7 +2696,7 @@ async function handleRecoveryVerify(options: LocalCliOptions): Promise<void> {
   }
 }
 
-async function handleRecoveryUse(options: LocalCliOptions): Promise<void> {
+export async function handleRecoveryUse(options: LocalCliOptions): Promise<void> {
   await rejectDatabaseContainerForLegacyRecovery(options);
   const recoveryFile = requiredOption(options.recoveryFile, '--recovery-file');
   const outputRecoveryFile = requiredOption(
@@ -4043,7 +2909,7 @@ async function handleRecoveryUse(options: LocalCliOptions): Promise<void> {
   writeJson(successOutput);
 }
 
-async function handleVaultList(options: LocalCliOptions): Promise<void> {
+export async function handleVaultList(options: LocalCliOptions): Promise<void> {
   if (await usesDatabaseContainer(options)) {
     throw new LocalCliError(
       'This profile is a database container. Use `kavrix db vault list` (not legacy `vault list`).',
@@ -4058,7 +2924,7 @@ async function handleVaultList(options: LocalCliOptions): Promise<void> {
   });
 }
 
-async function handleVaultStatus(options: LocalCliOptions): Promise<void> {
+export async function handleVaultStatus(options: LocalCliOptions): Promise<void> {
   if (await usesDatabaseContainer(options)) {
     throw new LocalCliError(
       'This profile is a database container. Use `kavrix db vault status` (not legacy `vault status`).',
@@ -4093,7 +2959,7 @@ async function handleVaultStatus(options: LocalCliOptions): Promise<void> {
   });
 }
 
-async function handleKeyStatus(options: LocalCliOptions): Promise<void> {
+export async function handleKeyStatus(options: LocalCliOptions): Promise<void> {
   const keyFile = options.source ?? options.keyFile;
   // Database-owner keys are managed through `kavrix db key` commands; guide the operator explicitly.
   try {
@@ -4127,7 +2993,7 @@ async function handleKeyStatus(options: LocalCliOptions): Promise<void> {
   }
 }
 
-async function handleKeyCopy(options: LocalCliOptions): Promise<void> {
+export async function handleKeyCopy(options: LocalCliOptions): Promise<void> {
   const sourceKeyFile = options.source ?? options.keyFile;
   try {
     await readDatabaseKeyFileBinding(sourceKeyFile);
@@ -4227,7 +3093,7 @@ async function handleKeyCopy(options: LocalCliOptions): Promise<void> {
   if (operationError !== undefined) throw asError(operationError);
 }
 
-async function handleKeyRewrap(options: LocalCliOptions): Promise<void> {
+export async function handleKeyRewrap(options: LocalCliOptions): Promise<void> {
   const keyFile = options.source ?? options.keyFile;
   try {
     await readDatabaseKeyFileBinding(keyFile);
@@ -5266,4 +4132,171 @@ export function sanitizeJsonValue(
   } finally {
     ancestors.delete(value);
   }
+}
+
+/** Dispatches the init action; body moved verbatim from the light registration. */
+export async function handleInitAction(args: unknown[]): Promise<void> {
+  const options = getOptions(args);
+  if (shouldRunInitTuiOnboarding(options)) {
+    const result = await runInitTuiOnboarding({
+      ...(options.profileConfigDir === undefined
+        ? {}
+        : { profileConfigDir: options.profileConfigDir }),
+      ...(options.ascii === true ? { ascii: true } : {}),
+      ...(options.color === true
+        ? { color: true }
+        : options.color === false
+          ? { color: false }
+          : {}),
+      ...(options.splash === false ? { splash: false } : {}),
+      ...(options.mouse === false ? { mouse: false } : {}),
+    });
+    if (result.status === 'completed') {
+      writeInitTuiOnboardingComplete({
+        color: initOnboardingColorEnabled(),
+        profileId: result.profileId,
+        datastore: result.datastore,
+        ...(result.recoveryFile === undefined
+          ? {}
+          : { recoveryFile: result.recoveryFile }),
+        write: (text) => process.stderr.write(text),
+      });
+      return;
+    }
+    if (result.status === 'cancelled') {
+      throw new InitOnboardingCancelledError();
+    }
+    throw new LocalCliError(result.message);
+  }
+  const guided = shouldRunInitOnboarding(options);
+  if (guided) {
+    const { ensureKavrixConfig, getKavrixConfigPath } =
+      await import('./kavrix-config.js');
+    await ensureKavrixConfig();
+    const reservedPaths = [getKavrixConfigPath()];
+    const destinations = await readGuidedLocalOnboardingDestinations(reservedPaths);
+    const values = await new LocalSecretInput(process.stdin, process.stderr).read(
+      [
+        'database-label',
+        'new-passphrase',
+        'new-passphrase',
+        'vault-label',
+        'recovery-passphrase',
+        'recovery-passphrase',
+      ],
+      false,
+    );
+    const databaseLabel = values[0];
+    const ownerPassphraseValue = values[1];
+    const ownerConfirmation = values[2];
+    const vaultLabel = values[3];
+    const recoveryPassphraseValue = values[4];
+    const recoveryConfirmation = values[5];
+    if (
+      databaseLabel === undefined ||
+      ownerPassphraseValue === undefined ||
+      ownerPassphraseValue !== ownerConfirmation ||
+      vaultLabel === undefined ||
+      recoveryPassphraseValue === undefined ||
+      recoveryPassphraseValue !== recoveryConfirmation
+    ) {
+      throw new DatabaseSessionError('invalid');
+    }
+    const ownerPassphrase = Buffer.from(ownerPassphraseValue, 'utf8');
+    const recoveryPassphrase = Buffer.from(recoveryPassphraseValue, 'utf8');
+    try {
+      const receipt = await executeGuidedLocalOnboarding({
+        ...destinations,
+        reservedPaths,
+        databaseLabel,
+        ownerPassphrase,
+        vaultLabel,
+        recoveryPassphrase,
+      });
+      writeGuidedLocalOnboardingComplete({
+        color: initOnboardingColorEnabled(),
+        profileId: receipt.profileId,
+        write: (text) => process.stderr.write(text),
+      });
+    } finally {
+      zeroize(ownerPassphrase);
+      zeroize(recoveryPassphrase);
+    }
+    return;
+  }
+  await handleInit(options);
+}
+
+/** Dispatches the session enable action; body moved verbatim from the light registration. */
+export async function handleSessionEnableAction(args: unknown[]): Promise<void> {
+  const options = getOptions(args);
+  const target = await currentSessionTarget(options);
+  const ttlRaw = options.ttlHours;
+  const ttlHours = ttlRaw === undefined ? undefined : Number.parseInt(ttlRaw, 10);
+  if (
+    ttlHours !== undefined &&
+    (!Number.isInteger(ttlHours) || ttlHours < 1 || ttlHours > 8760)
+  ) {
+    throw new LocalCliError('--ttl-hours must be an integer between 1 and 8760.');
+  }
+  // Enable must not touch the vault datastore: only the passphrase is read.
+  const input = new LocalSecretInput(process.stdin, process.stderr);
+  const values = await input.read(['passphrase'], options.passphraseStdin === true);
+  const passphrase = requiredSecret(values, 0);
+  const { enableSessionUnlock } = await import('./session-unlock.js');
+  const status = await enableSessionUnlock({
+    target: {
+      profileId: target.profileId,
+      databaseId: target.databaseId,
+      keyFile: target.keyFile,
+    },
+    passphrase,
+    ttlHours,
+  });
+  writeJson({
+    enabled: true,
+    profileId: target.profileId,
+    createdAt: status.createdAt,
+    ttlHours: status.ttlHours,
+  });
+}
+
+/** Dispatches the session status action; body moved verbatim from the light registration. */
+export async function handleSessionStatusAction(args: unknown[]): Promise<void> {
+  const options = getOptions(args);
+  const target = await currentSessionTarget(options);
+  const { sessionUnlockStatus } = await import('./session-unlock.js');
+  const status = await sessionUnlockStatus({
+    target: {
+      profileId: target.profileId,
+      databaseId: target.databaseId,
+      keyFile: target.keyFile,
+    },
+  });
+  writeJson({ profileId: target.profileId, ...status });
+}
+
+/** Dispatches the session revoke action; body moved verbatim from the light registration. */
+export async function handleSessionRevokeAction(args: unknown[]): Promise<void> {
+  const options = getOptions(args);
+  const target = await currentSessionTarget(options);
+  const { revokeSessionUnlock } = await import('./session-unlock.js');
+  await revokeSessionUnlock({
+    target: {
+      profileId: target.profileId,
+      databaseId: target.databaseId,
+      keyFile: target.keyFile,
+    },
+  });
+  writeJson({ revoked: true, profileId: target.profileId });
+}
+
+/** Dispatches the doctor action; body moved verbatim from the light registration. */
+export async function handleDoctorAction(args: unknown[]): Promise<void> {
+  const options = getOptions(args);
+  if (options.heal === true) {
+    await handleDoctorHealth(options);
+    return;
+  }
+  await handleDoctor(options);
 }

@@ -1,4 +1,4 @@
-﻿import { MongoClient, MongoServerError, type Collection, type Db } from 'mongodb';
+﻿import type { Collection, Db, MongoClient, MongoServerError } from 'mongodb';
 
 import {
   localVaultDocumentSchema,
@@ -11,6 +11,12 @@ import {
   EncryptedVaultStoreError,
   type EncryptedVaultStore,
 } from './encrypted-vault-store.js';
+import {
+  loadMongoDriver,
+  MONGO_MAX_POOL_SIZE,
+  MONGO_MIN_POOL_SIZE,
+  MONGO_WAIT_QUEUE_TIMEOUT_MS,
+} from './mongo-driver.js';
 
 const DEFAULT_COLLECTION_NAME = 'kavrix_vaults';
 const COLLECTION_NAME_PATTERN = /^[A-Za-z0-9_-]{1,64}$/u;
@@ -50,10 +56,17 @@ export class MongoLocalVaultStore implements EncryptedVaultStore {
   readonly #client: MongoClient;
   readonly #database: Db;
   readonly #collection: Collection<StoredLocalVaultDocument>;
+  /**
+   * Captured from the lazily loaded driver so duplicate-key detection keeps
+   * using the very same class the driver itself throws, without holding the
+   * driver's module graph in this module's import scope.
+   */
+  readonly #serverError: typeof MongoServerError;
 
   private constructor(
     client: MongoClient,
     database: Db,
+    serverError: typeof MongoServerError,
     options: MongoLocalVaultStoreOptions = {},
   ) {
     const collectionName = options.collectionName ?? DEFAULT_COLLECTION_NAME;
@@ -63,6 +76,7 @@ export class MongoLocalVaultStore implements EncryptedVaultStore {
     this.#client = client;
     this.#database = database;
     this.#collection = database.collection(collectionName);
+    this.#serverError = serverError;
   }
 
   static async connect(
@@ -73,15 +87,29 @@ export class MongoLocalVaultStore implements EncryptedVaultStore {
     assertMongoUriAllowed(uri, {
       allowInsecureTransport: options.allowInsecureTransport === true,
     });
-    const client = new MongoClient(uri, {
+    let driver;
+    try {
+      driver = await loadMongoDriver();
+    } catch {
+      throw new MongoLocalVaultError('connection');
+    }
+    const client = new driver.MongoClient(uri, {
       serverSelectionTimeoutMS: 5_000,
       connectTimeoutMS: 5_000,
       socketTimeoutMS: 10_000,
       timeoutMS: 10_000,
+      maxPoolSize: MONGO_MAX_POOL_SIZE,
+      minPoolSize: MONGO_MIN_POOL_SIZE,
+      waitQueueTimeoutMS: MONGO_WAIT_QUEUE_TIMEOUT_MS,
     });
     try {
       await client.connect();
-      return new MongoLocalVaultStore(client, client.db(databaseName), options);
+      return new MongoLocalVaultStore(
+        client,
+        client.db(databaseName),
+        driver.MongoServerError,
+        options,
+      );
     } catch {
       await client.close().catch(() => undefined);
       throw new MongoLocalVaultError('connection');
@@ -125,7 +153,7 @@ export class MongoLocalVaultStore implements EncryptedVaultStore {
     try {
       await this.#collection.insertOne({ ...parsed, _id: parsed.id });
     } catch (error: unknown) {
-      if (error instanceof MongoServerError && error.code === 11_000) {
+      if (error instanceof this.#serverError && error.code === 11_000) {
         throw new MongoLocalVaultError('exists');
       }
       throw new MongoLocalVaultError('operation');

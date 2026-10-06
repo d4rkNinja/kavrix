@@ -5,7 +5,6 @@ import {
   CLI_EXIT_CODES,
   authenticationFailure,
   authorizationDenied,
-  codedExitCode,
   confirmationRequired,
   credentialMissing,
   datastoreFailure,
@@ -13,13 +12,13 @@ import {
   grantInvalid,
   invalidConfiguration,
   runnerFailure,
-  isCodedCliError,
   securityIntegrityFailure,
   toErrorEnvelope,
   markJsonReported,
   wasJsonReported,
   cliErrorCodeForSessionFailure,
 } from '../src/execution/exit-codes.js';
+import { codedExitCode, isCodedCliError } from '../src/execution/coded-error.js';
 
 describe('coded CLI errors', () => {
   it('exposes one factory per stable code with matching exit codes', () => {

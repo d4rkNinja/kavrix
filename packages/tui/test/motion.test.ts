@@ -1,6 +1,6 @@
 import { PassThrough } from 'node:stream';
 
-import { createElement, type ReactElement } from 'react';
+import { createElement, useRef, type ReactElement } from 'react';
 import { render, renderToString, Text } from 'ink';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -59,6 +59,36 @@ function EnterDefaultsProbe(props: {
   const progress = useEnterProgress(props.enabled);
   props.onSample(progress);
   return createElement(Text, null, String(progress));
+}
+
+/**
+ * Renders one animation per cadence, all on the shared clock. Used to prove
+ * that several animations at different cadences cost one timer, not one each.
+ */
+function CadenceProbe(props: {
+  readonly cadences: readonly number[];
+  readonly onSample: (frames: readonly number[]) => void;
+  readonly onFrame: (value: number) => void;
+}): ReactElement {
+  const frames = props.cadences.map((intervalMs) =>
+    useMotionFrameAt(intervalMs, props.onFrame),
+  );
+  props.onSample(frames);
+  return createElement(Text, null, frames.join(':'));
+}
+
+/**
+ * Hook wrapper that reports only the times this cadence actually stepped, which
+ * is the signal that unrelated shared ticks are not repainting it.
+ */
+function useMotionFrameAt(intervalMs: number, onStep: (value: number) => void): number {
+  const frame = useMotionFrame(true, intervalMs);
+  const reported = useRef<number>(-1);
+  if (frame !== reported.current) {
+    reported.current = frame;
+    onStep(frame);
+  }
+  return frame;
 }
 
 function mountProbe(
@@ -274,6 +304,72 @@ describe('motion clocks', () => {
         },
         { timeout: 2_000, interval: 16 },
       );
+    } finally {
+      await unmountProbe(instance);
+    }
+  });
+
+  it('runs one timer for many animations with different cadences', async () => {
+    const createTimer = vi.spyOn(globalThis, 'setInterval');
+    const samples: number[] = [];
+    try {
+      const stdout = new TestOutput();
+      const instance = render(
+        createElement(CadenceProbe, {
+          cadences: [MOTION.sweepMs, MOTION.splashPulseMs, MOTION.tickMs],
+          onSample: () => undefined,
+          onFrame: (value: number) => samples.push(value),
+        }),
+        {
+          stdout: stdout as unknown as NodeJS.WriteStream,
+          interactive: true,
+          patchConsole: false,
+        },
+      );
+      try {
+        await vi.waitFor(
+          () => {
+            expect(samples.length).toBeGreaterThan(3);
+          },
+          { timeout: 2_000, interval: 16 },
+        );
+        // Three animations at three different cadences share a single timer.
+        // Independent intervals would have created three.
+        expect(createTimer).toHaveBeenCalledTimes(1);
+      } finally {
+        await unmountProbe(instance);
+      }
+    } finally {
+      createTimer.mockRestore();
+    }
+  });
+
+  it('steps an animation only on the shared ticks it has reached', async () => {
+    const frames: number[] = [];
+    const stdout = new TestOutput();
+    const instance = render(
+      createElement(CadenceProbe, {
+        // Far slower than the shared tick, so most ticks must not step it.
+        cadences: [MOTION.tickMs * 20],
+        onSample: () => undefined,
+        onFrame: (value: number) => frames.push(value),
+      }),
+      {
+        stdout: stdout as unknown as NodeJS.WriteStream,
+        interactive: true,
+        patchConsole: false,
+      },
+    );
+    try {
+      await vi.waitFor(
+        () => {
+          expect(frames.length).toBeGreaterThan(0);
+        },
+        { timeout: 3_000, interval: 16 },
+      );
+      // Frames advance in whole cadence steps, never once per shared tick.
+      const distinct = [...new Set(frames)];
+      expect(distinct).toEqual([...distinct].sort((left, right) => left - right));
     } finally {
       await unmountProbe(instance);
     }

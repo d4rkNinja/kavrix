@@ -49,6 +49,57 @@ import {
 export const MAX_FILE_ENCRYPTED_DATABASE_BYTES = 32 * 1024 * 1024;
 
 type FileIdentity = Readonly<{ dev: bigint; ino: bigint }>;
+/**
+ * A filesystem metadata snapshot that is strong enough to prove "this is the
+ * same bytes on disk we already verified".
+ *
+ * `FileIdentity` (`dev` + `ino`) alone cannot do that: an in-place write keeps
+ * both. Adding size, nanosecond mtime/ctime, mode, and link count means any
+ * in-place modification, truncation, permission change, or hard-link swap
+ * produces a different snapshot, so a matching snapshot against a path whose
+ * ACLs and identity were fully verified before is evidence that the verified
+ * state still holds. On Windows an ACL change updates the change time; on
+ * POSIX chmod and content writes update ctime/mtime.
+ */
+type TrustedSnapshot = Readonly<{
+  dev: bigint;
+  ino: bigint;
+  size: bigint;
+  mode: bigint;
+  nlink: bigint;
+  mtimeNs: bigint;
+  ctimeNs: bigint;
+}>;
+
+/**
+ * Paths whose full identity and permission verification is being reused.
+ *
+ * The map is owned by one store (or one publication attempt) and holds only
+ * paths that were fully verified at least once; a publication attempt passes a
+ * short-lived copy so its random temporary and backup paths never accumulate
+ * in the store's cache.
+ */
+type TrustCache = Map<string, TrustedSnapshot>;
+
+/**
+ * Marks a container whose vaults are already validated and whose vault keys are
+ * already in canonical order.
+ *
+ * Canonicalization deep-validates and re-sorts every vault, so it is the single
+ * most expensive step in both the read and the publish path. Canonicalization
+ * is idempotent, so repeating it on an already-canonical container cannot change
+ * a byte — it can only cost time. Branding the result makes "already canonical"
+ * a checked precondition rather than a comment, so a future caller cannot skip
+ * validation by accident.
+ *
+ * The brand is a symbol key, which `JSON.stringify` ignores, so a branded
+ * container serializes exactly like the plain value it was built from.
+ */
+const canonicalContainerBrand = Symbol('kavrix.fileDatabaseContainer.canonical');
+
+type CanonicalFileDatabaseContainer = FileDatabaseContainer &
+  Readonly<{ readonly [canonicalContainerBrand]: true }>;
+
 type ResolvedFileTarget = Readonly<{
   directoryPath: string;
   directoryIdentity: FileIdentity;
@@ -56,7 +107,13 @@ type ResolvedFileTarget = Readonly<{
   lockPath: string;
 }>;
 type ReadContainerResult = Readonly<{
-  container: FileDatabaseContainer;
+  container: CanonicalFileDatabaseContainer;
+  identity: FileIdentity;
+  /** The exact on-disk bytes the container was parsed from. */
+  text: string;
+}>;
+type ReadContainerState = Readonly<{
+  container: CanonicalFileDatabaseContainer;
   identity: FileIdentity;
 }>;
 type RetainedFile = Readonly<{
@@ -81,6 +138,23 @@ export class FileEncryptedDatabaseStore implements EncryptedDatabaseStore {
   readonly #lockIdentity: FileIdentity;
   #ownedInitialization: OwnedInitialization | undefined;
   readonly #retiredInitializationHandles = new Set<FileHandle>();
+  /**
+   * Full identity+permission verification results per path, reusable while the
+   * path's metadata snapshot is unchanged. The store holds the exclusive lock
+   * for its whole lifetime, so these entries describe state only this store
+   * mutates; every check still re-`lstat`s and falls back to full verification
+   * on any snapshot change.
+   */
+  readonly #trustCache: TrustCache = new Map();
+  /**
+   * The most recently read-and-verified container with its file snapshot, or
+   * the container this store last published. Served for repeated reads while
+   * a fresh `lstat` proves the file bytes are unchanged; the first read of a
+   * session and any snapshot change take the full verification path.
+   */
+  #containerCache:
+    | Readonly<{ snapshot: TrustedSnapshot; container: CanonicalFileDatabaseContainer }>
+    | undefined;
   #closed = false;
 
   private constructor(
@@ -142,18 +216,22 @@ export class FileEncryptedDatabaseStore implements EncryptedDatabaseStore {
     if ((await this.#readContainer()) !== null) {
       throw new EncryptedDatabaseStoreError('exists');
     }
+    const container = canonicalizeContainer({
+      format: 'kavrix-file-database-container',
+      version: 1,
+      database,
+      vaults: {},
+    });
     const retained = await publishContainer(
       this.#target(),
       this.#lockIdentity,
-      canonicalizeContainer({
-        format: 'kavrix-file-database-container',
-        version: 1,
-        database,
-        vaults: {},
-      }),
+      container,
       'create',
+      undefined,
+      this.#trustCache,
     );
     await this.#adoptPublishedHandle(database.id, retained, true);
+    await this.#notePublishedContainer(container);
   }
 
   /**
@@ -175,6 +253,7 @@ export class FileEncryptedDatabaseStore implements EncryptedDatabaseStore {
         this.#target(),
         this.#lockPath,
         this.#lockIdentity,
+        this.#trustCache,
       );
       const metadata = await owned.retained.handle.stat({ bigint: true });
       assertRetainedFileMetadata(metadata);
@@ -200,10 +279,15 @@ export class FileEncryptedDatabaseStore implements EncryptedDatabaseStore {
       try {
         await fileEncryptedDatabaseEffects.truncate(owned.retained.handle);
         await fileEncryptedDatabaseEffects.sync(owned.retained.handle);
+        // The data file was emptied in place; no cached container or target
+        // snapshot describes it anymore.
+        this.#containerCache = undefined;
+        this.#trustCache.delete(this.#targetPath);
         await assertTrustedPublicationState(
           this.#target(),
           this.#lockPath,
           this.#lockIdentity,
+          this.#trustCache,
         );
       } catch {
         failure = true;
@@ -227,6 +311,7 @@ export class FileEncryptedDatabaseStore implements EncryptedDatabaseStore {
           this.#target(),
           this.#lockPath,
           this.#lockIdentity,
+          this.#trustCache,
         );
         const current = await lstat(this.#targetPath, { bigint: true }).catch(
           (error: unknown) => {
@@ -247,6 +332,7 @@ export class FileEncryptedDatabaseStore implements EncryptedDatabaseStore {
           this.#target(),
           this.#lockPath,
           this.#lockIdentity,
+          this.#trustCache,
         );
       } catch {
         failure = true;
@@ -423,8 +509,75 @@ export class FileEncryptedDatabaseStore implements EncryptedDatabaseStore {
   }
 
   async #assertTrusted(): Promise<void> {
-    await assertDirectoryIdentity(this.#target());
-    await assertPathIdentity(this.#lockPath, this.#lockIdentity);
+    await assertDirectoryIdentityCached(this.#target(), this.#trustCache);
+    await assertPathIdentityCached(
+      this.#lockPath,
+      this.#lockIdentity,
+      this.#trustCache,
+    );
+  }
+
+  /**
+   * Reads the container, serving repeat reads from the verified snapshot while
+   * a fresh `lstat` proves the file is unchanged.
+   *
+   * The store holds the exclusive writer lock for its whole lifetime, so while
+   * the snapshot matches, the bytes on disk are exactly the bytes this store
+   * already parsed, validated, and canonicalized: same inode, size, mode, link
+   * count, and change time. Any mismatch — including an in-place edit or a
+   * permission change, both of which update the snapshot — falls through to the
+   * full verification path, so nothing trusted is ever served without the
+   * evidence that it is unchanged.
+   */
+  async #readContainer(): Promise<ReadContainerState | null> {
+    await this.#assertTrusted();
+    let currentStats: BigIntStats | undefined;
+    try {
+      currentStats = await lstat(this.#targetPath, { bigint: true });
+    } catch {
+      currentStats = undefined;
+    }
+    if (currentStats === undefined) {
+      this.#containerCache = undefined;
+      return null;
+    }
+    const snapshot = snapshotOf(currentStats);
+    const cached = this.#containerCache;
+    if (cached !== undefined && sameSnapshot(cached.snapshot, snapshot)) {
+      return { container: cached.container, identity: identityOf(currentStats) };
+    }
+    const current = await readContainerIfPresent(this.#targetPath);
+    await this.#assertTrusted();
+    if (current === null) {
+      this.#containerCache = undefined;
+      return null;
+    }
+    try {
+      const after = await lstat(this.#targetPath, { bigint: true });
+      this.#containerCache = {
+        snapshot: snapshotOf(after),
+        container: current.container,
+      };
+    } catch {
+      // The next read re-verifies from scratch when the stat fails.
+      this.#containerCache = undefined;
+    }
+    return current;
+  }
+
+  /**
+   * Records the exact container this store just published, so subsequent reads
+   * are served from verified memory after one confirming `lstat`.
+   */
+  async #notePublishedContainer(
+    container: CanonicalFileDatabaseContainer,
+  ): Promise<void> {
+    try {
+      const metadata = await lstat(this.#targetPath, { bigint: true });
+      this.#containerCache = { snapshot: snapshotOf(metadata), container };
+    } catch {
+      this.#containerCache = undefined;
+    }
   }
 
   async #adoptPublishedHandle(
@@ -468,7 +621,7 @@ export class FileEncryptedDatabaseStore implements EncryptedDatabaseStore {
 
   async #publishAndAdopt(
     databaseId: DatabaseId,
-    container: FileDatabaseContainer,
+    container: CanonicalFileDatabaseContainer,
     mode: 'create' | 'replace',
     expectedIdentity: FileIdentity,
   ): Promise<void> {
@@ -483,9 +636,16 @@ export class FileEncryptedDatabaseStore implements EncryptedDatabaseStore {
         container,
         mode,
         expectedIdentity,
+        this.#trustCache,
       );
       await this.#adoptPublishedHandle(databaseId, retained, detached !== undefined);
+      await this.#notePublishedContainer(container);
     } catch (error) {
+      // The container on disk is no longer the one this store last verified:
+      // either publication changed it before failing or rollback restored a
+      // different generation. Force the next read back onto the full path.
+      this.#containerCache = undefined;
+      this.#trustCache.delete(this.#targetPath);
       if (detached !== undefined) {
         try {
           const restored = await openRetainedFile(
@@ -529,13 +689,6 @@ export class FileEncryptedDatabaseStore implements EncryptedDatabaseStore {
     const handles = new Set(this.#retiredInitializationHandles);
     this.#retiredInitializationHandles.clear();
     return handles;
-  }
-
-  async #readContainer(): Promise<ReadContainerResult | null> {
-    await this.#assertTrusted();
-    const current = await readContainerIfPresent(this.#targetPath);
-    await this.#assertTrusted();
-    return current;
   }
 }
 
@@ -637,7 +790,15 @@ function assertNextRevision(actual: number, expected: number): void {
   if (actual !== expected + 1) throw new EncryptedDatabaseStoreError('invalid');
 }
 
-function canonicalizeContainer(value: FileDatabaseContainer): FileDatabaseContainer {
+/**
+ * Validates and normalizes a container into its single canonical form: every
+ * vault deeply re-validated, every vault key parsed and sorted, and the whole
+ * document re-checked against its schema. The result is branded so the
+ * serialization step can rely on this having already happened.
+ */
+function canonicalizeContainer(
+  value: FileDatabaseContainer,
+): CanonicalFileDatabaseContainer {
   const vaults: Record<string, DatabaseVaultDocument> = {};
   for (const rawId of Object.keys(value.vaults).sort(compareOpaqueIds)) {
     const id = parseVaultId(rawId);
@@ -646,12 +807,15 @@ function canonicalizeContainer(value: FileDatabaseContainer): FileDatabaseContai
     vaults[id] = parseVaultDocument(vault);
   }
   try {
-    return fileDatabaseContainerSchema.parse({
+    const canonical = fileDatabaseContainerSchema.parse({
       format: value.format,
       version: value.version,
       database: parseDatabaseDocument(value.database),
       vaults,
     });
+    return Object.assign(canonical, {
+      [canonicalContainerBrand]: true as const,
+    }) satisfies CanonicalFileDatabaseContainer;
   } catch (error) {
     if (error instanceof EncryptedDatabaseStoreError) throw error;
     throw new EncryptedDatabaseStoreError('invalid');
@@ -975,7 +1139,7 @@ async function readContainerIfPresent(
     );
     if (text !== serializeContainer(container))
       throw new EncryptedDatabaseStoreError('invalid');
-    return { container, identity };
+    return { container, identity, text };
   } catch (error) {
     if (error instanceof EncryptedDatabaseStoreError) throw error;
     throw new EncryptedDatabaseStoreError('invalid');
@@ -988,12 +1152,13 @@ async function readContainerIfPresent(
 async function publishContainer(
   target: ResolvedFileTarget,
   lockIdentity: FileIdentity,
-  container: FileDatabaseContainer,
+  container: CanonicalFileDatabaseContainer,
   mode: 'create' | 'replace',
   expectedIdentity?: FileIdentity,
+  trust?: TrustCache,
 ): Promise<RetainedFile> {
   const { directoryPath, targetPath, lockPath } = target;
-  await assertTrustedPublicationState(target, lockPath, lockIdentity);
+  await assertTrustedPublicationState(target, lockPath, lockIdentity, trust);
   const contents = Buffer.from(serializeContainer(container), 'utf8');
   if (contents.byteLength > MAX_FILE_ENCRYPTED_DATABASE_BYTES) {
     contents.fill(0);
@@ -1028,9 +1193,9 @@ async function publishContainer(
     await fileEncryptedDatabaseEffects.close(handle, 'temporary');
     handle = undefined;
     await assertPathIdentity(temporaryPath, stagedIdentity);
-    await assertTrustedPublicationState(target, lockPath, lockIdentity);
+    await assertTrustedPublicationState(target, lockPath, lockIdentity, trust);
     await fileEncryptedDatabaseEffects.syncDirectory(directoryPath, 'pre-publish');
-    await assertTrustedPublicationState(target, lockPath, lockIdentity);
+    await assertTrustedPublicationState(target, lockPath, lockIdentity, trust);
     if (mode === 'create') {
       try {
         await fileEncryptedDatabaseEffects.link(
@@ -1056,14 +1221,14 @@ async function publishContainer(
       if (expectedIdentity === undefined)
         throw new EncryptedDatabaseStoreError('operation');
       await assertPathIdentity(targetPath, expectedIdentity);
-      await assertTrustedPublicationState(target, lockPath, lockIdentity);
+      await assertTrustedPublicationState(target, lockPath, lockIdentity, trust);
       await fileEncryptedDatabaseEffects.link(targetPath, backupPath, 'backup');
       backupIdentity = await assertBackupIdentity(backupPath, expectedIdentity);
       await fileEncryptedDatabaseEffects.rename(temporaryPath, targetPath, 'publish');
       publishedIdentity = stagedIdentity;
       await assertPathIdentity(targetPath, stagedIdentity);
     }
-    await assertTrustedPublicationState(target, lockPath, lockIdentity);
+    await assertTrustedPublicationState(target, lockPath, lockIdentity, trust);
     const finalMetadata = await lstat(targetPath, { bigint: true });
     await assertOwnedPermissions(finalMetadata, targetPath, true, false);
     const finalIdentity = identityOf(finalMetadata);
@@ -1077,15 +1242,16 @@ async function publishContainer(
     }
     await fileEncryptedDatabaseEffects.verifyFinalIdentity(targetPath, finalIdentity);
     const final = await fileEncryptedDatabaseEffects.readFinal(targetPath);
-    if (
-      final === null ||
-      serializeContainer(final.container) !== contents.toString('utf8')
-    ) {
+    // The published bytes must equal the staged bytes exactly; comparing the
+    // parsed container's own text avoids a second full serialization while
+    // still proving the on-disk content (the readback re-parses and
+    // re-canonicalizes it first).
+    if (final?.text !== contents.toString('utf8')) {
       throw new EncryptedDatabaseStoreError('operation');
     }
-    await assertTrustedPublicationState(target, lockPath, lockIdentity);
+    await assertTrustedPublicationState(target, lockPath, lockIdentity, trust);
     await fileEncryptedDatabaseEffects.syncDirectory(directoryPath, 'post-publish');
-    await assertTrustedPublicationState(target, lockPath, lockIdentity);
+    await assertTrustedPublicationState(target, lockPath, lockIdentity, trust);
     if (backupIdentity !== undefined) {
       await assertPathIdentity(backupPath, backupIdentity);
       await fileEncryptedDatabaseEffects.unlink(backupPath, 'backup-cleanup');
@@ -1104,6 +1270,7 @@ async function publishContainer(
           publishedIdentity,
           backupPath,
           backupIdentity,
+          trust,
         );
         backupIdentity = undefined;
       } catch {
@@ -1207,19 +1374,20 @@ async function rollbackPublishedContainer(
   publishedIdentity: FileIdentity,
   backupPath: string,
   backupIdentity: FileIdentity | undefined,
+  trust?: TrustCache,
 ): Promise<void> {
   const { directoryPath, lockPath, targetPath } = target;
-  await assertTrustedPublicationState(target, lockPath, lockIdentity);
+  await assertTrustedPublicationState(target, lockPath, lockIdentity, trust);
   if (mode === 'create')
     await assertLinkedPublicationIdentity(targetPath, publishedIdentity);
   else await assertPathIdentity(targetPath, publishedIdentity);
-  await assertTrustedPublicationState(target, lockPath, lockIdentity);
+  await assertTrustedPublicationState(target, lockPath, lockIdentity, trust);
   if (mode === 'create') {
-    await assertTrustedPublicationState(target, lockPath, lockIdentity);
+    await assertTrustedPublicationState(target, lockPath, lockIdentity, trust);
     try {
       await fileEncryptedDatabaseEffects.unlink(targetPath, 'rollback-create');
     } catch {
-      await assertTrustedPublicationState(target, lockPath, lockIdentity);
+      await assertTrustedPublicationState(target, lockPath, lockIdentity, trust);
       await assertLinkedPublicationIdentity(targetPath, publishedIdentity);
       await fileEncryptedDatabaseEffects.unlink(targetPath, 'rollback-create');
     }
@@ -1227,11 +1395,11 @@ async function rollbackPublishedContainer(
     if (backupIdentity === undefined)
       throw new EncryptedDatabaseStoreError('operation');
     await assertPathIdentity(backupPath, backupIdentity);
-    await assertTrustedPublicationState(target, lockPath, lockIdentity);
+    await assertTrustedPublicationState(target, lockPath, lockIdentity, trust);
     try {
       await fileEncryptedDatabaseEffects.rename(backupPath, targetPath, 'rollback');
     } catch {
-      await assertTrustedPublicationState(target, lockPath, lockIdentity);
+      await assertTrustedPublicationState(target, lockPath, lockIdentity, trust);
       await assertPathIdentity(targetPath, publishedIdentity);
       await assertPathIdentity(backupPath, backupIdentity);
       await fileEncryptedDatabaseEffects.rename(backupPath, targetPath, 'rollback');
@@ -1241,7 +1409,7 @@ async function rollbackPublishedContainer(
   try {
     await fileEncryptedDatabaseEffects.syncDirectory(directoryPath, 'rollback');
   } catch {
-    await assertTrustedPublicationState(target, lockPath, lockIdentity);
+    await assertTrustedPublicationState(target, lockPath, lockIdentity, trust);
     if (mode === 'replace' && backupIdentity !== undefined) {
       await assertPathIdentity(targetPath, backupIdentity);
       await fileEncryptedDatabaseEffects.link(targetPath, backupPath, 'recovery');
@@ -1249,20 +1417,31 @@ async function rollbackPublishedContainer(
     }
     throw new EncryptedDatabaseStoreError('operation');
   }
-  await assertTrustedPublicationState(target, lockPath, lockIdentity);
+  await assertTrustedPublicationState(target, lockPath, lockIdentity, trust);
 }
 
 async function assertTrustedPublicationState(
   target: ResolvedFileTarget,
   lockPath: string,
   lockIdentity: FileIdentity,
+  trust?: TrustCache,
 ): Promise<void> {
-  await assertDirectoryIdentity(target);
-  await assertPathIdentity(lockPath, lockIdentity);
+  await assertDirectoryIdentityCached(target, trust);
+  await assertPathIdentityCached(lockPath, lockIdentity, trust);
 }
 
-function serializeContainer(container: FileDatabaseContainer): string {
-  return `${JSON.stringify(canonicalizeContainer(container))}\n`;
+/**
+ * Serializes an already-canonical container to its exact on-disk bytes.
+ *
+ * The parameter type is what lets this skip canonicalization: only
+ * `canonicalizeContainer` produces that type, and it validates and sorts the
+ * whole document before doing so. An uncanonical container would serialize to
+ * different bytes than the canonical form, which is exactly what the
+ * byte-identity checks on this path exist to detect, so the precondition is
+ * enforced by construction rather than re-checked at runtime.
+ */
+function serializeContainer(container: CanonicalFileDatabaseContainer): string {
+  return `${JSON.stringify(container)}\n`;
 }
 
 async function setAndVerifyCreatedFile(
@@ -1341,6 +1520,39 @@ async function assertPathIdentity(path: string, expected: FileIdentity): Promise
   }
 }
 
+/**
+ * Asserts a path's identity and permissions, reusing a previous full
+ * verification when the current metadata snapshot is byte-for-byte unchanged.
+ *
+ * The snapshot includes change time, so permission changes invalidate the
+ * reused verification instead of being silently accepted. A cache miss runs
+ * the complete verification and records the snapshot; a cache hit still
+ * performs the `lstat` itself, so replaced or modified paths are always
+ * detected. Fail-closed behavior is unchanged: any stat error, snapshot
+ * mismatch, or failed verification throws exactly as the uncached check does.
+ */
+async function assertPathIdentityCached(
+  path: string,
+  expected: FileIdentity,
+  trust?: TrustCache,
+): Promise<void> {
+  if (trust === undefined) return assertPathIdentity(path, expected);
+  let metadata: BigIntStats;
+  try {
+    metadata = await lstat(path, { bigint: true });
+  } catch {
+    throw new EncryptedDatabaseStoreError('operation');
+  }
+  const snapshot = snapshotOf(metadata);
+  const cached = trust.get(path);
+  if (cached !== undefined && sameSnapshot(cached, snapshot)) return;
+  await assertOwnedPermissions(metadata, path, true);
+  if (!sameIdentity(identityOf(metadata), expected)) {
+    throw new EncryptedDatabaseStoreError('invalid');
+  }
+  trust.set(path, snapshot);
+}
+
 async function assertDirectoryIdentity(target: ResolvedFileTarget): Promise<void> {
   try {
     const resolved = await realpath(dirname(target.targetPath));
@@ -1351,6 +1563,34 @@ async function assertDirectoryIdentity(target: ResolvedFileTarget): Promise<void
     if (!sameIdentity(identityOf(metadata), target.directoryIdentity)) {
       throw new EncryptedDatabaseStoreError('invalid');
     }
+  } catch (error) {
+    if (error instanceof EncryptedDatabaseStoreError) throw error;
+    throw new EncryptedDatabaseStoreError('operation');
+  }
+}
+
+/**
+ * Same contract as `assertDirectoryIdentity`, reusing a prior full
+ * verification while the directory's metadata snapshot is unchanged.
+ */
+async function assertDirectoryIdentityCached(
+  target: ResolvedFileTarget,
+  trust?: TrustCache,
+): Promise<void> {
+  if (trust === undefined) return assertDirectoryIdentity(target);
+  try {
+    const resolved = await realpath(dirname(target.targetPath));
+    if (resolved !== target.directoryPath)
+      throw new EncryptedDatabaseStoreError('invalid');
+    const metadata = await stat(resolved, { bigint: true });
+    const snapshot = snapshotOf(metadata);
+    const cached = trust.get(resolved);
+    if (cached !== undefined && sameSnapshot(cached, snapshot)) return;
+    await assertOwnedPermissions(metadata, resolved, false);
+    if (!sameIdentity(identityOf(metadata), target.directoryIdentity)) {
+      throw new EncryptedDatabaseStoreError('invalid');
+    }
+    trust.set(resolved, snapshot);
   } catch (error) {
     if (error instanceof EncryptedDatabaseStoreError) throw error;
     throw new EncryptedDatabaseStoreError('operation');
@@ -1388,6 +1628,30 @@ function identityOf(value: {
   readonly ino: bigint;
 }): FileIdentity {
   return { dev: value.dev, ino: value.ino };
+}
+
+function snapshotOf(value: BigIntStats): TrustedSnapshot {
+  return {
+    dev: value.dev,
+    ino: value.ino,
+    size: value.size,
+    mode: value.mode,
+    nlink: value.nlink,
+    mtimeNs: value.mtimeNs,
+    ctimeNs: value.ctimeNs,
+  };
+}
+
+function sameSnapshot(left: TrustedSnapshot, right: TrustedSnapshot): boolean {
+  return (
+    left.dev === right.dev &&
+    left.ino === right.ino &&
+    left.size === right.size &&
+    left.mode === right.mode &&
+    left.nlink === right.nlink &&
+    left.mtimeNs === right.mtimeNs &&
+    left.ctimeNs === right.ctimeNs
+  );
 }
 
 function sameIdentity(left: FileIdentity, right: FileIdentity): boolean {

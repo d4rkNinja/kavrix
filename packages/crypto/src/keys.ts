@@ -258,11 +258,10 @@ export async function derivePassphraseKek(
       memoryKiB: parsed.memoryKiB,
       passes: parsed.passes,
     });
-    try {
-      return copyBytes(result) as KeyEncryptionKey;
-    } finally {
-      zeroize(result);
-    }
+    // `deriveArgon2id` resolves with a fresh buffer Node allocated for this
+    // call alone, so it is already owned here; copying it before zeroizing the
+    // original would spend an extra allocation and wipe on every unlock.
+    return result as unknown as KeyEncryptionKey;
   } catch {
     throw new CryptoInputError('Key derivation failed');
   } finally {
@@ -334,13 +333,12 @@ function checksumKey(key: Uint8Array, domain: Uint8Array): Uint8Array {
 }
 
 function deriveHkdf(key: Uint8Array, salt: Uint8Array, info: string): KeyEncryptionKey {
-  const result = hkdfSync('sha256', key, salt, Buffer.from(info, 'ascii'), KEY_BYTES);
-  const resultBytes = new Uint8Array(result);
-  try {
-    return copyBytes(resultBytes) as KeyEncryptionKey;
-  } finally {
-    zeroize(resultBytes);
-  }
+  // `hkdfSync` returns a fresh ArrayBuffer allocated for this call, so the
+  // view over it is exclusively owned; copying it again would only add one
+  // allocation and wipe per derived subkey.
+  return new Uint8Array(
+    hkdfSync('sha256', key, salt, Buffer.from(info, 'ascii'), KEY_BYTES),
+  ) as KeyEncryptionKey;
 }
 
 function validatePassphraseDerivation(derivation: PassphraseDerivation): void {

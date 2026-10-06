@@ -39,7 +39,7 @@ export async function encryptAead(
     throw new CryptoInputError('Plaintext byte length is outside the supported range');
   }
   const aad = associatedDataSchema.parse(associatedData);
-  const aadBytes = canonicalAssociatedData(aad);
+  const aadBytes = canonicalAssociatedDataChecked(aad);
   const nonce = randomBytes(AEAD_NONCE_BYTES);
   try {
     await sodium.ready;
@@ -79,8 +79,8 @@ export async function decryptAead(
     requireByteLength(key, AEAD_KEY_BYTES);
     const parsed = aeadEnvelopeSchema.parse(envelope);
     const expected = associatedDataSchema.parse(expectedAssociatedData);
-    storedAadBytes = canonicalAssociatedData(parsed.aad);
-    expectedAadBytes = canonicalAssociatedData(expected);
+    storedAadBytes = canonicalAssociatedDataChecked(parsed.aad);
+    expectedAadBytes = canonicalAssociatedDataChecked(expected);
     if (!constantTimeEqual(storedAadBytes, expectedAadBytes)) {
       throw new AuthenticationError();
     }
@@ -112,25 +112,71 @@ export async function decryptAead(
 }
 
 export function canonicalAssociatedData(associatedData: AssociatedData): Uint8Array {
-  const aad = associatedDataSchema.parse(associatedData);
+  return canonicalAssociatedDataChecked(associatedDataSchema.parse(associatedData));
+}
 
-  const fields = [
-    lengthPrefixed(AAD_DOMAIN),
-    uint32(aad.version),
-    encodedAscii(aad.vaultId),
-    encodedAscii(aad.entityType),
-    encodedAscii(aad.entityId),
-    aad.groupId === undefined
-      ? Uint8Array.of(0)
-      : concat(Uint8Array.of(1), encodedAscii(aad.groupId)),
-    aad.parentId === undefined
-      ? Uint8Array.of(0)
-      : concat(Uint8Array.of(1), encodedAscii(aad.parentId)),
-    encodedAscii(aad.purpose),
-    uint32(aad.schemaVersion),
-    uint32(aad.keyVersion),
-  ];
-  return concat(...fields);
+/**
+ * Serializes an already-validated `AssociatedData` to its canonical bytes.
+ *
+ * The parameter type is what makes skipping the schema parse sound: only
+ * `associatedDataSchema.parse` produces that branded type, and both public
+ * entry points above run that parse before calling this. The wire format is
+ * identical to building each field as its own buffer and concatenating; the
+ * difference is that the whole AAD is written into one right-sized buffer
+ * instead of allocating and copying a dozen fragments twice.
+ */
+function canonicalAssociatedDataChecked(aad: AssociatedData): Uint8Array {
+  const domain = AAD_DOMAIN;
+  const vaultId = asciiBytes(aad.vaultId);
+  const entityType = asciiBytes(aad.entityType);
+  const entityId = asciiBytes(aad.entityId);
+  const groupId = aad.groupId === undefined ? undefined : asciiBytes(aad.groupId);
+  const parentId = aad.parentId === undefined ? undefined : asciiBytes(aad.parentId);
+  const purpose = asciiBytes(aad.purpose);
+  // 17 = 4 length bytes + 17-byte domain string, written twice below.
+  const totalLength =
+    4 +
+    domain.byteLength +
+    4 +
+    4 +
+    vaultId.byteLength +
+    4 +
+    entityType.byteLength +
+    4 +
+    entityId.byteLength +
+    1 +
+    (groupId === undefined ? 0 : 4 + groupId.byteLength) +
+    1 +
+    (parentId === undefined ? 0 : 4 + parentId.byteLength) +
+    4 +
+    purpose.byteLength +
+    4 +
+    4;
+  const output = Buffer.allocUnsafe(totalLength);
+  let offset = 0;
+  offset = writeLengthPrefixed(output, offset, domain);
+  offset = writeUint32(output, offset, aad.version);
+  offset = writeLengthPrefixedAscii(output, offset, vaultId);
+  offset = writeLengthPrefixedAscii(output, offset, entityType);
+  offset = writeLengthPrefixedAscii(output, offset, entityId);
+  if (groupId === undefined) {
+    output[offset] = 0;
+    offset += 1;
+  } else {
+    output[offset] = 1;
+    offset = writeLengthPrefixedAscii(output, offset + 1, groupId);
+  }
+  if (parentId === undefined) {
+    output[offset] = 0;
+    offset += 1;
+  } else {
+    output[offset] = 1;
+    offset = writeLengthPrefixedAscii(output, offset + 1, parentId);
+  }
+  offset = writeLengthPrefixedAscii(output, offset, purpose);
+  offset = writeUint32(output, offset, aad.schemaVersion);
+  writeUint32(output, offset, aad.keyVersion);
+  return output;
 }
 
 export function canonicalAttachmentChunkData(
@@ -140,32 +186,74 @@ export function canonicalAttachmentChunkData(
   const base = canonicalAssociatedData(associatedData);
   requireUint32(chunkIndex, 'chunk index', true);
   try {
-    return concat(
-      lengthPrefixed(ATTACHMENT_CHUNK_AAD_DOMAIN),
-      base,
-      uint32(1),
-      uint32(chunkIndex),
-    );
+    return appendChunkIndexToBase(base, chunkIndex);
   } finally {
     zeroize(base);
   }
 }
 
-function encodedAscii(value: string): Uint8Array {
+/**
+ * Prepares a per-stream chunk-AAD factory.
+ *
+ * The canonical base AAD is constant for a whole attachment stream, so a
+ * stream parses and canonicalizes it once instead of rebuilding it for every
+ * chunk. Each returned buffer is exactly the bytes
+ * `canonicalAttachmentChunkData` would produce for the same context and
+ * index; callers own and zeroize each returned buffer.
+ */
+export function createAttachmentChunkAadFactory(
+  associatedData: AssociatedData,
+): (chunkIndex: number) => Uint8Array {
+  const base = canonicalAssociatedData(associatedData);
+  return (chunkIndex: number): Uint8Array => {
+    requireUint32(chunkIndex, 'chunk index', true);
+    return appendChunkIndexToBase(base, chunkIndex);
+  };
+}
+
+/** [len][domain][base][version=1][chunkIndex]. */
+function appendChunkIndexToBase(base: Uint8Array, chunkIndex: number): Uint8Array {
+  const domain = ATTACHMENT_CHUNK_AAD_DOMAIN;
+  // 17 = 4 length bytes + 17-byte attachment-chunk domain string.
+  const totalLength = 4 + domain.byteLength + base.byteLength + 4 + 4;
+  const output = Buffer.allocUnsafe(totalLength);
+  let offset = 0;
+  offset = writeLengthPrefixed(output, offset, domain);
+  output.set(base, offset);
+  offset += base.byteLength;
+  offset = writeUint32(output, offset, 1);
+  writeUint32(output, offset, chunkIndex);
+  return output;
+}
+
+function asciiBytes(value: string): Uint8Array {
   if (!ASCII_FIELD.test(value)) {
     throw new CryptoInputError('Associated-data fields must be printable ASCII');
   }
-  return lengthPrefixed(Buffer.from(value, 'ascii'));
+  return Buffer.from(value, 'ascii');
 }
 
-function lengthPrefixed(value: Uint8Array): Uint8Array {
-  return concat(uint32(value.byteLength), value);
+function writeLengthPrefixedAscii(
+  output: Buffer,
+  offset: number,
+  value: Uint8Array,
+): number {
+  return writeLengthPrefixed(output, offset, value);
 }
 
-function uint32(value: number): Uint8Array {
-  const output = Buffer.allocUnsafe(4);
-  output.writeUInt32BE(value);
-  return output;
+function writeLengthPrefixed(
+  output: Buffer,
+  offset: number,
+  value: Uint8Array,
+): number {
+  const next = writeUint32(output, offset, value.byteLength);
+  output.set(value, next);
+  return next + value.byteLength;
+}
+
+function writeUint32(output: Buffer, offset: number, value: number): number {
+  output.writeUInt32BE(value, offset);
+  return offset + 4;
 }
 
 function requireUint32(value: number, label: string, allowZero: boolean): void {
@@ -176,8 +264,4 @@ function requireUint32(value: number, label: string, allowZero: boolean): void {
   ) {
     throw new CryptoInputError(`Invalid ${label}`);
   }
-}
-
-function concat(...values: readonly Uint8Array[]): Uint8Array {
-  return Buffer.concat(values.map((value) => Buffer.from(value)));
 }

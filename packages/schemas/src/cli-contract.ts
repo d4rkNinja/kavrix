@@ -1,5 +1,16 @@
 import { z } from 'zod';
 
+import { CLI_ERROR_CODES } from './cli-exit-codes.js';
+
+export {
+  CLI_ERROR_CODES,
+  CLI_EXIT_CODES,
+  cliErrorCodeForRunnerFailure,
+  exitCodeForCliError,
+  SPAWN_FAILURE_CLI_ERROR_CODE,
+} from './cli-exit-codes.js';
+export type { CliErrorCode, CliExitCode } from './cli-exit-codes.js';
+
 /** Non-secret destination preflight shared by the interactive UI and CLI host. */
 export const profileDestinationCheckActionSchema = z
   .object({
@@ -12,89 +23,7 @@ export type ProfileDestinationCheckAction = Readonly<
   z.infer<typeof profileDestinationCheckActionSchema>
 >;
 
-/**
- * Stable machine-readable CLI contract. Automation reads exit codes and the
- * JSON error envelope; it must never need to parse human-readable text.
- */
-export const CLI_EXIT_CODES = Object.freeze({
-  ok: 0,
-  unclassifiedFailure: 1,
-  usageError: 2,
-  authenticationFailed: 10,
-  credentialMissing: 11,
-  authorizationDenied: 12,
-  grantInvalid: 13,
-  invalidConfiguration: 14,
-  datastoreFailure: 15,
-  securityIntegrityFailure: 16,
-  confirmationRequired: 17,
-  executionFailed: 18,
-} as const);
-
-export type CliExitCode = (typeof CLI_EXIT_CODES)[keyof typeof CLI_EXIT_CODES];
-
-export const CLI_ERROR_CODES = [
-  'OK',
-  'UNCLASSIFIED_FAILURE',
-  'USAGE_ERROR',
-  'AUTHENTICATION_FAILED',
-  'CREDENTIAL_MISSING',
-  'AUTHORIZATION_DENIED',
-  'GRANT_INVALID',
-  'INVALID_CONFIGURATION',
-  'DATASTORE_FAILURE',
-  'SECURITY_INTEGRITY_FAILURE',
-  'CONFIRMATION_REQUIRED',
-  'EXECUTION_FAILED',
-] as const;
-
 export const cliErrorCodeSchema = z.enum(CLI_ERROR_CODES);
-
-export type CliErrorCode = z.infer<typeof cliErrorCodeSchema>;
-
-const CLI_ERROR_EXIT_CODES: Readonly<Record<CliErrorCode, number>> = Object.freeze({
-  OK: CLI_EXIT_CODES.ok,
-  UNCLASSIFIED_FAILURE: CLI_EXIT_CODES.unclassifiedFailure,
-  USAGE_ERROR: CLI_EXIT_CODES.usageError,
-  AUTHENTICATION_FAILED: CLI_EXIT_CODES.authenticationFailed,
-  CREDENTIAL_MISSING: CLI_EXIT_CODES.credentialMissing,
-  AUTHORIZATION_DENIED: CLI_EXIT_CODES.authorizationDenied,
-  GRANT_INVALID: CLI_EXIT_CODES.grantInvalid,
-  INVALID_CONFIGURATION: CLI_EXIT_CODES.invalidConfiguration,
-  DATASTORE_FAILURE: CLI_EXIT_CODES.datastoreFailure,
-  SECURITY_INTEGRITY_FAILURE: CLI_EXIT_CODES.securityIntegrityFailure,
-  CONFIRMATION_REQUIRED: CLI_EXIT_CODES.confirmationRequired,
-  EXECUTION_FAILED: CLI_EXIT_CODES.executionFailed,
-});
-
-/** Maps one stable error code to its stable process exit code. */
-export function exitCodeForCliError(code: CliErrorCode): number {
-  return CLI_ERROR_EXIT_CODES[code];
-}
-
-/**
- * CLI class for a child that never started (missing executable, spawn ENOENT,
- * OS start failure). This is not AUTHORIZATION_DENIED: policy-check deny,
- * including `executable-unresolved`, remains exit 12.
- */
-export const SPAWN_FAILURE_CLI_ERROR_CODE =
-  'EXECUTION_FAILED' as const satisfies CliErrorCode;
-
-/**
- * Maps a runner failure onto the stable CLI class. Spawn-miss is
- * EXECUTION_FAILED; a reserved/conflicting environment is configuration.
- * Other runner codes stay execution failures, never authorization denies.
- */
-export function cliErrorCodeForRunnerFailure(code: string): CliErrorCode {
-  switch (code) {
-    case 'RUNNER_ENVIRONMENT_REJECTED':
-      return 'INVALID_CONFIGURATION';
-    case 'RUNNER_SPAWN_FAILED':
-      return SPAWN_FAILURE_CLI_ERROR_CODE;
-    default:
-      return 'EXECUTION_FAILED';
-  }
-}
 
 export const cliErrorEnvelopeSchema = z
   .object({

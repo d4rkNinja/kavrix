@@ -17,9 +17,8 @@ import {
   vaultIdSchema,
 } from '@kavrix/schemas';
 
+import { registerStructuredVaultCommands } from '../src/structured-vault-commands.js';
 import {
-  DEFAULT_PROJECT_CONTEXT_NAME,
-  DEFAULT_SERVICE_NAME,
   assertStructuredFieldRevealAllowed,
   createProjectContext,
   createStructuredItem,
@@ -28,7 +27,6 @@ import {
   encodeStructuredFieldValueBase64,
   projectStructuredField,
   redactStructuredFieldValue,
-  registerStructuredVaultCommands,
   removeProjectContext,
   removeStructuredField,
   removeStructuredItem,
@@ -41,8 +39,10 @@ import {
   resolveService,
   setStructuredField,
   structuredRoutingOverrides,
-} from '../src/structured-vault-commands.js';
+} from '../src/structured-vault-impl.js';
 import {
+  DEFAULT_PROJECT_CONTEXT_NAME,
+  DEFAULT_SERVICE_NAME,
   createEmptyStructuredVaultPayload,
   projectFlatVaultPayload,
 } from '../src/structured-vault-projection.js';

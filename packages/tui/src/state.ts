@@ -1269,33 +1269,132 @@ export function revealGrantKey(
   return JSON.stringify([itemId, fieldId, elementId ?? null]);
 }
 
+/**
+ * Per-input caches for the two selectors that the render path calls several
+ * times per frame.
+ *
+ * `TuiState` is an immutable object replaced on every transition, so a cache
+ * keyed by the whole state object would be invalidated by unrelated changes
+ * (a selection move, a status message) and re-scan every item on the next
+ * keystroke. These selectors depend only on narrower immutable inputs, so each
+ * cache keys on exactly those:
+ *
+ * - `filteredItemIndexes` depends on the items array identity plus the
+ *   normalized query. The items array is replaced whenever any item changes,
+ *   and the per-item entries hold at most a bounded number of recent queries,
+ *   so the cache cannot grow with typing history.
+ * - `selectedFields` depends on the selected group and the selected item or
+ *   draft identity.
+ *
+ * All caches are `WeakMap`/`WeakRef`-based, so entries live exactly as long as
+ * the objects they were derived from. Both results are treated as immutable;
+ * callers only read them.
+ */
+const selectedFieldsBySelection = new WeakMap<
+  GroupPayload,
+  WeakMap<ItemPayload, readonly FieldDefinition[]>
+>();
+const filteredIndexesByItems = new WeakMap<
+  readonly ItemPayload[],
+  Map<string, readonly number[]>
+>();
+/** Bounded number of remembered queries per items array. */
+const MAX_CACHED_QUERIES = 32;
+
 export function selectedFields(state: TuiState): readonly FieldDefinition[] {
   const group = selectedGroup(state);
   const item = selectedItem(state);
   if (group === undefined || item === undefined) return [];
-  return [...group.template.fields, ...item.itemFields].sort(
-    (left, right) => left.sortOrder - right.sortOrder,
+  let byItem = selectedFieldsBySelection.get(group);
+  if (byItem === undefined) {
+    byItem = new WeakMap();
+    selectedFieldsBySelection.set(group, byItem);
+  }
+  const cached = byItem.get(item);
+  if (cached !== undefined) return cached;
+  const fields: readonly FieldDefinition[] = Object.freeze(
+    [...group.template.fields, ...item.itemFields].sort(
+      (left, right) => left.sortOrder - right.sortOrder,
+    ),
+  );
+  byItem.set(item, fields);
+  return fields;
+}
+
+/** True when one searchable attribute contains the already-lowered query. */
+function matchesQuery(candidate: string | undefined, query: string): boolean {
+  return candidate?.includes(query) === true;
+}
+
+/**
+ * Lowercased searchable text for one item, computed once per item object.
+ *
+ * `ItemPayload` objects are immutable, so the lowered forms never go stale;
+ * keying on the object identity means replaced items recompute exactly once
+ * and superseded items are garbage-collected with their cache entry.
+ */
+interface NormalizedSearchText {
+  readonly title: string | undefined;
+  readonly subtitle: string | undefined;
+  readonly environment: string | undefined;
+  readonly owner: string | undefined;
+  readonly tags: readonly string[];
+  readonly aliases: readonly string[];
+}
+
+const normalizedTextByItem = new WeakMap<ItemPayload, NormalizedSearchText>();
+
+function normalizedSearchText(item: ItemPayload): NormalizedSearchText {
+  const cached = normalizedTextByItem.get(item);
+  if (cached !== undefined) return cached;
+  const lowered = {
+    title: item.title.toLocaleLowerCase(),
+    subtitle: item.subtitle?.toLocaleLowerCase(),
+    environment: item.environment?.toLocaleLowerCase(),
+    owner: item.owner?.toLocaleLowerCase(),
+    tags: Object.freeze(item.tags.map((tag) => tag.toLocaleLowerCase())),
+    aliases: Object.freeze(item.aliases.map((alias) => alias.toLocaleLowerCase())),
+  };
+  normalizedTextByItem.set(item, lowered);
+  return lowered;
+}
+
+function itemMatchesQuery(item: ItemPayload, query: string): boolean {
+  const text = normalizedSearchText(item);
+  return (
+    matchesQuery(text.title, query) ||
+    matchesQuery(text.subtitle, query) ||
+    matchesQuery(text.environment, query) ||
+    matchesQuery(text.owner, query) ||
+    text.tags.some((tag) => tag.includes(query)) ||
+    text.aliases.some((alias) => alias.includes(query))
   );
 }
 
 export function filteredItemIndexes(state: TuiState): readonly number[] {
   const query = state.query.trim().toLocaleLowerCase();
-  return state.items.flatMap((item, index) => {
-    if (query.length === 0) return [index];
-    const candidates = [
-      item.title,
-      item.subtitle,
-      item.environment,
-      item.owner,
-      ...item.tags,
-      ...item.aliases,
-    ];
-    return candidates.some(
-      (candidate) => candidate?.toLocaleLowerCase().includes(query) === true,
-    )
-      ? [index]
-      : [];
-  });
+  let byQuery = filteredIndexesByItems.get(state.items);
+  if (byQuery === undefined) {
+    byQuery = new Map();
+    filteredIndexesByItems.set(state.items, byQuery);
+  }
+  const cached = byQuery.get(query);
+  if (cached !== undefined) return cached;
+  let indexes: readonly number[];
+  if (query.length === 0) {
+    indexes = Object.freeze(state.items.map((_item, index) => index));
+  } else {
+    // Scan in order and stop at the first matching attribute, so an early hit
+    // does not pay for lowering the remaining searchable text.
+    const matches: number[] = [];
+    for (const [index, item] of state.items.entries()) {
+      if (itemMatchesQuery(item, query)) matches.push(index);
+    }
+    indexes = Object.freeze(matches);
+  }
+  if (byQuery.size >= MAX_CACHED_QUERIES) byQuery.clear();
+  byQuery.set(query, indexes);
+  return indexes;
 }
 
 function firstFilteredItem(state: TuiState): number {

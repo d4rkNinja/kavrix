@@ -18,7 +18,7 @@ import {
   resolveNpmInvoker,
   shellSingleQuote,
   type SelfUpdateDeps,
-} from '../src/self-update.js';
+} from '../src/self-update-impl.js';
 import { buildLocalCli } from '../src/local-vault-cli.js';
 
 describe('published version compare', () => {

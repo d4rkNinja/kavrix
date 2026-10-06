@@ -13,7 +13,7 @@ import {
 } from '@kavrix/schemas';
 import sodium from 'libsodium-wrappers';
 
-import { canonicalAttachmentChunkData } from './aead.js';
+import { createAttachmentChunkAadFactory } from './aead.js';
 import {
   constantTimeEqual,
   copyBytes,
@@ -67,6 +67,30 @@ type StreamIdentity = Omit<
   'recordType' | 'header'
 >;
 
+/**
+ * Per-stream crypto context for attachment chunks.
+ *
+ * The canonical base AAD and the identity fields are constant for a whole
+ * stream, so each stream prepares them once instead of re-deriving the same
+ * canonical bytes and re-parsing the same identifiers for every chunk. Each
+ * per-chunk AAD buffer is exactly the bytes `canonicalAttachmentChunkData`
+ * would produce for the same context and index; callers own and zeroize the
+ * returned buffers.
+ */
+interface ChunkCryptoContext {
+  readonly aadForChunk: (chunkIndex: number) => Uint8Array;
+  readonly identity: StreamIdentity;
+}
+
+function prepareChunkCryptoContext(
+  parsedContext: AttachmentChunkContext,
+): ChunkCryptoContext {
+  return {
+    aadForChunk: createAttachmentChunkAadFactory(parsedContext),
+    identity: streamIdentity(parsedContext),
+  };
+}
+
 export async function* encryptAttachmentStream(
   plaintextChunks: Iterable<Uint8Array> | AsyncIterable<Uint8Array>,
   attachmentKey: Uint8Array,
@@ -79,11 +103,12 @@ export async function* encryptAttachmentStream(
   await sodium.ready;
   const initialized =
     sodium.crypto_secretstream_xchacha20poly1305_init_push(attachmentKey);
+  const chunkCrypto = prepareChunkCryptoContext(parsedContext);
   const hash = createHash('sha256');
   let pending: Uint8Array | undefined;
   try {
     const headerRecord = attachmentSecretStreamRecordSchema.parse({
-      ...streamIdentity(parsedContext),
+      ...chunkCrypto.identity,
       recordType: 'header',
       header: encodeBase64Url(initialized.header),
     });
@@ -116,7 +141,7 @@ export async function* encryptAttachmentStream(
             yield encryptChunk(
               initialized.state,
               toEncrypt,
-              parsedContext,
+              chunkCrypto,
               chunkCount - 2,
               false,
             );
@@ -140,7 +165,7 @@ export async function* encryptAttachmentStream(
       yield encryptChunk(
         initialized.state,
         finalPlaintext,
-        parsedContext,
+        chunkCrypto,
         Math.max(0, chunkCount - 1),
         true,
       );
@@ -151,7 +176,7 @@ export async function* encryptAttachmentStream(
     const digest = hash.digest();
     try {
       return attachmentSecretStreamManifestSchema.parse({
-        ...streamIdentity(parsedContext),
+        ...chunkCrypto.identity,
         manifestVersion: 1,
         header: headerRecord.header,
         chunkCount: Math.max(1, chunkCount),
@@ -229,6 +254,7 @@ export async function* decryptAttachmentStream(
     requireByteLength(attachmentKey, 32, 'attachment key');
     const limits = resolveLimits(limitOverrides);
     await sodium.ready;
+    const chunkCrypto = prepareChunkCryptoContext(parsedContext);
 
     for await (const unknownRecord of encryptedRecords) {
       if (state === undefined) {
@@ -260,7 +286,7 @@ export async function* decryptAttachmentStream(
           limits.maximumChunkBytes +
           sodium.crypto_secretstream_xchacha20poly1305_ABYTES,
       });
-      const aad = canonicalAttachmentChunkData(parsedContext, expectedIndex);
+      const aad = chunkCrypto.aadForChunk(expectedIndex);
       try {
         if (
           ciphertext.byteLength < sodium.crypto_secretstream_xchacha20poly1305_ABYTES
@@ -395,11 +421,11 @@ export function parseAttachmentStreamRecord(
 function encryptChunk(
   state: SecretStreamState,
   plaintext: Uint8Array,
-  context: AttachmentChunkContext,
+  crypto: ChunkCryptoContext,
   index: number,
   final: boolean,
 ): AttachmentSecretStreamRecord {
-  const aad = canonicalAttachmentChunkData(context, index);
+  const aad = crypto.aadForChunk(index);
   try {
     const ciphertext = sodium.crypto_secretstream_xchacha20poly1305_push(
       state,
@@ -411,7 +437,7 @@ function encryptChunk(
     );
     try {
       return attachmentSecretStreamRecordSchema.parse({
-        ...streamIdentity(context),
+        ...crypto.identity,
         recordType: 'chunk',
         index,
         ciphertext: encodeBase64Url(ciphertext),

@@ -13,7 +13,7 @@ import {
   type ExecutionFixture,
 } from './execution-helpers.js';
 import { createSecureTestDirectory as mkdtemp } from '../../../packages/key-files/test/secure-temporary-directory.js';
-import { parseEnvDocument } from '../src/import-env-command.js';
+import { parseEnvDocument } from '../src/import-env-command-impl.js';
 
 const PASSPHRASE = `${EXEC_PASSPHRASE}\n`;
 

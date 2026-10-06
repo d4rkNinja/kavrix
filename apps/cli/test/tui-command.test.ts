@@ -2,7 +2,8 @@ import { Command } from 'commander';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { LocalCliError } from '../src/cli-error.js';
-import { registerTuiCommand, runInteractiveTui } from '../src/tui-command.js';
+import { registerTuiCommand } from '../src/tui-command.js';
+import { runInteractiveTui } from '../src/tui-session.js';
 
 describe('runInteractiveTui', () => {
   const stdinDescriptor = Object.getOwnPropertyDescriptor(process.stdin, 'isTTY');

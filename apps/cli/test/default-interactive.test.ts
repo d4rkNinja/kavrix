@@ -26,8 +26,10 @@ const tuiState = vi.hoisted(() => ({ run: vi.fn() }));
 const onboardingState = vi.hoisted(() => ({ run: vi.fn(), complete: vi.fn() }));
 
 vi.mock('../src/tui-command.js', () => ({
-  runInteractiveTui: tuiState.run,
   registerTuiCommand: vi.fn(),
+}));
+vi.mock('../src/tui-session.js', () => ({
+  runInteractiveTui: tuiState.run,
 }));
 vi.mock('../src/init-tui-onboarding.js', () => ({
   runInitTuiOnboarding: onboardingState.run,

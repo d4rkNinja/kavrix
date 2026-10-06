@@ -6,7 +6,7 @@ import {
 } from './init-tui-onboarding.js';
 import { resolveProfileConfigDirectory } from './profile-config-directory.js';
 import { terminalColorEnabled } from './terminal-presentation.js';
-import { runInteractiveTui } from './tui-command.js';
+import { runInteractiveTui } from './tui-session.js';
 
 export type InteractiveDefaultRoute = 'onboarding' | 'tui';
 

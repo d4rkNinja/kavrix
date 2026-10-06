@@ -73,7 +73,7 @@ export function buildTuiScreenModel(state: TuiState, nowMs: number): TuiScreenMo
         state.activePane === 'groups',
         groupWidth,
         paneHeight,
-        groupLines(state),
+        groupLines(state, paneHeight),
       ),
       makePane(
         'items',
@@ -81,7 +81,7 @@ export function buildTuiScreenModel(state: TuiState, nowMs: number): TuiScreenMo
         state.activePane === 'items',
         itemWidth,
         paneHeight,
-        itemLines(state, visibleItems),
+        itemLines(state, visibleItems, paneHeight),
       ),
       makePane(
         'details',
@@ -95,9 +95,9 @@ export function buildTuiScreenModel(state: TuiState, nowMs: number): TuiScreenMo
   } else {
     const lines =
       state.activePane === 'groups'
-        ? groupLines(state)
+        ? groupLines(state, paneHeight)
         : state.activePane === 'items'
-          ? itemLines(state, visibleItems)
+          ? itemLines(state, visibleItems, paneHeight)
           : detailLines(state, nowMs);
     const title =
       state.activePane === 'groups'
@@ -173,9 +173,21 @@ function makePane(
   };
 }
 
-function groupLines(state: TuiState): readonly string[] {
+/**
+ * Formats at most the rows a pane can display.
+ *
+ * `makePane` slices and truncates the formatted rows to the pane height, so
+ * formatting rows that can never be rendered is pure waste; with a large
+ * vault that waste dominated every keystroke. The slice here is the same
+ * slice `makePane` would apply, just before formatting instead of after.
+ */
+function listWindowHeight(paneHeight: number): number {
+  return Math.max(0, paneHeight - 1);
+}
+
+function groupLines(state: TuiState, paneHeight: number): readonly string[] {
   if (state.groups.length === 0) return ['No groups'];
-  return state.groups.map((group, index) => {
+  return state.groups.slice(0, listWindowHeight(paneHeight)).map((group, index) => {
     const marker = index === state.selectedGroup ? '>' : ' ';
     return `${marker} ${safe(group.name, state.ascii)} (${String(group.notes.length)} notes)`;
   });
@@ -184,11 +196,12 @@ function groupLines(state: TuiState): readonly string[] {
 function itemLines(
   state: TuiState,
   visibleIndexes: readonly number[],
+  paneHeight: number,
 ): readonly string[] {
   if (state.pending?.kind === 'items') return ['Loading selected group...'];
   if (visibleIndexes.length === 0)
     return [state.query.length === 0 ? 'No credentials' : 'No search matches'];
-  return visibleIndexes.map((index) => {
+  return visibleIndexes.slice(0, listWindowHeight(paneHeight)).map((index) => {
     const item = state.items[index];
     if (item === undefined) return '';
     const marker = index === state.selectedItem ? '>' : ' ';

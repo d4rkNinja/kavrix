@@ -240,7 +240,15 @@ async function readbackPublication<T>(
 
 function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
   if (left.byteLength !== right.byteLength) return false;
-  return left.every((value, index) => value === right[index]);
+  // Byte-for-byte comparison of two documents already in memory. A native
+  // comparison avoids a per-byte JavaScript callback on what can be a large
+  // canonical payload.
+  return (
+    Buffer.compare(
+      Buffer.from(left.buffer, left.byteOffset, left.byteLength),
+      Buffer.from(right.buffer, right.byteOffset, right.byteLength),
+    ) === 0
+  );
 }
 
 function asTransitionError(error: unknown): Error {
@@ -264,8 +272,13 @@ function parseCanonicalDocument<T>(
     const text = Buffer.from(bytes).toString('utf8');
     if (Buffer.byteLength(text, 'utf8') !== bytes.byteLength) throw invalid();
     const parsed = schema.parse(JSON.parse(text) as unknown);
+    // The byte comparison below is what proves this document is canonical, so
+    // re-serializing and re-parsing it to "prove" that again would repeat the
+    // most expensive steps of a read for no additional assurance.
     if (canonicalJson(parsed) !== text) throw invalid();
-    return cloneDocument(parsed, schema);
+    // The caller's value must share no structure with anything the read
+    // observed. A structural copy is the cheapest way to guarantee that.
+    return structuredClone(parsed);
   } catch (error) {
     if (
       error instanceof PortableKeyFileError ||
@@ -290,7 +303,6 @@ function serializeCanonicalDocument<T>(
       bytes.fill(0);
       throw invalid();
     }
-    cloneDocument(parsed, schema);
     return bytes;
   } catch (error) {
     if (
@@ -301,10 +313,6 @@ function serializeCanonicalDocument<T>(
     }
     throw invalid();
   }
-}
-
-function cloneDocument<T>(document: T, schema: CanonicalJsonDocumentSchema<T>): T {
-  return schema.parse(JSON.parse(canonicalJson(document)) as unknown);
 }
 
 function invalid(): ProtectedJsonDocumentError {

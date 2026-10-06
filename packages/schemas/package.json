@@ -9,6 +9,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./cli-exit-codes": {
+      "types": "./dist/cli-exit-codes.d.ts",
+      "import": "./dist/cli-exit-codes.js"
     }
   },
   "files": [
