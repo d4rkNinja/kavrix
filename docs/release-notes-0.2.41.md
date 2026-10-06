@@ -44,6 +44,8 @@ unchanged.
 Legacy local-file replacement now tolerates transient Windows `EPERM` sharing
 denials with at most sixteen attempts and three seconds of backoff. Both target
 and staged file identities and permissions are checked on every attempt;
-substitution and permanent denial fail closed. This follows the existing
+the target's read-time metadata snapshot must also remain unchanged, so inode
+reuse and in-place writes fail closed alongside substitution and permanent
+denial. This follows the existing
 protected key-file replacement behavior. Tests cover retry, substitution,
 exhaustion, cleanup, and preservation of committed ciphertext.

@@ -189,6 +189,28 @@ describe('FileLocalVaultStore', () => {
     }
   });
 
+  it('refuses an in-place target change between Windows rename attempts', async () => {
+    const descriptor = Object.getOwnPropertyDescriptor(process, 'platform');
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+    const target = await targetPath();
+    const store = await FileLocalVaultStore.open(target);
+    try {
+      await store.create(document());
+      renameEffects.rename.mockImplementationOnce(async () => {
+        await writeRestricted(target, 'tampered-in-place');
+        throw Object.assign(new Error('denied'), { code: 'EPERM' });
+      });
+      await expect(store.update(document(1), revision(0))).rejects.toMatchObject({
+        code: 'invalid',
+      });
+      expect(renameEffects.rename).toHaveBeenCalledTimes(1);
+      expect(await readFile(target, 'utf8')).toBe('tampered-in-place');
+    } finally {
+      await store.close();
+      if (descriptor) Object.defineProperty(process, 'platform', descriptor);
+    }
+  });
+
   it('bounds persistent Windows replacement denial and preserves the committed ciphertext', async () => {
     const descriptor = Object.getOwnPropertyDescriptor(process, 'platform');
     Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });

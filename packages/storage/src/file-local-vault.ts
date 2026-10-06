@@ -91,6 +91,7 @@ type TrustCache = Map<string, TrustedSnapshot>;
 type ReadDocumentResult = Readonly<{
   document: LocalVaultDocument;
   identity: FileIdentity;
+  snapshot: TrustedSnapshot;
   /** The exact on-disk bytes the document was parsed from. */
   text: string;
 }>;
@@ -182,6 +183,7 @@ export class FileLocalVaultStore implements EncryptedVaultStore {
       return {
         document: cached.document,
         identity: identityOf(currentStats),
+        snapshot,
         text: '',
       };
     }
@@ -190,7 +192,7 @@ export class FileLocalVaultStore implements EncryptedVaultStore {
       this.#documentCache = undefined;
       return null;
     }
-    this.#documentCache = { snapshot, document: current.document };
+    this.#documentCache = { snapshot: current.snapshot, document: current.document };
     return current;
   }
 
@@ -241,7 +243,7 @@ export class FileLocalVaultStore implements EncryptedVaultStore {
       this.#targetPath,
       parsed,
       'replace',
-      current.identity,
+      current.snapshot,
       this.#trustCache,
     );
     await this.#notePublishedDocument(parsed);
@@ -594,7 +596,7 @@ async function readDocumentIfPresent(
     const parsed = parseDocument(JSON.parse(text) as unknown);
     if (text !== `${JSON.stringify(parsed)}\n`)
       throw new FileLocalVaultError('invalid');
-    return { document: parsed, identity, text };
+    return { document: parsed, identity, snapshot: snapshotOf(after), text };
   } catch (error) {
     if (error instanceof FileLocalVaultError) throw error;
     throw new FileLocalVaultError('invalid');
@@ -609,7 +611,7 @@ async function publishDocument(
   targetPath: string,
   document: LocalVaultDocument,
   mode: 'create' | 'replace',
-  expectedIdentity?: FileIdentity,
+  expectedSnapshot?: TrustedSnapshot,
   trust?: TrustCache,
 ): Promise<void> {
   const contents = Buffer.from(`${JSON.stringify(document)}\n`, 'utf8');
@@ -649,12 +651,20 @@ async function publishDocument(
       }
       await unlink(temporaryPath);
     } else {
-      if (expectedIdentity === undefined) throw new FileLocalVaultError('operation');
+      if (expectedSnapshot === undefined) throw new FileLocalVaultError('operation');
       // Windows scanners may briefly hold the committed file without delete
       // sharing. Match the protected key-file boundary's bounded EPERM retry,
       // rechecking both file identities and permissions before every attempt.
       for (let attempt = 1; attempt <= 16; attempt += 1) {
-        await assertPathIdentityCached(targetPath, expectedIdentity, trust);
+        await assertPathIdentityCached(targetPath, expectedSnapshot, trust);
+        if (
+          !sameSnapshot(
+            snapshotOf(await lstat(targetPath, { bigint: true })),
+            expectedSnapshot,
+          )
+        ) {
+          throw new FileLocalVaultError('invalid');
+        }
         await assertPathIdentityCached(temporaryPath, identityOf(staged), trust);
         try {
           await rename(temporaryPath, targetPath);

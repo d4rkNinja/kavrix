@@ -49,8 +49,8 @@ performs project configuration dry-run; it is not a live broker dashboard.
 
 ## Verification boundary
 
-The 0.2.41 local Windows run passed 2,068 tests with 21 environment-gated tests
-skipped. Coverage passed unchanged thresholds: 86.66% statements, 80.22%
+The 0.2.41 local Windows run passed 2,069 tests with 21 environment-gated tests
+skipped. Coverage passed unchanged thresholds: 86.66% statements, 80.23%
 branches, 91.03% functions, and 88.22% lines. Build, formatting, lint, and type
 checks also passed, as did packed-package smoke, every-command local-file
 acceptance, database-container acceptance, package-content dry-run, and dependency
