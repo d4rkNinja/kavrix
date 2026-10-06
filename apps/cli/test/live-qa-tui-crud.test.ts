@@ -115,6 +115,21 @@ describe('0.2.22 live TUI CRUD journey (real CLI, isolated home)', () => {
         put.snapshot.credentials.some((entry) => entry.name === 'github/token'),
       ).toBe(true);
 
+      const beforeBrowse = calls.length;
+      const browse = await backend.dispatch({ type: 'refresh-browse' });
+      expect(browse.snapshot.noticeTone).toBe('success');
+      expect(
+        browse.snapshot.browse.some((entry) => entry.label === 'github/token'),
+      ).toBe(true);
+      expect(JSON.stringify(browse.snapshot.browse)).not.toContain(
+        'live-qa-canary-value',
+      );
+      expect(calls.slice(beforeBrowse)).toHaveLength(1);
+      expect(calls.at(-1)?.args).toEqual(
+        expect.arrayContaining(['context', 'list', '--tree']),
+      );
+      expect(calls.at(-1)?.args.join(' ')).not.toContain(PASSPHRASE);
+
       // ---- Update: rename ----
       const renamed = await backend.dispatch({
         type: 'rename-credential',

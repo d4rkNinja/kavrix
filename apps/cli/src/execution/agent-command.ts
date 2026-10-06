@@ -1,4 +1,4 @@
-﻿import { randomBytes, randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import type { ChildProcess } from 'node:child_process';
 import { chmod, unlink } from 'node:fs/promises';
 import {
@@ -74,6 +74,7 @@ export async function startAgentBrokerForTest(
 const CONNECT_TIMEOUT_MS = 10_000;
 
 interface BrokerLimits {
+  readonly maxConcurrentRequests: number;
   readonly queueWaitTimeoutMs: number;
   readonly maxQueuedRequests: number;
   readonly frameRateWindowMs: number;
@@ -85,6 +86,7 @@ interface BrokerLimits {
 }
 
 const DEFAULT_BROKER_LIMITS: BrokerLimits = {
+  maxConcurrentRequests: 4,
   queueWaitTimeoutMs: 10_000,
   maxQueuedRequests: 32,
   frameRateWindowMs: 1_000,
@@ -102,6 +104,7 @@ const DEFAULT_BROKER_LIMITS: BrokerLimits = {
 const BROKER_BUSY_ERROR = 'kavrix agent: broker busy; retry the request.\n';
 const BROKER_FLOOD_ERROR = 'kavrix agent: broker resource limit exceeded.\n';
 const BROKER_CHILD_INPUT_ERROR = 'kavrix agent: child input failed.\n';
+const BROKER_CHILD_OUTPUT_ERROR = 'kavrix agent: child output failed.\n';
 
 export interface AgentRunOptions extends DatabaseFlatCommandOptions {
   readonly agentName: string;
@@ -572,6 +575,9 @@ interface BrokerSession {
 }
 
 interface BrokerRuntime {
+  activeRequests: number;
+  readonly waitingRequests: (() => void)[];
+  confirmationQueue: Promise<void>;
   readonly limits: BrokerLimits;
   queuedRequests: number;
   auditQueue: Promise<void>;
@@ -612,9 +618,19 @@ function startBroker(
   const runtime: BrokerRuntime = {
     limits: { ...DEFAULT_BROKER_LIMITS, ...limitOverrides },
     queuedRequests: 0,
+    activeRequests: 0,
+    waitingRequests: [],
+    confirmationQueue: Promise.resolve(),
     auditQueue: Promise.resolve(),
     pendingAuditOperations: 0,
   };
+  if (
+    !Number.isSafeInteger(runtime.limits.maxConcurrentRequests) ||
+    runtime.limits.maxConcurrentRequests < 1 ||
+    runtime.limits.maxConcurrentRequests > DEFAULT_BROKER_LIMITS.maxConcurrentRequests
+  ) {
+    return Promise.reject(invalidConfiguration('Invalid broker concurrency limit.'));
+  }
   const endpoint = isWindows
     ? `\\\\.\\pipe\\kavrix-agent-${randomUUID()}`
     : join(tmpdir(), `kavrix-agent-${randomUUID()}.sock`);
@@ -851,29 +867,56 @@ function endBrokerSocket(socket: Socket, hardTeardownGraceMs: number): void {
   timer.unref();
 }
 
-async function waitForQueueTurn(
-  previous: Promise<void>,
+async function acquireExecutionSlot(
   context: ConnectionContext,
-): Promise<'ready' | 'terminated' | 'timeout'> {
+): Promise<(() => void) | null> {
+  const runtime = context.runtime;
+  let acquired = false;
+  const release = (): void => {
+    if (!acquired) return;
+    acquired = false;
+    runtime.activeRequests -= 1;
+    runtime.waitingRequests.shift()?.();
+  };
+  if (runtime.activeRequests < runtime.limits.maxConcurrentRequests) {
+    runtime.activeRequests += 1;
+    acquired = true;
+    return release;
+  }
+  if (runtime.queuedRequests >= runtime.limits.maxQueuedRequests) return null;
+  let grantSlot = (): void => undefined;
+  const ready = new Promise<'ready'>((resolveReady) => {
+    grantSlot = () => {
+      runtime.activeRequests += 1;
+      acquired = true;
+      resolveReady('ready');
+    };
+  });
+  runtime.waitingRequests.push(grantSlot);
+  runtime.queuedRequests += 1;
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    return await Promise.race([
-      previous.then(
-        () => 'ready' as const,
-        () => 'ready' as const,
-      ),
+    const outcome = await Promise.race([
+      ready,
       context.terminated.then(() => 'terminated' as const),
       new Promise<'timeout'>((resolveTimeout) => {
         timer = setTimeout(() => {
           resolveTimeout('timeout');
-        }, context.runtime.limits.queueWaitTimeoutMs);
+        }, runtime.limits.queueWaitTimeoutMs);
       }),
     ]);
+    if (outcome !== 'ready' || context.terminatedHard) {
+      release();
+      return null;
+    }
+    return release;
   } finally {
     if (timer !== undefined) clearTimeout(timer);
+    runtime.queuedRequests -= 1;
+    const index = runtime.waitingRequests.indexOf(grantSlot);
+    if (index >= 0) runtime.waitingRequests.splice(index, 1);
   }
 }
-
 async function dispatchRequest(
   line: string,
   socket: Socket,
@@ -894,38 +937,27 @@ async function dispatchRequest(
   }
   context.authenticatedRequest = parsed.data;
 
-  const { runtime } = context;
-  if (runtime.queuedRequests >= runtime.limits.maxQueuedRequests) {
-    terminateBrokerConnection(socket, context, BROKER_BUSY_ERROR);
-    return;
-  }
-
-  // Serialize authorized executions so stdio frames never interleave.
-  const previous = session.queue.catch(() => undefined);
-  let releaseQueue = (): void => undefined;
-  const currentGate = new Promise<void>((resolveGate) => {
-    releaseQueue = resolveGate;
-  });
-  session.queue = previous.then(() => currentGate);
-  runtime.queuedRequests += 1;
-  let countedAsQueued = true;
-
-  try {
-    const queueOutcome = await waitForQueueTurn(previous, context);
-    runtime.queuedRequests -= 1;
-    countedAsQueued = false;
-    if (queueOutcome === 'timeout') {
-      terminateBrokerConnection(socket, context, BROKER_BUSY_ERROR);
+  const operation = (async () => {
+    const release = await acquireExecutionSlot(context);
+    if (release === null) {
+      if (!context.terminatedHard)
+        terminateBrokerConnection(socket, context, BROKER_BUSY_ERROR);
       return;
     }
-    if (queueOutcome === 'terminated' || context.terminatedHard) return;
-    await handleAuthorizedExec(socket, context, parsed.data);
-  } finally {
-    if (countedAsQueued) runtime.queuedRequests -= 1;
-    releaseQueue();
-  }
+    try {
+      if (!context.terminatedHard)
+        await handleAuthorizedExec(socket, context, parsed.data);
+    } finally {
+      release();
+    }
+  })();
+  // Completion barrier for shutdown/tests, independent of admission and execution.
+  session.queue = Promise.all([
+    session.queue.catch(() => undefined),
+    operation.catch(() => undefined),
+  ]).then(() => undefined);
+  await operation;
 }
-
 async function handleAuthorizedExec(
   socket: Socket,
   context: ConnectionContext,
@@ -994,7 +1026,7 @@ async function handleAuthorizedExec(
     return;
   }
   if (decision.outcome === 'confirm') {
-    const approval = await requestApproval({
+    const approval = await serializedApproval(context.runtime, {
       actor: 'agent',
       ...(entry.secret === undefined ? {} : { secret: entry.secret }),
       executable: resolution.displayName,
@@ -1055,6 +1087,8 @@ async function handleAuthorizedExec(
       ...(request.argv.length > 1
         ? { argvPreview: boundedPreview(request.argv.slice(1)) }
         : {}),
+    }).catch(() => {
+      terminateBrokerConnection(socket, context, BROKER_CHILD_OUTPUT_ERROR);
     });
   };
 
@@ -1099,6 +1133,23 @@ async function handleAuthorizedExec(
   });
 }
 
+async function serializedApproval(
+  runtime: BrokerRuntime,
+  request: Parameters<typeof requestApproval>[0],
+): ReturnType<typeof requestApproval> {
+  const previous = runtime.confirmationQueue;
+  let release = (): void => undefined;
+  runtime.confirmationQueue = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await previous;
+  try {
+    return await requestApproval(request);
+  } finally {
+    release();
+  }
+}
+
 function wireChildRelay(
   socket: Socket,
   context: ConnectionContext,
@@ -1135,9 +1186,11 @@ function wireChildRelay(
       streamOutput(socket, event, chunk as Buffer);
     }
   };
-  void pump(child.stdout, 'stdout')
-    .then(() => pump(child.stderr, 'stderr'))
-    .catch(() => undefined);
+  void Promise.all([pump(child.stdout, 'stdout'), pump(child.stderr, 'stderr')]).catch(
+    () => {
+      terminateBrokerConnection(socket, context, BROKER_CHILD_OUTPUT_ERROR);
+    },
+  );
   const sink = (frame: AgentBrokerClientFrame): void => {
     if (
       inputClosed ||

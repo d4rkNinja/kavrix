@@ -263,6 +263,7 @@ export function transitionAppRouter(
     }
     case 'backend-result': {
       const themed = adoptSnapshotTheme(state, action.snapshot);
+      const locked = state.snapshot.home.unlocked && !action.snapshot.home.unlocked;
       const acceptReveal =
         action.revealedSecret !== undefined &&
         state.pendingRevealName !== null &&
@@ -271,6 +272,16 @@ export function transitionAppRouter(
       return unchanged(
         normalizeSnapshotState({
           ...themed,
+          ...(locked
+            ? {
+                overlay: 'none' as const,
+                query: '',
+                pendingPassphrase: null,
+                pendingMongoUrl: null,
+                pendingRecoveryPassphrase: null,
+                pendingName: null,
+              }
+            : {}),
           snapshot: action.snapshot,
           message: action.snapshot.notice ?? state.message,
           pendingRevealName:

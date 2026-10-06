@@ -37,10 +37,8 @@ describe('splash helpers', () => {
     expect(splashEnabled({ env: { KAVRIX_TUI_NO_SPLASH: '0' } })).toBe(true);
   });
 
-  it('dismisses after ready+min or at max duration', () => {
-    expect(shouldDismissSplash({ startedAtMs: 0, nowMs: 500, ready: true })).toBe(
-      false,
-    );
+  it('dismisses immediately when ready or at max duration', () => {
+    expect(shouldDismissSplash({ startedAtMs: 0, nowMs: 0, ready: true })).toBe(true);
     expect(
       shouldDismissSplash({
         startedAtMs: 0,
@@ -147,7 +145,7 @@ describe('SplashScreen', () => {
 });
 
 describe('SplashGate', () => {
-  it('shows splash then dismisses to children once ready and min elapsed', async () => {
+  it('shows splash then dismisses to children as soon as ready', async () => {
     const stdout = new TestOutput();
     const chunks: Buffer[] = [];
     stdout.on('data', (chunk: Buffer) => chunks.push(chunk));
@@ -178,7 +176,7 @@ describe('SplashGate', () => {
     expect(painted).toContain('K   K');
     expect(painted).not.toContain('HOME_READY');
 
-    // Past min but not ready — still splash
+    // No minimum wait, but an unready backend still shows the splash.
     now = SPLASH_MIN_MS;
     await new Promise((r) => setTimeout(r, 80));
     painted = stripAnsi(Buffer.concat(chunks).toString('utf8'));

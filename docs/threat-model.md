@@ -23,6 +23,16 @@ Protected files are passphrase-bound and permission checked. Secret input is
 masked or framed through stdin; secrets are not accepted as positional command
 arguments, logged, or written to settings files.
 
+Common database TUI actions retain unlocked keys in the local process for two
+idle minutes or fifteen minutes since unlock. Storage closes between actions;
+each reuse rechecks key-file permissions/content, profile binding, authenticated
+datastore state, and the rollback anchor. Expiry, integrity failures, profile
+changes, and exit clear the session and UI secret drafts. In-flight operations
+settle before cleanup. Runtime string copies remain subject to the unlocked-host
+limitations below. Up to four agent requests may run simultaneously; independent
+socket framing isolates their outputs while confirmations and audit mutations
+remain serialized. Admission and wait limits contain queue overload.
+
 ## Out of scope
 
 A fully privileged or same-user process running after unlock can inspect process

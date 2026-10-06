@@ -4,6 +4,7 @@ import { isAbsolute, resolve } from 'node:path';
 
 import {
   authorizationDecisionSchema,
+  authorizationStateDocumentSchema,
   grantIdSchema,
   grantRecordSchema,
   parseDurationToMs,
@@ -78,6 +79,15 @@ export async function executePolicyList(
       .sort((left, right) => String(left['id']).localeCompare(String(right['id'])));
     return { policies };
   });
+}
+
+/** One read-only authenticated sidecar; no partial success or credential payloads. */
+export async function executePolicySnapshot(
+  options: DatabaseFlatCommandOptions,
+): Promise<unknown> {
+  return withAuthorizationSnapshot(options, (snapshot) =>
+    authorizationStateDocumentSchema.parse({ version: 1, ...snapshot }),
+  );
 }
 
 export async function executePolicyShow(

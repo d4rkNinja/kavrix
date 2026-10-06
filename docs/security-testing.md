@@ -5,11 +5,8 @@ direct MongoDB behavior when a disposable MongoDB prerequisite is available.
 
 The active release workspace is `apps/cli`, `packages/core`, `packages/schemas`,
 `packages/crypto`, `packages/key-files`, `packages/storage`, `packages/runner`,
-and `packages/tui`. The other package directories remain
-source-present but parked/incubating: they are not workspace members, are not
-release artifacts, and are not counted by the coverage gate. Focused
-collaboration tests under the parked `packages/client` source do run in root
-Vitest as an incubation security gate, but do not make that package shipped. See
+and `packages/tui`. Legacy package directories are pending removal: they are not
+workspace members, release artifacts, or part of the root coverage gate. See
 [Active release boundary](active-release-boundary.md) for the complete boundary
 and command list.
 
@@ -63,8 +60,8 @@ Every root Vitest worker runs against an isolated fake home directory created by
 machine-local datastore-profile registry under the user's home directory. Tests
 that exercise profile selection target an explicit protected config directory.
 
-The CLI contract suite invokes `--help` across 101 canonical command nodes and
-16 expanded alias routes. It verifies clean root help and version output,
+The CLI contract suite invokes `--help` across 116 canonical command nodes and
+17 expanded alias routes. It verifies clean root help and version output,
 unknown-command usage exit `2`, hidden-command isolation, no protected input,
 and no ANSI, stack traces, Commander sentinels, or generic failure text in the
 non-TTY path. Focused prompt tests cover requirement/status markers,
@@ -129,6 +126,15 @@ Platform caveats: Windows command-script refusal is asserted through injected
 platform parameters plus native `.cmd` cases on Windows runners; POSIX signal
 exit-code mapping is exercised only where the platform delivers signals.
 
+TUI session regressions additionally prove one unlock across common actions,
+release of local writer locks between operations, observation of external vault
+writes, rejection of changed key files and malformed storage, idle/absolute
+expiry, disposal, and encrypted-storage plaintext canaries. Router tests clear
+revealed values and protected drafts on expiry. Broker tests keep a child waiting
+on stdin while a second request completes, assert output/audit isolation, drain
+large stderr concurrently with stdout, and exercise single-slot admission,
+queue timeout, and overload without weakening their assertions.
+
 Packed database-container acceptance also invokes the installed archive's
 policy check/explain/lint/diff/suggest and grant-show commands, verifies their
 machine contracts, and compares the sealed authorization sidecar byte for byte
@@ -154,9 +160,10 @@ vitest run --config packages/storage/vitest.config.ts \
   packages/storage/test/mongo-collaboration.integration.test.ts
 ```
 
-The repository does not bootstrap MongoDB in CI: the workflow has no reviewed,
-immutable, transaction-capable service image or safe replica-set startup path.
-Unit doubles and a standalone server are not reported as live MongoDB proof.
+CI starts a digest-pinned standalone MongoDB service for the read-only setup
+probe, including proof that probing creates no datastore artifacts. It does not
+bootstrap a transaction-capable replica set; this probe and unit doubles are not
+reported as evidence for live transactional database or collaboration behavior.
 Provide `KAVRIX_MONGODB_URI` in an authorized integration environment to obtain
 that evidence.
 

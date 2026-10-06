@@ -31,7 +31,7 @@ export const SPLASH_SPINNER_FRAMES = [
 /** Printable ASCII spinner for --ascii / win32. */
 export const SPLASH_ASCII_SPINNER_FRAMES = ['|', '/', '-', '\\'] as const;
 
-export const SPLASH_MIN_MS = 1_200;
+export const SPLASH_MIN_MS = 0;
 export const SPLASH_MAX_MS = 1_800;
 export const SPLASH_ANIMATION_MS = 100;
 
@@ -217,8 +217,8 @@ export function splashEnabled(
 }
 
 /**
- * Auto-dismiss: wait for backend ready + min duration, or force at max.
- * Window is ~1.2–1.8s so splash never blocks home longer than needed.
+ * Auto-dismiss when the backend is ready, or force at max duration.
+ * An explicit minimum remains available to callers; the app imposes none.
  */
 export function shouldDismissSplash(
   options: Readonly<{

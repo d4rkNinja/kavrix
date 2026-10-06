@@ -531,6 +531,21 @@ async function exerciseReadOnlyPolicyTooling(run, paths, passphrase) {
     (await readFile(statePath)).equals(grantState),
     'packed grant inspection mutated authorization state',
   );
+  const snapshot = parseJson(
+    await run(['policy', 'snapshot', ...route], [passphrase]),
+    'packed policy snapshot',
+  );
+  assert(
+    snapshot.version === 1 &&
+      snapshot.policies?.['packed-node']?.definition?.secret === 'service/first' &&
+      snapshot.grants?.[grant.grantId]?.usedCount === 0 &&
+      Array.isArray(snapshot.audit),
+    'packed policy snapshot did not include canonical policy, grant, and audit metadata',
+  );
+  assert(
+    (await readFile(statePath)).equals(grantState),
+    'packed policy snapshot mutated authorization state',
+  );
 }
 
 async function exerciseConcurrentConflict(run, paths, profile, passphrase, label) {

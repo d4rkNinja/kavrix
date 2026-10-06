@@ -34,6 +34,12 @@ import {
   type ProjectContextPayload,
   type StructuredGroupPayload,
   type StructuredVaultPayload,
+  VAULT_BROWSE_CONTEXT_LIMIT,
+  VAULT_BROWSE_SERVICE_LIMIT,
+  VAULT_BROWSE_ITEM_LIMIT,
+  vaultBrowseSnapshotSchema,
+  type VaultBrowseNode,
+  type VaultBrowseSnapshot,
 } from '@kavrix/schemas';
 import type { Command } from 'commander';
 
@@ -1153,7 +1159,7 @@ export async function contextCreate(
 
 /** Handler for `context list`. */
 export async function contextList(
-  _options: Record<string, unknown>,
+  options: Record<string, unknown>,
   command: Command,
 ): Promise<void> {
   const flat = commandOptions(command);
@@ -1161,17 +1167,73 @@ export async function contextList(
   await withDatabaseFlatVault(flat, values, async (session, vaultId) => {
     let result: StructuredCommandResult = {};
     const document = await session.inspectStructuredVault(vaultId, (payload) => {
-      result = {
-        contexts: payload.projectContexts.map((entry) => ({
-          name: sanitizeText(entry.name),
-          ...(entry.environment === undefined
-            ? {}
-            : { environment: sanitizeText(entry.environment) }),
-        })),
-      };
+      result =
+        options['tree'] === true
+          ? projectVaultBrowse(payload)
+          : {
+              contexts: payload.projectContexts.map((entry) => ({
+                name: sanitizeText(entry.name),
+                ...(entry.environment === undefined
+                  ? {}
+                  : { environment: sanitizeText(entry.environment) }),
+              })),
+            };
     });
-    writeJsonResult({ ...result, revision: document.revision });
+    const output = { ...result, revision: document.revision };
+    writeJsonResult(
+      options['tree'] === true ? vaultBrowseSnapshotSchema.parse(output) : output,
+    );
   });
+}
+
+/** One authenticated payload, indexed once; no secret-bearing fields escape. */
+export function projectVaultBrowse(
+  payload: StructuredVaultPayload,
+): Omit<VaultBrowseSnapshot, 'revision'> {
+  const services = new Map<string, StructuredGroupPayload[]>();
+  const items = new Map<string, ItemPayload[]>();
+  for (const group of payload.groups) {
+    const entries = services.get(group.projectContextId) ?? [];
+    entries.push(group);
+    services.set(group.projectContextId, entries);
+  }
+  for (const item of payload.items) {
+    if (item.deletedAt !== undefined) continue;
+    const entries = items.get(item.groupId) ?? [];
+    entries.push(item);
+    items.set(item.groupId, entries);
+  }
+  const nodes: VaultBrowseNode[] = [];
+  let truncated = payload.projectContexts.length > VAULT_BROWSE_CONTEXT_LIMIT;
+  for (const context of payload.projectContexts.slice(0, VAULT_BROWSE_CONTEXT_LIMIT)) {
+    nodes.push({
+      id: `context:${context.id}`,
+      kind: 'context',
+      label: sanitizeText(context.name),
+      detail: 'project context',
+    });
+    const groups = services.get(context.id) ?? [];
+    truncated ||= groups.length > VAULT_BROWSE_SERVICE_LIMIT;
+    for (const group of groups.slice(0, VAULT_BROWSE_SERVICE_LIMIT)) {
+      nodes.push({
+        id: `service:${group.id}`,
+        kind: 'service',
+        label: sanitizeText(group.name),
+        detail: `context ${sanitizeText(context.name)}`,
+      });
+      const entries = items.get(group.id) ?? [];
+      truncated ||= entries.length > VAULT_BROWSE_ITEM_LIMIT;
+      for (const item of entries.slice(0, VAULT_BROWSE_ITEM_LIMIT)) {
+        nodes.push({
+          id: `item:${item.id}`,
+          kind: 'item',
+          label: sanitizeText(item.title),
+          detail: `service ${sanitizeText(group.name)}`,
+        });
+      }
+    }
+  }
+  return { nodes, truncated };
 }
 
 /** Handler for `context rename <from> <to>`. */

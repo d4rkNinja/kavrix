@@ -9,6 +9,13 @@ database-vault boundary.
 
 ## Database document and private catalog
 
+`context list --tree` returns bounded context/service/item metadata from one
+authenticated payload revision; its canonical response is defined in
+`packages/schemas/src/vault-browse.ts`. `policy snapshot` returns the canonical
+authorization-state document (`version`, `policies`, `grants`, `audit`) from one
+read-only sealed sidecar read. Neither is a new persisted vault format, and
+neither response includes credential field values.
+
 One database document contains a format/version discriminator, opaque database
 ID, schema/cryptographic/key versions, one active portable database-key slot,
 bounded database recovery slots, database revision, timestamps, catalog digest,

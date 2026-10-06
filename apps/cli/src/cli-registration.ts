@@ -200,11 +200,7 @@ export const MONGO_DATABASE_NAME_PATTERN = /^[A-Za-z0-9_-]{1,63}$/u;
 export const MONGO_COLLECTION_NAME_PATTERN = /^[A-Za-z0-9_-]{1,64}$/u;
 export const REDACTED = '[REDACTED]';
 export const MAX_LOCAL_PAYLOAD_BYTES = 4 * 1024 * 1024;
-export const RESERVED_CREDENTIAL_NAMES = new Set([
-  '__proto__',
-  'constructor',
-  'prototype',
-]);
+export { RESERVED_CREDENTIAL_NAMES } from './credential-name.js';
 export const RESERVED_VAULT_IDENTIFIERS = new Set([
   '__proto__',
   'constructor',

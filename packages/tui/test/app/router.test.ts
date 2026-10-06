@@ -83,6 +83,36 @@ function sampleSnapshot(): AppSnapshot {
   };
 }
 
+it('clears protected drafts and revealed values when the backend expires an unlocked session', () => {
+  const state: AppRouterState = {
+    ...createInitialAppRouterState(),
+    snapshot: sampleSnapshot(),
+    overlay: 'input-put-value',
+    query: 'draft-canary',
+    pendingPassphrase: 'passphrase-canary',
+    pendingMongoUrl: 'connection-canary',
+    pendingRecoveryPassphrase: 'recovery-canary',
+    revealedValue: 'revealed-canary',
+    revealedName: 'test',
+    revealedUntilMs: 999_999,
+  };
+  const result = transitionAppRouter(state, {
+    type: 'backend-result',
+    snapshot: emptySnapshot('TUI session expired; unlock again.'),
+    nowMs: 1,
+  });
+  expect(result.state.overlay).toBe('none');
+  expect(result.state.query).toBe('');
+  for (const marker of [
+    'draft-canary',
+    'passphrase-canary',
+    'connection-canary',
+    'recovery-canary',
+    'revealed-canary',
+  ])
+    expect(JSON.stringify(result.state)).not.toContain(marker);
+});
+
 function hydrate(ascii = false, color = true): AppRouterState {
   const base = createInitialAppRouterState({ ascii, color, width: 100, height: 30 });
   return transitionAppRouter(base, {

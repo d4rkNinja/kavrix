@@ -747,6 +747,34 @@ export class DatabaseSession {
     });
   }
 
+  /** Revalidate fresh storage and the rollback anchor before reusing unlocked keys. */
+  public async verifyCurrentState(): Promise<void> {
+    this.#assertOpen();
+    try {
+      const database = await this.#store.getDatabase(this.#databaseId);
+      if (
+        database === null ||
+        canonicalJson(database) !== canonicalJson(this.#database)
+      ) {
+        throw new DatabaseSessionError('conflict');
+      }
+      const observed = await authenticateDatabaseState(
+        this.#store,
+        database,
+        this.#catalog,
+        this.#rootKey,
+      );
+      await verifyReadOnlyOpenAnchor({
+        anchorFile: this.#anchorFile,
+        rootKey: this.#rootKey,
+        observed,
+      });
+    } catch (error) {
+      await this.#poison();
+      throw mapError(error);
+    }
+  }
+
   public status(): Readonly<{
     databaseId: DatabaseId;
     revision: DatabaseRevision;

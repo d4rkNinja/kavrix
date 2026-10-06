@@ -1452,6 +1452,7 @@ export function HelpScreen({
     'Paste into overlays: Ctrl+Shift+V / Cmd+V. Paste never submits Enter.',
     'Tab / Shift+Tab cycle; digits 1-9 jump to screens.',
     'Mouse: click actions / wheel to move. Shift+drag selects terminal text.',
+    'Vault relocks after 2 minutes without actions or 15 minutes since unlock.',
     'Use --no-mouse for native selection. Run: project-file --environment is CLI-only.',
   ];
   const topics = [

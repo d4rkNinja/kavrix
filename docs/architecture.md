@@ -67,9 +67,14 @@ for database files.
   the agent broker/client, sanitized output, and stable exit codes.
 
 No API server, sync daemon, or SQLite store is required. The active
-`@kavrix/tui` workspace supplies an optional presentational Ink showcase for
-interactive storage selection; it owns no persistence or cryptographic state
-and is loaded lazily. The public package bundles the CLI and reviewed
+`@kavrix/tui` workspace supplies schema-driven Ink onboarding and management
+screens; it owns no persistence or cryptographic state and is loaded lazily.
+The CLI-owned TUI backend leases storage per operation while retaining unlocked
+keys for at most two idle minutes or fifteen minutes since unlock. Protected
+key-file identity, routing, full authenticated state, and rollback anchors are
+checked on reuse. Administrative subprocesses invalidate reusable keys, and
+profile changes, expiry, failures, and exit clear the session.
+The public package bundles the CLI and reviewed
 cryptographic/schema libraries while leaving the MongoDB driver external and
 pinned.
 
@@ -89,6 +94,12 @@ pipe (Windows) broker authenticates newline-delimited JSON requests against a
 per-session token, evaluates configured permissions through one shared engine
 with `kavrix run`, streams the authorized child's stdio in bounded base64
 frames, and always terminates requests with an exit frame.
+Up to four requests execute concurrently on independent sockets. Admission has a
+32-request queue and a ten-second wait deadline. Confirmation prompts and sealed
+audit writes are serialized independently of child execution; stdout and stderr
+are drained concurrently so a full stderr pipe cannot block stdout completion.
+Shutdown waits for the request completion barrier and audit drain before wiping
+session credentials. Broker permissions remain evaluated per request.
 
 ## Persistence and concurrency
 

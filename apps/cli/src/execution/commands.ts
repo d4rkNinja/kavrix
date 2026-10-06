@@ -40,6 +40,7 @@ import {
   executePolicyExplain,
   executePolicyLint,
   executePolicyList,
+  executePolicySnapshot,
   executePolicyRemove,
   executePolicyShow,
   executePolicySuggest,
@@ -201,6 +202,16 @@ export async function executePolicyListAction(args: readonly unknown[]): Promise
     executePolicyList(
       executionFlatOptions(extractMergedOptions(args.at(-1) as Command)),
     ),
+  );
+}
+
+export async function executePolicySnapshotAction(
+  args: readonly unknown[],
+): Promise<void> {
+  const command = args.at(-1) as Command;
+  const merged = extractMergedOptions(command);
+  await guard(merged['json'] === true, () =>
+    executePolicySnapshot(executionFlatOptions(merged)),
   );
 }
 

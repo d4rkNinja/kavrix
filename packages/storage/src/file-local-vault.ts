@@ -650,8 +650,26 @@ async function publishDocument(
       await unlink(temporaryPath);
     } else {
       if (expectedIdentity === undefined) throw new FileLocalVaultError('operation');
-      await assertPathIdentityCached(targetPath, expectedIdentity, trust);
-      await rename(temporaryPath, targetPath);
+      // Windows scanners may briefly hold the committed file without delete
+      // sharing. Match the protected key-file boundary's bounded EPERM retry,
+      // rechecking both file identities and permissions before every attempt.
+      for (let attempt = 1; attempt <= 16; attempt += 1) {
+        await assertPathIdentityCached(targetPath, expectedIdentity, trust);
+        await assertPathIdentityCached(temporaryPath, identityOf(staged), trust);
+        try {
+          await rename(temporaryPath, targetPath);
+          break;
+        } catch (error) {
+          if (
+            process.platform !== 'win32' ||
+            fileErrorCode(error) !== 'EPERM' ||
+            attempt === 16
+          ) {
+            throw error;
+          }
+          await new Promise<void>((resolve) => setTimeout(resolve, 25 * attempt));
+        }
+      }
     }
     published = true;
     const finalMetadata = await lstat(targetPath, { bigint: true });

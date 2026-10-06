@@ -31,8 +31,8 @@ Use `kavrix init --no-mouse` or `KAVRIX_TUI_MOUSE=0` for native selection.
 
 `kavrix tui` (alias `ui`) mounts the colorful Ink app from `@kavrix/tui` when
 both stdin and stdout are TTYs. Non-TTY sessions print a clear error and exit
-non-zero so automation keeps using numbered CLI commands. Every screen action
-runs the published CLI (no product mocks).
+non-zero so automation keeps using numbered CLI commands. Screens call CLI-owned
+use cases; administrative and legacy actions invoke the published CLI.
 
 Screens: Home, Profiles, Vaults, Credentials (masked / REVEAL; Enter opens
 detail), Doctor / heal (local health, not key recovery), Recovery kit
@@ -98,6 +98,38 @@ or confirmation overlays. Repeated resize reports and ignored keys avoid redunda
 state updates and mouse-frame invalidations. The reveal countdown updates once per displayed second; the expiry check
 still runs every 250ms. Escape remasks a REVEAL and returns focus to the
 credentials list. Clicking the startup splash skips it.
+
+The splash also dismisses as soon as the backend is ready; there is no minimum
+animation wait. Browse loads one authenticated metadata snapshot, available to
+scripts as `kavrix context list --tree --json`, including context, service, and active item
+labels, never field values. The preview is bounded to 20 contexts, 20 services
+per context, and 30 items per service. A warning identifies truncation; use the
+individual CLI lists for the full hierarchy. Agent dry-run validates the project
+configuration and database profile without forwarding passphrases or connection
+strings; it does not verify that secrets exist or that execution will succeed.
+
+For bound database profiles, unlock, credential CRUD, copy/reveal, Browse, and
+Policy/Grant/Audit refresh reuse one in-memory authenticated session. Storage is
+reopened for each operation and closed afterward, so no file writer lock remains
+held while idle. Every reuse verifies protected key-file bytes and permissions,
+the profile binding, authenticated database/vault state, and the rollback anchor.
+Changed key files or database catalogs, corruption, and failed operations clear
+the session and require unlocking again. External authenticated vault writes are
+read afresh; mutation revision checks remain mandatory.
+
+The TUI locks after two minutes without backend actions or fifteen minutes since
+unlock. Keyboard-only navigation does not extend the idle deadline. Expiry clears
+keys, retained passphrase/connection buffers, metadata, and visible reveal state.
+An action already in progress is allowed to settle before cleanup. Profile
+changes and app exit dispose the session. Administrative subprocess actions
+release reusable keys before running; the next common action authenticates again.
+Legacy standalone profiles retain their existing subprocess route and the same
+TUI lifetime bounds. OS keychain session unlock is a separate facility with its
+own configured TTL.
+
+`kavrix policy snapshot --json` reads policies, grants, and the bounded audit ring
+from one authenticated sidecar read. TUI refresh renders all three together and
+reports read failures instead of presenting a missing audit result as success.
 
 ## Mouse and workflow navigation (0.2.34)
 

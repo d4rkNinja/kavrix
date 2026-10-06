@@ -68,6 +68,60 @@ describe('CliTuiSession mutations (mocked spawn)', () => {
     }
   });
 
+  it('warns on a truncated browse preview and clears it on malformed or failed refresh', async () => {
+    const configDir = await setupProfile();
+    let browseResponse: unknown = {
+      nodes: [
+        {
+          id: 'context:preview',
+          kind: 'context',
+          label: 'preview',
+          detail: 'project context',
+        },
+      ],
+      truncated: true,
+      revision: 1,
+    };
+    let failBrowse = false;
+    const backend = createCliTuiBackend({
+      profileConfigDir: configDir,
+      commandRunner: async (args) => {
+        if (args[0] === 'list') return JSON.stringify({ names: [] });
+        if (failBrowse) throw new Error('Browse unavailable.');
+        return JSON.stringify(browseResponse);
+      },
+    });
+    await backend.dispatch({ type: 'unlock', passphrase: 'test-owner-passphrase' });
+    const limited = await backend.dispatch({ type: 'refresh-browse' });
+    expect(limited.snapshot.noticeTone).toBe('warning');
+    expect(limited.snapshot.notice).toContain('Preview limited');
+    expect(limited.snapshot.browse[0]?.label).toBe('preview');
+    browseResponse = {
+      nodes: [
+        {
+          id: 'item:bad',
+          kind: 'item',
+          label: 'bad',
+          detail: '',
+          value: 'plaintext-canary',
+        },
+      ],
+      truncated: false,
+      revision: 2,
+    };
+    const malformed = await backend.dispatch({ type: 'refresh-browse' });
+    expect(malformed.snapshot.noticeTone).toBe('error');
+    expect(malformed.snapshot.notice).toBe('Unexpected browse response.');
+    expect(JSON.stringify(malformed.snapshot)).not.toContain('plaintext-canary');
+    expect(malformed.snapshot.browse.some((node) => node.label === 'preview')).toBe(
+      false,
+    );
+    failBrowse = true;
+    const failed = await backend.dispatch({ type: 'refresh-browse' });
+    expect(failed.snapshot.noticeTone).toBe('error');
+    expect(failed.snapshot.notice).toBe('Browse unavailable.');
+  });
+
   it.each(['file', 'mongodb'] as const)(
     'preflights %s recovery anchors before any profile mutation or command',
     async (datastore) => {
@@ -749,6 +803,37 @@ describe('CliTuiSession mutations (mocked spawn)', () => {
         if (args[0] === 'policy' && args[1] === 'list') {
           return JSON.stringify({ policies });
         }
+        if (args[0] === 'policy' && args[1] === 'snapshot') {
+          return JSON.stringify({
+            version: 1,
+            policies: Object.fromEntries(
+              policies.map((row) => [
+                row['id'],
+                {
+                  definition: { secret: row['secret'], commands: row['commands'] },
+                  createdAt: row['createdAt'],
+                },
+              ]),
+            ),
+            grants: Object.fromEntries(
+              grants.map((row) => [
+                row['grantId'],
+                {
+                  grantId: row['grantId'],
+                  secret: row['secret'],
+                  commands: row['commands'],
+                  createdAt: row['createdAt'],
+                  usedCount: 0,
+                  actor: 'user',
+                  ...(row['status'] === 'revoked'
+                    ? { revokedAt: '2026-01-02T00:00:00.000Z' }
+                    : {}),
+                },
+              ]),
+            ),
+            audit: [],
+          });
+        }
         if (args[0] === 'policy' && args[1] === 'create') {
           const id = args[2];
           policies = [
@@ -815,7 +900,25 @@ describe('CliTuiSession mutations (mocked spawn)', () => {
           return JSON.stringify({ exists: name === 'alpha', name, revision: 1 });
         }
         if (args[0] === 'context' && args[1] === 'list') {
-          return JSON.stringify({ contexts: [{ name: 'default' }] });
+          return JSON.stringify({
+            revision: 1,
+            truncated: false,
+            nodes: [
+              {
+                id: 'context:default',
+                kind: 'context',
+                label: 'default',
+                detail: 'project context',
+              },
+              {
+                id: 'service:api',
+                kind: 'service',
+                label: 'api',
+                detail: 'context default',
+              },
+              { id: 'item:token', kind: 'item', label: 'token', detail: 'service api' },
+            ],
+          });
         }
         if (args[0] === 'service' && args[1] === 'list') {
           return JSON.stringify({ context: 'default', services: ['api'] });
@@ -942,12 +1045,27 @@ describe('CliTuiSession mutations (mocked spawn)', () => {
       ]),
     );
     expect(result.snapshot.agentStatus.length).toBeGreaterThan(0);
+    expect(agentCall?.frames).toEqual([]);
+    expect(agentCall?.args).not.toContain('--passphrase-stdin');
+    expect(agentCall?.args).not.toContain('--database-url-stdin');
 
+    const policyCallStart = calls.length;
+    result = await backend.dispatch({ type: 'refresh-policy' });
+    expect(result.snapshot.noticeTone).toBe('success');
+    expect(calls.slice(policyCallStart)).toHaveLength(1);
+    expect(calls.at(-1)?.args).toEqual(expect.arrayContaining(['policy', 'snapshot']));
+
+    const browseCallStart = calls.length;
     result = await backend.dispatch({ type: 'refresh-browse' });
     expect(result.snapshot.noticeTone).toBe('success');
     expect(result.snapshot.browse.some((node) => node.kind === 'context')).toBe(true);
     expect(result.snapshot.browse.some((node) => node.kind === 'service')).toBe(true);
     expect(result.snapshot.browse.some((node) => node.kind === 'item')).toBe(true);
+    expect(calls.slice(browseCallStart)).toHaveLength(1);
+    expect(calls.at(-1)?.args).toEqual(
+      expect.arrayContaining(['context', 'list', '--tree']),
+    );
+    expect(calls.at(-1)?.frames).toEqual(['correct horse battery staple']);
     const hasCall = calls.find((call) => call.args[0] === 'has');
     expect(hasCall?.frames).toEqual(['correct horse battery staple']);
     expect(hasCall?.args.join(' ')).not.toContain('correct horse');

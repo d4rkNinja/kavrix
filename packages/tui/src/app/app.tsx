@@ -192,6 +192,15 @@ export function KavrixApp({
   );
   dispatchRef.current = dispatch;
 
+  useEffect(
+    () =>
+      backendRef.current.subscribe?.((snapshot) => {
+        if (!mountedRef.current || stateRef.current.quit) return;
+        dispatchRef.current({ type: 'backend-result', snapshot, nowMs: now() });
+      }),
+    [now],
+  );
+
   useEffect(() => {
     mountedRef.current = true;
     return () => {

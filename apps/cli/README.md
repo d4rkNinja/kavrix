@@ -61,7 +61,7 @@ policy, grant, authorization, and completion events without secret material.
 
 Manage the secrets firewall interactively (profiles, vaults, credentials,
 doctor, recovery). On Linux, macOS, and Windows with Node.js `>=24.12.0`,
-Kavrix ships a real Ink terminal UI — every action runs the same CLI:
+Kavrix ships a real Ink terminal UI backed by CLI-owned use cases:
 
 ```sh
 kavrix init   # TUI onboarding on an interactive TTY (default)
@@ -70,6 +70,13 @@ kavrix tui    # full app
 
 Use `kavrix init --no-tui` for classic line prompts, or stdin/explicit routing
 for scripts.
+
+Version 0.2.41 reuses authenticated keys for common database TUI actions while
+closing storage between actions. The TUI locks after two idle minutes or fifteen
+minutes since unlock. Browse and Policy/Grant/Audit load one snapshot each;
+`kavrix policy snapshot --json` also exposes the latter to scripts. Agent brokers
+support up to four concurrent requests with bounded admission and isolated I/O.
+See [behavior and security limits](https://github.com/d4rkNinja/kavrix/blob/v0.2.41/docs/release-notes-0.2.41.md).
 
 Version 0.2.39 fixes existing-vault unlock routing, preserves MongoDB connections
 after unlock, and adds direct passphrase unlock with Shift+U. Common credential

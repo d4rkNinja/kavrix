@@ -4,6 +4,7 @@ import { existsSync } from 'node:fs';
 import { lstat, realpath } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { performance } from 'node:perf_hooks';
 
 import { z } from 'zod';
 
@@ -19,6 +20,8 @@ import {
 } from '@kavrix/key-files';
 import {
   profileIdSchema,
+  authorizationStateDocumentSchema,
+  vaultBrowseSnapshotSchema,
   profileDestinationCheckActionSchema,
   type ProfileDestinationCheckAction,
   type SetupToolAction,
@@ -39,6 +42,25 @@ import { resolveProfileConfigDirectory } from './profile-config-directory.js';
 import { terminalColorEnabled } from './terminal-presentation.js';
 import { isTuiThemeId, TUI_THEME_IDS } from './tui-theme.js';
 import { CLI_VERSION } from './version.js';
+import { grantStatus, presentGrant } from './execution/policy-command.js';
+import {
+  TuiVaultSession,
+  TUI_SESSION_IDLE_MS,
+  TUI_SESSION_MAX_MS,
+} from './tui-vault-session.js';
+import { resolveDatabaseVaultId } from './database-flat-commands.js';
+import type { DatabaseSession } from './database-session.js';
+import {
+  putCredential,
+  renameCredential,
+  removeCredential,
+} from './credential-mutations.js';
+import { enforceRevealPolicy } from './execution/reveal-policy.js';
+import { projectVaultBrowse } from './structured-vault-impl.js';
+import { credentialMissing } from './execution/exit-codes.js';
+import { validateCredentialName } from './credential-name.js';
+import { AuthorizationState } from './execution/authorization-state.js';
+import type { VaultId } from '@kavrix/schemas';
 
 /**
  * Structural host backend used by `kavrix tui`. Kept free of `@kavrix/tui`
@@ -196,6 +218,8 @@ export type CliTuiAction =
   | Readonly<{ type: 'set-theme'; themeId: string }>;
 
 export interface CliTuiBackend {
+  dispose(): Promise<void>;
+  subscribe(listener: (snapshot: CliTuiSnapshot) => void): () => void;
   load(): Promise<CliTuiSnapshot>;
   dispatch(
     action: CliTuiAction,
@@ -374,13 +398,34 @@ async function readPersistedTheme(kavrixArtifactDir?: string): Promise<string | 
 
 export function createCliTuiBackend(options: CliTuiSessionOptions = {}): CliTuiBackend {
   const session = new CliTuiSession(options);
+  let pending: Promise<unknown> = Promise.resolve();
+  let disposed = false;
   return {
+    dispose: async () => {
+      disposed = true;
+      await pending;
+      await session.dispose();
+    },
+    subscribe: (listener) => session.subscribe(listener),
     load: () => session.snapshot(),
-    dispatch: (action, onProgress) => session.dispatch(action, onProgress),
+    dispatch: (action, onProgress) => {
+      if (disposed) return Promise.reject(new Error('TUI session is closed.'));
+      const next = pending.then(() => session.dispatch(action, onProgress));
+      pending = next.then(
+        () => undefined,
+        () => undefined,
+      );
+      return next;
+    },
   };
 }
 
 class CliTuiSession {
+  readonly #vaultSession: TuiVaultSession;
+  readonly #listeners = new Set<(snapshot: CliTuiSnapshot) => void>();
+  #unlockedAt: number | undefined;
+  #lifetimeTimer: ReturnType<typeof setTimeout> | undefined;
+  #lifetimeFailure: unknown;
   readonly #options: CliTuiSessionOptions;
   #passphrase: Buffer | null = null;
   #credentialNames: string[] = [];
@@ -398,6 +443,59 @@ class CliTuiSession {
 
   constructor(options: CliTuiSessionOptions) {
     this.#options = options;
+    this.#vaultSession = new TuiVaultSession(async (error) => {
+      await this.#lock();
+      this.#notice =
+        error === undefined
+          ? 'TUI session expired; unlock again.'
+          : 'TUI session cleanup failed; restart the app.';
+      this.#noticeTone = error === undefined ? 'info' : 'error';
+      const snapshot = await this.#buildSnapshot();
+      for (const listener of this.#listeners) listener(snapshot);
+    });
+  }
+
+  subscribe(listener: (snapshot: CliTuiSnapshot) => void): () => void {
+    this.#listeners.add(listener);
+    return () => {
+      this.#listeners.delete(listener);
+    };
+  }
+
+  async dispose(): Promise<void> {
+    this.#listeners.clear();
+    await this.#lock();
+  }
+
+  async #withNativeSession<T>(
+    operation: (
+      session: DatabaseSession,
+      vaultId: VaultId,
+      profile: DatastoreProfile,
+    ) => Promise<T>,
+    passphrase = this.#passphrase,
+  ): Promise<{ supported: false } | { supported: true; value: T }> {
+    if (this.#options.commandRunner !== undefined) return { supported: false };
+    const profile = await this.#currentProfile();
+    if (profile?.databaseId === undefined) return { supported: false };
+    if (passphrase === null) throw new Error('Unlock the vault first.');
+    const vaultId = resolveDatabaseVaultId(profile, {
+      vault: this.#vaultId ?? 'default',
+      ...(this.#vaultId === null ? { vaultWasDefaulted: true } : {}),
+    });
+    try {
+      const value = await this.#vaultSession.run(
+        profile,
+        vaultId,
+        passphrase,
+        this.#databaseUrl?.toString('utf8'),
+        (session, id) => operation(session, id, profile),
+      );
+      return { supported: true, value };
+    } catch (error) {
+      await this.#lock();
+      throw error;
+    }
   }
 
   /** Effective theme: explicit option, then persisted preference. */
@@ -426,7 +524,15 @@ class CliTuiSession {
       setup?: SetupToolResult;
     }>
   > {
+    if (this.#lifetimeTimer !== undefined) clearTimeout(this.#lifetimeTimer);
     try {
+      if (this.#lifetimeFailure !== undefined)
+        throw new Error('TUI session cleanup failed; restart the app.');
+      if (
+        this.#unlockedAt !== undefined &&
+        performance.now() - this.#unlockedAt >= TUI_SESSION_MAX_MS
+      )
+        await this.#lock();
       switch (action.type) {
         case 'browse-setup-folders':
         case 'repair-setup-directory':
@@ -487,7 +593,7 @@ class CliTuiSession {
           await this.#unlock(action.passphrase, action.databaseUrl);
           break;
         case 'lock':
-          this.#lock();
+          await this.#lock();
           this.#notice = 'Session locked; secrets cleared.';
           this.#noticeTone = 'success';
           break;
@@ -618,7 +724,36 @@ class CliTuiSession {
             : 'Operation failed safely.';
       this.#noticeTone = 'error';
       return { snapshot: await this.#buildSnapshot() };
+    } finally {
+      this.#armLifetime();
     }
+  }
+
+  #armLifetime(): void {
+    if (this.#passphrase === null) return;
+    this.#vaultSession.touch();
+    this.#unlockedAt ??= performance.now();
+    const delay = Math.max(
+      1,
+      Math.min(
+        TUI_SESSION_IDLE_MS,
+        TUI_SESSION_MAX_MS - (performance.now() - this.#unlockedAt),
+      ),
+    );
+    this.#lifetimeTimer = setTimeout(() => {
+      void this.#expireLifetime().catch((error: unknown) => {
+        this.#lifetimeFailure = error;
+      });
+    }, delay);
+    this.#lifetimeTimer.unref();
+  }
+
+  async #expireLifetime(): Promise<void> {
+    await this.#lock();
+    this.#notice = 'TUI session expired; unlock again.';
+    this.#noticeTone = 'info';
+    const snapshot = await this.#buildSnapshot();
+    for (const listener of this.#listeners) listener(snapshot);
   }
 
   async #buildSnapshot(): Promise<CliTuiSnapshot> {
@@ -744,7 +879,7 @@ class CliTuiSession {
         : { configDirectory: this.#options.profileConfigDir }),
     });
     await registry.use(profileIdSchema.parse(profileId));
-    this.#lock();
+    await this.#lock();
     // Drop any vault override from the previous profile — browse/recovery must
     // not keep sending --vault <foreign-id> after a profile switch.
     this.#vaultId = null;
@@ -859,7 +994,7 @@ class CliTuiSession {
     if (current?.id === id) {
       // Removing the selected profile ends its session: selection cleared on
       // disk, so drop the in-memory unlock material and derived rows too.
-      this.#lock();
+      await this.#lock();
       this.#vaultId = null;
       this.#recoverySlots = [];
       this.#doctorRows = [];
@@ -1430,19 +1565,29 @@ class CliTuiSession {
     }
     const bytes = Buffer.from(passphrase, 'utf8');
     try {
+      await this.#vaultSession.close();
+      const native = await this.#withNativeSession(async (session, vaultId) => {
+        let names: string[] = [];
+        await session.inspectVault(vaultId, (payload) => {
+          names = Object.keys(payload.records).sort();
+        });
+        return { names };
+      }, bytes);
       const current = await this.#currentProfile();
       const auth = await this.#flatAuth([passphrase], current);
-      const names = await this.#runJsonCommand(
-        [
-          'list',
-          ...(await this.#credentialProfileArgs(current)),
-          ...this.#vaultFlagArgs(),
-          ...auth.args,
-          '--json',
-          '--passphrase-stdin',
-        ],
-        auth.frames,
-      );
+      const names = native.supported
+        ? native.value
+        : await this.#runJsonCommand(
+            [
+              'list',
+              ...(await this.#credentialProfileArgs(current)),
+              ...this.#vaultFlagArgs(),
+              ...auth.args,
+              '--json',
+              '--passphrase-stdin',
+            ],
+            auth.frames,
+          );
       const parsed = names as { names?: unknown };
       if (!Array.isArray(parsed.names)) {
         throw new Error('Unexpected list response.');
@@ -1457,7 +1602,7 @@ class CliTuiSession {
       this.#notice = `Unlocked (${String(this.#credentialNames.length)} credentials).`;
       this.#noticeTone = 'success';
     } catch (error) {
-      this.#lock();
+      await this.#lock();
       throw error;
     } finally {
       zeroize(bytes);
@@ -1468,6 +1613,17 @@ class CliTuiSession {
     if (this.#passphrase === null) {
       throw new Error('Unlock the vault before reading credentials.');
     }
+    validateCredentialName(name);
+    const native = await this.#withNativeSession(async (session, vaultId, profile) => {
+      await enforceRevealPolicy(session, profile, name);
+      let value: string | undefined;
+      await session.inspectVault(vaultId, (payload) => {
+        value = payload.records[name]?.value;
+      });
+      if (value === undefined) throw credentialMissing();
+      return value;
+    });
+    if (native.supported) return native.value;
     const passphrase = this.#passphrase.toString('utf8');
     const auth = await this.#credentialAuth([passphrase]);
     const output = await this.#runTextCommand(
@@ -1503,6 +1659,18 @@ class CliTuiSession {
     if (trimmed.length === 0 || value.length === 0) {
       throw new Error('Credential name and value are required.');
     }
+    const native = await this.#withNativeSession(async (session, vaultId) => {
+      await session.updateVault(vaultId, (payload) => {
+        const next = putCredential(payload, trimmed, value, true);
+        this.#credentialNames = Object.keys(next.records).sort();
+        return next;
+      });
+    });
+    if (native.supported) {
+      this.#notice = `Stored credential ${trimmed}.`;
+      this.#noticeTone = 'success';
+      return;
+    }
     const passphrase = this.#passphrase.toString('utf8');
     // Frames contract: `kavrix frames put` → [mongodb-url,] passphrase, value
     const auth = await this.#credentialAuth([passphrase, value]);
@@ -1532,6 +1700,18 @@ class CliTuiSession {
     if (source.length === 0 || target.length === 0) {
       throw new Error('Rename requires from and to names.');
     }
+    const native = await this.#withNativeSession(async (session, vaultId) => {
+      await session.updateVault(vaultId, (payload) => {
+        const next = renameCredential(payload, source, target);
+        this.#credentialNames = Object.keys(next.records).sort();
+        return next;
+      });
+    });
+    if (native.supported) {
+      this.#notice = `Renamed ${source} → ${target}.`;
+      this.#noticeTone = 'success';
+      return;
+    }
     const passphrase = this.#passphrase.toString('utf8');
     // Frames: `kavrix frames rename` → [mongodb-url,] passphrase
     const auth = await this.#credentialAuth([passphrase]);
@@ -1552,6 +1732,18 @@ class CliTuiSession {
     if (trimmed.length === 0) {
       throw new Error('Credential name is required.');
     }
+    const native = await this.#withNativeSession(async (session, vaultId) => {
+      await session.updateVault(vaultId, (payload) => {
+        const next = removeCredential(payload, trimmed);
+        this.#credentialNames = Object.keys(next.records).sort();
+        return next;
+      });
+    });
+    if (native.supported) {
+      this.#notice = `Removed credential ${trimmed}.`;
+      this.#noticeTone = 'success';
+      return;
+    }
     const passphrase = this.#passphrase.toString('utf8');
     // Frames: `kavrix frames remove` → [mongodb-url,] passphrase
     const auth = await this.#credentialAuth([passphrase]);
@@ -1566,6 +1758,12 @@ class CliTuiSession {
 
   async #refreshCredentialList(): Promise<void> {
     if (this.#passphrase === null) return;
+    const native = await this.#withNativeSession(async (session, vaultId) => {
+      await session.inspectVault(vaultId, (payload) => {
+        this.#credentialNames = Object.keys(payload.records).sort();
+      });
+    });
+    if (native.supported) return;
     const passphrase = this.#passphrase.toString('utf8');
     const auth = await this.#credentialAuth([passphrase]);
     const names = await this.#runJsonCommand(
@@ -1711,14 +1909,10 @@ class CliTuiSession {
       args.push('--config', configPath.trim());
     }
     args.push(...(await this.#profileArgs()));
-    let frames: string[] = [];
-    if (this.#passphrase !== null) {
-      const auth = await this.#flatAuth([this.#passphrase.toString('utf8')]);
-      args.push(...auth.args, '--passphrase-stdin');
-      frames = auth.frames;
-    }
+    // Agent dry-run validates project permissions and routing before unlock.
+    // It needs no vault credential or MongoDB connection string.
     try {
-      const raw = await this.#runJsonCommand(args, frames);
+      const raw = await this.#runJsonCommand(args, []);
       this.#agentStatus = `agent dry-run OK: ${JSON.stringify(raw)}`;
       this.#notice = 'Agent dry-run completed.';
       this.#noticeTone = 'success';
@@ -1737,32 +1931,52 @@ class CliTuiSession {
     const passphrase = this.#passphrase.toString('utf8');
     const profileArgs = await this.#profileArgs();
     const auth = await this.#flatAuth([passphrase]);
-    const policyRaw = await this.#runJsonCommand(
-      ['policy', 'list', ...profileArgs, ...auth.args, '--json', '--passphrase-stdin'],
-      auth.frames,
+    this.#policyRows = [];
+    const native = await this.#withNativeSession(async (session, _vaultId, profile) => {
+      const key = session.authorizationStateKey();
+      try {
+        return {
+          version: 1,
+          ...(await AuthorizationState.readSnapshot(profile.keyFile, key, {
+            scopeKind: 'database',
+            scopeId: session.databaseId,
+          })),
+        };
+      } finally {
+        zeroize(key);
+      }
+    });
+    const raw = native.supported
+      ? native.value
+      : await this.#runJsonCommand(
+          [
+            'policy',
+            'snapshot',
+            ...profileArgs,
+            ...auth.args,
+            '--json',
+            '--passphrase-stdin',
+          ],
+          auth.frames,
+        );
+    const parsed = authorizationStateDocumentSchema.safeParse(raw);
+    if (!parsed.success) throw new Error('Unexpected authorization snapshot response.');
+    const snapshot = parsed.data;
+    const atMs = Date.now();
+    this.#policyRows = parsePolicyRows(
+      {
+        policies: Object.entries(snapshot.policies).map(([id, record]) => ({
+          id,
+          ...record.definition,
+        })),
+      },
+      {
+        grants: Object.values(snapshot.grants).map((grant) =>
+          presentGrant({ ...grant, status: grantStatus(grant, atMs) }, atMs),
+        ),
+      },
+      { events: snapshot.audit },
     );
-    const grantRaw = await this.#runJsonCommand(
-      ['grant', 'list', ...profileArgs, ...auth.args, '--json', '--passphrase-stdin'],
-      auth.frames,
-    );
-    let auditRaw: unknown = { events: [] };
-    try {
-      auditRaw = await this.#runJsonCommand(
-        [
-          'audit',
-          '--limit',
-          '10',
-          ...profileArgs,
-          ...auth.args,
-          '--json',
-          '--passphrase-stdin',
-        ],
-        auth.frames,
-      );
-    } catch {
-      // Audit is best-effort when the sidecar is empty or unavailable.
-    }
-    this.#policyRows = parsePolicyRows(policyRaw, grantRaw, auditRaw);
     this.#notice = `Policy snapshot: ${String(this.#policyRows.length)} row(s).`;
     this.#noticeTone = 'success';
   }
@@ -2156,160 +2370,30 @@ class CliTuiSession {
       this.#noticeTone = 'warning';
       return;
     }
-    const passphrase = this.#passphrase.toString('utf8');
-    const profileArgs = await this.#profileArgs();
-    const vaultArgs = this.#vaultFlagArgs();
-    const auth = await this.#flatAuth([passphrase]);
-    const nodes: {
-      id: string;
-      kind: 'context' | 'service' | 'item' | 'field';
-      label: string;
-      detail: string;
-    }[] = [];
-    try {
-      const contextRaw = await this.#runJsonCommand(
-        [
-          'context',
-          'list',
-          ...profileArgs,
-          ...vaultArgs,
-          ...auth.args,
-          '--json',
-          '--passphrase-stdin',
-        ],
-        auth.frames,
-      );
-      const contexts =
-        typeof contextRaw === 'object' &&
-        contextRaw !== null &&
-        Array.isArray((contextRaw as { contexts?: unknown }).contexts)
-          ? (contextRaw as { contexts: unknown[] }).contexts.flatMap((entry) => {
-              if (typeof entry === 'string') return [entry];
-              if (
-                typeof entry === 'object' &&
-                entry !== null &&
-                typeof (entry as { name?: unknown }).name === 'string'
-              ) {
-                return [(entry as { name: string }).name];
-              }
-              return [];
-            })
-          : [];
-      if (contexts.length === 0) {
-        nodes.push({
-          id: 'contexts-empty',
-          kind: 'context',
-          label: '(none)',
-          detail: 'kavrix context list returned no project contexts.',
-        });
-      }
-      for (const contextName of contexts.slice(0, 20)) {
-        nodes.push({
-          id: `context:${contextName}`,
-          kind: 'context',
-          label: contextName,
-          detail: 'project context',
-        });
-        try {
-          const serviceRaw = await this.#runJsonCommand(
-            [
-              'service',
-              'list',
-              '--context',
-              contextName,
-              ...profileArgs,
-              ...vaultArgs,
-              ...auth.args,
-              '--json',
-              '--passphrase-stdin',
-            ],
-            auth.frames,
-          );
-          const services =
-            typeof serviceRaw === 'object' &&
-            serviceRaw !== null &&
-            Array.isArray((serviceRaw as { services?: unknown }).services)
-              ? (serviceRaw as { services: unknown[] }).services.filter(
-                  (entry): entry is string => typeof entry === 'string',
-                )
-              : [];
-          for (const serviceName of services.slice(0, 20)) {
-            nodes.push({
-              id: `service:${contextName}/${serviceName}`,
-              kind: 'service',
-              label: serviceName,
-              detail: `context ${contextName}`,
-            });
-            try {
-              const itemRaw = await this.#runJsonCommand(
-                [
-                  'item',
-                  'list',
-                  '--context',
-                  contextName,
-                  '--service',
-                  serviceName,
-                  ...profileArgs,
-                  ...vaultArgs,
-                  ...auth.args,
-                  '--json',
-                  '--passphrase-stdin',
-                ],
-                auth.frames,
-              );
-              const items =
-                typeof itemRaw === 'object' &&
-                itemRaw !== null &&
-                Array.isArray((itemRaw as { items?: unknown }).items)
-                  ? (itemRaw as { items: unknown[] }).items.filter(
-                      (entry): entry is string => typeof entry === 'string',
-                    )
-                  : [];
-              for (const itemTitle of items.slice(0, 30)) {
-                nodes.push({
-                  id: `item:${contextName}/${serviceName}/${itemTitle}`,
-                  kind: 'item',
-                  label: itemTitle,
-                  detail: `service ${serviceName}`,
-                });
-              }
-            } catch (error) {
-              const detail =
-                error instanceof Error ? error.message : 'item list failed';
-              nodes.push({
-                id: `item-error:${contextName}/${serviceName}`,
-                kind: 'item',
-                label: '(error)',
-                detail,
-              });
-            }
-          }
-        } catch (error) {
-          const detail = error instanceof Error ? error.message : 'service list failed';
-          nodes.push({
-            id: `service-error:${contextName}`,
-            kind: 'service',
-            label: '(error)',
-            detail,
-          });
-        }
-      }
-      this.#browseNodes = nodes;
-      this.#notice = `Browse: ${String(nodes.length)} node(s) from context/service/item list.`;
-      this.#noticeTone = 'success';
-    } catch (error) {
-      const detail = error instanceof Error ? error.message : 'context list failed';
-      this.#browseNodes = [
-        {
-          id: 'error',
-          kind: 'context',
-          label: '(error)',
-          detail,
-        },
-      ];
-      this.#notice = `Browse: ${detail}`;
-      this.#noticeTone = 'error';
-    }
+    const auth = await this.#credentialAuth([this.#passphrase.toString('utf8')]);
+    // The child authenticates once and emits only bounded hierarchy metadata.
+    // Never fan out a subprocess (and Argon2 derivation) for every tree node.
+    this.#browseNodes = [];
+    const native = await this.#withNativeSession(async (session, vaultId) => {
+      let tree: ReturnType<typeof projectVaultBrowse> | undefined;
+      const document = await session.inspectStructuredVault(vaultId, (payload) => {
+        tree = projectVaultBrowse(payload);
+      });
+      return { ...tree, revision: document.revision };
+    });
+    const raw = native.supported
+      ? native.value
+      : await this.#runJsonCommand(
+          ['context', 'list', '--tree', ...auth.args, '--json', '--passphrase-stdin'],
+          auth.frames,
+        );
+    const result = vaultBrowseSnapshotSchema.safeParse(raw);
+    if (!result.success) throw new Error('Unexpected browse response.');
+    this.#browseNodes = result.data.nodes;
+    this.#notice = result.data.truncated
+      ? `Browse: ${String(result.data.nodes.length)} nodes. Preview limited to 20 contexts, 20 services per context, and 30 items per service; use CLI lists for the full hierarchy.`
+      : `Browse: ${String(result.data.nodes.length)} node(s) from one authenticated snapshot.`;
+    this.#noticeTone = result.data.truncated ? 'warning' : 'success';
   }
 
   async #currentProfile(): Promise<DatastoreProfile | null> {
@@ -2323,13 +2407,23 @@ class CliTuiSession {
     );
   }
 
-  #lock(): void {
+  async #lock(): Promise<void> {
+    if (this.#lifetimeTimer !== undefined) clearTimeout(this.#lifetimeTimer);
+    this.#lifetimeTimer = undefined;
+    this.#unlockedAt = undefined;
     if (this.#passphrase !== null) {
       zeroize(this.#passphrase);
       this.#passphrase = null;
     }
     this.#credentialNames = [];
     this.#clearDatabaseUrl();
+    this.#policyRows = [];
+    this.#browseNodes = [];
+    this.#doctorRows = [];
+    this.#recoverySlots = [];
+    this.#runPreview = null;
+    this.#agentStatus = null;
+    await this.#vaultSession.close();
   }
 
   #setDatabaseUrl(url: string): void {
@@ -2467,6 +2561,7 @@ class CliTuiSession {
     args: readonly string[],
     frames: readonly string[],
   ): Promise<string> {
+    await this.#vaultSession.close();
     if (this.#options.commandRunner !== undefined) {
       return this.#options.commandRunner(args, frames);
     }
@@ -2916,5 +3011,6 @@ export async function runInteractiveTui(
     await handle.waitUntilExit();
   } finally {
     handle.unmount();
+    await backend.dispose();
   }
 }

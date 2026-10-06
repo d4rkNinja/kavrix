@@ -2,10 +2,11 @@
 
 ## Active workspace
 
-The supported build contains these seven workspaces:
+The supported build contains these eight workspaces:
 
 - `apps/cli` (`kavrix`)
 - `packages/schemas` (`@kavrix/schemas`)
+- `packages/core` (`@kavrix/core`)
 - `packages/crypto` (`@kavrix/crypto`)
 - `packages/key-files` (`@kavrix/key-files`)
 - `packages/storage` (`@kavrix/storage`)
@@ -14,7 +15,7 @@ The supported build contains these seven workspaces:
 
 The CLI composes those packages; schemas remain the canonical contract and do
 not depend on consumers. The source directories for `client`, `clipboard`,
-`import-export`, `keychain`, `local-store`, and `sync` are parked/incubating.
+`import-export`, `keychain`, `local-store`, and `sync` are retired and pending removal.
 They are not workspace members, release artifacts, or evidence for the shipped
 CLI.
 
@@ -22,7 +23,7 @@ CLI.
 
 The public artifact is the `kavrix` CLI. Its build bundles the reviewed CLI,
 schema, cryptography, runner, and presentation code required by the executable;
-the lazily loaded Ink/React showcase is part of that reviewed closure. MongoDB
+the lazily loaded Ink/React TUI is part of that reviewed closure. MongoDB
 `7.5.0` remains the explicit runtime dependency for direct database connections.
 No workspace protocol, local path, optional package, or unreviewed runtime
 import may reach the published `dist` output.

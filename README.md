@@ -47,6 +47,12 @@ kavrix tui    # full interactive app against the real CLI
 Use `kavrix init --no-tui` for classic line prompts, or stdin/explicit routing
 for scripts. Bare `kavrix` on a non-interactive stream keeps printing help.
 
+The TUI reuses authenticated keys for common database actions, releases storage
+between actions, and locks after two idle minutes or fifteen minutes since
+unlock. Browse and Policy/Grant/Audit each load one snapshot. Agent brokers run
+up to four requests concurrently, with bounded admission and isolated child I/O.
+See [0.2.41 behavior and limits](docs/release-notes-0.2.41.md).
+
 ## Run tools without pasting secrets
 
 ```sh

@@ -29,6 +29,7 @@ Run from the repository root:
 ```sh
 pnpm install --frozen-lockfile
 pnpm verify
+pnpm test:coverage
 pnpm --filter kavrix package:smoke
 pnpm acceptance:pre-ci
 pnpm acceptance:database-container

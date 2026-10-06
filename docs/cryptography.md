@@ -15,6 +15,13 @@ passphrase, DRK, VRK, private label, or plaintext credential value.
 
 ## Primitive suite
 
+The TUI may reuse authenticated keys for common database actions, bounded by a
+two-minute idle and fifteen-minute absolute lifetime. It reopens storage and
+authenticates current state and the rollback anchor per operation, rather than
+repeating Argon2id. Key-file bytes and permissions are checked on reuse. Keys are
+cleared on expiry, failure, profile change, and exit. These lifecycle changes do
+not alter Argon2id parameters, algorithms, key derivation, or envelope formats.
+
 - Secret keys are generated from the operating system CSPRNG.
 - Vault payloads and wrapped key material use libsodium
   XChaCha20-Poly1305-IETF authenticated encryption with a fresh 24-byte nonce.

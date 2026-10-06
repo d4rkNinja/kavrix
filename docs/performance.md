@@ -79,7 +79,7 @@ latency, throughput, or startup claims.
 
 The credential execution features add the following costs and behaviors:
 
-- **Unlock dominates.** Every vault-touching command pays one Argon2id
+- **Unlock dominates.** Every separate vault-touching CLI invocation pays one Argon2id
   derivation; its parameters are part of the key-slot format and are
   deliberately expensive.
 - **Policy evaluation is in-memory** — command allowlists, executable pins,
@@ -89,15 +89,49 @@ The credential execution features add the following costs and behaviors:
 - **Sealed-state mutations rewrite one small document** under an exclusive
   lock: size stays bounded (audit ring capped at 512 events; policy and grant
   counts capped by schema), so writes remain compact.
-- **Executable resolution hashes the target binary** (bounded at 512 MB) when
-  a policy pins SHA-256 digests; unpinned policies skip hashing entirely.
+- **Executable resolution hashes the target binary** (bounded at 512 MB),
+  providing the digest used by executable-pin policy evaluation.
 - **`kavrix run` pays one unlock per invocation.** For scripted loops, wrap
   many operations in a single invocation; the agent broker amortizes unlock
-  across a whole session — secrets decrypt once per session and each request
-  costs only a local socket round trip plus policy evaluation.
+  across a whole session. Each request still pays executable resolution/hash,
+  policy evaluation, child startup, and sealed audit I/O. Up to four requests
+  execute concurrently, with 32 queued requests and a ten-second queue deadline.
+  Confirmation prompts and audit writes remain serialized. Stdout and stderr
+  drain concurrently to avoid pipe deadlocks.
 - **Remote MongoDB deployments** add one network round trip per CAS operation
   plus transaction overhead (a replica set is required); the transport opt-in
   (`--allow-insecure-transport`) does not change message volume.
+
+## TUI browse and startup
+
+Browse refresh uses `context list --tree --json` to project bounded hierarchy
+metadata from one authenticated vault read. The former nested listing loop could
+start 1 context command + 20 service commands + 400 item commands, each paying
+process startup and unlock costs. The current TUI uses a reusable session with
+zero child processes for this read; the standalone tree command authenticates
+once. Context, service, and item indexes are built in a single pass;
+field values, notes, attachments, and history are excluded from the response.
+The canonical response schema rejects unexpected properties and malformed data.
+Preview limits remain 20 contexts, 20 services per context, and 30 active items
+per service, with an explicit truncation warning.
+
+The startup splash no longer waits a minimum 1,200 ms after backend readiness.
+Agent dry-run sends no unlock input because its implementation validates project
+permissions and profile routing before opening a vault. These are operation-count
+and scheduling improvements, not measured end-to-end latency claims. Argon2id
+parameters, protected-file validation, and execution authorization are unchanged.
+
+Bound database TUI profiles reuse unlocked keys for credential CRUD, copy/reveal,
+Browse, and authorization refresh. File/MongoDB storage is opened and closed per
+operation. Reuse still reads the protected key file, authenticates current database
+and vault documents, and checks the rollback anchor; large vault authentication
+and MongoDB connection setup can therefore remain significant costs. Two-minute
+idle and fifteen-minute absolute deadlines bound key retention. Administrative
+subprocess actions drop reusable keys and the next common action unlocks afresh.
+
+Policy/Grant/Audit refresh reads one sealed-state snapshot, replacing three
+independent CLI unlocks and sidecar reads. `policy snapshot --json` exposes the
+same metadata contract to scripts without decrypting credential vault payloads.
 
 ## Guidance
 

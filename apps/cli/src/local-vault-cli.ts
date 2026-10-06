@@ -1,3 +1,9 @@
+import { validateCredentialName } from './credential-name.js';
+import {
+  putCredential,
+  renameCredential,
+  removeCredential,
+} from './credential-mutations.js';
 import {
   ANSI_BOLD,
   ANSI_BOLD_CYAN,
@@ -15,7 +21,6 @@ import {
   MONGO_COLLECTION_NAME_PATTERN,
   MONGO_DATABASE_NAME_PATTERN,
   REDACTED,
-  RESERVED_CREDENTIAL_NAMES,
   RESERVED_VAULT_IDENTIFIERS,
   getOptions,
   type DatastoreProfileCommandOptions,
@@ -1493,15 +1498,9 @@ export async function handlePut(name: string, options: LocalCliOptions): Promise
     const values = await readDatabaseFlatSecrets(options, [valueKind]);
     const value = requiredSecret(values.extras, 0);
     await withDatabaseFlatVault(options, values, async (session, vaultId) => {
-      const updated = await session.updateVault(vaultId, (payload) => {
-        if (Object.hasOwn(payload.records, name) && options.overwrite !== true) {
-          throw new LocalCliError(
-            'Credential already exists. Re-run with --overwrite to replace it.',
-          );
-        }
-        payload.records[name] = { value, updatedAt: now() };
-        return payload;
-      });
+      const updated = await session.updateVault(vaultId, (payload) =>
+        putCredential(payload, name, value, options.overwrite === true),
+      );
       writeJson({ saved: true, name, revision: updated.revision });
     });
     return;
@@ -1909,14 +1908,9 @@ export async function handleRemove(
   if (await usesDatabaseContainer(options)) {
     const values = await readDatabaseFlatSecrets(options, []);
     await withDatabaseFlatVault(options, values, async (session, vaultId) => {
-      const updated = await session.updateVault(vaultId, (payload) => {
-        if (payload.records[name] === undefined) throw credentialMissing();
-        return localVaultPayloadSchema.parse({
-          records: Object.fromEntries(
-            Object.entries(payload.records).filter(([key]) => key !== name),
-          ),
-        });
-      });
+      const updated = await session.updateVault(vaultId, (payload) =>
+        removeCredential(payload, name),
+      );
       writeJson({ removed: true, name, revision: updated.revision });
     });
     return;
@@ -2004,19 +1998,9 @@ export async function handleRename(
   if (await usesDatabaseContainer(options)) {
     const values = await readDatabaseFlatSecrets(options, []);
     await withDatabaseFlatVault(options, values, async (session, vaultId) => {
-      const updated = await session.updateVault(vaultId, (payload) => {
-        const source = payload.records[from];
-        if (source === undefined) throw credentialMissing();
-        if (Object.hasOwn(payload.records, to))
-          throw new LocalCliError('The destination credential already exists.');
-        return localVaultPayloadSchema.parse({
-          records: Object.fromEntries(
-            Object.entries(payload.records).flatMap(([key, record]) =>
-              key === from ? [[to, record]] : [[key, record]],
-            ),
-          ),
-        });
-      });
+      const updated = await session.updateVault(vaultId, (payload) =>
+        renameCredential(payload, from, to),
+      );
       writeJson({ renamed: true, from, to, revision: updated.revision });
     });
     return;
@@ -3514,37 +3498,6 @@ function encodePayload(payload: LocalVaultPayload): Uint8Array {
     throw new LocalCliError('Vault payload exceeds the 4 MiB safety limit.');
   }
   return encoded;
-}
-
-function validateCredentialName(name: string): void {
-  if (RESERVED_CREDENTIAL_NAMES.has(name)) {
-    throw new LocalCliError('That credential name is reserved.');
-  }
-  // Names become record keys and terminal output; ambiguous or hostile
-  // spellings are refused rather than silently accepted.
-  if (
-    name.length === 0 ||
-    name.length > 256 ||
-    // Control characters cannot appear in safe credential names.
-    // eslint-disable-next-line no-control-regex
-    /[\u0000-\u001f\u007f]/u.test(name) ||
-    /\s/u.test(name)
-  ) {
-    throw new LocalCliError(
-      'Credential names must be 1-256 characters without whitespace or control characters.',
-    );
-  }
-  if (
-    name.startsWith('/') ||
-    name.endsWith('/') ||
-    name.includes('//') ||
-    name === '.' ||
-    name === '..'
-  ) {
-    throw new LocalCliError(
-      'Credential names must not start or end with "/", contain "//", or be a dot segment.',
-    );
-  }
 }
 
 /**

@@ -154,7 +154,8 @@ describe('public command help contract', () => {
     // 0.2.24: + session, session enable, session status, session revoke.
     // 0.2.28: + backup, backup create, backup verify, backup restore.
     // 0.2.29: + import, import env.
-    expect(routes.canonical).toHaveLength(115);
+    // 0.2.41: + policy snapshot (one authenticated policy/grant/audit read).
+    expect(routes.canonical).toHaveLength(116);
     expect(routes.aliases).toHaveLength(17);
 
     for (const route of [...routes.canonical, ...routes.aliases]) {

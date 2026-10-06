@@ -191,6 +191,7 @@ export type AppBackendResult = Readonly<{
  * touches secrets except through this port.
  */
 export interface InteractiveAppBackend {
+  subscribe?(listener: (snapshot: AppSnapshot) => void): () => void;
   load(): Promise<AppSnapshot>;
   dispatch(
     action: AppBackendAction,

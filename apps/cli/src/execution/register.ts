@@ -92,6 +92,18 @@ function registerPolicy(program: Command): void {
     .command('policy')
     .description('Manage stored credential permission policies.');
 
+  const snapshot = policy
+    .command('snapshot')
+    .description(
+      'Read policies, grants, and audit from one authenticated state snapshot.',
+    )
+    .option('--json', 'Emit machine-readable output.');
+  addExecutionRoutingOptions(snapshot);
+  snapshot.action(async (...args: unknown[]) => {
+    const impl = await import('./commands.js');
+    await impl.executePolicySnapshotAction(args);
+  });
+
   const create = addPolicyDefinitionOptions(
     policy
       .command('create <id>')

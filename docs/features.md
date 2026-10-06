@@ -140,6 +140,13 @@ switch between five color themes (Gold, Ocean, Magma, Forest, Violet) with
 a live preview — your choice is saved, or set it per launch with
 `kavrix tui --theme`.
 
+Common database TUI actions reuse authenticated keys, with fresh protected-file,
+datastore, and rollback-anchor checks per operation. Storage closes between
+actions. Two idle minutes or fifteen minutes since unlock locks the TUI; navigation
+alone does not renew it. Browse and policy/grant/audit views load one snapshot
+each. Agent brokers can execute up to four requests concurrently; confirmations
+and audit writes remain serialized.
+
 ## Housekeeping
 
 - `kavrix status` shows the resolved routing; `kavrix frames <command>`

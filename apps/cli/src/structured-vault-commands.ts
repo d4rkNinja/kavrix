@@ -56,6 +56,7 @@ function registerContextCommands(program: Command): void {
     });
   const list = context.command('list').description('List project contexts.');
   addDatabaseOptions(list)
+    .option('--tree', 'Include bounded service and item metadata in one snapshot.')
     .option('--json', 'Emit machine-readable output.')
     .action(async (...args: unknown[]) => {
       const impl = await import('./structured-vault-impl.js');

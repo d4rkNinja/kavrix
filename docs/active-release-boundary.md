@@ -14,9 +14,8 @@ workspace packages it needs to build and test that package:
 
 The source trees for `packages/client`, `packages/clipboard`,
 `packages/import-export`, `packages/keychain`, `packages/local-store`, and
-`packages/sync` are parked/incubating.
-They remain available for future work, but are deliberately absent from
-`pnpm-workspace.yaml`. They are not release packages, are not built by the
+`packages/sync` are retired and pending removal.
+They are absent from `pnpm-workspace.yaml`. They are not release packages, are not built by the
 active workspace gates, and must not be described as shipped or verified.
 
 ## Active verification commands
@@ -33,10 +32,8 @@ pnpm typecheck
 ```
 
 The root Vitest configuration includes the active CLI, core, schema, crypto,
-key-file, runner, storage, and TUI tests. It also executes the focused
-collaboration tests in the parked client source as an incubation gate; that
-does not make `@kavrix/client` a workspace or public release artifact. In
-particular, the portable-key and
+key-file, runner, storage, and TUI tests. Retired package directories are not
+included as live workspace verification targets. In particular, the portable-key and
 revision-anchor
 suites are part of the active security gate. Coverage is collected only from
 the eight active source trees and uses the configured thresholds.

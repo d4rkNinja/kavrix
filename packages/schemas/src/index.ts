@@ -25,3 +25,4 @@ export * from './templates.js';
 export * from './transfer.js';
 export * from './structured-vault.js';
 export * from './setup-tools.js';
+export * from './vault-browse.js';

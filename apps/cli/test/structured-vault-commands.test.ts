@@ -15,6 +15,7 @@ import {
   structuredVaultPayloadSchema,
   timestampSchema,
   vaultIdSchema,
+  vaultBrowseSnapshotSchema,
 } from '@kavrix/schemas';
 
 import { registerStructuredVaultCommands } from '../src/structured-vault-commands.js';
@@ -26,6 +27,7 @@ import {
   displayStructuredFieldValue,
   encodeStructuredFieldValueBase64,
   projectStructuredField,
+  projectVaultBrowse,
   redactStructuredFieldValue,
   removeProjectContext,
   removeStructuredField,
@@ -131,6 +133,75 @@ function envelope(
 }
 
 describe('structured vault command model', () => {
+  it('projects bounded hierarchy metadata without values, deleted items, or terminal escapes', () => {
+    const payload = fieldPayload();
+    const result = projectVaultBrowse({
+      ...payload,
+      projectContexts: payload.projectContexts.map((entry) => ({
+        ...entry,
+        name: `${entry.name}\u001b[31m`,
+      })),
+      items: payload.items.map((entry) => ({
+        ...entry,
+        title: `${entry.title}\u001b[31m`,
+      })),
+    });
+    expect(result.truncated).toBe(false);
+    expect(result.nodes.map((node) => node.kind)).toEqual([
+      'context',
+      'service',
+      'context',
+      'service',
+      'item',
+    ]);
+    const serialized = JSON.stringify(result);
+    expect(serialized).not.toContain('correct horse battery staple');
+    expect(serialized).not.toContain('key-value');
+    expect(serialized).not.toContain('itemValues');
+    expect(serialized).not.toContain('\\u001b');
+    expect(
+      vaultBrowseSnapshotSchema.safeParse({ ...result, revision: 0 }).success,
+    ).toBe(true);
+    expect(
+      vaultBrowseSnapshotSchema.safeParse({
+        ...result,
+        revision: 0,
+        value: 'forbidden',
+      }).success,
+    ).toBe(false);
+    expect(
+      projectVaultBrowse({
+        ...payload,
+        items: payload.items.map((entry) => ({ ...entry, deletedAt: at })),
+      }).nodes.some((node) => node.kind === 'item'),
+    ).toBe(false);
+  });
+
+  it('reports truncation for each hierarchy limit', () => {
+    const payload = projectPayload();
+    const context = payload.projectContexts[1]!;
+    const group = payload.groups[1]!;
+    const item = payload.items[0]!;
+    const contexts = projectVaultBrowse({
+      ...payload,
+      projectContexts: Array.from({ length: 21 }, () => context),
+    });
+    expect(contexts.truncated).toBe(true);
+    expect(contexts.nodes.filter((node) => node.kind === 'context')).toHaveLength(20);
+    const services = projectVaultBrowse({
+      ...payload,
+      groups: Array.from({ length: 21 }, () => group),
+    });
+    expect(services.truncated).toBe(true);
+    expect(services.nodes.filter((node) => node.kind === 'service')).toHaveLength(20);
+    const items = projectVaultBrowse({
+      ...payload,
+      items: Array.from({ length: 31 }, () => item),
+    });
+    expect(items.truncated).toBe(true);
+    expect(items.nodes.filter((node) => node.kind === 'item')).toHaveLength(30);
+  });
+
   it('documents every structured protected-input frame contract', () => {
     for (const command of [
       'context create',
@@ -874,6 +945,15 @@ describe('structured vault command model', () => {
         expect.objectContaining({ name: 'no-environment' }),
       ]),
     });
+    const inspectCount = session.inspectStructuredVault.mock.calls.length;
+    await expect(execute('context', 'list', '--tree')).resolves.toMatchObject({
+      nodes: expect.arrayContaining([
+        expect.objectContaining({ kind: 'context', label: 'project' }),
+      ]),
+      truncated: false,
+      revision,
+    });
+    expect(session.inspectStructuredVault).toHaveBeenCalledTimes(inspectCount + 1);
     await expect(execute('context', 'remove', 'no-environment')).resolves.toMatchObject(
       { removed: true, type: 'context' },
     );

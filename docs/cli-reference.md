@@ -188,6 +188,13 @@ passphrases, private labels, keys, database credentials, or credential values.
 
 ### Structured project credentials
 
+`kavrix context list --tree --json` returns one authenticated, bounded hierarchy
+snapshot containing context/service/item metadata and its vault revision. It
+excludes field values and deleted items. `truncated: true` means the preview
+exceeded 20 contexts, 20 services per context, or 30 items per service; use the
+individual list commands for the full hierarchy. The same protected routing and
+stdin options as `context list` apply.
+
 Structured commands require a database-container profile and either its stored
 default vault or an explicit `--vault` override. They resolve names exactly and
 fail on missing or ambiguous parents:
@@ -471,6 +478,12 @@ temporary files are written. The child can always read its own environment.
 This is process scoping, not a sandbox.
 
 ## 10. Policies and temporary grants
+
+`kavrix policy snapshot --json` reads the complete bounded policy/grant/audit
+document from one authenticated sidecar snapshot. It emits the canonical
+`version`, `policies`, `grants`, and `audit` fields without credential values,
+does not create a missing sidecar, and does not decrypt credential vault payloads.
+It uses the same protected routing and stdin inputs as `policy list`.
 
 Stored policies live in a sealed sidecar beside the owner key, authenticated
 with a key derived from the database root key and a monotonic sequence.

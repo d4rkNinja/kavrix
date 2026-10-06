@@ -70,6 +70,7 @@ export const STDIN_FRAME_CONTRACTS: Readonly<Record<string, string>> = Object.fr
   'policy diff': '[mongodb-url,] passphrase',
   'policy suggest': '[mongodb-url,] passphrase',
   'policy list': '[mongodb-url,] passphrase',
+  'policy snapshot': '[mongodb-url,] passphrase',
   'policy show': '[mongodb-url,] passphrase',
   'policy remove': '[mongodb-url,] passphrase',
   grant: '[mongodb-url,] passphrase',

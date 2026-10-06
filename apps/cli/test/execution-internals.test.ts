@@ -782,7 +782,7 @@ describe('in-process broker and client round trip', () => {
     state.close();
   }, 240_000);
 
-  it('serializes concurrent authorized broker requests without interleaving', async () => {
+  it('honors a single execution slot without interleaving', async () => {
     const directory = await createSecureTestDirectory(
       join(tmpdir(), 'kavrix-broker-serialize-'),
     );
@@ -813,6 +813,7 @@ describe('in-process broker and client round trip', () => {
     // verification. Busy-limit behavior has its own explicit short-budget test.
     const broker = await startAgentBrokerForTest(session, {
       queueWaitTimeoutMs: 60_000,
+      maxConcurrentRequests: 1,
     });
     const order: string[] = [];
     try {
@@ -841,6 +842,87 @@ describe('in-process broker and client round trip', () => {
       state.close();
     }
   }, 240_000);
+
+  it('finishes a fast request while another child is waiting, with isolated output and audits', async () => {
+    const directory = await createSecureTestDirectory(
+      join(tmpdir(), 'kavrix-broker-concurrent-'),
+    );
+    directories.push(directory);
+    const scope = { scopeKind: 'database' as const, scopeId: 'db_broker_concurrent' };
+    const key = deriveAuthorizationStateKey(new Uint8Array(32).fill(21), scope);
+    const state = await AuthorizationState.open(
+      join(directory, 'owner.key'),
+      key,
+      scope,
+    );
+    key.fill(0);
+    const token = randomUUID().replaceAll('-', '') + randomUUID().replaceAll('-', '');
+    const session = {
+      token,
+      permissions: {
+        gh: permissionEntrySchema.parse({
+          secret: 'x/y',
+          commands: ['node'],
+          env: 'CONCURRENT_TOKEN',
+        }),
+      },
+      secrets: new Map([['x/y', 'concurrency-canary']]),
+      state,
+      platform: process.platform,
+      counters: { allowed: 0, denied: 0 },
+      queue: Promise.resolve(),
+    };
+    const broker = await startAgentBrokerForTest(session);
+    let first: RawBrokerClient | undefined;
+    try {
+      first = await openRawBrokerRequest(
+        broker.endpoint,
+        execBrokerRequest(
+          token,
+          "process.stdout.write('FIRST_ONLY'); process.stdin.on('end', () => process.exit(0)); process.stdin.resume();",
+        ),
+      );
+      await first.waitForFrame((frame) => frame.event === 'stdout');
+      const second = await openRawBrokerRequest(
+        broker.endpoint,
+        execBrokerRequest(
+          token,
+          "process.stderr.write('E'.repeat(512 * 1024)); process.stdout.write('FAST_ONLY');",
+        ),
+      );
+      const secondFrames = await second.done;
+      expect(secondFrames).toContainEqual({
+        v: 1,
+        event: 'exit',
+        exitCode: 0,
+        signal: null,
+      });
+      expect(first.frames.some((frame) => frame.event === 'exit')).toBe(false);
+      const output = (frames: readonly AgentBrokerServerFrame[]) =>
+        frames
+          .filter((frame) => frame.event === 'stdout' || frame.event === 'stderr')
+          .map((frame) => Buffer.from(frame.data, 'base64').toString('utf8'))
+          .join('');
+      expect(output(secondFrames).match(/E/g)).toHaveLength(512 * 1024);
+      expect(output(secondFrames)).toContain('FAST_ONLY');
+      expect(output(secondFrames)).not.toContain('FIRST_ONLY');
+      first.sendFrames([{ v: 1, event: 'close-stdin' }]);
+      const firstFrames = await first.done;
+      expect(output(firstFrames)).toBe('FIRST_ONLY');
+      await session.queue;
+      const audit = await state.read();
+      expect(
+        audit.audit.filter((event) => event.action === 'execution-completed'),
+      ).toHaveLength(2);
+      expect(JSON.stringify(audit)).not.toContain('concurrency-canary');
+      expect(session.counters).toEqual({ allowed: 2, denied: 0 });
+    } finally {
+      first?.sendFrames([{ v: 1, event: 'close-stdin' }]);
+      await first?.done;
+      await broker.cleanup();
+      state.close();
+    }
+  });
 
   it('maps an environment collision to an exit-only child-start failure', async () => {
     const directory = await createSecureTestDirectory(
@@ -1033,6 +1115,7 @@ describe('in-process broker and client round trip', () => {
     };
     const broker = await startAgentBrokerForTest(session, {
       queueWaitTimeoutMs: 120,
+      maxConcurrentRequests: 1,
       maxQueuedRequests: 1,
       maxPendingAuditOperations: 2,
       hardTeardownGraceMs: 25,

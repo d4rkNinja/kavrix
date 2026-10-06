@@ -21,6 +21,18 @@ import {
 } from '@kavrix/schemas';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+const renameEffects = vi.hoisted(() => ({
+  rename: vi.fn<typeof import('node:fs/promises').rename>(),
+  original: undefined as typeof import('node:fs/promises').rename | undefined,
+}));
+
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>();
+  renameEffects.original = actual.rename;
+  renameEffects.rename.mockImplementation(actual.rename);
+  return { ...actual, rename: renameEffects.rename };
+});
+
 const aclMocks = vi.hoisted(() => ({
   set: vi.fn<(path: string) => Promise<void>>(() => Promise.resolve()),
   verifyDirectory: vi.fn<(path: string) => Promise<void>>(() => Promise.resolve()),
@@ -46,6 +58,9 @@ const timestamp = '2026-08-19T00:00:00.000Z';
 
 afterEach(async () => {
   vi.clearAllMocks();
+  renameEffects.rename.mockReset();
+  if (renameEffects.original)
+    renameEffects.rename.mockImplementation(renameEffects.original);
   const directories = temporaryDirectories.splice(0);
   for (const directory of directories) {
     await rm(directory, { force: true, recursive: true });
@@ -128,6 +143,92 @@ describe('FileLocalVaultStore', () => {
     });
 
     await store.close();
+  });
+
+  it('retries transient Windows replacement denial without losing the prior revision', async () => {
+    const descriptor = Object.getOwnPropertyDescriptor(process, 'platform');
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+    const store = await FileLocalVaultStore.open(await targetPath());
+    try {
+      await store.create(document());
+      renameEffects.rename.mockRejectedValueOnce(
+        Object.assign(new Error('denied'), { code: 'EPERM' }),
+      );
+      await store.update(document(1), revision(0));
+      expect(renameEffects.rename).toHaveBeenCalledTimes(2);
+      expect(await store.get('vault.one')).toEqual(document(1));
+    } finally {
+      await store.close();
+      if (descriptor) Object.defineProperty(process, 'platform', descriptor);
+    }
+  });
+
+  it('fails closed when the target is replaced between Windows rename attempts', async () => {
+    const descriptor = Object.getOwnPropertyDescriptor(process, 'platform');
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+    const target = await targetPath();
+    const store = await FileLocalVaultStore.open(target);
+    try {
+      await store.create(document());
+      renameEffects.rename.mockImplementationOnce(async () => {
+        await rm(target);
+        await writeRestricted(target, 'substituted');
+        throw Object.assign(new Error('denied'), { code: 'EPERM' });
+      });
+      await expect(store.update(document(1), revision(0))).rejects.toMatchObject({
+        code: 'invalid',
+      });
+      expect(renameEffects.rename).toHaveBeenCalledTimes(1);
+      expect(await readFile(target, 'utf8')).toBe('substituted');
+      expect(
+        (await readdir(dirname(target))).filter((name) => name.endsWith('.tmp')),
+      ).toEqual([]);
+    } finally {
+      await store.close();
+      if (descriptor) Object.defineProperty(process, 'platform', descriptor);
+    }
+  });
+
+  it('bounds persistent Windows replacement denial and preserves the committed ciphertext', async () => {
+    const descriptor = Object.getOwnPropertyDescriptor(process, 'platform');
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+    const target = await targetPath();
+    const store = await FileLocalVaultStore.open(target);
+    try {
+      await store.create(document());
+      const before = await readFile(target);
+      renameEffects.rename.mockRejectedValue(
+        Object.assign(new Error('denied'), { code: 'EPERM' }),
+      );
+      await expect(store.update(document(1), revision(0))).rejects.toMatchObject({
+        code: 'operation',
+      });
+      expect(renameEffects.rename).toHaveBeenCalledTimes(16);
+      expect(await readFile(target)).toEqual(before);
+      expect(
+        (await readdir(dirname(target))).filter((name) => name.endsWith('.tmp')),
+      ).toEqual([]);
+    } finally {
+      await store.close();
+      if (descriptor) Object.defineProperty(process, 'platform', descriptor);
+    }
+  });
+
+  it('does not retry permanent replacement errors', async () => {
+    const store = await FileLocalVaultStore.open(await targetPath());
+    try {
+      await store.create(document());
+      renameEffects.rename.mockRejectedValueOnce(
+        Object.assign(new Error('denied'), { code: 'EACCES' }),
+      );
+      await expect(store.update(document(1), revision(0))).rejects.toMatchObject({
+        code: 'operation',
+      });
+      expect(renameEffects.rename).toHaveBeenCalledTimes(1);
+      expect(await store.get('vault.one')).toEqual(document());
+    } finally {
+      await store.close();
+    }
   });
 
   it('creates, canonically reads, revision-CAS updates, and revision-CAS deletes', async () => {
