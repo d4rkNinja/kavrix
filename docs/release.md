@@ -63,7 +63,7 @@ release SHA, then tag.
 The release workflow independently requires those exact-SHA checks. It will not
 publish a tag whose commit has failing or missing CI/CodeQL evidence.
 
-## Automatic publication
+## Trusted publication
 
 Create and push a tag that exactly matches the package version:
 
@@ -84,6 +84,45 @@ A `v*` tag starts `.github/workflows/publish.yml`. The workflow:
 8. creates the GitHub release only after npm confirms the version.
 
 Stable versions publish to `latest`; `-beta.N` versions publish to `beta`.
+
+An accepted upload is not proof of public availability. npm can return success
+while a version is still processing or staged. The workflow requires registry
+visibility and matching archive integrity before creating a GitHub release;
+its bounded visibility check can fail while npm still holds the accepted upload.
+
+## Processing and staged versions
+
+If npm reports `Cannot publish over previously staged version`, preserve the
+version, tag, and original validated archive. Do not delete the stage, move the
+tag, change the package bytes, or switch to token-based workstation publishing.
+
+A maintainer can inspect the package's staged entry on npmjs.com, or use an
+authenticated npm CLI (11.15.0 or newer):
+
+```sh
+npm stage list kavrix
+npm stage view <stage-id>
+```
+
+The private entry distinguishes scanning from a version ready for approval. If
+approval is required, a maintainer must complete npm's interactive 2FA flow. The
+approval control may be unavailable until scanning finishes. OIDC cannot list,
+view, or approve stages; it does not replace that proof of presence. Keep OTPs
+and tokens out of chat, logs, and command arguments, and use npm's interactive
+website for approval. See [staged publishing](https://docs.npmjs.com/staged-publishing/)
+and [trusted publisher permissions](https://docs.npmjs.com/trusted-publishers/).
+
+After approval or processing finishes, verify the public version and SHA-512
+integrity against the retained archive, then retry the failed publication and
+dependent release jobs. Successful archive validation is retained:
+
+```sh
+gh run rerun <run-id> --repo d4rkNinja/kavrix --failed
+```
+
+Verify npm's version/dist-tag and the resulting GitHub release before claiming
+the release is available. A staged upload, signed provenance, and a pushed tag
+are individually insufficient.
 
 ## Safe retry
 

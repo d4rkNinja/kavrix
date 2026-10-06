@@ -63,3 +63,24 @@ publication, registry-integrity reconciliation, and GitHub release verification
 are required before publication is claimed. See [release notes](release-notes-0.2.41.md)
 and the [canonical release procedure](release.md). Operation counts are proven by
 tests; no measured end-to-end latency improvement is claimed.
+
+## 0.2.41 release checkpoint
+
+The release tag `v0.2.41` points to
+`c60aa21b39eda15943664688356732dba222451c`. Its [21 CI jobs](https://github.com/d4rkNinja/kavrix/actions/runs/37542798208)
+and [CodeQL analysis](https://github.com/d4rkNinja/kavrix/actions/runs/37542798145)
+passed. The [publishing run](https://github.com/d4rkNinja/kavrix/actions/runs/37545556440)
+validated the archive and npm accepted the first upload with signed provenance.
+
+As checked on 2026-10-06 at 23:33 UTC, 0.2.41 was not public and npm's second
+attempt reported a previously staged version. The private stage inspection
+required npm authentication; the local session returned `E401`. Public
+availability, registry-integrity reconciliation, and GitHub release creation
+remain pending until npm finishes processing or a maintainer completes any
+required staged approval. This checkpoint does not claim a completed release.
+Follow the [processing/staged-version procedure](release.md#processing-and-staged-versions).
+
+The retained archive's SHA-256 is
+`b30bf2bb688f8d67b9976b75b76451fff0d4c69f0094e95edd229b949c4e735b`;
+its expected npm integrity is
+`sha512-bRDgH8fARRLfbcLepJNOCxa8ywpJ2Ja1K7w+y9TPWPtMqdbwbawROM2AMyygnhhVMR5LYkYMj6P/MrdShFxu2Q==`.
