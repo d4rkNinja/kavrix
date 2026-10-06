@@ -20,12 +20,16 @@ let windowsAclQueue: Promise<void> = Promise.resolve();
 /**
  * Applies the caller's retry policy to one protected-path request.
  *
- * Only transport failures are retried: an interpreter that could not start, a
- * helper that died, a timeout, or a malformed reply. A refused verification is
- * a statement about the filesystem that no retry can change, so re-reading the
+ * Transport failures are retried: an interpreter that could not start, a helper
+ * that died, a timeout, or a malformed reply. A refusal with reason `error` is
+ * retried on the same budget, because it means the helper's own query failed
+ * before it could inspect the descriptor — an environment-transient condition
+ * (concurrent publication, antivirus filters) that a fresh request can answer,
+ * exactly as the historical one-shot interpreter retries did. A refusal that
+ * carries a real verdict (`policy`, `kind`, `unknown-op`) is terminal: it is a
+ * statement about the filesystem that no retry can change, so re-reading the
  * security descriptor the same way only multiplied the cost of already-failing
- * operations by three. Verdicts are therefore terminal and transport failures
- * keep the historical retry budget.
+ * operations.
  */
 async function requestAcl(
   operation: WindowsAclOperation,
@@ -34,12 +38,14 @@ async function requestAcl(
   let lastError: unknown;
   for (let attempt = 0; attempt < ACL_RETRY_ATTEMPTS; attempt += 1) {
     try {
-      return await runWindowsAclRequest(operation, targetPath);
+      const reply = await runWindowsAclRequest(operation, targetPath);
+      if (reply.ok || reply.reason !== 'error') return reply;
+      lastError = new PortableKeyFileError('KEY_FILE_UNSAFE');
     } catch (error) {
       lastError = error;
-      if (attempt + 1 < ACL_RETRY_ATTEMPTS) {
-        await delay(ACL_RETRY_BASE_DELAY_MS * (attempt + 1));
-      }
+    }
+    if (attempt + 1 < ACL_RETRY_ATTEMPTS) {
+      await delay(ACL_RETRY_BASE_DELAY_MS * (attempt + 1));
     }
   }
   throw lastError instanceof Error

@@ -98,6 +98,20 @@ async function awaitRequest(emitted: readonly string[]): Promise<void> {
   throw new Error('the boundary never sent a request');
 }
 
+/** Waits until the boundary has written at least `count` requests. */
+async function awaitNthRequest(
+  emitted: readonly string[],
+  count: number,
+): Promise<void> {
+  for (let attempt = 0; attempt < 400; attempt += 1) {
+    if (emitted.length >= count) return;
+    // Poll in real time: retry backoff delays the next request by tens of
+    // milliseconds, which a pure microtask loop would outrun.
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  throw new Error(`the boundary never sent request ${String(count)}`);
+}
+
 /** Extracts the read-only parent-directory rule from the shared program. */
 function readOnlyVerifierBody(program: string): string {
   const start = program.indexOf('function Verify-ParentDirectory');
@@ -193,6 +207,34 @@ describe('read-only Windows directory ACL verification', () => {
     // cannot help. One interpreter start, one request.
     expect(spawnMock).toHaveBeenCalledTimes(1);
     expect(helper.emitted).toHaveLength(1);
+  });
+
+  it('retries when the helper could not determine an answer', async () => {
+    const { verifyWindowsDirectoryAcl } = await loadBoundary();
+
+    const pending = verifyWindowsDirectoryAcl('C:\\workspace');
+    await awaitRequest(helper.emitted);
+    helper.stdout.write('{"v":1,"n":1,"ok":false,"r":"error"}\n');
+    await awaitNthRequest(helper.emitted, 2);
+    helper.stdout.write('{"v":1,"n":2,"ok":true}\n');
+
+    // An `error` reason means the helper's own query failed before it could
+    // inspect the descriptor; a fresh request can answer it.
+    await expect(pending).resolves.toBeUndefined();
+    expect(helper.emitted).toHaveLength(2);
+  });
+
+  it('spends the retry budget when the helper never determines an answer', async () => {
+    const { verifyWindowsDirectoryAcl } = await loadBoundary();
+
+    const pending = verifyWindowsDirectoryAcl('C:\\workspace');
+    for (let nonce = 1; nonce <= 3; nonce += 1) {
+      await awaitNthRequest(helper.emitted, nonce);
+      helper.stdout.write(`{"v":1,"n":${nonce},"ok":false,"r":"error"}\n`);
+    }
+
+    await expect(pending).rejects.toMatchObject({ code: 'KEY_FILE_UNSAFE' });
+    expect(helper.emitted).toHaveLength(3);
   });
 
   it('fails closed when the helper answers with something that is not a verdict', async () => {

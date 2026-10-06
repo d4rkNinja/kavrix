@@ -551,8 +551,24 @@ async function exerciseConcurrentConflict(run, paths, profile, passphrase, label
   const failures = attempts.filter(
     (result) => result.code !== 0 || result.signal !== null,
   );
-  assert(successes.length === 1, 'concurrent vault creation had no single winner');
+  assert(
+    successes.length === 1,
+    `concurrent vault creation had no single winner (${describeAttempts(attempts)})`,
+  );
   assert(failures.length === 1, 'concurrent vault creation did not fail closed');
+}
+
+/** Renders every concurrent attempt's outcome without exposing runtime input. */
+function describeAttempts(attempts) {
+  return attempts
+    .map((result, index) => {
+      const outcome =
+        result.signal === null
+          ? `exit ${String(result.code)}`
+          : `signal ${result.signal}`;
+      return `attempt ${String(index)} ${outcome}: ${redactedDiagnostic(result)}`;
+    })
+    .join(' || ');
 }
 
 async function exerciseDatabaseContainer(run, paths) {
