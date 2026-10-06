@@ -67,6 +67,33 @@ async function addCurrentProfile(profile: DatastoreProfile): Promise<void> {
 }
 
 describe('flat database command routing', () => {
+  it('uses one fresh protected snapshot and observes a later profile switch', async () => {
+    const profile = fileProfile(
+      join(directory, 'existing.database'),
+      join(directory, 'existing.key'),
+    );
+    await addCurrentProfile(profile);
+    const snapshot = vi.spyOn(DatastoreProfileRegistry, 'snapshotIfPresent');
+    const options = { profileConfigDir: directory, vault: 'default' };
+    expect(await usesDatabaseContainer(options)).toBe(true);
+    expect(snapshot).toHaveBeenCalledTimes(1);
+    const registry = await DatastoreProfileRegistry.open({
+      configDirectory: directory,
+    });
+    await registry.add({
+      id: profileIdSchema.parse('legacy'),
+      datastore: 'file',
+      dataFile: join(directory, 'legacy.vault'),
+      keyFile: join(directory, 'legacy.key'),
+    });
+    await registry.use(profileIdSchema.parse('legacy'));
+    expect(await usesDatabaseContainer(options)).toBe(false);
+    expect(snapshot).toHaveBeenCalledTimes(2);
+    await expect(
+      usesDatabaseContainer({ ...options, profile: 'missing' }),
+    ).rejects.toThrow(/not found/i);
+  });
+
   it('honors bound file data-file and key-file overrides while retaining the database binding', async () => {
     const originalDataFile = join(directory, 'original.database');
     const originalKeyFile = join(directory, 'original.key');

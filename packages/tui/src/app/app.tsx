@@ -67,6 +67,8 @@ export function KavrixApp({
   const [hydrateError, setHydrateError] = useState<string | null>(null);
   const [paintEpoch, setPaintEpoch] = useState(0);
   const [busy, setBusy] = useState(false);
+  const [busyLabel, setBusyLabel] = useState('');
+  const [busySeconds, setBusySeconds] = useState(0);
   const busyRef = useRef(false);
   const mountedRef = useRef(true);
   const [state, setState] = useState(() => {
@@ -95,6 +97,14 @@ export function KavrixApp({
     async (action: AppBackendAction): Promise<void> => {
       busyRef.current = true;
       setBusy(true);
+      setBusySeconds(0);
+      setBusyLabel(
+        action.type === 'unlock' || action.type === 'session-unlock'
+          ? 'Unlocking your vault'
+          : action.type === 'refresh'
+            ? 'Refreshing credentials'
+            : action.type.replaceAll('-', ' '),
+      );
       try {
         const result = await backendRef.current.dispatch(action);
         if (!mountedRef.current || stateRef.current.quit) return;
@@ -124,6 +134,17 @@ export function KavrixApp({
     },
     [now],
   );
+
+  useEffect(() => {
+    if (!busy) return;
+    const startedAt = Date.now();
+    const timer = setInterval(() => {
+      setBusySeconds(Math.floor((Date.now() - startedAt) / 1000));
+    }, 1000);
+    return () => {
+      clearInterval(timer);
+    };
+  }, [busy]);
 
   const dispatch = useCallback(
     (action: AppRouterAction): void => {
@@ -305,6 +326,7 @@ export function KavrixApp({
         enabled: backendReady && hydrateError === null && !busy,
         mouse,
         busy,
+        busyLabel: `${busyLabel} (${String(busySeconds)}s). q quits.`,
       }}
     >
       <ClickTarget

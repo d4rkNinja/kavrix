@@ -1221,7 +1221,7 @@ describe('0.2.24 session unlock TUI', () => {
     expect(result.state.overlay).toBe('input-passphrase');
   });
 
-  it('u reports an expired session instead of unlocking', () => {
+  it('u opens passphrase input when the convenience session expires', () => {
     const expired = {
       ...navigateToScreen(hydrate(), 'home'),
       snapshot: {
@@ -1235,7 +1235,36 @@ describe('0.2.24 session unlock TUI', () => {
       nowMs: 0,
     });
     expect(result.effect).toEqual({ kind: 'none' });
+    expect(result.state.overlay).toBe('input-passphrase');
     expect(result.state.message).toMatch(/expired/i);
+  });
+
+  it('Shift+U bypasses an unavailable keychain and accepts a masked passphrase', () => {
+    const state = { ...navigateToScreen(hydrate(), 'home'), snapshot: sessionSnapshot };
+    const result = transitionAppRouter(state, {
+      type: 'key',
+      key: { text: 'U' },
+      nowMs: 0,
+    });
+    expect(result.effect).toEqual({ kind: 'none' });
+    expect(result.state.overlay).toBe('input-passphrase');
+  });
+
+  it('MongoDB collects a protected connection even with an enabled session', () => {
+    const state = {
+      ...navigateToScreen(hydrate(), 'home'),
+      snapshot: {
+        ...sessionSnapshot,
+        home: { ...sessionSnapshot.home, datastore: 'mongodb' },
+      },
+    };
+    const result = transitionAppRouter(state, {
+      type: 'key',
+      key: { text: 'u' },
+      nowMs: 0,
+    });
+    expect(result.effect).toEqual({ kind: 'none' });
+    expect(result.state.overlay).toBe('input-unlock-mongo-url');
   });
 
   it('session screen renders active session rows and enable hint when off', () => {

@@ -786,7 +786,14 @@ class CliTuiSession {
       frames,
     );
     this.#vaultId = id;
+    this.#credentialNames = [];
+    this.#doctorRows = [];
+    this.#recoverySlots = [];
+    this.#policyRows = [];
+    this.#runPreview = null;
+    this.#agentStatus = null;
     this.#browseNodes = [];
+    await this.#refreshCredentialList();
     this.#notice = `Selected vault ${id}.`;
     this.#noticeTone = 'success';
   }
@@ -952,24 +959,24 @@ class CliTuiSession {
     } catch (error) {
       if (error instanceof SessionUnlockError && error.code === 'expired') {
         throw new Error(
-          'Session unlock has expired; unlock with the passphrase (u), then enable a new session on the Session screen.',
+          'Session unlock has expired; press Shift+U to unlock with your passphrase, then enable a new session on the Session screen.',
           { cause: error },
         );
       }
       if (error instanceof SessionUnlockError && error.code === 'tampered') {
         throw new Error(
-          'The stored session unlock failed authentication; revoke it on the Session screen and unlock with the passphrase.',
+          'The stored session unlock failed authentication; press Shift+U to unlock with your passphrase, then revoke the session on the Session screen.',
           { cause: error },
         );
       }
       throw new Error(
-        'The operating system credential store is unavailable; unlock with the passphrase (u).',
+        'The operating system credential store is unavailable; press Shift+U to unlock with your passphrase.',
         { cause: error },
       );
     }
     if (material === null) {
       throw new Error(
-        'No session unlock is enabled; unlock with the passphrase (u), then enable one on the Session screen.',
+        'No session unlock is enabled; press Shift+U to unlock with your passphrase, then enable one on the Session screen.',
       );
     }
     await this.#unlock(material.passphrase);
@@ -1422,11 +1429,13 @@ class CliTuiSession {
     }
     const bytes = Buffer.from(passphrase, 'utf8');
     try {
-      const auth = await this.#flatAuth([passphrase]);
+      const current = await this.#currentProfile();
+      const auth = await this.#flatAuth([passphrase], current);
       const names = await this.#runJsonCommand(
         [
           'list',
-          ...(await this.#profileArgs()),
+          ...(await this.#credentialProfileArgs(current)),
+          ...this.#vaultFlagArgs(),
           ...auth.args,
           '--json',
           '--passphrase-stdin',
@@ -1437,13 +1446,18 @@ class CliTuiSession {
       if (!Array.isArray(parsed.names)) {
         throw new Error('Unexpected list response.');
       }
-      this.#lock();
+      // Replace authenticated material without discarding the MongoDB transport
+      // needed by subsequent commands. A failed attempt clears both below.
+      if (this.#passphrase !== null) zeroize(this.#passphrase);
       this.#passphrase = Buffer.from(bytes);
       this.#credentialNames = parsed.names.filter(
         (entry): entry is string => typeof entry === 'string',
       );
       this.#notice = `Unlocked (${String(this.#credentialNames.length)} credentials).`;
       this.#noticeTone = 'success';
+    } catch (error) {
+      this.#lock();
+      throw error;
     } finally {
       zeroize(bytes);
     }
@@ -1454,16 +1468,9 @@ class CliTuiSession {
       throw new Error('Unlock the vault before reading credentials.');
     }
     const passphrase = this.#passphrase.toString('utf8');
-    const auth = await this.#flatAuth([passphrase]);
+    const auth = await this.#credentialAuth([passphrase]);
     const output = await this.#runTextCommand(
-      [
-        'get',
-        name,
-        ...(await this.#profileArgs()),
-        ...auth.args,
-        '--reveal',
-        '--passphrase-stdin',
-      ],
+      ['get', name, ...auth.args, '--reveal', '--passphrase-stdin'],
       auth.frames,
     );
     return output.trimEnd();
@@ -1497,12 +1504,11 @@ class CliTuiSession {
     }
     const passphrase = this.#passphrase.toString('utf8');
     // Frames contract: `kavrix frames put` → [mongodb-url,] passphrase, value
-    const auth = await this.#flatAuth([passphrase, value]);
+    const auth = await this.#credentialAuth([passphrase, value]);
     await this.#runTextCommand(
       [
         'put',
         trimmed,
-        ...(await this.#profileArgs()),
         ...auth.args,
         '--passphrase-stdin',
         '--value-stdin',
@@ -1527,17 +1533,9 @@ class CliTuiSession {
     }
     const passphrase = this.#passphrase.toString('utf8');
     // Frames: `kavrix frames rename` → [mongodb-url,] passphrase
-    const auth = await this.#flatAuth([passphrase]);
+    const auth = await this.#credentialAuth([passphrase]);
     await this.#runTextCommand(
-      [
-        'rename',
-        source,
-        target,
-        ...(await this.#profileArgs()),
-        ...auth.args,
-        '--passphrase-stdin',
-        '--json',
-      ],
+      ['rename', source, target, ...auth.args, '--passphrase-stdin', '--json'],
       auth.frames,
     );
     await this.#refreshCredentialList();
@@ -1555,16 +1553,9 @@ class CliTuiSession {
     }
     const passphrase = this.#passphrase.toString('utf8');
     // Frames: `kavrix frames remove` → [mongodb-url,] passphrase
-    const auth = await this.#flatAuth([passphrase]);
+    const auth = await this.#credentialAuth([passphrase]);
     await this.#runTextCommand(
-      [
-        'remove',
-        trimmed,
-        ...(await this.#profileArgs()),
-        ...auth.args,
-        '--passphrase-stdin',
-        '--json',
-      ],
+      ['remove', trimmed, ...auth.args, '--passphrase-stdin', '--json'],
       auth.frames,
     );
     await this.#refreshCredentialList();
@@ -1575,15 +1566,9 @@ class CliTuiSession {
   async #refreshCredentialList(): Promise<void> {
     if (this.#passphrase === null) return;
     const passphrase = this.#passphrase.toString('utf8');
-    const auth = await this.#flatAuth([passphrase]);
+    const auth = await this.#credentialAuth([passphrase]);
     const names = await this.#runJsonCommand(
-      [
-        'list',
-        ...(await this.#profileArgs()),
-        ...auth.args,
-        '--json',
-        '--passphrase-stdin',
-      ],
+      ['list', ...auth.args, '--json', '--passphrase-stdin'],
       auth.frames,
     );
     const parsed = names as { names?: unknown };
@@ -2389,8 +2374,9 @@ class CliTuiSession {
 
   async #flatAuth(
     rest: readonly string[],
+    profile?: DatastoreProfile | null,
   ): Promise<{ args: string[]; frames: string[] }> {
-    const current = await this.#currentProfile();
+    const current = profile === undefined ? await this.#currentProfile() : profile;
     if (current?.datastore === 'mongodb') {
       const url = this.#requireDatabaseUrl();
       const insecure = needsInsecureTransport(url)
@@ -2404,16 +2390,54 @@ class CliTuiSession {
     return { args: [], frames: [...rest] };
   }
 
+  async #credentialAuth(
+    rest: readonly string[],
+  ): Promise<{ args: string[]; frames: string[] }> {
+    const current = await this.#currentProfile();
+    const auth = await this.#flatAuth(rest, current);
+    return {
+      args: [
+        ...(await this.#credentialProfileArgs(current)),
+        ...this.#vaultFlagArgs(),
+        ...auth.args,
+      ],
+      frames: auth.frames,
+    };
+  }
+
   #vaultFlagArgs(): string[] {
     return this.#vaultId === null ? [] : ['--vault', this.#vaultId];
   }
 
-  async #profileArgs(): Promise<string[]> {
+  async #credentialProfileArgs(current: DatastoreProfile | null): Promise<string[]> {
+    if (current === null || current.databaseId !== undefined) {
+      return this.#profileArgs(current);
+    }
+    // Existing single-vault profiles predate database-container bindings. Use
+    // their explicit standalone route; `--profile` root CRUD deliberately
+    // rejects uninitialized database containers. The child still validates and
+    // authenticates the existing encrypted vault and protected key file.
+    return [
+      ...this.#configDirArgs('--profile-config-dir'),
+      '--datastore',
+      current.datastore,
+      '--key-file',
+      current.keyFile,
+      ...(current.datastore === 'file'
+        ? ['--data-file', current.dataFile]
+        : ['--database', current.database, '--collection', current.vaultCollection]),
+      ...(this.#vaultId === null && current.defaultVaultId !== undefined
+        ? ['--vault', current.defaultVaultId]
+        : []),
+    ];
+  }
+
+  async #profileArgs(profile?: DatastoreProfile | null): Promise<string[]> {
+    const current = profile === undefined ? await this.#currentProfile() : profile;
     const args: string[] = [];
     if (this.#options.profileConfigDir !== undefined) {
       args.push('--profile-config-dir', this.#options.profileConfigDir);
     }
-    const current = await this.#currentProfile();
     if (current !== null) {
       args.push('--profile', current.id);
     }
@@ -2450,6 +2474,7 @@ class CliTuiSession {
     const env = { ...process.env };
     delete env['FORCE_COLOR'];
     const child = spawn(process.execPath, [bin, ...args], {
+      shell: false,
       env,
       stdio: ['pipe', 'pipe', 'pipe'],
       windowsHide: true,

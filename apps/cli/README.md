@@ -71,6 +71,12 @@ kavrix tui    # full app
 Use `kavrix init --no-tui` for classic line prompts, or stdin/explicit routing
 for scripts.
 
+Version 0.2.39 fixes existing-vault unlock routing, preserves MongoDB connections
+after unlock, and adds direct passphrase unlock with Shift+U. Common credential
+actions avoid duplicate protected profile reads and honor the selected vault.
+Operation names and elapsed time make progress visible. See the
+[changes and compatibility checks](https://github.com/d4rkNinja/kavrix/blob/v0.2.39/docs/release-notes-0.2.39.md).
+
 Version 0.2.38 adds Home/End and Page Up/Page Down navigation in the main TUI,
 skips redundant state updates for ignored input and repeated terminal sizes, and reduces reveal
 countdown redraws. See the

@@ -289,6 +289,15 @@ describe('CliTuiSession mutations (mocked spawn)', () => {
     expect(unlockCall?.args).toContain('--passphrase-stdin');
     expect(unlockCall?.args.join(' ')).not.toContain('correct horse');
 
+    const selected = await backend.dispatch({
+      type: 'use-vault',
+      vaultId: 'vault_other',
+    });
+    expect(selected.snapshot.home.vaultId).toBe('vault_other');
+    const selectedList = calls.at(-1);
+    expect(selectedList?.args).toContain('--vault');
+    expect(selectedList?.args).toContain('vault_other');
+
     result = await backend.dispatch({
       type: 'put-credential',
       name: 'beta',
@@ -297,6 +306,7 @@ describe('CliTuiSession mutations (mocked spawn)', () => {
     expect(result.snapshot.noticeTone).toBe('success');
     expect(result.snapshot.credentials.map((c) => c.name)).toEqual(['alpha', 'beta']);
     const putCall = calls.find((call) => call.args.includes('put'));
+    expect(putCall?.args).toContain('vault_other');
     expect(putCall?.frames).toEqual(['correct horse battery staple', 'secret-value']);
     expect(putCall?.args).toEqual(
       expect.arrayContaining([
@@ -332,6 +342,32 @@ describe('CliTuiSession mutations (mocked spawn)', () => {
     expect(recoveryCall?.args).toEqual(
       expect.arrayContaining(['db', 'recovery', 'status', '--json']),
     );
+  });
+
+  it('clears prior unlocked state when a subsequent authentication fails', async () => {
+    const configDir = await setupProfile();
+    let rejectUnlock = false;
+    const backend = createCliTuiBackend({
+      profileConfigDir: configDir,
+      commandRunner: async () => {
+        if (rejectUnlock) throw new Error('Authentication failed.');
+        return JSON.stringify({ names: ['credential-canary'] });
+      },
+    });
+    const unlocked = await backend.dispatch({
+      type: 'unlock',
+      passphrase: 'test-owner-passphrase',
+    });
+    expect(unlocked.snapshot.home.unlocked).toBe(true);
+    rejectUnlock = true;
+    const rejected = await backend.dispatch({
+      type: 'unlock',
+      passphrase: 'incorrect-test-passphrase',
+    });
+    expect(rejected.snapshot.noticeTone).toBe('error');
+    expect(rejected.snapshot.home.unlocked).toBe(false);
+    expect(rejected.snapshot.credentials).toEqual([]);
+    expect(rejected.snapshot.home.credentialCount).toBe(0);
   });
 
   it('creates a file profile via documented CLI frames then unlocks', async () => {
@@ -1032,6 +1068,13 @@ describe('CliTuiSession mutations (mocked spawn)', () => {
     expect(result.snapshot.home.vaultId).toBe('vault_mongo');
     expect(result.snapshot.home.unlocked).toBe(true);
     expect(result.snapshot.agentStatus).toBe('');
+
+    // Unlock must retain the protected connection for the next operation.
+    const refreshed = await backend.dispatch({ type: 'refresh' });
+    expect(refreshed.snapshot.noticeTone, refreshed.snapshot.notice).not.toBe('error');
+    const listCall = calls.at(-1);
+    expect(listCall?.args).toContain('--database-url-stdin');
+    expect(listCall?.frames).toEqual([mongoUrl, passphrase]);
 
     for (const call of calls) {
       expect(call.args.join(' ')).not.toContain(mongoUrl);

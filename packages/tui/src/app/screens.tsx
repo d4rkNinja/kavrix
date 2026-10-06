@@ -594,7 +594,7 @@ function Footer({ state }: Readonly<{ state: AppRouterState }>): ReactElement {
   const interaction = useAppInteraction();
   const { color, ascii, message, snapshot, width } = state;
   const notice = interaction.busy
-    ? 'Working... Please wait.'
+    ? (interaction.busyLabel ?? 'Working... q quits.')
     : (message ?? snapshot.notice);
   if (state.overlay !== 'none' && notice === null) return <></>;
   const noticeAccent = toneAccent(snapshot.noticeTone);
@@ -861,7 +861,10 @@ export function HomeScreen({
       {snapshot.home.profileId === null ? (
         <KeyChip keyLabel="2" hint="create a profile" color={color} />
       ) : vaultLocked(state) ? (
-        <KeyChip keyLabel="u" hint="unlock your vault" color={color} />
+        <Box flexDirection="column">
+          <KeyChip keyLabel="u" hint="unlock your vault" color={color} />
+          <KeyChip keyLabel="U" hint="use passphrase" color={color} />
+        </Box>
       ) : (
         <KeyChip keyLabel="4" hint="browse credentials" color={color} />
       )}
@@ -880,7 +883,7 @@ export function HomeScreen({
   );
   const navPanel = (
     <Panel
-      title="Navigate"
+      title="Choose an action"
       accent={CHROME.accent}
       ascii={ascii}
       color={color}
@@ -907,7 +910,7 @@ export function HomeScreen({
               key={entry.id}
               active={active}
               label={labelOf(entry)}
-              {...(width >= 110 ? { hint: entry.hint } : {})}
+              {...(width >= 80 ? { hint: entry.hint } : {})}
               accent={entry.accent}
               color={color}
               ascii={ascii}
@@ -1477,7 +1480,7 @@ export function HelpScreen({
       'Terminal clipboard: best-effort clear after ~30s while Kavrix is open. System clipboard: clear manually.',
     ],
     [
-      'u: unlock. l: confirm lock.',
+      'u: unlock. Shift+U: use passphrase. l: confirm lock.',
       'Recovery: n create / v verify.',
       'Doctor: d checks local health.',
       'Policy: n create / g grant.',

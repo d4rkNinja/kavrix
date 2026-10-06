@@ -446,8 +446,8 @@ describe('mounted Kavrix mouse interaction', () => {
     );
     mounted.add(handle);
 
-    const frame = await waitForFrame(output, 'Datastore routes');
-    const profiles = coordinateOf(frame, 'Datastore routes');
+    const frame = await waitForFrame(output, 'Choose where secrets are stored');
+    const profiles = coordinateOf(frame, 'Choose where secrets are stored');
     const report = `${ESC}[<0;${String(profiles.x + 1)};${String(profiles.y + 1)}M`;
     input.write(report + report);
     await waitForFrame(output, 'kavrix / Profiles');

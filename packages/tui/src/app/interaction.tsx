@@ -8,6 +8,7 @@ export interface AppInteraction {
   readonly enabled: boolean;
   readonly mouse: boolean;
   readonly busy: boolean;
+  readonly busyLabel?: string;
 }
 
 const InteractionContext = createContext<AppInteraction>({

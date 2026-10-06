@@ -41,6 +41,26 @@ Policy/Grant/Audit, Agent, Vault context / service / item browse (vault
 hierarchy, not the CLI project-file `--environment` flag), Help, and the
 existing storage showcase destination.
 
+On Home, press `u` to unlock and `4` to open Credentials. `Shift+U` always
+opens protected passphrase input, so an unavailable OS keychain cannot trap
+you in repeated session-unlock attempts. Expired sessions open passphrase
+input directly. MongoDB unlock first asks for its masked connection string;
+the connection stays in memory for later operations and is cleared on lock
+or an unsuccessful authentication attempt.
+
+While a command runs, the footer names the operation and shows elapsed seconds.
+`q` exits the app. A child command that exceeds its 60-second deadline is stopped;
+this is a timeout, not evidence that the passphrase was wrong. Storage permission
+checks remain mandatory. Common credential actions share one fresh verified
+profile read for their routing and stdin frames, and use the selected vault.
+
+These TUI changes do not change encrypted vault, portable-key, or profile formats.
+Opening an existing vault does not request migration or reinitialization. Package
+updates and data-format compatibility are separate checks; preserve your existing
+protected files and recovery kit, and never run initialization over them to fix
+an unlock error. Cross-platform and real MongoDB verification must still pass
+before a release is claimed.
+
 Security and presentation rules:
 
 - Never echo passphrases or secret values by default.

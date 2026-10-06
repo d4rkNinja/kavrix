@@ -14,6 +14,7 @@ import {
 import { DatabaseSession } from './database-session.js';
 import {
   DatastoreProfileRegistry,
+  DatastoreProfileError,
   resolveDatastoreProfileRouting,
   type DatastoreProfile,
   type DatastoreProfileRoutingOverrides,
@@ -372,15 +373,19 @@ async function selectedDatabaseProfile(
     await rejectConflictingAmbientBoundProfile(options, registryOptions);
     return null;
   }
-  const registry =
+  // One fresh protected snapshot supplies both selection and routing. Opening
+  // a registry and then calling current/get reads and verifies it twice;
+  // Windows pays for each verification with a native ACL process. Do not cache
+  // across calls: a concurrent routing change must still be observed.
+  const document = await DatastoreProfileRegistry.snapshotIfPresent(registryOptions);
+  const selectedId =
     options.profile === undefined
-      ? await DatastoreProfileRegistry.openIfPresent(registryOptions)
-      : await DatastoreProfileRegistry.open(registryOptions);
-  if (registry === null) return null;
-  const profile =
-    options.profile === undefined
-      ? await registry.current()
-      : await registry.get(profileIdSchema.parse(options.profile));
+      ? document?.current
+      : profileIdSchema.parse(options.profile);
+  const profile = document?.profiles.find((entry) => entry.id === selectedId) ?? null;
+  if (profile === null && options.profile !== undefined) {
+    throw new DatastoreProfileError('PROFILE_NOT_FOUND');
+  }
   if (profile?.databaseId === undefined) return null;
   return resolveSelectedProfileRouting(profile, options);
 }

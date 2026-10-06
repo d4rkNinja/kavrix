@@ -798,9 +798,9 @@ describe('structured vault command model', () => {
       dataFile: 'structured.database',
       keyFile: 'structured.key',
     } as const;
-    vi.spyOn(DatastoreProfileRegistry, 'open').mockResolvedValue({
-      get: vi.fn(async () => profile),
-    } as never);
+    vi.spyOn(DatastoreProfileRegistry, 'snapshotIfPresent').mockImplementation(
+      async () => ({ version: 2, current: profile.id, profiles: [profile] }) as never,
+    );
     vi.spyOn(FileEncryptedDatabaseStore, 'open').mockResolvedValue({
       close: vi.fn(async () => undefined),
     } as never);

@@ -474,7 +474,7 @@ function keyTransition(
   }
 
   if (key.text?.toLowerCase() === 'u') {
-    return unlockIntent(state);
+    return unlockIntent(state, key.text === 'U' || key.shift === true);
   }
   if (key.text?.toLowerCase() === 'l') {
     return unchanged({ ...state, overlay: 'confirm-lock' });
@@ -509,19 +509,20 @@ function helpIntent(state: AppRouterState): AppRouterTransition {
  * `u` resolves the unlock path: an enabled, unexpired OS session unlocks
  * immediately through the keychain; otherwise the passphrase overlay opens.
  */
-function unlockIntent(state: AppRouterState): AppRouterTransition {
+function unlockIntent(
+  state: AppRouterState,
+  usePassphrase = false,
+): AppRouterTransition {
   const session = state.snapshot.session;
-  if (session.enabled && !session.expired) {
+  if (
+    !usePassphrase &&
+    session.enabled &&
+    !session.expired &&
+    state.snapshot.home.datastore !== 'mongodb'
+  ) {
     return effect(state, {
       kind: 'backend',
       action: { type: 'session-unlock' },
-    });
-  }
-  if (session.enabled && session.expired) {
-    return unchanged({
-      ...state,
-      message:
-        'Session unlock has expired; unlock with the passphrase, then enable a new session on the Session screen.',
     });
   }
   if (state.snapshot.home.datastore === 'mongodb') {
@@ -539,8 +540,9 @@ function unlockIntent(state: AppRouterState): AppRouterTransition {
     overlay: 'input-passphrase',
     query: '',
     pendingMongoUrl: null,
-    message:
-      'Unlock vault — enter passphrase (masked). Paste works (Ctrl+Shift+V / Cmd+V). Enter unlocks; Esc cancels.',
+    message: session.expired
+      ? 'Session expired. Enter your passphrase to unlock; Enter submits, Esc cancels.'
+      : 'Unlock vault — enter your passphrase; Enter submits, Esc cancels. Paste is supported.',
   });
 }
 
