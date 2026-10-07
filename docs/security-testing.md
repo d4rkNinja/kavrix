@@ -12,6 +12,11 @@ and command list.
 
 ## Required local checks
 
+CI's Windows packed acceptance job allows 75 minutes for native protected-file
+checks, both packed command journeys, and final package smoke. A previous run
+completed the journeys but reached its 45-minute job limit during smoke build.
+The larger CI budget does not change runtime CLI deadlines or waive checks.
+
 Fullscreen setup regressions exercise mounted pointer streams, padded targets,
 split/stale report filtering, protected-input canaries, resize and mouse-disabled
 keyboard fallback, paged public guidance, and terminal-mode restoration. Layout

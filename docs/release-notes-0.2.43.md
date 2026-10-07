@@ -35,3 +35,8 @@ lines. Build, formatting, lint, type checks, packed smoke, both acceptance suite
 package inspection, and audit passed. Skipped integration tests do not establish
 live transactional MongoDB behavior. Exact-commit CI/CodeQL and trusted
 publication remain release gates.
+
+Windows packed acceptance now has a 75-minute CI budget. The 0.2.42 run passed
+both acceptance suites but exhausted its 45-minute job budget during the final
+smoke build. This changes the CI job allowance only; every gate, CLI deadline,
+security assertion, and coverage threshold remains mandatory.
