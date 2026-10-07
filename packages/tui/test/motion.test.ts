@@ -188,6 +188,29 @@ describe('easing and stagger', () => {
 });
 
 describe('motion clocks', () => {
+  it('releases the entrance timer while the component stays mounted', async () => {
+    const clearTimer = vi.spyOn(globalThis, 'clearInterval');
+    const latest: ProbeSample = { frame: 0, elapsedMs: 0, progress: -1 };
+    const instance = mountProbe(
+      {
+        frameEnabled: false,
+        elapsedEnabled: false,
+        enterEnabled: true,
+        durationMs: 40,
+        ease: 'linear',
+      },
+      latest,
+    );
+    try {
+      await vi.waitFor(() => {
+        expect(latest.progress).toBe(1);
+        expect(clearTimer).toHaveBeenCalled();
+      });
+    } finally {
+      await unmountProbe(instance);
+      clearTimer.mockRestore();
+    }
+  });
   it('keeps disabled clocks settled for static snapshots', () => {
     const latest: ProbeSample = { frame: -1, elapsedMs: -1, progress: -1 };
     const painted = renderToString(

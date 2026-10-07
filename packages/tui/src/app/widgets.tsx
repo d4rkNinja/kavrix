@@ -13,7 +13,6 @@ import {
   revealRemainingMs,
   staggerVisibleCount,
   sweepBarRow,
-  useElapsedMs,
   useEnterProgress,
   useMotionFrame,
 } from '../motion.js';
@@ -287,16 +286,11 @@ export function MotionEnter({
 /**
  * List stagger: every row stays mounted and interactive. Unsettled rows are
  * only dimmed. Keyboard navigation must not change `enabled` mid-move.
- */
-/**
- * List stagger: every row stays mounted and interactive. Unsettled rows are
- * only dimmed. Keyboard navigation must not change `enabled` mid-move.
  *
  * The stagger owns its clock subscription and stops updating state once every
  * row has settled, so a list screen does not keep redrawing at the frame
  * clock's rate for the rest of its lifetime after the entrance finishes. The
- * shared clock itself is unaffected: this only removes the per-tick state
- * commit that nothing consumes anymore.
+ * subscription also ends after settlement, so idle screens release the timer.
  */
 export function useListStagger(
   itemCount: number,
@@ -322,7 +316,10 @@ export function useListStagger(
       if (next >= itemCount) settled = true;
     };
     update(0);
-    return subscribeToFrameClock(update);
+    return subscribeToFrameClock(
+      update,
+      Math.max(0, Math.min(itemCount, MOTION.staggerCap) - 1) * MOTION.staggerMs,
+    );
   }, [enabled, itemCount]);
   return (index: number): boolean => enabled && index >= visible;
 }
@@ -475,11 +472,10 @@ export function LoadingState({
   animate?: boolean;
 }>): ReactElement {
   const frame = useMotionFrame(animate, MOTION.feedbackMs);
-  const elapsedMs = useElapsedMs(animate);
   const spinner = ascii
     ? ['|', '/', '-', '\\'][frame % 4]
     : ['\u280b', '\u2819', '\u2839', '\u2838'][frame % 4];
-  const seconds = Math.floor(elapsedMs / 1_000);
+  const seconds = Math.floor((frame * MOTION.feedbackMs) / 1_000);
   // Callers may pass a label that already ends in an ellipsis; dots animate in
   // its place so the two never stack.
   const base = safe(label, ascii)

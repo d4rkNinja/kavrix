@@ -29,6 +29,36 @@ Use `kavrix init --no-mouse` or `KAVRIX_TUI_MOUSE=0` for native selection.
 
 ## Interactive app (`kavrix tui` / `kavrix ui`)
 
+For an existing vault, open `kavrix tui`, press `u` to unlock, then `4` for
+Credentials. Use `Shift+U` to enter a passphrase directly if OS session unlock
+is unavailable. Escape closes overlays; `?` opens Help. Agent validates a project
+configuration; start a live broker with the CLI rather than leaving that screen open.
+
+### If the terminal feels choppy
+
+Finite entrance, list, and splash-reveal animations release their clock
+subscriptions when they settle. Loading elapsed seconds share the spinner clock
+instead of requesting a repaint every 32 ms. Continuous spinners and input caret
+blink still run while needed; these changes do not shorten storage or unlock work.
+
+For remote terminals or reduced motion, use this in PowerShell:
+
+```powershell
+$env:KAVRIX_TUI_REDUCED_MOTION = '1'
+kavrix tui --no-splash --no-mouse --ascii
+```
+
+Or on a POSIX shell:
+
+```sh
+KAVRIX_TUI_REDUCED_MOTION=1 kavrix tui --no-splash --no-mouse --ascii
+```
+
+This retains keyboard controls and native terminal text selection. If loading
+fails, read the displayed error and use `kavrix doctor --help` for diagnostic
+options. Preserve existing protected files and recovery kits; initialization
+is not an unlock repair. See [agent setup](getting-started.md) for CLI workflows.
+
 `kavrix tui` (alias `ui`) mounts the colorful Ink app from `@kavrix/tui` when
 both stdin and stdout are TTYs. Non-TTY sessions print a clear error and exit
 non-zero so automation keeps using numbered CLI commands. Screens call CLI-owned

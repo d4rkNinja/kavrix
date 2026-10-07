@@ -112,7 +112,7 @@ export function SplashScreen({
   const motion = resolveMotionPolicy({ requested: animate });
   const frame = useMotionFrame(motion.animate, MOTION.splashPulseMs);
   const sweepFrame = useMotionFrame(motion.animate, MOTION.sweepMs);
-  const elapsedMs = useElapsedMs(motion.animate);
+  const elapsedMs = useElapsedMs(motion.animate, MOTION.splashSweepMs);
   const spinnerFrames = ascii ? SPLASH_ASCII_SPINNER_FRAMES : SPLASH_SPINNER_FRAMES;
   const spinner = spinnerFrames[frame % spinnerFrames.length] ?? '|';
   const kavLines = ascii ? WORDMARK_KAV_ASCII : WORDMARK_KAV;

@@ -28,6 +28,7 @@ type Subscriber = (elapsedMs: number) => void;
 interface Registration {
   readonly subscriber: Subscriber;
   readonly startedAtMs: number;
+  readonly durationMs: number;
 }
 
 const registrations = new Set<Registration>();
@@ -38,8 +39,12 @@ function tick(): void {
   // Iterate a copy so a subscriber that unsubscribes during delivery cannot skip
   // another subscriber this tick.
   for (const registration of [...registrations]) {
-    registration.subscriber(now - registration.startedAtMs);
+    if (!registrations.has(registration)) continue;
+    const elapsed = now - registration.startedAtMs;
+    registration.subscriber(Math.min(elapsed, registration.durationMs));
+    if (elapsed >= registration.durationMs) registrations.delete(registration);
   }
+  if (registrations.size === 0) stop();
 }
 
 function start(): void {
@@ -57,10 +62,21 @@ function stop(): void {
  * zero so a newly mounted animation starts settled rather than a tick late, and
  * again on every shared tick until it unsubscribes.
  */
-export function subscribeToFrameClock(subscriber: Subscriber): () => void {
+export function subscribeToFrameClock(
+  subscriber: Subscriber,
+  durationMs = Number.POSITIVE_INFINITY,
+): () => void {
+  if (Number.isNaN(durationMs) || durationMs < 0) {
+    throw new RangeError('Animation duration must be nonnegative.');
+  }
+  if (durationMs === 0) {
+    subscriber(0);
+    return () => undefined;
+  }
   const registration: Registration = {
     subscriber,
     startedAtMs: performance.now(),
+    durationMs,
   };
   registrations.add(registration);
   start();

@@ -36,8 +36,10 @@ and native terminal selection.
 - Want the UI without onboarding? `kavrix tui`
 - After onboarding, bare `kavrix` opens the TUI directly.
 
-Everything below also works from the TUI — each screen shows its keys in the
-footer.
+The TUI supports credential management, vault selection, scoped hierarchy
+browsing, policy inspection, and agent configuration dry-run. Import, backup,
+and live agent execution use the CLI commands below. Each TUI screen shows
+its available keys in the footer; the [TUI guide](tui-guide.md) lists its scope.
 
 ## 2. Store and read a secret
 

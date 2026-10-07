@@ -72,13 +72,12 @@ and [CodeQL analysis](https://github.com/d4rkNinja/kavrix/actions/runs/375427981
 passed. The [publishing run](https://github.com/d4rkNinja/kavrix/actions/runs/37545556440)
 validated the archive and npm accepted the first upload with signed provenance.
 
-As checked on 2026-10-06 at 23:33 UTC, 0.2.41 was not public and npm's second
-attempt reported a previously staged version. The private stage inspection
-required npm authentication; the local session returned `E401`. Public
-availability, registry-integrity reconciliation, and GitHub release creation
-remain pending until npm finishes processing or a maintainer completes any
-required staged approval. This checkpoint does not claim a completed release.
-Follow the [processing/staged-version procedure](release.md#processing-and-staged-versions).
+On 2026-10-07, npm made 0.2.41 public. The failed-jobs retry reconciled the
+original archive against registry integrity and completed successfully, including
+[GitHub release creation](https://github.com/d4rkNinja/kavrix/releases/tag/v0.2.41).
+The npm `latest` tag was verified as 0.2.41 at that checkpoint, with signed
+provenance. No release tag moved and no CI gate was bypassed. The earlier staged
+delay is covered by the [processing/staged-version procedure](release.md#processing-and-staged-versions).
 
 The retained archive's SHA-256 is
 `b30bf2bb688f8d67b9976b75b76451fff0d4c69f0094e95edd229b949c4e735b`;

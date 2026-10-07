@@ -71,6 +71,11 @@ kavrix tui    # full app
 Use `kavrix init --no-tui` for classic line prompts, or stdin/explicit routing
 for scripts.
 
+Version 0.2.42 stops completed TUI animation clocks and removes redundant
+per-frame loading-time updates. The TUI guide includes reduced-motion commands
+for PowerShell and POSIX terminals. See
+[changes and limits](https://github.com/d4rkNinja/kavrix/blob/v0.2.42/docs/release-notes-0.2.42.md).
+
 Version 0.2.41 reuses authenticated keys for common database TUI actions while
 closing storage between actions. The TUI locks after two idle minutes or fifteen
 minutes since unlock. Browse and Policy/Grant/Audit load one snapshot each;

@@ -40,8 +40,8 @@ function truthyFlag(value: string | undefined): boolean {
 }
 
 /**
- * Fail closed: animation is off unless the caller requested it and the
- * environment is not reduced-motion / dumb-terminal. CI and non-TTY never
+ * Animation defaults on, unless disabled by the caller or reduced-motion flags.
+ * CI and non-TTY never
  * mount this package in production; tests may still request motion.
  */
 export function resolveMotionPolicy(
@@ -137,7 +137,10 @@ export function useMotionFrame(enabled: boolean, intervalMs: number): number {
   return frame;
 }
 
-export function useElapsedMs(enabled: boolean): number {
+export function useElapsedMs(
+  enabled: boolean,
+  durationMs = Number.POSITIVE_INFINITY,
+): number {
   const [elapsedMs, setElapsedMs] = useState(0);
   useEffect(() => {
     if (!enabled) {
@@ -147,8 +150,8 @@ export function useElapsedMs(enabled: boolean): number {
     setElapsedMs(0);
     return subscribeToFrameClock((elapsed) => {
       setElapsedMs(Math.round(elapsed));
-    });
-  }, [enabled]);
+    }, durationMs);
+  }, [enabled, durationMs]);
   return elapsedMs;
 }
 
@@ -156,9 +159,8 @@ export function useElapsedMs(enabled: boolean): number {
  * 0→1 ease-out clock. Starts at 1 when disabled so renderToString snapshots
  * stay fully settled. Overlay mounts pass enabled=true to play an entrance.
  *
- * The clock keeps driving the value once progress saturates; `enterOffsetCells`
- * and `enterDimmed` map every settled value to the same output, so subscribers
- * that only care about the visual result already stopped re-rendering.
+ * The subscription ends when the entrance settles, allowing the shared timer
+ * to stop when no continuous animations remain.
  */
 export function useEnterProgress(
   enabled: boolean,
@@ -173,9 +175,8 @@ export function useEnterProgress(
     }
     setProgress(0);
     return subscribeToFrameClock((elapsed) => {
-      const next = applyEase(elapsed / durationMs, ease);
-      setProgress(next);
-    });
+      setProgress(durationMs === 0 ? 1 : applyEase(elapsed / durationMs, ease));
+    }, durationMs);
   }, [enabled, durationMs, ease]);
   return progress;
 }
