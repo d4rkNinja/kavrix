@@ -1,0 +1,19 @@
+{
+  "repository": "d4rkNinja/kavrix",
+  "project": "/home/gandiv/projects/kavrix/app",
+  "stack": "pnpm",
+  "node": "v24.12.0",
+  "build": [
+    [
+      "corepack",
+      "pnpm",
+      "build"
+    ]
+  ],
+  "checks": [],
+  "outputs": [
+    "apps/api/dist"
+  ],
+  "static": false,
+  "runtimes": []
+}

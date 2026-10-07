@@ -1,0 +1,50 @@
+name: Deploy selected branch to server
+run-name: "Server ${{ inputs.mode }} — ${{ inputs.branch }}"
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: Branch to build/deploy (any branch in this repository)
+        required: true
+        type: string
+        default: main
+      mode:
+        description: Build first to verify; deploy activates the selected branch
+        required: true
+        type: choice
+        options: [build, deploy, validate]
+        default: build
+permissions:
+  contents: read
+concurrency:
+  group: sudarsan-production
+  cancel-in-progress: false
+jobs:
+  deploy:
+    # Always use the reviewed default-branch deployment code, even for old branches.
+    if: github.ref == 'refs/heads/main'
+    runs-on: [self-hosted, linux, x64, sudarsan-d4rkninja-kavrix]
+    timeout-minutes: 90
+    environment: server-production
+    steps:
+      - name: Validate branch name
+        env:
+          DEPLOY_BRANCH: ${{ inputs.branch }}
+        run: git check-ref-format "refs/heads/$DEPLOY_BRANCH"
+      - name: Checkout trusted deployment configuration
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          path: control
+          persist-credentials: false
+      - name: Checkout selected branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/heads/${{ inputs.branch }}
+          path: source
+          persist-credentials: false
+      - name: Build or deploy selected branch
+        env:
+          DEPLOY_BRANCH: ${{ inputs.branch }}
+          DEPLOY_MODE: ${{ inputs.mode }}
+        run: python3 control/.github/deploy/deploy.py --config control/.github/deploy/server.json --source source --mode "$DEPLOY_MODE"
