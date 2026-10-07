@@ -143,7 +143,11 @@ export async function executeAgentRun(options: AgentRunOptions): Promise<unknown
   }
 
   const configDocument = await loadAgentProjectConfig(options.config);
-  const agentDefinition = configDocument.document.agents?.[options.agentName];
+  const agents = configDocument.document.agents;
+  const agentDefinition =
+    agents !== undefined && Object.hasOwn(agents, options.agentName)
+      ? agents[options.agentName]
+      : undefined;
   if (agentDefinition === undefined) {
     throw invalidConfiguration(
       `Agent '${options.agentName}' is not defined in the project file.`,
@@ -975,8 +979,10 @@ async function handleAuthorizedExec(
     });
   };
 
-  const entry = session.permissions[request.permission];
-  if (entry === undefined) {
+  const entry = Object.hasOwn(session.permissions, request.permission)
+    ? session.permissions[request.permission]
+    : undefined;
+  if (entry === undefined || entry.deny === true) {
     await deny('policy-denied');
     return;
   }

@@ -48,6 +48,48 @@ it('discovers the same project configuration for agent run and exec dry-run with
   ).resolves.toMatchObject({ ok: true, permission: 'ping' });
 });
 
+it.each(['constructor', 'toString', 'valueOf'])(
+  'rejects undeclared agent %s as a configuration error',
+  async (agentName) => {
+    const config = join(fixture.directory, 'agents.json');
+    await writeFile(config, JSON.stringify({ version: 1, agents: {} }));
+    const result = executeAgentRun({
+      profile: 'exec',
+      profileConfigDir: join(fixture.directory, 'profiles'),
+      agentName,
+      config,
+      dryRun: true,
+      executableAndArgs: [],
+    });
+    await expect(result).rejects.toMatchObject({
+      errorCode: 'INVALID_CONFIGURATION',
+      exitCode: 14,
+    });
+    await expect(result).rejects.toThrow(/not defined/u);
+  },
+);
+
+it('preserves explicitly declared agent names that also exist on Object.prototype', async () => {
+  const config = join(fixture.directory, 'agents.json');
+  await writeFile(
+    config,
+    JSON.stringify({
+      version: 1,
+      agents: { toString: { permissions: { blocked: { deny: true } } } },
+    }),
+  );
+  await expect(
+    executeAgentRun({
+      profile: 'exec',
+      profileConfigDir: join(fixture.directory, 'profiles'),
+      agentName: 'toString',
+      config,
+      dryRun: true,
+      executableAndArgs: [],
+    }),
+  ).resolves.toMatchObject({ agent: 'toString', permissionCount: 1, ok: true });
+});
+
 afterEach(async () => {
   vi.restoreAllMocks();
   await destroyFixture(fixture);

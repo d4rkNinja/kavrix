@@ -71,6 +71,11 @@ kavrix tui    # full app
 Use `kavrix init --no-tui` for classic line prompts, or stdin/explicit routing
 for scripts.
 
+Version 0.2.43 rejects undeclared agent names as configuration errors and denies
+unknown or explicitly blocked permissions before executable lookup or hashing.
+This preserves denial auditing and avoids unnecessary work on rejected requests.
+See [changes and limits](https://github.com/d4rkNinja/kavrix/blob/v0.2.43/docs/release-notes-0.2.43.md).
+
 Version 0.2.42 stops completed TUI animation clocks and removes redundant
 per-frame loading-time updates, coalesces resize bursts, honors reduced motion
 while loading, and fixes fail-closed agent project-file discovery. The new

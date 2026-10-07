@@ -98,6 +98,12 @@ inspect audit through the Policy/Grant/Audit screen after unlocking.
   occupy every execution slot. The busy response uses the existing `invalid-request`
   reason and exit code 14; review whether the requested operation is safe to retry.
 
+Agent and permission lookups use only explicitly declared map entries. Inherited
+object names do not count as configuration. Unknown or `deny: true` permissions
+are denied and audited before executable resolution or hashing, even if the
+requested executable is missing. Explicitly declared names such as `toString`
+remain valid; this does not reserve new identifiers.
+
 Windows command scripts cannot be run targets because they require shell
 re-parsing. Use a native executable. Never send session tokens, passphrases,
 connection strings, or decrypted values in a bug report.

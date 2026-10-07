@@ -58,6 +58,10 @@ and terminal resize bursts coalesce using the latest dimensions. Agent commands
 share fail-closed project-file discovery. See the [agent guide](docs/agent-guide.md)
 and [0.2.42 changes](docs/release-notes-0.2.42.md).
 
+Agent names and live permissions require explicitly configured entries.
+Unknown and explicitly denied requests stop before executable lookup; see
+[0.2.43 changes](docs/release-notes-0.2.43.md).
+
 ## Run tools without pasting secrets
 
 ```sh
