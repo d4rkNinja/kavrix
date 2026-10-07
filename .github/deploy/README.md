@@ -21,9 +21,12 @@ Deployment switches only this project's PM2 processes or static dist path. Nginx
 canonical roots remain valid. Failed runtime health checks restore the prior targeted PM2
 configuration/static path. At most the current and previous successful releases are retained
 after activation. Do not manually erase `.deploy` while a release is running.
-Go checks verify process/listener availability; they do not prove database readiness.
+DevProfile checks /health/ready; Karnsha checks process/listener availability, which does not prove all database readiness.
 Database migrations are deliberately separate and must be reviewed for the selected branch.
 No automatic database migration, npm publication, CLI network operation, or artifact signing occurs.
 
 This project has no currently registered production service. Deploy publishes the built
 release through `.deploy/current`; it does not start a new API/CLI/network service.
+
+Deployment state is excluded from the server checkout through git info/exclude. Builds use their own cloned git metadata, so git-aware scripts see the selected commit. The global lock is stored under ~/.local/state/server-deploy.
+The current main branch builds the Kavrix CLI; it no longer contains the older API workspace. The CLI output is validated without npm publication.

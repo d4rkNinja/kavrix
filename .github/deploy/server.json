@@ -12,7 +12,7 @@
   ],
   "checks": [],
   "outputs": [
-    "apps/api/dist"
+    "apps/cli/dist/bin.js"
   ],
   "static": false,
   "runtimes": []
