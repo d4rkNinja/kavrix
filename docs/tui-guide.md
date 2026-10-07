@@ -59,6 +59,12 @@ fails, read the displayed error and use `kavrix doctor --help` for diagnostic
 options. Preserve existing protected files and recovery kits; initialization
 is not an unlock repair. See [agent setup](getting-started.md) for CLI workflows.
 
+Resize bursts are coalesced over one 32 ms window using the latest dimensions;
+pending resize work is canceled on unmount. Onboarding ignores unchanged sizes.
+Input readiness waits for the resized frame, and pointer reports are discarded
+while the layout is pending rather than acting on old coordinates.
+Loading spinners honor reduced-motion settings as well as list and input motion.
+
 `kavrix tui` (alias `ui`) mounts the colorful Ink app from `@kavrix/tui` when
 both stdin and stdout are TTYs. Non-TTY sessions print a clear error and exit
 non-zero so automation keeps using numbered CLI commands. Screens call CLI-owned
@@ -137,6 +143,10 @@ per context, and 30 items per service. A warning identifies truncation; use the
 individual CLI lists for the full hierarchy. Agent dry-run validates the project
 configuration and database profile without forwarding passphrases or connection
 strings; it does not verify that secrets exist or that execution will succeed.
+The optional Agent config path now discovers one `kavrix.yaml`, `kavrix.yml`, or
+`kavrix.json` in the working directory. Multiple defaults require an explicit
+path; invalid or unreadable discovered files fail closed. See the
+[agent guide](agent-guide.md) before starting a live broker.
 
 For bound database profiles, unlock, credential CRUD, copy/reveal, Browse, and
 Policy/Grant/Audit refresh reuse one in-memory authenticated session. Storage is

@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -8,11 +8,77 @@ import { isCodedCliError } from '../src/execution/coded-error.js';
 import {
   environmentMappings,
   loadProjectConfig,
+  discoverProjectConfig,
   projectPolicies,
 } from '../src/execution/project-config.js';
 import { createExecutionFixture, destroyFixture } from './execution-helpers.js';
 
 let fixture: Awaited<ReturnType<typeof createExecutionFixture>>;
+
+describe('project configuration discovery', () => {
+  async function inDirectory(run: (directory: string) => Promise<void>): Promise<void> {
+    const directory = await mkdtemp(join(tmpdir(), 'kavrix-config-discovery-'));
+    try {
+      await run(directory);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  }
+
+  it('returns null only when all default files are absent', async () => {
+    await inDirectory(async (directory) => {
+      expect(await discoverProjectConfig(undefined, directory)).toBeNull();
+    });
+  });
+
+  it.each(['kavrix.yaml', 'kavrix.yml', 'kavrix.json'])(
+    'loads a unique %s',
+    async (filename) => {
+      await inDirectory(async (directory) => {
+        await writeFile(join(directory, filename), JSON.stringify({ version: 1 }));
+        expect(await discoverProjectConfig(undefined, directory)).toEqual({
+          document: { version: 1 },
+        });
+      });
+    },
+  );
+
+  it('rejects ambiguous defaults, even when one is malformed', async () => {
+    await inDirectory(async (directory) => {
+      await writeFile(join(directory, 'kavrix.yaml'), 'broken: [');
+      await writeFile(join(directory, 'kavrix.json'), JSON.stringify({ version: 1 }));
+      await expect(discoverProjectConfig(undefined, directory)).rejects.toThrow(
+        /Multiple.*--config/u,
+      );
+      expect(
+        await discoverProjectConfig(join(directory, 'kavrix.json'), directory),
+      ).toEqual({ document: { version: 1 } });
+    });
+  });
+
+  it('does not hide invalid default documents or unreadable file types', async () => {
+    await inDirectory(async (directory) => {
+      await writeFile(join(directory, 'kavrix.yaml'), 'broken: [');
+      await expect(discoverProjectConfig(undefined, directory)).rejects.toThrow(
+        /valid YAML/u,
+      );
+      await rm(join(directory, 'kavrix.yaml'));
+      await mkdir(join(directory, 'kavrix.json'));
+      await expect(discoverProjectConfig(undefined, directory)).rejects.toThrow(
+        /could not be read/u,
+      );
+    });
+  });
+
+  it('never falls back when an explicit path is missing', async () => {
+    await inDirectory(async (directory) => {
+      await writeFile(join(directory, 'kavrix.json'), JSON.stringify({ version: 1 }));
+      await expect(
+        discoverProjectConfig(join(directory, 'missing.json'), directory),
+      ).rejects.toThrow(/could not be read/u);
+    });
+  });
+});
 
 describe('project configuration bounds', () => {
   it('rejects empty and oversized documents before parsing', async () => {

@@ -44,7 +44,7 @@ import {
 } from './engine.js';
 import {
   environmentMappings,
-  loadProjectConfig,
+  discoverProjectConfig,
   projectPolicies,
 } from './project-config.js';
 import {
@@ -265,31 +265,19 @@ async function openStateSafely(unlocked: UnlockedScope): Promise<AuthorizationSt
 async function loadOptionalProjectConfig(
   explicitPath: string | undefined,
 ): Promise<ProjectConfigDocumentLike | null> {
-  if (explicitPath !== undefined)
-    return (await loadProjectConfig(explicitPath)).document;
-  for (const candidate of DEFAULT_CONFIG_CANDIDATES) {
-    try {
-      return (await loadProjectConfig(candidate)).document;
-    } catch (error) {
-      if (isMissingConfig(error)) continue;
-      // Auto-discovered cwd project files that fail validation should name the
-      // escape hatch used by pure `--secret` runs.
-      if (error instanceof CodedCliError) {
-        throw invalidConfiguration(
-          `${error.message} Pass --no-config to ignore cwd project files when using only --secret.`,
-        );
-      }
-      throw error;
+  try {
+    return (await discoverProjectConfig(explicitPath))?.document ?? null;
+  } catch (error) {
+    // Auto-discovered cwd project files that fail validation should name the
+    // escape hatch used by pure `--secret` runs.
+    if (explicitPath === undefined && error instanceof CodedCliError) {
+      throw invalidConfiguration(
+        `${error.message} Pass --no-config to ignore cwd project files when using only --secret.`,
+      );
     }
+    throw error;
   }
-  return null;
 }
-
-function isMissingConfig(error: unknown): boolean {
-  return error instanceof Error && error.message.includes('could not be read');
-}
-
-const DEFAULT_CONFIG_CANDIDATES = ['kavrix.yaml', 'kavrix.yml', 'kavrix.json'] as const;
 
 interface RunTarget {
   readonly request: string;

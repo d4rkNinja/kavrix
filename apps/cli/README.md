@@ -71,6 +71,12 @@ kavrix tui    # full app
 Use `kavrix init --no-tui` for classic line prompts, or stdin/explicit routing
 for scripts.
 
+Version 0.2.43 fixes agent project-file discovery, coalesces TUI resize bursts,
+and honors reduced motion while loading. The new
+[agent guide](https://github.com/d4rkNinja/kavrix/blob/v0.2.43/docs/agent-guide.md)
+explains configuration validation, live requests, and failure recovery. See
+[changes and limits](https://github.com/d4rkNinja/kavrix/blob/v0.2.43/docs/release-notes-0.2.43.md).
+
 Version 0.2.42 stops completed TUI animation clocks and removes redundant
 per-frame loading-time updates. The TUI guide includes reduced-motion commands
 for PowerShell and POSIX terminals. See

@@ -11,6 +11,7 @@ import {
   MOTION,
   revealProgress,
   revealRemainingMs,
+  resolveMotionPolicy,
   staggerVisibleCount,
   sweepBarRow,
   useEnterProgress,
@@ -471,7 +472,8 @@ export function LoadingState({
   ascii: boolean;
   animate?: boolean;
 }>): ReactElement {
-  const frame = useMotionFrame(animate, MOTION.feedbackMs);
+  const animated = resolveMotionPolicy({ requested: animate }).animate;
+  const frame = useMotionFrame(animated, MOTION.feedbackMs);
   const spinner = ascii
     ? ['|', '/', '-', '\\'][frame % 4]
     : ['\u280b', '\u2819', '\u2839', '\u2838'][frame % 4];
@@ -485,9 +487,9 @@ export function LoadingState({
     <Box flexDirection="row" columnGap={1} paddingY={1}>
       <Text {...accentColor(color, CHROME.accent)}>{spinner ?? '|'}</Text>
       <Text {...accentColor(color, CHROME.muted)}>
-        {animate ? `${base}${animatedDots(frame)}` : safe(label, ascii)}
+        {animated ? `${base}${animatedDots(frame)}` : safe(label, ascii)}
       </Text>
-      {animate && seconds > 0 ? (
+      {animated && seconds > 0 ? (
         <Text dimColor {...accentColor(color, CHROME.muted)}>
           {`${String(seconds)}s`}
         </Text>

@@ -56,7 +56,7 @@ import {
   streamOutputFrames,
   tokensMatch,
 } from './broker-protocol.js';
-import { loadProjectConfig } from './project-config.js';
+import { discoverProjectConfig } from './project-config.js';
 import type { ProjectConfigDocument } from '@kavrix/schemas';
 import { effectiveExitCode, forwardableSignals, signalExitCode } from './signals.js';
 
@@ -142,13 +142,7 @@ export async function executeAgentRun(options: AgentRunOptions): Promise<unknown
     throw invalidConfiguration('An agent command is required after `--`.');
   }
 
-  const configDocument =
-    options.config !== undefined ? await loadProjectConfig(options.config) : null;
-  if (configDocument === null) {
-    throw invalidConfiguration(
-      'Agent permissions live in a project file; pass --config or create kavrix.yaml.',
-    );
-  }
+  const configDocument = await loadAgentProjectConfig(options.config);
   const agentDefinition = configDocument.document.agents?.[options.agentName];
   if (agentDefinition === undefined) {
     throw invalidConfiguration(
@@ -485,25 +479,13 @@ const INHERITED_ENVIRONMENT = [
   'USERPROFILE',
 ] as const;
 
-const DEFAULT_AGENT_CONFIG_CANDIDATES = [
-  'kavrix.yaml',
-  'kavrix.yml',
-  'kavrix.json',
-] as const;
-
 async function loadAgentProjectConfig(
   explicitPath: string | undefined,
 ): Promise<Readonly<{ document: ProjectConfigDocument }>> {
-  if (explicitPath !== undefined) return loadProjectConfig(explicitPath);
-  for (const candidate of DEFAULT_AGENT_CONFIG_CANDIDATES) {
-    try {
-      return await loadProjectConfig(candidate);
-    } catch {
-      // try next default
-    }
-  }
+  const config = await discoverProjectConfig(explicitPath);
+  if (config !== null) return config;
   throw invalidConfiguration(
-    'agent exec --dry-run requires a project config (pass --config or create kavrix.yaml) so unknown permissions cannot report ok:true.',
+    'Agent permissions require a project file (pass --config or create kavrix.yaml, kavrix.yml, or kavrix.json in the working directory).',
   );
 }
 

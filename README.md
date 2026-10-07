@@ -53,6 +53,11 @@ unlock. Browse and Policy/Grant/Audit each load one snapshot. Agent brokers run
 up to four requests concurrently, with bounded admission and isolated child I/O.
 See [0.2.41 behavior and limits](docs/release-notes-0.2.41.md).
 
+Finished TUI animations release their timers, loading honors reduced motion,
+and terminal resize bursts coalesce using the latest dimensions. Agent commands
+share fail-closed project-file discovery. See the [agent guide](docs/agent-guide.md)
+and [0.2.43 changes](docs/release-notes-0.2.43.md).
+
 ## Run tools without pasting secrets
 
 ```sh

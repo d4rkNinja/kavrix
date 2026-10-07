@@ -1,4 +1,5 @@
-import { readFile } from 'node:fs/promises';
+import { lstat, readFile } from 'node:fs/promises';
+import { join } from 'node:path';
 
 import { parse as parseYaml } from 'yaml';
 
@@ -13,6 +14,37 @@ import {
 import { invalidConfiguration } from './exit-codes.js';
 
 const MAX_PROJECT_CONFIG_BYTES = 128 * 1024;
+
+const DEFAULT_CONFIG_CANDIDATES = ['kavrix.yaml', 'kavrix.yml', 'kavrix.json'] as const;
+
+/** Only absence permits discovery to continue. Invalid or ambiguous policy files fail closed. */
+export async function discoverProjectConfig(
+  explicitPath: string | undefined,
+  workingDirectory = process.cwd(),
+): Promise<Readonly<{ document: ProjectConfigDocument }> | null> {
+  if (explicitPath !== undefined) return loadProjectConfig(explicitPath);
+  const present: string[] = [];
+  for (const candidate of DEFAULT_CONFIG_CANDIDATES) {
+    const path = join(workingDirectory, candidate);
+    try {
+      await lstat(path);
+      present.push(path);
+    } catch (error) {
+      if (error instanceof Error && 'code' in error && error.code === 'ENOENT')
+        continue;
+      throw invalidConfiguration(
+        `Project configuration could not be inspected: ${path}`,
+      );
+    }
+  }
+  if (present.length > 1) {
+    throw invalidConfiguration(
+      'Multiple project configuration files were found; choose one with --config <path>.',
+    );
+  }
+  const path = present[0];
+  return path === undefined ? null : loadProjectConfig(path);
+}
 
 /**
  * Loads a non-secret project file (`kavrix.yaml` or `.json`). The file may

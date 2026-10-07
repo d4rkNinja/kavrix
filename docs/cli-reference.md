@@ -608,6 +608,13 @@ credential plaintext.
 
 ## 11. AI agent credential firewall
 
+`agent run` and `agent exec --dry-run` share project-file discovery with `run`:
+exactly one `kavrix.yaml`, `kavrix.yml`, or `kavrix.json` in the working directory.
+Pass `--config <path>` to select explicitly when multiple defaults exist.
+Malformed or unreadable discovered files fail closed; they never silently fall
+back to another configuration. Agent mode requires a bound database profile.
+See the [agent guide](agent-guide.md) for setup and troubleshooting.
+
 `kavrix agent run` starts an agent process with no credential material: it
 receives only a local broker endpoint and a per-session token. Every
 credential-backed operation must be requested through `kavrix agent exec`,

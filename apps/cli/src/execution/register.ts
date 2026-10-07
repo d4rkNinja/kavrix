@@ -353,7 +353,10 @@ function registerAgent(program: Command): void {
     .allowUnknownOption(true)
     .allowExcessArguments(true)
     .requiredOption('--agent <name>', 'Agent entry in the project configuration file.')
-    .option('--config <path>', 'Non-secret project configuration file.')
+    .option(
+      '--config <path>',
+      'Project file; otherwise discover one kavrix.yaml, kavrix.yml, or kavrix.json in cwd.',
+    )
     .option(
       '--dry-run',
       'Validate project agent config and datastore binding without starting an agent.',
@@ -377,7 +380,10 @@ function registerAgent(program: Command): void {
       '--dry-run',
       'Validate the permission against project agent config without contacting a broker (fails closed on unknown permissions).',
     )
-    .option('--config <path>', 'Non-secret project configuration file.')
+    .option(
+      '--config <path>',
+      'Dry-run project file; otherwise discover one kavrix.yaml, kavrix.yml, or kavrix.json in cwd.',
+    )
     .option('--json', 'Emit a machine-readable envelope.');
   agentExec.action(async (...args: unknown[]) => {
     const impl = await import('./commands.js');

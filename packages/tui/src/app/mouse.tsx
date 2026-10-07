@@ -81,6 +81,8 @@ export interface MouseInputOptions {
    * replaced is dropped instead of being resolved against new geometry.
    */
   readonly getFrame?: () => number;
+  /** Reject pointer reports while a layout update is pending or not yet painted. */
+  readonly isInputReady?: () => boolean;
 }
 
 export interface MouseInput {
@@ -538,7 +540,7 @@ export function createMouseInput(options: MouseInputOptions): MouseInput {
     // Coordinates only mean something relative to the frame the user saw. Every
     // report in one read is decoded against the same snapshot, so once the first
     // click repaints, the rest of that read is resolving against stale geometry.
-    if (frame !== getFrame()) {
+    if (frame !== getFrame() || options.isInputReady?.() === false) {
       return;
     }
 

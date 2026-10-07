@@ -164,12 +164,19 @@ specific one.
 Inside that session, children request secrets per operation:
 
 ```sh
-kavrix agent exec gh -- gh issue list
+kavrix agent exec gh-issue-list -- gh issue list
 ```
 
 Every request is authorized before any child starts; the secret is injected
 into the authorized child only; and both allow and deny decisions appear in
 `kavrix audit`.
+
+Validate the configuration first with
+`kavrix agent run --agent bot --config kavrix.yaml --dry-run --json`.
+Dry-run checks configuration and datastore binding; it does not unlock, check
+credential existence, or authorize a future operation. The permission key must
+match the YAML entry exactly. See the [agent guide](agent-guide.md) for the TUI
+workflow, configuration discovery, denial reasons, and broker limits.
 
 ## 8. Stop typing the passphrase
 

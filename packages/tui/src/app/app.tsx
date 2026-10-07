@@ -20,6 +20,7 @@ import { AppInteractionProvider } from './interaction.js';
 import { ClickTarget, createMouseInput, MouseProvider } from './mouse.js';
 import { terminalFullscreenEnabled } from './viewport.js';
 import { createInputReadiness } from './input-readiness.js';
+import { subscribeToTerminalResize } from './terminal-resize.js';
 
 /** Monotonic frame id shared between the router and the mouse decoder. */
 export interface FrameClock {
@@ -43,6 +44,7 @@ export interface KavrixAppProps {
    * with mouse reporting still enabled.
    */
   readonly releaseInput?: () => void;
+  readonly holdInput?: () => () => void;
 }
 
 export function KavrixApp({
@@ -56,6 +58,7 @@ export function KavrixApp({
   mouse = false,
   frameClock,
   releaseInput,
+  holdInput,
 }: KavrixAppProps): ReactElement {
   const { stdout } = useStdout();
   const { exit } = useApp();
@@ -265,11 +268,8 @@ export function KavrixApp({
         height: size.height,
       });
     };
-    stdout.on('resize', resize);
-    return () => {
-      stdout.off('resize', resize);
-    };
-  }, [dispatch, stdout]);
+    return subscribeToTerminalResize(stdout, resize, holdInput);
+  }, [dispatch, stdout, holdInput]);
 
   useEffect(() => {
     if (state.revealedUntilMs === 0) return undefined;
@@ -411,6 +411,7 @@ export function mountKavrixApp(options: MountKavrixAppOptions): KavrixAppHandle 
       process.env['KAVRIX_TUI_MOUSE'] !== '0' &&
       alternateScreen,
     getFrame: () => frameClock.current,
+    isInputReady: inputReadiness.isReady,
   });
   ensureTtySize(stdout);
   // Ink 7 skips live frames under CI=1 even on a real TTY (xfce4-terminal stays
@@ -452,6 +453,7 @@ export function mountKavrixApp(options: MountKavrixAppOptions): KavrixAppHandle 
           color={presentation.color}
           mouse={mouse.enabled}
           frameClock={frameClock}
+          holdInput={inputReadiness.hold}
           releaseInput={() => {
             mouse.dispose();
           }}

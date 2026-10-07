@@ -134,6 +134,18 @@ async function click(
 }
 
 describe('mounted setup pointer and full-screen controls', () => {
+  it('drops pointer reports while a resize is pending, then accepts the painted layout', async () => {
+    const fixture = mount();
+    await ready(fixture, 'Welcome');
+    const oldClick = report(fixture, 'Enter start');
+    fixture.output.columns = 70;
+    fixture.output.rows = 20;
+    fixture.output.emit('resize');
+    fixture.input.write(oldClick);
+    await fixture.handle.waitForInputReady();
+    expect(fixture.output.frame()).toContain('Welcome');
+    await click(fixture, 'Enter start', 'Local encrypted file');
+  });
   it('flushes resized chrome before reporting input readiness', async () => {
     const fixture = mount();
     await ready(fixture, 'Welcome');

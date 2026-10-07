@@ -3,7 +3,7 @@ import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { executeAgentRun } from '../src/execution/agent-command.js';
+import { executeAgentExec, executeAgentRun } from '../src/execution/agent-command.js';
 import { AuthorizationState } from '../src/execution/authorization-state.js';
 import {
   createExecutionFixture,
@@ -21,6 +21,31 @@ beforeEach(async () => {
   fixture = await createExecutionFixture({
     'github/token': SECRET_VALUE,
   });
+});
+
+it('discovers the same project configuration for agent run and exec dry-run without unlock', async () => {
+  await writeFile(
+    join(fixture.directory, 'kavrix.json'),
+    JSON.stringify({
+      version: 1,
+      agents: {
+        bot: { permissions: { ping: { secret: 'github/token', commands: ['node'] } } },
+      },
+    }),
+  );
+  vi.spyOn(process, 'cwd').mockReturnValue(fixture.directory);
+  await expect(
+    executeAgentRun({
+      profile: 'exec',
+      profileConfigDir: join(fixture.directory, 'profiles'),
+      agentName: 'bot',
+      dryRun: true,
+      executableAndArgs: [],
+    }),
+  ).resolves.toMatchObject({ ok: true, agent: 'bot', permissionCount: 1 });
+  await expect(
+    executeAgentExec({ permission: 'ping', dryRun: true, executableAndArgs: [] }),
+  ).resolves.toMatchObject({ ok: true, permission: 'ping' });
 });
 
 afterEach(async () => {

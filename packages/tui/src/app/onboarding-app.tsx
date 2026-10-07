@@ -11,6 +11,7 @@ import { InputInteractionProvider } from './interaction.js';
 import { createMouseInput, MouseProvider } from './mouse.js';
 import { terminalFullscreenEnabled } from './viewport.js';
 import { createInputReadiness } from './input-readiness.js';
+import { subscribeToTerminalResize } from './terminal-resize.js';
 import {
   createInitialOnboardingState,
   transitionOnboarding,
@@ -31,6 +32,7 @@ export interface KavrixOnboardingAppProps {
   readonly mouse?: boolean;
   readonly frameClock?: FrameClock;
   readonly releaseInput?: () => void;
+  readonly holdInput?: () => () => void;
 }
 
 export type OnboardingAppResult =
@@ -70,6 +72,7 @@ export function KavrixOnboardingApp({
   mouse = false,
   frameClock,
   releaseInput,
+  holdInput,
 }: KavrixOnboardingAppProps): ReactElement {
   const { stdout } = useStdout();
   const { exit } = useApp();
@@ -239,21 +242,20 @@ export function KavrixOnboardingApp({
 
   useEffect(() => {
     const resize = (): void => {
+      const size = resolveTtySize(stdout);
       const next = transitionOnboarding(stateRef.current, {
         type: 'resize',
-        width: resolveTtySize(stdout).width,
-        height: resolveTtySize(stdout).height,
+        width: size.width,
+        height: size.height,
       });
+      if (next.state === stateRef.current) return;
       stateRef.current = next.state;
       setState(next.state);
       clock.current += 1;
       setPaintEpoch((epoch) => epoch + 1);
     };
-    stdout.on('resize', resize);
-    return () => {
-      stdout.off('resize', resize);
-    };
-  }, [stdout]);
+    return subscribeToTerminalResize(stdout, resize, holdInput);
+  }, [stdout, holdInput]);
 
   useEffect(() => {
     if (!state.quit) return;
@@ -366,6 +368,7 @@ export function mountOnboardingApp(
       process.env['KAVRIX_TUI_MOUSE'] !== '0' &&
       alternateScreen,
     getFrame: () => frameClock.current,
+    isInputReady: inputReadiness.isReady,
   });
   let instance: ReturnType<typeof render> | undefined;
   const restoreTerminal = (): void => {
@@ -396,6 +399,7 @@ export function mountOnboardingApp(
           color={presentation.color}
           mouse={mouse.enabled}
           frameClock={frameClock}
+          holdInput={inputReadiness.hold}
           releaseInput={() => {
             mouse.dispose();
           }}
