@@ -3,7 +3,10 @@
 Open Actions > Deploy selected branch to server > Run workflow.
 Keep **Use workflow from** on `main`. Select the target repository branch in the **branch** dropdown.
 The server refreshes branch choices every five minutes; reopen or refresh the Actions page after adding a branch.
-Choose **build** to verify without switching the running service, then **deploy** to activate.
+The default **Build and deploy** validates configuration, builds the selected branch and activates it in one run.
+Choose **build** to check a build without activation, **deploy** for the existing full deployment action,
+or **validate** for configuration/source checks only. Activation failures retain the existing rollback behavior.
+Projects without a configured runtime publish their built release without starting a service.
 The branch input works even when an older branch has no deployment workflow.
 Pushes and pull requests do not deploy. Existing CI and release workflows are preserved.
 

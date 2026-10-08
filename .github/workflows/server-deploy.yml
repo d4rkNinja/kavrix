@@ -22,11 +22,15 @@ on:
           - "fix/ci-after-153-file-default"
           - "fix/p1-followups-0.2.14"
       mode:
-        description: Build first to verify; deploy activates the selected branch
+        description: "Build and deploy runs validation, build and activation; build only verifies; validate checks configuration"
         required: true
         type: choice
-        options: [build, deploy, validate]
-        default: build
+        default: "Build and deploy"
+        options:
+          - "Build and deploy"
+          - build
+          - deploy
+          - validate
 permissions:
   contents: read
 concurrency:
@@ -59,5 +63,5 @@ jobs:
       - name: Build or deploy selected branch
         env:
           DEPLOY_BRANCH: ${{ inputs.branch }}
-          DEPLOY_MODE: ${{ inputs.mode }}
+          DEPLOY_MODE: ${{ inputs.mode == 'Build and deploy' && 'deploy' || inputs.mode }}
         run: python3 control/.github/deploy/deploy.py --config control/.github/deploy/server.json --source source --mode "$DEPLOY_MODE"
