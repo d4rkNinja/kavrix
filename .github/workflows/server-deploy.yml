@@ -4,10 +4,23 @@ on:
   workflow_dispatch:
     inputs:
       branch:
-        description: Branch to build/deploy (any branch in this repository)
+        description: Select branch to build/deploy (list refreshes every 5 minutes)
         required: true
-        type: string
-        default: main
+        type: choice
+        default: "main"
+        options:
+          - "main"
+          - "ci/windows-verify-faster"
+          - "development"
+          - "fix/0.2.15-windows-ci-flakes"
+          - "fix/0.2.19-live-qa-p1s"
+          - "fix/0.2.19-live-qa-p2-ux"
+          - "fix/0.2.20-qa-and-tui-release"
+          - "fix/0.2.21-windows-heal"
+          - "fix/ci-0.2.14-lint-smoke"
+          - "fix/ci-0214-lint-smoke"
+          - "fix/ci-after-153-file-default"
+          - "fix/p1-followups-0.2.14"
       mode:
         description: Build first to verify; deploy activates the selected branch
         required: true
