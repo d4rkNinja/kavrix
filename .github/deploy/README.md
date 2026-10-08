@@ -1,7 +1,8 @@
 # Branch deployment to Sudarsan
 
 Open Actions > Deploy selected branch to server > Run workflow.
-Keep **Use workflow from** on `main`. Enter any repository branch in **branch**.
+Keep **Use workflow from** on `main`. Select the target repository branch in the **branch** dropdown.
+The server refreshes branch choices every five minutes; reopen or refresh the Actions page after adding a branch.
 Choose **build** to verify without switching the running service, then **deploy** to activate.
 The branch input works even when an older branch has no deployment workflow.
 Pushes and pull requests do not deploy. Existing CI and release workflows are preserved.
