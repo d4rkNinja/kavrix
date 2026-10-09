@@ -150,6 +150,19 @@ stays listed and says why — "Unlock the vault first (u) to add a credential."
 (`u`, `l`, `t`, `a`, `?`, `Tab`, `Esc`, `q`) are advertised on every screen's
 footer, not only Home.
 
+Every screen also says what it is for. One line under the header names the
+screen's purpose and the keys that act on it, and it follows the current state —
+while the Credentials name filter is open it reads "Name filter open: every key
+narrows the list. Esc clears." rather than advertising keys that would type into
+the search. The Home menu groups its destinations into Set up, Secrets,
+Security, and Tools, each section reporting how many destinations it holds.
+Empty lists offer the one key that moves you forward: `n create a file profile`
+on Profiles, `n put a credential` (or `u unlock your vault` while locked) on
+Credentials, `n create a recovery kit` on Recovery. An affordance the screen
+cannot honour is not offered at all — Vaults and Session unlock only show an
+unlock chip while the vault is actually locked. Notice rows carry a tone glyph
+beside their colour, so a `NO_COLOR` or `--ascii` session reads the same.
+
 Common database TUI actions reuse authenticated keys, with fresh protected-file,
 datastore, and rollback-anchor checks per operation. Storage closes between
 actions. Two idle minutes or fifteen minutes since unlock locks the TUI; navigation

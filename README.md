@@ -62,6 +62,12 @@ Agent names and live permissions require explicitly configured entries.
 Unknown and explicitly denied requests stop before executable lookup; see
 [0.2.43 changes](docs/release-notes-0.2.43.md).
 
+The interactive app is redesigned for first use: the Home menu groups its
+destinations into Set up, Secrets, Security, and Tools, every screen states what
+it is for and which keys act on it, empty lists offer the key that moves you
+forward, and notice rows carry a tone glyph for `NO_COLOR` sessions. See
+[0.2.45 changes](docs/release-notes-0.2.45.md).
+
 ## Run tools without pasting secrets
 
 ```sh

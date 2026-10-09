@@ -141,6 +141,34 @@ Policy/Grant/Audit, Agent, Vault context / service / item browse (vault
 hierarchy, not the CLI project-file `--environment` flag), Help, and the
 existing storage showcase destination.
 
+### Reading the screen
+
+The header names the product and the current screen, shows the lock state, the
+active profile and vault, and the credential count. Directly beneath it is one
+line that says what this screen is for and which keys act on it — for example
+`/ filters names · Enter detail · c copy · r reveal · n put.` on Credentials.
+That line is state-aware: while the Credentials name filter is open it becomes
+`Name filter open: every key narrows the list. Esc clears.`, because every
+printable key is filter text at that moment. Below 16 terminal rows the line is
+dropped so a compact viewport spends its budget on the body.
+
+The Home menu groups its twelve destinations into four named sections — **Set
+up**, **Secrets**, **Security**, **Tools** — each introducing itself with the
+number of destinations it holds. A section header is never the last visible row
+of a truncated list, and the bands never take a cursor slot, so the digit
+shortcuts and `Tab` cycling still index the same screens in the same order.
+
+Every empty list offers the one key that moves you forward: Profiles shows
+`n create a file profile`, Credentials shows `n put a credential` (or
+`u unlock your vault` while the vault is locked), Recovery shows
+`n create a recovery kit`, and Doctor shows `d run doctor checks`. An
+affordance the screen cannot honour is not offered at all: Vaults and Session
+only show an unlock chip while the vault is actually locked.
+
+The notice row below the body carries a tone glyph (`✓`, `⚠`, `✕`, `ℹ`) beside
+its colour, so a session with `NO_COLOR` or `--ascii` still reads whether the
+last operation succeeded, warned, or failed.
+
 On Home, press `u` to unlock and `4` to open Credentials. `Shift+U` always
 opens protected passphrase input, so an unavailable OS keychain cannot trap
 you in repeated session-unlock attempts. Expired sessions open passphrase

@@ -1,4 +1,5 @@
 export * from './ids.js';
+export * from './navigation.js';
 export * from './backend.js';
 export * from './router.js';
 export { prioritizeFooterChips } from './screens.js';
@@ -73,6 +74,9 @@ export {
   RevealCountdown,
   Divider,
   TabNav,
+  GroupBand,
+  ScreenHint,
+  navGroupLabel,
   useListStagger,
 } from './widgets.js';
 export {

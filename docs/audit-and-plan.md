@@ -16,6 +16,8 @@ plaintext note body, passphrase, or field value reaches the container bytes).
 
 Everything in §2 and §4 shipped in **0.2.44**; see
 [the release notes](release-notes-0.2.44.md) for the user-facing account.
+Section §4.7 is a follow-up usability pass that shipped in **0.2.45**; see
+[its release notes](release-notes-0.2.45.md).
 Sections §3, §5, and §6 describe what remains open.
 
 ## 1. What already works, and works well
@@ -251,6 +253,43 @@ codebase was missing.
 Files: `packages/tui/src/app/commands.ts` (new),
 `packages/tui/src/app/router.ts`, `packages/tui/src/app/screens.tsx`,
 `packages/tui/test/command-palette.test.ts` (new, 11 tests).
+
+### 4.7 Thirteen destinations with no map, and screens that never said what they were — **done (0.2.45)**
+
+The palette made every action _listable_, but nothing made the app _readable_.
+The Home menu rendered twelve identical rows under a generic heading; no screen
+stated its own purpose; an empty list described the next step in prose and then
+offered no key; and the notice row carried no indication of whether the last
+operation succeeded, warned, or failed, so a colour-blind or `NO_COLOR` session
+had to guess.
+
+Fixed in `packages/tui/src/app/ids.ts` (`AppNavGroup`, `NAV_GROUPS`,
+`SCREEN_GUIDES`, `screenGuide`), `packages/tui/src/app/navigation.ts` (new),
+`packages/tui/src/app/widgets.tsx` (`GroupBand`, `ScreenHint`), and
+`packages/tui/src/app/screens.tsx`:
+
+- The Home menu groups destinations into **Set up**, **Secrets**, **Security**,
+  and **Tools**. Bands are presentation only — they never consume a cursor slot,
+  so digit shortcuts and `Tab` cycling still index the same screens in the same
+  order. `groupedNavWindow` never leaves a band as the last visible row, because
+  a section header promising entries scrolled out of view is worse than none.
+- Each screen states its purpose and its keys in one line under the header,
+  bounded to 73 characters so it survives the 80-column layout matrix. It is
+  dropped below 16 rows and the body's height budget pays for it when present.
+- `screenGuide` is state-aware: while the Credentials name filter is open the
+  line switches to "Name filter open: every key narrows the list. Esc clears."
+  instead of advertising `n put` / `c copy` / `r reveal`, which are filter text at
+  that moment. This is the discipline the footer's filtering chip set already
+  follows, applied to the new row.
+- `EmptyState` gained an `action` slot, so the screens that most often start
+  empty offer the one key that moves the user forward. Affordances the screen
+  cannot honour are gated rather than shown: Vaults and Session unlock offer an
+  unlock chip only while the vault is actually locked.
+- The notice row prefixes the snapshot's tone glyph, so `NO_COLOR`, `--ascii`,
+  and dumb terminals read the same information a colour terminal does.
+
+No screen, keybinding, mnemonic, palette entry, or masking rule changed.
+Tests: `packages/tui/test/app/friendly-ui.test.ts` (new, 26 tests).
 
 ## 5. Missing capabilities (the honest product gap)
 

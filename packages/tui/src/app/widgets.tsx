@@ -19,6 +19,7 @@ import {
 } from '../motion.js';
 import { sanitizeTerminalText } from '../terminal-text.js';
 import { APP_MENU, type AppScreenId } from './ids.js';
+import { NAV_GROUPS, type AppNavGroup } from './ids.js';
 import { keyForChip, useAppInteraction, useInputInteraction } from './interaction.js';
 import { ClickTarget } from './mouse.js';
 import {
@@ -28,12 +29,78 @@ import {
   panelBorderStyle,
   pointerGlyph,
   sectionTitle,
+  sectionTitleWide,
   toneGlyph,
   type AppAccent,
 } from './theme.js';
 
 function safe(value: string, ascii: boolean): string {
   return sanitizeTerminalText(value, ascii);
+}
+
+/** Human label for a destination group, in the active text mode. */
+export function navGroupLabel(group: AppNavGroup, ascii: boolean): string {
+  const info = NAV_GROUPS.find((candidate) => candidate.id === group);
+  if (info === undefined) return group;
+  return ascii ? info.label.toUpperCase() : info.label;
+}
+
+/**
+ * Section band for grouped navigation: `─ SET UP ──────── 2` in Unicode,
+ * `[ SET UP ] 2` in ASCII. It names what follows and counts the destinations
+ * in the section, so a truncated list still tells the user how much is there.
+ */
+export function GroupBand({
+  group,
+  count,
+  width,
+  color,
+  ascii,
+}: Readonly<{
+  group: AppNavGroup;
+  count: number;
+  width: number;
+  color: boolean;
+  ascii: boolean;
+}>): ReactElement {
+  const label = navGroupLabel(group, ascii);
+  const badge = String(count);
+  // The badge is what makes the band honest when the section is truncated, so
+  // it must survive even in a very narrow cell budget.
+  if (width <= badge.length + 2) {
+    return (
+      <Text bold {...accentColor(color, CHROME.heading)}>
+        {`${label} ${badge}`}
+      </Text>
+    );
+  }
+  const rule = sectionTitleWide(label, ascii, Math.max(4, width - badge.length - 1));
+  return (
+    <SingleLine {...accentColor(color, CHROME.muted)}>
+      <Text bold {...accentColor(color, CHROME.heading)}>
+        {rule}
+      </Text>
+      <Text {...accentColor(color, CHROME.muted)}>{` ${badge}`}</Text>
+    </SingleLine>
+  );
+}
+
+/**
+ * One-line orientation row: what this screen is for and which keys act on it.
+ * Painted under the header so the user never has to infer a screen's purpose
+ * from its tab label alone.
+ */
+export function ScreenHint({
+  hint,
+  color,
+  ascii,
+}: Readonly<{ hint: string; color: boolean; ascii: boolean }>): ReactElement {
+  return (
+    <SingleLine {...accentColor(color, CHROME.muted)}>
+      <Text {...accentColor(color, CHROME.info)}>{toneGlyph('info', ascii)}</Text>
+      {safe(hint, ascii)}
+    </SingleLine>
+  );
 }
 
 /** Clip at cell boundaries without Ink inserting a Unicode ellipsis in ASCII mode. */
@@ -426,16 +493,26 @@ export function EmptyState({
   hint,
   color,
   ascii,
+  action,
 }: Readonly<{
   title: string;
   hint: string;
   color: boolean;
   ascii: boolean;
+  /** Primary next step, rendered as a chip so the empty state is actionable. */
+  action?: ReactNode | undefined;
 }>): ReactElement {
   return (
     <Box flexDirection="column" paddingY={1}>
-      <Text {...accentColor(color, CHROME.warning)}>{safe(title, ascii)}</Text>
+      <Text bold {...accentColor(color, CHROME.warning)}>
+        {safe(title, ascii)}
+      </Text>
       <Text {...accentColor(color, CHROME.muted)}>{safe(hint, ascii)}</Text>
+      {action === undefined ? null : (
+        <Box flexDirection="row" columnGap={1} marginTop={1}>
+          {action}
+        </Box>
+      )}
     </Box>
   );
 }

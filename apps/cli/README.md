@@ -71,6 +71,14 @@ kavrix tui    # full app
 Use `kavrix init --no-tui` for classic line prompts, or stdin/explicit routing
 for scripts.
 
+Version 0.2.45 redesigns the TUI around orientation and next steps. The Home
+menu groups its destinations into Set up, Secrets, Security, and Tools; every
+screen states what it is for and which keys act on it; empty lists offer the one
+key that moves you forward; and the notice row carries a tone glyph so a
+`NO_COLOR` or `--ascii` session reads the same. No screen, keybinding, or
+mnemonic changes. See
+[changes and limits](https://github.com/d4rkNinja/kavrix/blob/v0.2.45/docs/release-notes-0.2.45.md).
+
 Version 0.2.43 rejects undeclared agent names as configuration errors and denies
 unknown or explicitly blocked permissions before executable lookup or hashing.
 This preserves denial auditing and avoids unnecessary work on rejected requests.

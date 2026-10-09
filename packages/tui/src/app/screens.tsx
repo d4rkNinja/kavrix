@@ -5,9 +5,10 @@ import { resolveMotionPolicy, useCursorVisible } from '../motion.js';
 import { PRODUCT_LABEL } from '../product.js';
 import { sanitizeTerminalText, secretMask } from '../terminal-text.js';
 import type { AppSnapshot } from './backend.js';
-import { APP_MENU, HELP_TOPICS } from './ids.js';
+import { APP_MENU, HELP_TOPICS, screenGuide } from './ids.js';
 import { useAppInteraction } from './interaction.js';
 import { ClickTarget } from './mouse.js';
+import { groupedNavRows, groupedNavWindow, type NavRow } from './navigation.js';
 import { TerminalViewport, terminalFullscreenEnabled } from './viewport.js';
 import {
   filteredCredentials,
@@ -27,16 +28,19 @@ import {
   screenAccent,
   THEMES,
   toneAccent,
+  toneGlyph,
   type AppAccent,
 } from './theme.js';
 import {
   CardRow,
   EmptyState,
+  GroupBand,
   KeyChip,
   ModalFrame,
   MotionEnter,
   Panel,
   RevealCountdown,
+  ScreenHint,
   SectionTitle,
   SelectRow,
   SingleLine,
@@ -508,6 +512,9 @@ export function AppChrome({
 
   const fullscreen = terminalFullscreenEnabled();
   const compactOverlay = overlay !== null && state.height < 16;
+  // The orientation row costs one line of chrome, so the body budget pays for
+  // it: the frame still fills exactly `height` rows with the footer pinned.
+  const showGuide = overlay === null && state.height >= 16;
   const overlayActions = (
     <OverlayActions
       color={color}
@@ -577,6 +584,13 @@ export function AppChrome({
                 </Text>
               ) : null}
             </Box>
+            {showGuide ? (
+              <ScreenHint
+                hint={screenGuide(state.screen, state.filtering)}
+                color={color}
+                ascii={ascii}
+              />
+            ) : null}
           </Panel>
 
           <TabNav
@@ -603,7 +617,9 @@ export function AppChrome({
                 ? 4
                 : 2
               : overlay === null
-                ? 10
+                ? showGuide
+                  ? 11
+                  : 10
                 : state.height < 20
                   ? 4
                   : 7),
@@ -722,6 +738,9 @@ function Footer({ state }: Readonly<{ state: AppRouterState }>): ReactElement {
     : (message ?? snapshot.notice);
   if (state.overlay !== 'none' && notice === null) return <></>;
   const noticeAccent = toneAccent(snapshot.noticeTone);
+  // A wordless glyph makes the notice readable at a glance without relying on
+  // color, and `NO_COLOR` / ASCII sessions keep the bracketed token instead.
+  const noticeGlyph = toneGlyph(snapshot.noticeTone, ascii);
   const sep = ascii ? ' | ' : ' · ';
   const chips = prioritizeFooterChips(
     footerChips(state),
@@ -732,7 +751,7 @@ function Footer({ state }: Readonly<{ state: AppRouterState }>): ReactElement {
     <Box flexDirection="column" flexShrink={0}>
       {notice === null ? null : (
         <SingleLine {...accentColor(color, noticeAccent)}>
-          {safe(notice, ascii)}
+          {safe(`${noticeGlyph}${notice}`, ascii)}
         </SingleLine>
       )}
       {state.overlay !== 'none' ? null : (
@@ -985,10 +1004,13 @@ export function HomeScreen({
   const entries = APP_MENU.filter((entry) => entry.id !== 'home');
   const pendingAt = useListStagger(entries.length, allowMotion());
   const wide = width >= 80;
-  const window = visibleListWindow(
-    entries,
+  // Group bands share the body budget with destinations, so the window is sized
+  // over grouped rows rather than destinations alone.
+  const navRows = groupedNavRows(entries);
+  const window = groupedNavWindow(
+    navRows,
     menuIndex,
-    Math.max(1, state.height - (wide ? 14 : 15)),
+    Math.max(3, state.height - (wide ? 15 : 16)),
   );
   const statusPanel = (
     <Panel
@@ -1048,35 +1070,56 @@ export function HomeScreen({
           ...entries.map((entry) => labelOf(entry).length),
           8,
         );
-        return window.items.map((entry, offset) => {
-          const index = window.start + offset;
-          const active = index === menuIndex;
-          return (
-            <SelectRow
-              key={entry.id}
-              active={active}
-              label={labelOf(entry)}
-              {...(width >= 80 ? { hint: entry.hint } : {})}
-              accent={entry.accent}
-              color={color}
-              ascii={ascii}
-              labelWidth={labelWidth}
-              pending={pendingAt(index)}
-              onPress={() => {
-                interaction.dispatch({
-                  type: 'select-row',
-                  index,
-                  activate: true,
-                  nowMs: state.nowMs,
-                });
-              }}
-            />
-          );
-        });
+        // Panel borders and paddingX already account for two cells per side, so
+        // the band's own budget is the panel's content width.
+        const navWidth = wide
+          ? width - 1 - Math.floor((width - 1) * 0.35) - 4
+          : width - 4;
+        const visibleEntries = window.rows.filter(
+          (row): row is Extract<NavRow, { kind: 'entry' }> => row.kind === 'entry',
+        );
+        return (
+          <>
+            {window.rows.map((row) =>
+              row.kind === 'band' ? (
+                <GroupBand
+                  key={`group-${row.group}`}
+                  group={row.group}
+                  count={row.count}
+                  width={navWidth}
+                  color={color}
+                  ascii={ascii}
+                />
+              ) : (
+                <SelectRow
+                  key={row.entry.id}
+                  active={row.index === menuIndex}
+                  label={labelOf(row.entry)}
+                  {...(width >= 80 ? { hint: row.entry.hint } : {})}
+                  accent={row.entry.accent}
+                  color={color}
+                  ascii={ascii}
+                  labelWidth={labelWidth}
+                  pending={pendingAt(row.index)}
+                  onPress={() => {
+                    interaction.dispatch({
+                      type: 'select-row',
+                      index: row.index,
+                      activate: true,
+                      nowMs: state.nowMs,
+                    });
+                  }}
+                />
+              ),
+            )}
+            {visibleEntries.length === 0 ? null : (
+              <Text
+                dimColor
+              >{`${String(visibleEntries.length)} / ${String(entries.length)} destinations shown`}</Text>
+            )}
+          </>
+        );
       })()}
-      <Text
-        dimColor
-      >{`${String(window.start + 1)}-${String(window.start + window.items.length)} / ${String(entries.length)} destinations`}</Text>
     </Panel>
   );
   if (wide) {
@@ -1140,7 +1183,7 @@ function StatusBlock({
 export function ProfilesScreen({
   state,
 }: Readonly<{ state: AppRouterState }>): ReactElement {
-  const { color, ascii } = state;
+  const { color } = state;
   return (
     <Box flexDirection="column" flexGrow={1}>
       <ListScreen
@@ -1148,6 +1191,10 @@ export function ProfilesScreen({
         title="Profiles"
         accent={CHROME.accent}
         empty="No datastore profiles found. Press n (file) or m (mongodb)."
+        hint="Enter uses the selected profile · n file · m mongodb · x removes it and keeps its files"
+        emptyAction={
+          <KeyChip keyLabel="n" hint="create a file profile" color={color} />
+        }
         rows={state.snapshot.profiles.map((profile) => ({
           id: profile.id,
           primary: `${profile.id} (${profile.datastore})${profile.selected ? ' *' : ''}`,
@@ -1155,12 +1202,6 @@ export function ProfilesScreen({
         }))}
         activateRows
       />
-      <Text {...accentColor(color, CHROME.muted)}>
-        {safe(
-          'Enter = use · n = file profile · m = mongodb profile · x = remove profile (files are kept)',
-          ascii,
-        )}
-      </Text>
     </Box>
   );
 }
@@ -1168,14 +1209,32 @@ export function ProfilesScreen({
 export function VaultsScreen({
   state,
 }: Readonly<{ state: AppRouterState }>): ReactElement {
-  const { color, ascii } = state;
+  const { color } = state;
+  const unlocked = state.snapshot.home.unlocked;
   return (
     <Box flexDirection="column" flexGrow={1}>
       <ListScreen
         state={state}
         title="Vaults"
         accent={CHROME.accent}
-        empty="No vaults yet. Select a profile, then unlock (u)."
+        empty={
+          unlocked
+            ? 'No vaults in this datastore yet. Press n to create one.'
+            : 'No vaults yet. Select a profile, then unlock (u).'
+        }
+        hint="Enter uses the selected vault · n creates a new one once the vault is unlocked"
+        // An unlock affordance on an already-unlocked vault is a promise this
+        // screen cannot keep, so it appears only while the vault is locked.
+        emptyAction={
+          state.snapshot.home.unlocked ? undefined : (
+            <KeyChip
+              keyLabel="u"
+              hint="unlock your vault"
+              color={color}
+              keyAccent={CHROME.warning}
+            />
+          )
+        }
         rows={state.snapshot.vaults.map((vault) => ({
           id: vault.id,
           primary: `${vault.id}${vault.selected ? ' *' : ''}`,
@@ -1183,12 +1242,6 @@ export function VaultsScreen({
         }))}
         activateRows
       />
-      <Text {...accentColor(color, CHROME.muted)}>
-        {safe(
-          'Enter = use selected vault · n = create a new vault (unlock first with u)',
-          ascii,
-        )}
-      </Text>
     </Box>
   );
 }
@@ -1239,6 +1292,21 @@ export function CredentialsScreen({
             }
             color={color}
             ascii={ascii}
+            // The empty state is where a user is most likely to be stuck, so it
+            // carries the one key that moves them forward instead of only
+            // naming it in prose.
+            action={
+              snapshot.home.unlocked ? (
+                <KeyChip keyLabel="n" hint="put a credential" color={color} />
+              ) : (
+                <KeyChip
+                  keyLabel="u"
+                  hint="unlock your vault"
+                  color={color}
+                  keyAccent={CHROME.warning}
+                />
+              )
+            }
           />
         ) : (
           window.items.map((credential, offset) => {
@@ -1300,7 +1368,7 @@ export function CredentialsScreen({
 export function SessionScreen({
   state,
 }: Readonly<{ state: AppRouterState }>): ReactElement {
-  const { color, ascii, snapshot } = state;
+  const { color, snapshot } = state;
   const session = snapshot.session;
   const rows = session.enabled
     ? [
@@ -1320,14 +1388,21 @@ export function SessionScreen({
         title="Session unlock (OS keychain)"
         accent={CHROME.accent}
         empty="No session unlock for this profile. Unlock with the passphrase (u), then press n to enable."
+        hint="n enables it after a passphrase unlock · x removes it · Enter refreshes the status"
+        // Session unlock only exists on an unlocked profile; the chip is offered
+        // while the vault is locked, which is when unlock is the next step.
+        emptyAction={
+          state.snapshot.home.unlocked ? undefined : (
+            <KeyChip
+              keyLabel="u"
+              hint="unlock your vault"
+              color={color}
+              keyAccent={CHROME.warning}
+            />
+          )
+        }
         rows={rows}
       />
-      <Text {...accentColor(color, CHROME.muted)}>
-        {safe(
-          'n = enable (after passphrase unlock) · x = remove · Enter = refresh status',
-          ascii,
-        )}
-      </Text>
     </Box>
   );
 }
@@ -1355,6 +1430,7 @@ export function DoctorScreen({
           hint="Checks stay on this machine. Failures are generic — they never name unlock material."
           color={color}
           ascii={ascii}
+          action={<KeyChip keyLabel="d" hint="run doctor checks" color={color} />}
         />
       ) : (
         window.items.map((check, offset) => {
@@ -1385,12 +1461,15 @@ export function DoctorScreen({
 export function RecoveryScreen({
   state,
 }: Readonly<{ state: AppRouterState }>): ReactElement {
+  const { color } = state;
   return (
     <ListScreen
       state={state}
       title="Recovery kit (key material)"
       accent={CHROME.danger}
       empty="No recovery-kit slots. n create · v verify · Enter/x revoke (last slot blocked). Doctor heal is a different command."
+      hint="n creates a kit · v verifies one · x revokes a slot. The final slot is protected."
+      emptyAction={<KeyChip keyLabel="n" hint="create a recovery kit" color={color} />}
       rows={state.snapshot.recovery.map((slot) => ({
         id: slot.slotId,
         primary: `${slot.slotId} [${slot.status}]`,
@@ -1444,6 +1523,12 @@ export function PolicyScreen({
           hint="n = create policy · x = remove policy · g = create grant · r = revoke grant"
           color={color}
           ascii={ascii}
+          action={
+            <Box flexDirection="row" columnGap={1}>
+              <KeyChip keyLabel="n" hint="create policy" color={color} />
+              <KeyChip keyLabel="g" hint="issue a grant" color={color} />
+            </Box>
+          }
         />
       ) : (
         window.items.map((row, offset) => {
@@ -1584,6 +1669,7 @@ export function BrowseScreen({
       title="Vault context / service / item"
       accent={CHROME.accent}
       empty="No vault-context rows. Unlock and press Enter to load vault context / service / item lists (not run --environment)."
+      hint="Labels only: context, service and item names, never field values. Enter refreshes."
       rows={state.snapshot.browse.map((node) => ({
         id: node.id,
         primary: `${node.kind}: ${node.label}`,
@@ -1694,6 +1780,8 @@ function ListScreen({
   accent,
   empty,
   rows,
+  hint,
+  emptyAction,
   activateRows = false,
 }: Readonly<{
   state: AppRouterState;
@@ -1701,6 +1789,10 @@ function ListScreen({
   accent: AppAccent;
   empty: string;
   rows: readonly Readonly<{ id: string; primary: string; secondary: string }>[];
+  /** Short guidance for what the rows on this screen mean and how to act on them. */
+  hint?: string | undefined;
+  /** Primary next step offered while the list has no rows. */
+  emptyAction?: ReactElement | undefined;
   /**
    * Enables two-step row activation for lists whose rows change real state, such
    * as switching the active datastore profile or vault. The first click selects,
@@ -1724,9 +1816,10 @@ function ListScreen({
       {rows.length === 0 ? (
         <EmptyState
           title={empty}
-          hint="j/k move · Enter opens the selected row when one exists."
+          hint={hint ?? 'j/k move · Enter opens the selected row when one exists.'}
           color={color}
           ascii={ascii}
+          {...(emptyAction === undefined ? {} : { action: emptyAction })}
         />
       ) : (
         window.items.map((row, offset) => {
@@ -1755,9 +1848,16 @@ function ListScreen({
         })
       )}
       {rows.length > 0 ? (
-        <Text
-          dimColor
-        >{`${String(window.start + 1)}-${String(window.start + window.items.length)} / ${String(rows.length)}  |  arrows / wheel to move`}</Text>
+        <>
+          <Text
+            dimColor
+          >{`${String(window.start + 1)}-${String(window.start + window.items.length)} / ${String(rows.length)}  |  arrows / wheel to move`}</Text>
+          {hint === undefined ? null : (
+            <SingleLine {...accentColor(color, CHROME.muted)}>
+              {safe(hint, ascii)}
+            </SingleLine>
+          )}
+        </>
       ) : null}
     </Panel>
   );
