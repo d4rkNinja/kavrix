@@ -235,9 +235,78 @@ field cannot be renamed or removed because they anchor flat-command
 compatibility. Other field removal archives the definition/value inside the
 item rather than silently discarding its schema history.
 
-Notes, expiry/rotation metadata, attachment ownership, and encrypted history
+### Encrypted notes on items
+
+`kavrix note` attaches notes to one credential item inside the same encrypted
+structured payload and the same revision-checked mutation path as every other
+structured command; there is no separate note store:
+
+```sh
+kavrix note add primary 'Rotation window' \
+  --context payments --service postgres --item primary \
+  --profile work
+kavrix note list primary --context payments --service postgres --profile work
+kavrix note show primary <noteId> --context payments --service postgres \
+  --profile work
+kavrix note remove primary <noteId> --context payments --service postgres \
+  --profile work
+```
+
+`note add` takes the item title and the note title as ordinary arguments and
+reads the note body only through a masked prompt or a protected stdin frame —
+`--passphrase-stdin` with `--content-stdin` (or `--content-stdin-base64` for a
+body with line breaks). A note body is never accepted in argv, a URL, a flag,
+or an environment variable. Notes are non-sensitive by default, so `note show`
+prints the body; add `--sensitive` when a body must stay masked, and `--pin` /
+`--no-pin` to control the listing order.
+
+`note list` returns each note's opaque ID, title, `sensitive`, `pinned`, tags,
+ordering, and timestamps, and never its body. `note show` returns the body as
+escaped JSON, or `[REDACTED]` for a sensitive note unless `--reveal` is explicit
+and the stored authorization policy covering `context/service/item/<noteId>`
+grants reveal. Reveal is audited and the derived authorization key is wiped on
+every exit path, exactly as it is for `field get --reveal`. An unknown item,
+context, service, or note ID fails closed with exit `1` and a generic message.
+
+Removal archives the note inside its item aggregate (`archivedAt`) instead of
+discarding it: the encrypted body stays in the payload, but the note disappears
+from `note list` and `note show` and can no longer be revealed. Notes belong to
+items; service/group notes are not exposed by this command group.
+
+Expiry/rotation metadata, attachment ownership, and encrypted history
 are part of the structured payload and survive these operations. Version 0.2.6
-does not add attachment transfer or history-restore commands.
+does not add attachment transfer commands.
+
+### Credential history (read-only)
+
+`kavrix item history list <title>` (aliased as `kavrix credential history
+list`) reports the non-sensitive metadata of one item's encrypted history
+records: the opaque record identity, the item revision each snapshot captured,
+its creation timestamp, the envelope's schema and key versions, and its
+ciphertext digest. It never prints a value. `--limit <count>` bounds one page
+(default 50, maximum 500) and `truncated: true` reports that more records exist.
+
+`kavrix item history show <title> <version>` reports the same metadata for one
+record. `<version>` is the opaque history record id that `list` prints as
+`version`.
+
+This group is deliberately read-only, and the reason is structural rather than a
+missing implementation:
+
+- **No command writes a history record.** `history` is declared, schema-bounded,
+  authenticated, counted by `item show`, and removed with its item, but nothing
+  appends to it. A non-empty history can only arrive in a container that already
+  carried records when it was imported or restored. Commands in this release
+  cannot create one.
+- **History ciphertext is not restorable.** An `encryptedHistoryRecord` carries
+  its envelope plus the item revision it captured, but no wrapped-key record,
+  and the structured payload stores item content inside the vault-level
+  envelope. There is consequently no key reachable from an authenticated vault
+  that could decrypt a history payload, so no command can reveal, restore,
+  diff, or prune snapshot values. There is deliberately **no `--reveal`** on
+  this group: requesting one is a usage error, not a reveal.
+
+Attachment transfer and history restore remain unimplemented.
 
 ## 4. Store and read credentials
 
@@ -693,13 +762,17 @@ for localhost) and must not embed credentials.
 ## 14. Current limits
 
 The database container supports encrypted database/vault labels and structured
-project contexts, groups/services, credential items, and typed fields. Its root
-credential commands remain the default-context/service compatibility
-projection described above. Notes, expiry/rotation metadata, attachment
-ownership, and encrypted history records are modeled and preserved, but the
-current CLI does not add attachment transfer or history-restore commands. Project-file
-environments cover execution mappings only; they are not a second vault
-hierarchy. Structured commands, policies, grants, audit, run, and agent commands
+project contexts, groups/services, credential items, typed fields, and notes on
+items. Its root credential commands remain the default-context/service
+compatibility projection described above. Expiry/rotation metadata, attachment
+ownership, and encrypted history records are modeled and preserved. Attachment
+transfer remains unimplemented. Encrypted history records are **read-only
+metadata**: no command writes one, and their ciphertext has no wrapped-key
+record, so no command can reveal, restore, or diff a snapshot value (see
+"Credential history" above). The `note` group covers item notes only;
+service/group note collections are not
+exposed by a command. Project-file environments cover execution mappings only;
+they are not a second vault hierarchy. Structured commands, policies, grants, audit, run, and agent commands
 require a database-container profile. Legacy version 2 vaults keep their
 existing compatibility commands and can migrate with the copy-first flow in
 section 7.

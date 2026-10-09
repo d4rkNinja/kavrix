@@ -50,6 +50,7 @@ remains a command reference and is not loaded automatically.
 ## Security
 
 - [Threat model](threat-model.md): intended protections, exclusions, and rollback handling.
+- [Audit and prioritized plan](audit-and-plan.md): what the implementation audit found, what was fixed, and the ordered open list.
 - [Cryptography](cryptography.md): active algorithms, key hierarchy, authenticated metadata, and limits.
 - [Security testing](security-testing.md): release gates and environment-specific evidence.
 - [Dependency policy](dependency-policy.md): shipped dependency and SBOM rules.
@@ -74,6 +75,9 @@ remains a command reference and is not loaded automatically.
   [0.2.30](release-notes-0.2.30.md), [0.2.31](release-notes-0.2.31.md),
   [0.2.35 — setup destination recovery](release-notes-0.2.35.md);
   [0.2.36 — fullscreen setup and pointer controls](release-notes-0.2.36.md);
+  [0.2.44 — discoverable TUI and honest history](release-notes-0.2.44.md);
+  [0.2.43 — precise agent denials](release-notes-0.2.43.md);
+  [0.2.42 — verified candidate with complete TUI fixes](release-notes-0.2.42.md);
   [0.2.41 — bounded TUI sessions and concurrent agent requests](release-notes-0.2.41.md);
   [0.2.40 — every-command startup and execution performance](release-notes-0.2.40.md);
   [0.2.39 — reliable unlock and existing-vault compatibility](release-notes-0.2.39.md);

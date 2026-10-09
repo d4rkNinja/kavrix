@@ -232,6 +232,7 @@ never store MongoDB credentials, passphrases, private labels, keys, or values.
 | `db recovery ...`                                                          | Manage database-root recovery kits.                                                   |
 | `migrate database`                                                         | Copy one legacy version 2 vault into a database.                                      |
 | `context`, `service`, `item`, `field`                                      | Manage structured project credentials and schema-driven typed fields.                 |
+| `note`                                                                     | Manage encrypted notes attached to one credential item.                               |
 | `put`, `get`, `list`, `view`, `search`, `stats`, `has`, `rename`, `remove` | Store, read, and organize credentials.                                                |
 | `key status/verify/copy/replicate/assign/rewrap`                           | Manage protected key files.                                                           |
 | `recovery create/verify/status/revoke/use`                                 | Manage recovery kits.                                                                 |
@@ -243,6 +244,9 @@ never store MongoDB credentials, passphrases, private labels, keys, or values.
 Sensitive plaintext output is opt-in through `--reveal` or multiline-safe
 `--reveal-base64`; listing and dashboard commands never display field values.
 `field get` may return a non-sensitive value according to its schema.
+`kavrix note add` reads a note body through a masked prompt or `--content-stdin`
+/ `--content-stdin-base64`, never argv; `note list` never prints a body, and
+`note show --reveal` is the only way to print a sensitive one.
 
 Database vaults organize private data as project context/environment →
 service/group → credential item → typed fields. The root flat commands remain

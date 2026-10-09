@@ -2,6 +2,12 @@ import { APP_MENU, HELP_TOPICS, type AppScreenId } from './ids.js';
 import type { AppBackendAction, AppSnapshot } from './backend.js';
 import { emptySnapshot } from './backend.js';
 import {
+  allCommands,
+  filterCommands,
+  isPaletteTrigger,
+  type ScreenCommand,
+} from './commands.js';
+import {
   applyTuiTheme,
   activeTuiThemeId,
   isThemeId,
@@ -9,6 +15,7 @@ import {
   type ThemeId,
 } from './theme.js';
 import { defaultFileProfilePaths, defaultMongoProfilePaths } from './paths.js';
+import { sanitizeTerminalText } from '../terminal-text.js';
 
 export interface AppKey {
   readonly name?:
@@ -45,7 +52,6 @@ export type AppOverlay =
   | 'confirm-grant-revoke'
   | 'confirm-remove-profile'
   | 'confirm-session-revoke'
-  | 'input-search'
   | 'input-run'
   | 'input-passphrase'
   | 'input-put-name'
@@ -78,7 +84,8 @@ export type AppOverlay =
   | 'input-agent-name'
   | 'input-agent-config'
   | 'credential-detail'
-  | 'theme-picker';
+  | 'theme-picker'
+  | 'command-palette';
 
 export interface AppRouterState {
   readonly screen: AppScreenId;
@@ -127,6 +134,12 @@ export interface AppRouterState {
   readonly quit: boolean;
   /** Client-side credential name filter from `/` search. */
   readonly credentialFilter: string;
+  /**
+   * True while the Credentials screen is collecting name-filter keystrokes.
+   * Held as state rather than derived from the filter length so an empty
+   * filter, paste readiness, and the footer chips all read one flag.
+   */
+  readonly filtering: boolean;
   /** True after the first successful hydrate so motion can start. */
   readonly sessionReady: boolean;
   /** Clock advanced by `tick` while a timed reveal is on screen. */
@@ -137,6 +150,10 @@ export interface AppRouterState {
   readonly themeId: ThemeId;
   /** Cursor row inside the theme picker overlay. */
   readonly themeCursor: number;
+  /** Cursor row inside the command palette overlay. */
+  readonly paletteIndex: number;
+  /** Substring filter inside the command palette overlay. */
+  readonly paletteFilter: string;
 }
 
 export type AppRouterEffect =
@@ -237,11 +254,14 @@ export function createInitialAppRouterState(
     message: null,
     quit: false,
     credentialFilter: '',
+    filtering: false,
     sessionReady: false,
     nowMs: 0,
     navDirection: 'none',
     themeId: activeTuiThemeId(),
     themeCursor: 0,
+    paletteIndex: 0,
+    paletteFilter: '',
   };
 }
 
@@ -280,6 +300,8 @@ export function transitionAppRouter(
                 pendingMongoUrl: null,
                 pendingRecoveryPassphrase: null,
                 pendingName: null,
+                credentialFilter: '',
+                filtering: false,
               }
             : {}),
           snapshot: action.snapshot,
@@ -337,6 +359,17 @@ export function transitionAppRouter(
       }
       return enterScreen(state, action.screen);
     case 'select-row':
+      // The palette owns row selection while it is open: its rows index the
+      // command list, not the screen list, and clicking one must run that
+      // command rather than whatever the screen's own cursor row happens to be.
+      if (state.overlay === 'command-palette') {
+        if (!Number.isInteger(action.index) || action.index < 0)
+          return unchanged(state);
+        const moved = unchanged({ ...state, paletteIndex: action.index });
+        return action.activate === true
+          ? paletteKey(moved.state, NAMED_RETURN, 0)
+          : moved;
+      }
       return selectRowIntent(
         state,
         action.index,
@@ -439,6 +472,14 @@ function keyTransition(
   if (key.ctrl === true && key.text?.toLowerCase() === 'c') {
     return unchanged({ ...state, quit: true });
   }
+  // While the Credentials screen filters names, every printable key is filter
+  // text. Screen mnemonics, digit jumps, and the global keys are suspended for
+  // the duration — the same discipline the command palette uses — so a filter
+  // can hold any character a credential name holds and the footer never
+  // advertises a key that would type into the search instead of running.
+  if (state.overlay === 'none' && state.filtering && state.screen === 'credentials') {
+    return credentialFilterKey(state, key);
+  }
   if (key.text?.toLowerCase() === 'q' && state.overlay === 'none') {
     return unchanged({ ...state, quit: true });
   }
@@ -476,7 +517,7 @@ function keyTransition(
 
   if (key.name === 'escape' && state.screen !== 'home') {
     return unchanged({
-      ...state,
+      ...dropCredentialFilter(state),
       screen: 'home',
       listIndex: 0,
       message: null,
@@ -500,6 +541,20 @@ function keyTransition(
       overlay: 'theme-picker',
       themeCursor: cursor,
       message: 'Theme picker — arrows or 1-5 preview, Enter applies, Esc cancels.',
+    });
+  }
+
+  // `:` / Ctrl+K lists everything this screen can do. A flat 13-screen menu with
+  // per-screen mnemonics is not discoverable; a palette that names each action
+  // and its key is, and it is the only place a user has to look.
+  if (isPaletteTrigger(key)) {
+    return unchanged({
+      ...state,
+      overlay: 'command-palette',
+      paletteIndex: 0,
+      paletteFilter: '',
+      message:
+        'Actions on this screen — j/k move, Enter runs, type to filter, Esc closes.',
     });
   }
 
@@ -586,6 +641,8 @@ function homeKey(state: AppRouterState, key: AppKey): AppRouterTransition {
   if (key.text?.toLowerCase() === 'r') {
     return effect(state, { kind: 'backend', action: { type: 'refresh' } });
   }
+  // Home has no list to narrow, so `/` points at the screen that does.
+  if (key.text === '/') return searchUnavailable(state);
   return unchanged(state);
 }
 
@@ -603,8 +660,15 @@ function screenKey(state: AppRouterState, key: AppKey): AppRouterTransition {
   if (key.name === 'down' || key.text === 'j') {
     return unchanged({ ...state, listIndex: clamp(state.listIndex + 1, length) });
   }
+  // `/` narrows the Credentials list. It is the only list with a name filter,
+  // so on every other screen it says where search lives rather than opening an
+  // input whose result nothing would read.
   if (key.text === '/') {
-    return unchanged({ ...state, overlay: 'input-search', query: '' });
+    if (state.screen !== 'credentials') return searchUnavailable(state);
+    // `/` starts the filter; once filtering it is just another character a
+    // credential name may contain.
+    if (!state.filtering) return enterCredentialFilter(state);
+    return appendCredentialFilter(state, key.text);
   }
   if (key.text?.toLowerCase() === 'r' && state.screen === 'credentials') {
     const name = filteredCredentials(state)[state.listIndex]?.name;
@@ -716,29 +780,6 @@ function screenKey(state: AppRouterState, key: AppKey): AppRouterTransition {
       pendingName: name,
       message: `Remove credential '${name}'? y/n`,
     });
-  }
-  if (key.text?.toLowerCase() === 'u') {
-    if (state.snapshot.home.datastore === 'mongodb') {
-      return unchanged({
-        ...state,
-        overlay: 'input-unlock-mongo-url',
-        query: '',
-        pendingMongoUrl: null,
-        message:
-          'MongoDB URL (masked). Paste works (Ctrl+Shift+V / Cmd+V). Enter continues; Esc cancels.',
-      });
-    }
-    return unchanged({
-      ...state,
-      overlay: 'input-passphrase',
-      query: '',
-      pendingMongoUrl: null,
-      message:
-        'Unlock vault — enter passphrase (masked). Paste works (Ctrl+Shift+V / Cmd+V). Enter unlocks; Esc cancels.',
-    });
-  }
-  if (key.text?.toLowerCase() === 'l') {
-    return unchanged({ ...state, overlay: 'confirm-lock' });
   }
   if (key.name === 'return') return activateSelection(state);
   if (key.text?.toLowerCase() === 'd' && state.screen === 'doctor') {
@@ -966,9 +1007,6 @@ function overlayKey(
         message: 'Unlock cancelled.',
       });
     }
-    if (key.name === 'backspace') {
-      return unchanged({ ...state, query: removeLast(state.query) });
-    }
     if (key.name === 'return') {
       const url = state.query.trim();
       if (url.length === 0) {
@@ -983,7 +1021,7 @@ function overlayKey(
           'Unlock vault — enter passphrase (masked). Paste works (Ctrl+Shift+V / Cmd+V). Enter unlocks; Esc cancels.',
       });
     }
-    return appendOverlayText(state, key.text, 2048);
+    return editOrAppendOverlayText(state, key, 2048);
   }
   if (state.overlay === 'input-passphrase') {
     if (key.name === 'escape') {
@@ -994,9 +1032,6 @@ function overlayKey(
         pendingMongoUrl: null,
         message: 'Unlock cancelled.',
       });
-    }
-    if (key.name === 'backspace') {
-      return unchanged({ ...state, query: removeLast(state.query) });
     }
     if (key.name === 'return') {
       if (state.query.trim().length === 0) {
@@ -1016,7 +1051,7 @@ function overlayKey(
         },
       );
     }
-    return appendOverlayText(state, key.text, 1024);
+    return editOrAppendOverlayText(state, key, 1024);
   }
   if (state.overlay === 'confirm-remove') {
     if (key.text?.toLowerCase() === 'y') {
@@ -1081,9 +1116,6 @@ function overlayKey(
         message: 'Vault create cancelled.',
       });
     }
-    if (key.name === 'backspace') {
-      return unchanged({ ...state, query: removeLast(state.query) });
-    }
     if (key.name === 'return') {
       const label = state.query.trim();
       if (label.length === 0) {
@@ -1097,7 +1129,7 @@ function overlayKey(
         { kind: 'backend', action: { type: 'create-vault', label } },
       );
     }
-    return appendOverlayText(state, key.text, 128);
+    return editOrAppendOverlayText(state, key, 128);
   }
   if (
     state.overlay === 'input-put-name' ||
@@ -1112,9 +1144,6 @@ function overlayKey(
         pendingName: null,
         message: 'Credential edit cancelled.',
       });
-    }
-    if (key.name === 'backspace') {
-      return unchanged({ ...state, query: removeLast(state.query) });
     }
     if (key.name === 'return') {
       if (state.overlay === 'input-put-name') {
@@ -1161,7 +1190,7 @@ function overlayKey(
       );
     }
     const putLimit = state.overlay === 'input-put-value' ? 4096 : 256;
-    return appendOverlayText(state, key.text, putLimit);
+    return editOrAppendOverlayText(state, key, putLimit);
   }
   if (
     state.overlay === 'input-profile-id' ||
@@ -1181,9 +1210,6 @@ function overlayKey(
         pendingPassphrase: null,
         message: 'Create file profile cancelled.',
       });
-    }
-    if (key.name === 'backspace') {
-      return unchanged({ ...state, query: removeLast(state.query) });
     }
     if (key.name === 'return') {
       if (state.overlay === 'input-profile-id') {
@@ -1307,7 +1333,7 @@ function overlayKey(
       state.overlay === 'input-profile-passphrase-confirm'
         ? 1024
         : 512;
-    return appendOverlayText(state, key.text, profileLimit);
+    return editOrAppendOverlayText(state, key, profileLimit);
   }
 
   if (
@@ -1330,9 +1356,6 @@ function overlayKey(
         pendingMongoDatabase: null,
         message: 'Create mongodb profile cancelled.',
       });
-    }
-    if (key.name === 'backspace') {
-      return unchanged({ ...state, query: removeLast(state.query) });
     }
     if (key.name === 'return') {
       if (state.overlay === 'input-mongo-profile-id') {
@@ -1469,7 +1492,7 @@ function overlayKey(
       state.overlay === 'input-mongo-passphrase-confirm'
         ? 2048
         : 512;
-    return appendOverlayText(state, key.text, mongoLimit);
+    return editOrAppendOverlayText(state, key, mongoLimit);
   }
   if (state.overlay === 'input-agent-name' || state.overlay === 'input-agent-config') {
     if (key.name === 'escape') {
@@ -1480,9 +1503,6 @@ function overlayKey(
         pendingAgentName: null,
         message: 'Agent dry-run cancelled.',
       });
-    }
-    if (key.name === 'backspace') {
-      return unchanged({ ...state, query: removeLast(state.query) });
     }
     if (key.name === 'return') {
       if (state.overlay === 'input-agent-name') {
@@ -1530,7 +1550,7 @@ function overlayKey(
         },
       );
     }
-    return appendOverlayText(state, key.text, 512);
+    return editOrAppendOverlayText(state, key, 512);
   }
 
   if (state.overlay === 'theme-picker') {
@@ -1563,27 +1583,11 @@ function overlayKey(
     return unchanged(state);
   }
 
-  if (state.overlay === 'input-search' || state.overlay === 'input-run') {
+  if (state.overlay === 'input-run') {
     if (key.name === 'escape') {
       return unchanged({ ...state, overlay: 'none', query: '' });
     }
-    if (key.name === 'backspace') {
-      return unchanged({ ...state, query: removeLast(state.query) });
-    }
     if (key.name === 'return') {
-      if (state.overlay === 'input-search') {
-        return unchanged({
-          ...state,
-          overlay: 'none',
-          credentialFilter: state.query.trim(),
-          listIndex: 0,
-          query: '',
-          message:
-            state.query.trim().length === 0
-              ? 'Credential search cleared.'
-              : `Credential search: ${state.query.trim()}`,
-        });
-      }
       const names = state.query
         .split(/[,\s]+/u)
         .map((part) => part.trim())
@@ -1593,7 +1597,7 @@ function overlayKey(
         { kind: 'backend', action: { type: 'preview-run', credentialNames: names } },
       );
     }
-    return appendOverlayText(state, key.text, 256);
+    return editOrAppendOverlayText(state, key, 256);
   }
 
   if (state.overlay === 'confirm-revoke-last') {
@@ -1680,9 +1684,6 @@ function overlayKey(
         pendingRecoveryPassphrase: null,
         message: 'Recovery flow cancelled.',
       });
-    }
-    if (key.name === 'backspace') {
-      return unchanged({ ...state, query: removeLast(state.query) });
     }
     if (key.name === 'return') {
       if (state.overlay === 'input-recovery-file') {
@@ -1784,7 +1785,7 @@ function overlayKey(
       state.overlay === 'input-recovery-verify-passphrase'
         ? 1024
         : 512;
-    return appendOverlayText(state, key.text, recoveryLimit);
+    return editOrAppendOverlayText(state, key, recoveryLimit);
   }
   if (
     state.overlay === 'input-policy-id' ||
@@ -1800,9 +1801,6 @@ function overlayKey(
         pendingPolicySecret: null,
         message: 'Policy create cancelled.',
       });
-    }
-    if (key.name === 'backspace') {
-      return unchanged({ ...state, query: removeLast(state.query) });
     }
     if (key.name === 'return') {
       if (state.overlay === 'input-policy-id') {
@@ -1851,7 +1849,7 @@ function overlayKey(
         },
       );
     }
-    return appendOverlayText(state, key.text, 256);
+    return editOrAppendOverlayText(state, key, 256);
   }
   if (
     state.overlay === 'input-grant-secret' ||
@@ -1867,9 +1865,6 @@ function overlayKey(
         pendingGrantCommand: null,
         message: 'Grant create cancelled.',
       });
-    }
-    if (key.name === 'backspace') {
-      return unchanged({ ...state, query: removeLast(state.query) });
     }
     if (key.name === 'return') {
       if (state.overlay === 'input-grant-secret') {
@@ -1918,11 +1913,342 @@ function overlayKey(
         },
       );
     }
-    return appendOverlayText(state, key.text, 256);
+    return editOrAppendOverlayText(state, key, 256);
   }
 
   void nowMs;
+  if (state.overlay === 'command-palette') return paletteKey(state, key, nowMs);
   return unchanged(state);
+}
+
+/**
+ * The palette runs the action it is pointing at by re-entering the router with
+ * that action's own keystroke, so a palette choice is a keystroke and can never
+ * mean something different from pressing the key directly.
+ */
+/** Enter, expressed once so palette entries and mouse clicks share it. */
+const NAMED_RETURN: AppKey = { name: 'return' };
+
+/**
+ * The palette runs the action it is pointing at by re-entering the router with
+ * that action's own keystroke, so a palette choice is a keystroke and can never
+ * mean something different from pressing the key directly.
+ */
+function paletteKey(
+  state: AppRouterState,
+  key: AppKey,
+  nowMs: number,
+): AppRouterTransition {
+  if (key.name === 'escape') {
+    return unchanged({ ...state, overlay: 'none', paletteFilter: '', paletteIndex: 0 });
+  }
+  if (key.name === 'backspace') {
+    return unchanged({
+      ...state,
+      paletteFilter: removeLast(state.paletteFilter),
+      paletteIndex: 0,
+    });
+  }
+  if (key.name === 'up' || key.text === 'k') {
+    return unchanged({
+      ...state,
+      paletteIndex: Math.max(0, state.paletteIndex - 1),
+    });
+  }
+  if (key.name === 'down' || key.text === 'j') {
+    const last = Math.max(0, paletteCommands(state).length - 1);
+    return unchanged({
+      ...state,
+      paletteIndex: Math.min(last, state.paletteIndex + 1),
+    });
+  }
+  if (key.name === 'return') {
+    const visible = paletteCommands(state);
+    const entry = visible[state.paletteIndex];
+    if (entry === undefined) return unchanged(state);
+    const blocked = entry.blocked(state);
+    if (blocked !== null) {
+      // Say why rather than silently doing nothing.
+      return unchanged({ ...state, message: blocked });
+    }
+    return keyTransition(
+      { ...state, overlay: 'none', paletteFilter: '', paletteIndex: 0 },
+      entry.key,
+      nowMs,
+    );
+  }
+  // Digits are a shortcut to the nth visible row, matching the tab strip.
+  if (key.text !== undefined && /^[1-9]$/u.test(key.text)) {
+    const target = Number.parseInt(key.text, 10) - 1;
+    if (paletteCommands(state)[target] === undefined) return unchanged(state);
+    return paletteKey({ ...state, paletteIndex: target }, { name: 'return' }, nowMs);
+  }
+  if (key.name === 'tab') {
+    return unchanged({
+      ...state,
+      paletteIndex:
+        (state.paletteIndex + 1) % Math.max(1, paletteCommands(state).length),
+    });
+  }
+  return appendPaletteFilter(state, key.text);
+}
+
+/** Types into the palette filter only; overlay `query` is untouched. */
+function appendPaletteFilter(
+  state: AppRouterState,
+  text: string | undefined,
+): AppRouterTransition {
+  if (text === undefined || text.length === 0) return unchanged(state);
+  const chunk =
+    text.length > 1 ? sanitizePasteText(text) : isPrintable(text) ? text : '';
+  if (chunk.length === 0) return unchanged(state);
+  return unchanged({
+    ...state,
+    paletteFilter: `${state.paletteFilter}${chunk}`.slice(0, 64),
+    paletteIndex: 0,
+  });
+}
+
+/** Visible palette rows for the current filter. */
+function paletteCommands(state: AppRouterState): readonly ScreenCommand[] {
+  return filterCommands(allCommands(state), state.paletteFilter);
+}
+
+/** Exported for tests: exactly the rows the palette renders, in order. */
+export function paletteEntries(state: AppRouterState): readonly ScreenCommand[] {
+  return paletteCommands(state);
+}
+
+/**
+ * Window slice the palette renders, kept next to the cursor state it reads.
+ *
+ * Keeps the cursor visible when a filter matches more rows than fit, without
+ * scrolling a short list away from its first entry.
+ */
+export function paletteWindow(
+  state: AppRouterState,
+): Readonly<{ rows: readonly ScreenCommand[]; start: number }> {
+  const visible = paletteCommands(state);
+  const start =
+    visible.length <= PALETTE_PAGE_ROWS
+      ? 0
+      : Math.max(
+          0,
+          Math.min(
+            state.paletteIndex - Math.floor(PALETTE_PAGE_ROWS / 2),
+            visible.length - PALETTE_PAGE_ROWS,
+          ),
+        );
+  return { rows: visible.slice(start, start + PALETTE_PAGE_ROWS), start };
+}
+
+/** Number of rows the palette renders at once; also bounds the cursor. */
+export const PALETTE_PAGE_ROWS = 12;
+
+/**
+ * Live name filter on the Credentials screen.
+ *
+ * The list narrows on every keystroke, so nothing is hidden behind a modal:
+ * what is typed is what is being matched, and it stays visible while it is
+ * edited. Escape clears, Enter opens the highlighted row, and j/k plus the
+ * arrow keys keep the list-navigation meaning they have everywhere else.
+ */
+function credentialFilterKey(state: AppRouterState, key: AppKey): AppRouterTransition {
+  if (key.name === 'escape') {
+    // Escape is the documented way out of a filter, and it also retires an
+    // on-screen reveal: leaving plaintext visible while the user believes they
+    // dismissed it is the one outcome that cannot be allowed.
+    if (state.revealedName !== null) {
+      return unchanged({
+        ...state,
+        credentialFilter: '',
+        filtering: false,
+        listIndex: 0,
+        revealedName: null,
+        revealedValue: null,
+        revealedUntilMs: 0,
+        pendingRevealName: null,
+        message: 'Reveal cleared; value remasked. Credential filter cleared.',
+      });
+    }
+    return unchanged({
+      ...state,
+      credentialFilter: '',
+      filtering: false,
+      listIndex: 0,
+      message: 'Credential filter cleared.',
+    });
+  }
+  if (key.name === 'return') {
+    // Enter opens the row the filter selected. When nothing matches there is no
+    // row to open, so the filter stays put and says so instead of closing.
+    if (filteredCredentials(state)[state.listIndex] === undefined) {
+      return unchanged({
+        ...state,
+        message: `No credentials match '${state.credentialFilter}'. Backspace edits, Esc clears.`,
+      });
+    }
+    return activateSelection({ ...state, filtering: false });
+  }
+  if (key.name === 'backspace') {
+    const shortened = removeLast(state.credentialFilter);
+    if (shortened === state.credentialFilter) {
+      return unchanged({ ...state, filtering: false });
+    }
+    // Editing the last characters away leaves the list whole again, so the
+    // filter session ends rather than waiting on an explicit Escape.
+    return applyCredentialFilter(
+      shortened.length === 0 ? { ...state, filtering: false } : state,
+      shortened,
+    );
+  }
+  if (key.name === 'tab') {
+    return unchanged({
+      ...cycleScreen(state, key.shift === true ? -1 : 1).state,
+      credentialFilter: '',
+      filtering: false,
+    });
+  }
+  // j/k and the arrow keys stay list movement, exactly as in the command
+  // palette; every other printable character is filter text.
+  if (key.name !== undefined || key.text === 'j' || key.text === 'k') {
+    return unchanged(moveCredentialFilterCursor(state, key));
+  }
+  return appendCredentialFilter(state, key.text);
+}
+
+/** Named keys still move the list cursor; text keys are filter characters. */
+function moveCredentialFilterCursor(
+  state: AppRouterState,
+  key: AppKey,
+): AppRouterState {
+  const length = listLength(state);
+  const jump = listJumpIndex(key, state.listIndex, length, credentialWindowSize(state));
+  if (jump !== null) return { ...state, listIndex: jump };
+  if (key.name === 'up' || key.text === 'k') {
+    return { ...state, listIndex: clamp(state.listIndex - 1, length) };
+  }
+  if (key.name === 'down' || key.text === 'j') {
+    return { ...state, listIndex: clamp(state.listIndex + 1, length) };
+  }
+  return state;
+}
+
+function enterCredentialFilter(state: AppRouterState): AppRouterTransition {
+  return unchanged({
+    ...state,
+    filtering: true,
+    listIndex: 0,
+    message: 'Filter credential names: type to narrow, j/k move, Esc clears.',
+  });
+}
+
+/** Longest name filter held in memory; generous for any real credential name. */
+const MAX_CREDENTIAL_FILTER = 64;
+
+/**
+ * Applies one keystroke to an overlay text field, then appends whatever is left.
+ *
+ * The overlay fields accepted only printable characters and Backspace, so a typo
+ * in a 200-character path had to be fixed by deleting back to the error and
+ * retyping everything after it. Onboarding supported line editing; the main app
+ * did not. This shares the useful part.
+ *
+ * Deliberately limited: the overlay query is a linear string with no caret
+ * offset, so a caret model does not exist. Claiming arrow-key editing here would
+ * be a lie, so the bindings offered are the ones a linear field can honour
+ * exactly — Backspace (one code point), `Ctrl+U` (clear the field), and
+ * `Ctrl+W` (delete the last word).
+ */
+function editOrAppendOverlayText(
+  state: AppRouterState,
+  key: AppKey,
+  limit: number,
+): AppRouterTransition {
+  if (key.ctrl === true) {
+    if (key.text?.toLowerCase() === 'u') {
+      return unchanged({ ...state, query: '', message: 'Input cleared.' });
+    }
+    if (key.text?.toLowerCase() === 'w') {
+      return unchanged({ ...state, query: dropTrailingWord(state.query) });
+    }
+  }
+  if (key.name === 'backspace') {
+    return unchanged({ ...state, query: removeLast(state.query) });
+  }
+  return appendOverlayText(state, key.text, limit);
+}
+
+/**
+ * Kills the word before the end of the field together with the whitespace in
+ * front of it — the `unix-word-rubout` behaviour users already know from Bash
+ * and Emacs. Operates on code points so a surrogate pair is never split.
+ */
+function dropTrailingWord(value: string): string {
+  const kept = Array.from(value);
+  while (kept.length > 0 && !/\s/u.test(kept[kept.length - 1] ?? '')) kept.pop();
+  while (kept.length > 0 && /\s/u.test(kept[kept.length - 1] ?? '')) kept.pop();
+  return kept.join('');
+}
+
+function appendCredentialFilter(
+  state: AppRouterState,
+  text: string | undefined,
+): AppRouterTransition {
+  if (text === undefined || text.length === 0) return unchanged(state);
+  // A paste can carry whole escape and OSC sequences. They are removed before
+  // the paste markers and newline handling, because stripping ESC alone would
+  // leave the sequence payload behind as filter text.
+  const chunk =
+    text.length > 1
+      ? sanitizePasteText(sanitizeTerminalText(text))
+      : isPrintable(text)
+        ? text
+        : '';
+  // The filter is terminal-bound input that is both matched and rendered, so it
+  // is sanitized here, in the matcher, and again on the way to a cell.
+  const safeChunk = sanitizeTerminalText(chunk);
+  if (safeChunk.length === 0) return unchanged(state);
+  const bounded = Array.from(`${state.credentialFilter}${safeChunk}`)
+    .slice(0, MAX_CREDENTIAL_FILTER)
+    .join('');
+  return applyCredentialFilter(state, bounded);
+}
+
+/** Applies a filter and reports what it matched, including nothing. */
+function applyCredentialFilter(
+  state: AppRouterState,
+  filter: string,
+): AppRouterTransition {
+  const next: AppRouterState = { ...state, credentialFilter: filter, listIndex: 0 };
+  const matches = filteredCredentials(next).length;
+  const total = next.snapshot.credentials.length;
+  return unchanged({
+    ...next,
+    message:
+      filter.length === 0
+        ? null
+        : matches === 0
+          ? `No credentials match '${filter}'. Backspace edits, Esc clears.`
+          : `Filter '${filter}' — ${String(matches)}/${String(total)} credentials.`,
+  });
+}
+
+/** Names the screen that can filter, instead of silently swallowing `/`. */
+function searchUnavailable(state: AppRouterState): AppRouterTransition {
+  return unchanged({
+    ...state,
+    message: 'Search is available on the Credentials screen (press 4).',
+  });
+}
+
+/**
+ * A name filter is a Credentials view, not vault state: leaving the screen
+ * drops it so a filter the user did not choose to keep can never hide rows.
+ */
+function dropCredentialFilter(state: AppRouterState): AppRouterState {
+  if (state.credentialFilter.length === 0 && !state.filtering) return state;
+  return { ...state, credentialFilter: '', filtering: false, listIndex: 0 };
 }
 
 function activateSelection(state: AppRouterState): AppRouterTransition {
@@ -2007,7 +2333,7 @@ function enterScreen(state: AppRouterState, screen: AppScreenId): AppRouterTrans
         ? 'forward'
         : 'back';
   const next = {
-    ...state,
+    ...dropCredentialFilter(state),
     screen,
     listIndex: 0,
     listPinned: false,
@@ -2181,7 +2507,10 @@ export function filteredCredentials(
   state: AppRouterState,
 ): AppRouterState['snapshot']['credentials'] {
   const credentials = state.snapshot.credentials;
-  const query = state.credentialFilter.trim().toLocaleLowerCase();
+  // The filter is untrusted input that is matched and rendered, so it is
+  // sanitized on the way in and again here: a control or escape sequence must
+  // never reach the matcher or a terminal cell, whatever wrote the state.
+  const query = sanitizeTerminalText(state.credentialFilter).trim().toLocaleLowerCase();
   if (query.length === 0) return credentials;
   let byQuery = filteredCredentialsByList.get(credentials);
   if (byQuery === undefined) {

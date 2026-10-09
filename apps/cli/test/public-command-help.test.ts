@@ -155,8 +155,12 @@ describe('public command help contract', () => {
     // 0.2.28: + backup, backup create, backup verify, backup restore.
     // 0.2.29: + import, import env.
     // 0.2.41: + policy snapshot (one authenticated policy/grant/audit read).
-    expect(routes.canonical).toHaveLength(116);
-    expect(routes.aliases).toHaveLength(17);
+    // 0.2.43: + note, note list, note add, note show, note remove;
+    //         + item history, item history list, item history show.
+    // `item history list` and `item history show` also resolve through the
+    // `credential` alias, so each adds one alias route alongside its canonical.
+    expect(routes.canonical).toHaveLength(124);
+    expect(routes.aliases).toHaveLength(20);
 
     for (const route of [...routes.canonical, ...routes.aliases]) {
       const label =

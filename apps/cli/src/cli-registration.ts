@@ -15,6 +15,7 @@ import { InitOnboardingCancelledError } from './init-onboarding.js';
 import { registerExecutionCommands } from './execution/register.js';
 import { applyStdinFrameHelp, registerFramesCommand } from './stdin-frames.js';
 import { registerStructuredVaultCommands } from './structured-vault-commands.js';
+import { registerCredentialHistoryCommands } from './credential-history-commands.js';
 import { registerTuiCommand } from './tui-command.js';
 import { registerSelfUpdateCommand } from './self-update.js';
 import { registerBackupCommands } from './backup-command.js';
@@ -787,6 +788,9 @@ export function buildLocalCli(): Command {
   registerExecutionCommands(program);
   registerTuiCommand(program);
   registerStructuredVaultCommands(program);
+  // After the structured family: the history group attaches to the shared
+  // item/credential command and fails closed if that command is absent.
+  registerCredentialHistoryCommands(program);
   registerBackupCommands(program);
   registerImportCommands(program);
   registerFramesCommand(program);

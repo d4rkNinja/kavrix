@@ -249,11 +249,11 @@ describe('router keymap: digit jumps and tab cycling', () => {
 
   it('never moves screens while an overlay owns the keyboard', () => {
     const typing = press(
-      { ...state(), overlay: 'input-search', query: 'api' },
+      { ...state(), overlay: 'input-run', query: 'api' },
       { name: 'tab' },
     );
     expect(typing.state.screen).toBe('home');
-    expect(typing.state.overlay).toBe('input-search');
+    expect(typing.state.overlay).toBe('input-run');
     expect(typing.state.query).toBe('api');
   });
 

@@ -30,6 +30,8 @@
     "src/structured-vault-commands.ts",
     "src/structured-vault-impl.ts",
     "src/structured-vault-projection.ts",
+    "src/credential-history-commands.ts",
+    "src/credential-history-impl.ts",
     "src/default-interactive.ts",
     "src/cli-error.ts",
     "src/credential-name.ts",

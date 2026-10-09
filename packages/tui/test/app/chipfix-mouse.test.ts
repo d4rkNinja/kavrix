@@ -135,20 +135,21 @@ async function waitForFrame(
 
 function coordinateOf(
   frame: string,
-  label: string,
+  label: string | RegExp,
   occurrence: 'first' | 'last' = 'first',
 ): Readonly<{ x: number; y: number }> {
   const lines = frame.split('\n');
+  const matches = (line: string): boolean =>
+    typeof label === 'string' ? line.includes(label) : label.test(line);
   const y =
-    occurrence === 'first'
-      ? lines.findIndex((line) => line.includes(label))
-      : lines.findLastIndex((line) => line.includes(label));
+    occurrence === 'first' ? lines.findIndex(matches) : lines.findLastIndex(matches);
   if (y === -1) {
-    throw new Error(`Label not rendered: ${label}`);
+    throw new Error(`Label not rendered: ${String(label)}`);
   }
-  const x = lines[y]?.indexOf(label) ?? -1;
+  const line = lines[y] ?? '';
+  const x = typeof label === 'string' ? line.indexOf(label) : line.search(label);
   if (x === -1) {
-    throw new Error(`Label has no cell coordinate: ${label}`);
+    throw new Error(`Label has no cell coordinate: ${String(label)}`);
   }
   return { x, y };
 }
@@ -201,9 +202,11 @@ describe('footer chip click affordances', () => {
     const home = await waitForFrame(output, [
       'kavrix / Home',
       '8 credentials',
-      '+1 more',
+      // The exact overflow count depends on how many global chips fit at this
+      // width; the invariant is that an overflow summary exists at all.
+      /\+[1-9]\d* more/u,
     ]);
-    const overflow = coordinateOf(home, '+1 more');
+    const overflow = coordinateOf(home, /\+[1-9]\d* more/u);
     click(input, { x: overflow.x + 1, y: overflow.y });
     await new Promise((resolve) => setTimeout(resolve, 250));
     expect(output.latestFrame()).toContain('kavrix / Home');

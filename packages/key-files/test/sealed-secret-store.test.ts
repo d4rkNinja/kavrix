@@ -355,6 +355,53 @@ describe('SealedSecretStore', () => {
   });
 
   it(
+    'refuses service and account labels that would be ambiguous domain separators',
+    async () => {
+      const store = storeAt(directory);
+      const passphrase = vi.fn(() =>
+        Promise.resolve(Buffer.from('correct horse battery staple', 'utf8')),
+      );
+      const labelled = new SealedSecretStore({ directory, passphrase });
+      const hostile = [
+        ['embedded separator', 'service', 'account\u0000extra'],
+        ['newline separator', 'ser\nvice', 'account'],
+        ['surrogate half', 'service', '\ud800'],
+        ['absolute path', '/etc', 'account'],
+        ['backslash', 'service', 'ac\\count'],
+        ['whitespace', 'service name', 'account'],
+        ['non-ascii', 'servïce', 'account'],
+        ['over-long label', 'a'.repeat(65), 'account'],
+        ['empty label', '', 'account'],
+      ] as const;
+
+      try {
+        for (const [label, service, account] of hostile) {
+          await expect(
+            labelled.store(service, account, SECRET),
+            label,
+          ).rejects.toMatchObject({ code: 'KEY_FILE_UNSAFE' });
+          await expect(labelled.load(service, account), label).rejects.toMatchObject({
+            code: 'KEY_FILE_UNSAFE',
+          });
+          await expect(labelled.delete(service, account), label).rejects.toMatchObject({
+            code: 'KEY_FILE_UNSAFE',
+          });
+        }
+        expect(passphrase).not.toHaveBeenCalled();
+
+        // The boundary is a length bound, not a charset judgement: the longest
+        // accepted label must still round-trip.
+        const longest = 'a'.repeat(64);
+        await labelled.store(longest, longest, SECRET);
+        expect(await labelled.load(longest, longest)).toStrictEqual(SECRET);
+      } finally {
+        await labelled.close();
+      }
+    },
+    TIMEOUT_MS,
+  );
+
+  it(
     'deletes an entry idempotently',
     async () => {
       const store = storeAt(directory);

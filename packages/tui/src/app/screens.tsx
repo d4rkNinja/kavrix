@@ -12,10 +12,12 @@ import { TerminalViewport, terminalFullscreenEnabled } from './viewport.js';
 import {
   filteredCredentials,
   credentialWindowSize,
+  paletteWindow,
   visibleListWindow,
   type AppOverlay,
   type AppRouterState,
 } from './router.js';
+import { commandGroups, allCommands } from './commands.js';
 import {
   accentColor,
   CHROME,
@@ -35,6 +37,7 @@ import {
   MotionEnter,
   Panel,
   RevealCountdown,
+  SectionTitle,
   SelectRow,
   SingleLine,
   StatusPill,
@@ -104,6 +107,110 @@ function ThemePickerRows({
 
 function allowMotion(): boolean {
   return resolveMotionPolicy().animate;
+}
+
+/**
+ * Command palette rows: every action this screen can perform, grouped, with its
+ * key and a one-line description. Blocked actions stay visible with the reason
+ * they cannot run, because "unlock first" is the answer a new user needs and a
+ * missing row is not.
+ */
+export function CommandPaletteRows({
+  state,
+}: Readonly<{ state: AppRouterState }>): ReactElement {
+  const { color, ascii } = state;
+  const interaction = useAppInteraction();
+  const { rows, start } = paletteWindow(state);
+  const cursor = state.paletteIndex;
+  const filter = safe(state.paletteFilter, ascii);
+  // The catalogue is rebuilt on every call, so membership and cursor position
+  // are matched by stable id rather than by object identity.
+  const visibleIds = new Set(rows.map((entry) => entry.id));
+
+  return (
+    <Box flexDirection="column">
+      {filter.length === 0 ? null : (
+        <Box flexDirection="row" columnGap={1}>
+          <Text {...accentColor(color, CHROME.muted)}>filter</Text>
+          <Text bold {...accentColor(color, CHROME.accent)}>
+            {filter}
+          </Text>
+          {rows.length === 0 ? (
+            <Text {...accentColor(color, CHROME.danger)}>no matches</Text>
+          ) : null}
+        </Box>
+      )}
+      {rows.length === 0 ? (
+        <EmptyState
+          title="No matching action"
+          hint="Backspace clears the filter; Esc closes the palette."
+          color={color}
+          ascii={ascii}
+        />
+      ) : null}
+      {commandGroups(state).map((group) => {
+        const groupRows = group.commands.filter((entry) => visibleIds.has(entry.id));
+        if (groupRows.length === 0) return null;
+        return (
+          <Box key={group.label} flexDirection="column">
+            {start === 0 && filter.length === 0 ? (
+              <SectionTitle
+                label={safe(group.label, ascii)}
+                ascii={ascii}
+                color={color}
+              />
+            ) : null}
+            {groupRows.map((entry) => {
+              const index = allCommands(state).findIndex((row) => row.id === entry.id);
+              const blocked = entry.blocked(state);
+              const selected = index === cursor;
+              const accent: AppAccent =
+                blocked === null
+                  ? entry.danger === true
+                    ? CHROME.danger
+                    : CHROME.accent
+                  : CHROME.muted;
+              return (
+                <Box key={entry.id} flexDirection="row" columnGap={1}>
+                  <Text
+                    {...accentColor(color, selected ? CHROME.heading : CHROME.muted)}
+                  >
+                    {selected ? pointerGlyph(ascii) : ' '}
+                  </Text>
+                  <ClickTarget
+                    enabled={interaction.enabled}
+                    onClick={() => {
+                      interaction.dispatch({
+                        type: 'select-row',
+                        index: Math.max(0, index),
+                        activate: true,
+                        nowMs: 0,
+                      });
+                    }}
+                  >
+                    <KeyChip
+                      keyLabel={entry.keyLabel}
+                      hint={entry.hint}
+                      color={color}
+                      keyAccent={accent}
+                      disabled={blocked !== null}
+                      active={selected}
+                    />
+                  </ClickTarget>
+                  <Text
+                    dimColor={blocked !== null}
+                    {...accentColor(color, CHROME.muted)}
+                  >
+                    {safe(blocked ?? '', ascii)}
+                  </Text>
+                </Box>
+              );
+            })}
+          </Box>
+        );
+      })}
+    </Box>
+  );
 }
 
 function overlayCopy(
@@ -186,8 +293,13 @@ function overlayCopy(
         accent: CHROME.accent,
         hint: 'Arrow keys or 1-5 preview live; Enter applies and saves; Esc restores.',
       };
-    case 'input-search':
-      return { title: 'Search', body: `Search: ${q}_`, accent: CHROME.accent };
+    case 'command-palette':
+      return {
+        title: 'Actions',
+        body: '(palette list)',
+        accent: CHROME.accent,
+        hint: 'j/k or 1-9 move · Enter runs · type to filter · Esc closes',
+      };
     case 'input-run':
       return {
         title: 'Run preview',
@@ -365,15 +477,21 @@ export function AppChrome({
         : home.vaultId;
   const isDetailOverlay = state.overlay === 'credential-detail';
   const isThemePicker = state.overlay === 'theme-picker';
+  const isPalette = state.overlay === 'command-palette';
   const isConfirmOverlay =
     overlay !== null &&
     !isDetailOverlay &&
+    !isPalette &&
     (overlay.title.startsWith('Confirm') ||
       overlay.title.startsWith('Revoke') ||
       overlay.title.startsWith('Remove') ||
       overlay.title.startsWith('Recovery blocked'));
   const isInputOverlay =
-    overlay !== null && !isConfirmOverlay && !isDetailOverlay && !isThemePicker;
+    overlay !== null &&
+    !isConfirmOverlay &&
+    !isDetailOverlay &&
+    !isThemePicker &&
+    !isPalette;
   // Blink only while a typing overlay owns the screen; otherwise the clock
   // would repaint the whole chrome twice a second for nothing.
   const caret = useCursorVisible(motion && isInputOverlay);
@@ -515,7 +633,8 @@ export function AppChrome({
                 activeId={state.themeId}
               />
             ) : null}
-            {isThemePicker ? null : (
+            {isPalette ? <CommandPaletteRows state={state} /> : null}
+            {isThemePicker || isPalette ? null : (
               <Text bold {...accentColor(color, overlay.accent)}>
                 {safe(typedBody, ascii)}
                 {isInputOverlay ? (
@@ -584,6 +703,11 @@ function OverlayActions({
           <KeyChip keyLabel="Enter" hint="continue" color={color} />
           <KeyChip keyLabel="Esc" hint="cancel" color={color} />
           <KeyChip keyLabel="^V" hint="paste" color={color} keyAccent={CHROME.muted} />
+          {/* Line editing was once Backspace-only; these two are the bindings a
+              linear field can honour exactly, and they are what make a long path
+              typo recoverable without retyping the tail. */}
+          <KeyChip keyLabel="^W" hint="word" color={color} keyAccent={CHROME.muted} />
+          <KeyChip keyLabel="^U" hint="clear" color={color} keyAccent={CHROME.muted} />
         </>
       )}
     </Box>
@@ -640,13 +764,21 @@ function vaultLocked(state: AppRouterState): boolean {
   return home.profileId !== null && !home.unlocked;
 }
 
-function footerChips(state: AppRouterState): readonly FooterChip[] {
+export function footerChips(state: AppRouterState): readonly FooterChip[] {
   const key = CHROME.accent;
-  const commonTail = [
+  // Global keys truly work from every screen, so they are advertised from every
+  // screen. A key that behaves the same everywhere but is only shown somewhere
+  // is the definition of a hidden feature.
+  const globalTail: readonly FooterChip[] = [
+    ...(state.snapshot.home.unlocked
+      ? [{ keyLabel: 'l', hint: 'lock', accent: CHROME.warning }]
+      : []),
+    { keyLabel: ':', hint: 'actions', accent: CHROME.heading },
     { keyLabel: 't', hint: 'theme', accent: key },
     { keyLabel: 'Tab', hint: 'screens', accent: key },
     { keyLabel: 'Esc', hint: 'home', accent: key },
     { keyLabel: '?', hint: 'help', accent: CHROME.heading },
+    { keyLabel: 'a', hint: 'ascii', accent: CHROME.muted },
     { keyLabel: 'q', hint: 'quit', accent: CHROME.danger },
   ];
   // `u` unlocks from every screen, so the affordance is advertised on all of
@@ -659,9 +791,21 @@ function footerChips(state: AppRouterState): readonly FooterChip[] {
       return [
         { keyLabel: 'j/k', hint: 'topic', accent: key },
         ...unlockTail,
-        ...commonTail,
+        ...globalTail,
       ];
     case 'credentials':
+      // While names are being filtered, every printable key is filter text. A
+      // chip for `n` or `c` here would type into the search instead of running,
+      // so the footer advertises only the keys that still act on the list.
+      if (state.filtering) {
+        return [
+          { keyLabel: 'Enter', hint: 'detail', accent: key },
+          { keyLabel: 'j/k', hint: 'move', accent: key },
+          { keyLabel: 'Backspace', hint: 'edit', accent: key },
+          { keyLabel: 'Esc', hint: 'clear filter', accent: CHROME.heading },
+          { keyLabel: 'Tab', hint: 'screens', accent: key },
+        ];
+      }
       return [
         { keyLabel: 'Enter', hint: 'detail', accent: key },
         { keyLabel: 'j/k', hint: 'move', accent: key },
@@ -670,9 +814,9 @@ function footerChips(state: AppRouterState): readonly FooterChip[] {
         { keyLabel: 'n', hint: 'put', accent: key },
         { keyLabel: 'm', hint: 'rename', accent: key },
         { keyLabel: 'x', hint: 'remove', accent: CHROME.danger },
-        { keyLabel: '/', hint: 'search', accent: key },
+        { keyLabel: '/', hint: 'filter', accent: key },
         ...unlockTail,
-        ...commonTail,
+        ...globalTail,
       ];
     case 'profiles':
       return [
@@ -682,7 +826,7 @@ function footerChips(state: AppRouterState): readonly FooterChip[] {
         { keyLabel: 'm', hint: 'mongo', accent: key },
         { keyLabel: 'x', hint: 'remove', accent: CHROME.danger },
         ...unlockTail,
-        ...commonTail,
+        ...globalTail,
       ];
     case 'vaults':
       return [
@@ -690,7 +834,7 @@ function footerChips(state: AppRouterState): readonly FooterChip[] {
         { keyLabel: 'Enter', hint: 'use', accent: key },
         { keyLabel: 'n', hint: 'new vault', accent: key },
         ...unlockTail,
-        ...commonTail,
+        ...globalTail,
       ];
     case 'policy':
       return [
@@ -701,7 +845,7 @@ function footerChips(state: AppRouterState): readonly FooterChip[] {
         { keyLabel: 'g', hint: 'new grant', accent: key },
         { keyLabel: 'r', hint: 'revoke grant', accent: CHROME.danger },
         ...unlockTail,
-        ...commonTail,
+        ...globalTail,
       ];
     case 'recovery':
       return [
@@ -710,7 +854,7 @@ function footerChips(state: AppRouterState): readonly FooterChip[] {
         { keyLabel: 'v', hint: 'verify kit', accent: key },
         { keyLabel: 'x', hint: 'revoke', accent: CHROME.danger },
         ...unlockTail,
-        ...commonTail,
+        ...globalTail,
       ];
     case 'session':
       return [
@@ -719,52 +863,54 @@ function footerChips(state: AppRouterState): readonly FooterChip[] {
         { keyLabel: 'Enter', hint: 'refresh', accent: key },
         { keyLabel: 'j/k', hint: 'move', accent: key },
         ...unlockTail,
-        ...commonTail,
+        ...globalTail,
       ];
     case 'doctor':
       return [
         { keyLabel: 'd', hint: 'run checks', accent: key },
         { keyLabel: 'j/k', hint: 'move', accent: key },
         ...unlockTail,
-        ...commonTail,
+        ...globalTail,
       ];
     case 'run':
       return [
         { keyLabel: 'p', hint: 'pick credentials', accent: key },
         { keyLabel: 'j/k', hint: 'move', accent: key },
         ...unlockTail,
-        ...commonTail,
+        ...globalTail,
       ];
     case 'agent':
       return [
         { keyLabel: 'g', hint: 'dry-run', accent: key },
         { keyLabel: 'j/k', hint: 'move', accent: key },
         ...unlockTail,
-        ...commonTail,
+        ...globalTail,
       ];
     case 'browse':
       return [
         { keyLabel: 'Enter', hint: 'refresh', accent: key },
         { keyLabel: 'j/k', hint: 'move', accent: key },
         ...unlockTail,
-        ...commonTail,
+        ...globalTail,
       ];
     case 'home':
       return [
         { keyLabel: 'j/k', hint: 'move', accent: key },
         { keyLabel: 'Enter', hint: 'open', accent: key },
         ...unlockTail,
-        { keyLabel: 'l', hint: 'lock', accent: CHROME.warning },
         { keyLabel: 'r', hint: 'refresh', accent: key },
-        ...commonTail,
+        ...globalTail,
       ];
+    case 'showcase':
+      // Read-only by design: advertising a row action here would be a promise
+      // this screen cannot keep.
+      return [...unlockTail, ...globalTail];
     default:
       return [
         { keyLabel: 'j/k', hint: 'move', accent: key },
         { keyLabel: 'Enter', hint: 'open', accent: key },
         ...unlockTail,
-        { keyLabel: 'l', hint: 'lock', accent: CHROME.warning },
-        ...commonTail,
+        ...globalTail,
       ];
   }
 }
@@ -1067,7 +1213,11 @@ export function CredentialsScreen({
       >
         <Text {...accentColor(color, CHROME.muted)}>
           {safe(
-            `Values stay masked. ${String(filtered.length)}/${String(snapshot.credentials.length)} credentials${state.credentialFilter.length > 0 ? ` / ${state.credentialFilter}` : ''}`,
+            `Values stay masked. ${String(filtered.length)}/${String(snapshot.credentials.length)} credentials${
+              state.credentialFilter.length > 0
+                ? ` · filter: ${state.credentialFilter}${state.filtering ? '_' : ''}`
+                : ''
+            }`,
             ascii,
           )}
         </Text>
@@ -1082,7 +1232,9 @@ export function CredentialsScreen({
             }
             hint={
               snapshot.home.unlocked
-                ? 'Names are visible; values stay masked until an explicit reveal. Enter opens detail.'
+                ? state.credentialFilter.length > 0
+                  ? 'Backspace edits the filter; Esc clears it. Enter opens detail once a row matches.'
+                  : 'Names are visible; values stay masked until an explicit reveal. Enter opens detail.'
                 : 'Unlock first. Secrets are never accepted on the command line.'
             }
             color={color}
@@ -1138,7 +1290,7 @@ export function CredentialsScreen({
         {filtered.length > 0 ? (
           <Text
             dimColor
-          >{`${String(window.start + 1)}-${String(window.start + window.items.length)} / ${String(filtered.length)}  |  / search`}</Text>
+          >{`${String(window.start + 1)}-${String(window.start + window.items.length)} / ${String(filtered.length)}  |  ${state.filtering ? 'Esc clears the filter' : '/ filter names'}`}</Text>
         ) : null}
       </Panel>
     </Box>
@@ -1476,8 +1628,8 @@ export function HelpScreen({
     [
       'Enter: masked detail. c: copy.',
       'n: put. m: rename. x: remove.',
-      '/: search names. r then y: REVEAL.',
-      'Reveal remasks after 15 seconds.',
+      '/: filter names as you type. Esc clears.',
+      'r then y: REVEAL. Remasks after 15 seconds.',
       'Terminal clipboard: best-effort clear after ~30s while Kavrix is open. System clipboard: clear manually.',
     ],
     [

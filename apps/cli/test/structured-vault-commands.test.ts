@@ -221,10 +221,15 @@ describe('structured vault command model', () => {
       'field list',
       'field get',
       'field remove',
+      'note list',
+      'note add',
+      'note show',
+      'note remove',
     ]) {
       expect(STDIN_FRAME_CONTRACTS[command], command).toBeDefined();
     }
     expect(STDIN_FRAME_CONTRACTS['field set']).toContain('value');
+    expect(STDIN_FRAME_CONTRACTS['note add']).toContain('note-content');
   });
 
   it('registers one command for each alias pair', () => {

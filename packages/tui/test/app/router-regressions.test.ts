@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   createInitialAppRouterState,
   emptySnapshot,
+  filteredCredentials,
   navigateToScreen,
   transitionAppRouter,
   type AppRouterState,
@@ -108,7 +109,7 @@ describe('router regressions', () => {
     expect(late.revealedUntilMs).toBe(0);
   });
 
-  it('preserves an overlay opened while an earlier backend action resolves', () => {
+  it('preserves a name filter written while an earlier backend action resolves', () => {
     let state = navigateToScreen(hydrated(), 'credentials');
     state = transitionAppRouter(state, {
       type: 'key',
@@ -120,6 +121,8 @@ describe('router regressions', () => {
       key: { text: 'alpha' },
       nowMs: 2,
     }).state;
+    expect(state.filtering).toBe(true);
+    expect(state.credentialFilter).toBe('alpha');
 
     const refreshed = transitionAppRouter(state, {
       type: 'backend-result',
@@ -127,8 +130,13 @@ describe('router regressions', () => {
       nowMs: 3,
     }).state;
 
-    expect(refreshed.overlay).toBe('input-search');
-    expect(refreshed.query).toBe('alpha');
+    expect(refreshed.filtering).toBe(true);
+    expect(refreshed.credentialFilter).toBe('alpha');
+    // The refreshed rows are re-filtered in place, so a background refresh can
+    // never silently widen a list the user narrowed.
+    expect(filteredCredentials(refreshed).map((credential) => credential.name)).toEqual(
+      ['alpha'],
+    );
   });
 
   it('clamps a stale list index when refreshed rows shrink', () => {

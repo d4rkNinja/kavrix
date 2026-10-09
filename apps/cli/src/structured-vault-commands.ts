@@ -1,9 +1,9 @@
 /**
  * Light registration for the structured vault command families (`context`,
  * alias `environment`; `service`, alias `group`; `item`, alias `credential`;
- * and `field`). This module only builds Commander shapes (names, aliases,
- * option flags, defaults, descriptions) so CLI startup stays cheap; every
- * action dynamically imports its runtime implementation from
+ * `field`; and `note`). This module only builds Commander shapes (names,
+ * aliases, option flags, defaults, descriptions) so CLI startup stays cheap;
+ * every action dynamically imports its runtime implementation from
  * `./structured-vault-impl.js` at invocation time.
  */
 import type { Command } from 'commander';
@@ -18,6 +18,7 @@ export function registerStructuredVaultCommands(program: Command): void {
   registerServiceCommands(program);
   registerItemCommands(program);
   registerFieldCommands(program);
+  registerNoteCommands(program);
 }
 
 function addDatabaseOptions(command: Command): Command {
@@ -256,5 +257,68 @@ function registerFieldCommands(program: Command): void {
     .action(async (...args: unknown[]) => {
       const impl = await import('./structured-vault-impl.js');
       await impl.fieldRemove(...(args as [string, Record<string, unknown>, Command]));
+    });
+}
+
+function registerNoteCommands(program: Command): void {
+  const note = program
+    .command('note')
+    .description('Manage encrypted notes attached to credential items.');
+  const base = (command: Command): Command =>
+    addDatabaseOptions(command)
+      .requiredOption('--context <name>', 'Project context name.')
+      .requiredOption('--service <name>', 'Service/group name.');
+  const list = note
+    .command('list <item>')
+    .description('List the notes on one item, without their content.');
+  base(list)
+    .option('--json', 'Emit machine-readable output.')
+    .action(async (...args: unknown[]) => {
+      const impl = await import('./structured-vault-impl.js');
+      await impl.noteList(...(args as [string, Record<string, unknown>, Command]));
+    });
+  const add = note
+    .command('add <item> <title>')
+    .description('Add one note from protected input.');
+  base(add)
+    .option('--content-stdin', 'Read the note content from protected stdin.')
+    .option(
+      '--content-stdin-base64',
+      'Read one base64-encoded note-content frame from protected stdin.',
+    )
+    .option('--sensitive', 'Mask the note content by default and gate every reveal.')
+    .option('--pin', 'Pin the note to the top of the item listing.')
+    .option('--no-pin', 'Store the note unpinned (the default).')
+    .option('--json', 'Emit machine-readable output.')
+    .action(async (...args: unknown[]) => {
+      const impl = await import('./structured-vault-impl.js');
+      await impl.noteAdd(
+        ...(args as [string, string, Record<string, unknown>, Command]),
+      );
+    });
+  const show = note
+    .command('show <item> <noteId>')
+    .description(
+      'Read one note; a sensitive body is redacted unless explicitly authorized.',
+    );
+  base(show)
+    .option('--reveal', 'Request an authorized plaintext note body.')
+    .option('--json', 'Emit machine-readable output.')
+    .action(async (...args: unknown[]) => {
+      const impl = await import('./structured-vault-impl.js');
+      await impl.noteShow(
+        ...(args as [string, string, Record<string, unknown>, Command]),
+      );
+    });
+  const remove = note
+    .command('remove <item> <noteId>')
+    .description('Archive one note inside its encrypted item aggregate.');
+  base(remove)
+    .option('--json', 'Emit machine-readable output.')
+    .action(async (...args: unknown[]) => {
+      const impl = await import('./structured-vault-impl.js');
+      await impl.noteRemove(
+        ...(args as [string, string, Record<string, unknown>, Command]),
+      );
     });
 }

@@ -34,6 +34,70 @@ Credentials. Use `Shift+U` to enter a passphrase directly if OS session unlock
 is unavailable. Escape closes overlays; `?` opens Help. Agent validates a project
 configuration; start a live broker with the CLI rather than leaving that screen open.
 
+### Seeing what you can do: `:` or `Ctrl+K`
+
+Thirteen screens with per-screen mnemonic keys are hard to learn, so the app
+carries a command palette. Press `:` (or `Ctrl+K`) on any screen to list every
+action that screen can perform, grouped by screen and "Always available".
+
+Each row shows the key and what it does:
+
+```text
+Actions                                    (packages/tui/src/app/commands.ts)
+  Credentials
+    Enter  view masked detail
+    c      copy to clipboard
+    r      reveal value
+    n      add credential
+    ...
+  Always available
+    u      unlock vault
+    l      lock vault
+    t      change theme
+    a      toggle ascii
+    ?      help
+    Tab    next screen
+    Esc    back to home
+    q      quit
+```
+
+- `j`/`k` or the arrow keys move; `1`–`9` jump to a row; `Enter` runs it.
+- Typing filters by label, hint, or key — `reveal` narrows to one row.
+- When an action cannot run, its row stays visible and shows why, for example
+  "Unlock the vault first (u) to add a credential." A blocked action never
+  silently does nothing.
+- `Esc` closes without running anything.
+
+Choosing a palette entry dispatches the same keystroke as pressing the key, so
+the palette cannot mean something different from the key it names. This is
+asserted for every command on every screen in
+`packages/tui/test/command-palette.test.ts`, which additionally checks that every
+key the footer advertises exists as a palette entry.
+
+### Keys that behave the same everywhere
+
+These are advertised in the footer of every screen, not only Home:
+
+| Key                 | Action                                                   |
+| ------------------- | -------------------------------------------------------- |
+| `u` / `Shift+U`     | unlock (session / forced passphrase)                     |
+| `l`                 | lock                                                     |
+| `t`                 | theme picker                                             |
+| `a`                 | toggle ASCII                                             |
+| `?`                 | Help from any screen                                     |
+| `Tab` / `Shift+Tab` | cycle screens                                            |
+| `Esc`               | return Home (also clears a REVEAL first, on Credentials) |
+| `q`                 | quit (outside input overlays)                            |
+| `Ctrl+C`            | quit from anywhere, including inside overlays            |
+
+`/` starts a live name filter on the Credentials screen. Typing narrows the list
+on every keystroke — no search box opens, so nothing you type is ever invisible.
+`Backspace` edits, `Esc` clears the filter and restores every row, `Enter` opens
+the highlighted credential, and `j`/`k` plus the arrow keys move through the
+matches. While a filter is open every other printable key is filter text, so
+screen shortcuts are suspended until you press `Esc`. `/` is a Credentials-only
+control; on any other screen it answers that search lives on Credentials (press 4) instead of opening a search box that screen could not use.
+
 ### If the terminal feels choppy
 
 Finite entrance, list, and splash-reveal animations release their clock
@@ -127,10 +191,11 @@ paint. Footer chips prioritize Enter/detail, Esc, and q on narrow terminals, plu
 `u` unlock while the vault is locked, so the unlock control survives overflow.
 `+N more` reports how many chips are hidden and is not itself clickable; press
 `?` for Help from any screen. Home and data lists render bounded windows; `/`
-search filters client-side. Home/End select the first/last row; Page Up/Page Down
-jump through lists. Credential paging adapts to terminal height and the visible
-reveal panel, and uses the filtered list. These shortcuts do not act behind input
-or confirmation overlays. Repeated resize reports and ignored keys avoid redundant
+filters credential names live on Credentials. Home/End select the first/last
+row; Page Up/Page Down jump through lists. Credential paging adapts to terminal
+height and the visible reveal panel, and uses the filtered list. Screen
+shortcuts do not act behind input or confirmation overlays, and are suspended
+while a credential name filter is open. Repeated resize reports and ignored keys avoid redundant
 state updates and mouse-frame invalidations. The reveal countdown updates once per displayed second; the expiry check
 still runs every 250ms. Escape remasks a REVEAL and returns focus to the
 credentials list. Clicking the startup splash skips it.
@@ -190,6 +255,27 @@ The workspace paints in the terminal's alternate screen and restores your origin
 scrollback on exit, so it behaves like a full-screen application rather than an
 inline frame. This is independent of mouse support.
 
+### Screens
+
+Thirteen screens are reachable by `Tab`, `Shift+Tab`, the digits `1`–`9`, the Home
+menu, or the command palette:
+
+|   # | Screen                 | What it is for                                         |
+| --: | ---------------------- | ------------------------------------------------------ |
+|   1 | Home                   | status dashboard and the menu                          |
+|   2 | Profiles               | datastore routing (file / MongoDB)                     |
+|   3 | Vaults                 | vault selection and creation                           |
+|   4 | Credentials            | flat name/value credentials: add, filter, copy, reveal |
+|   5 | Doctor / heal          | local health and permission checks                     |
+|   6 | Session unlock         | OS-credential-store session unlock                     |
+|   7 | Recovery kit           | key-material slots                                     |
+|   8 | Run preview            | dry-run check for a command (never injects secrets)    |
+|   9 | Policy / Grant / Audit | authorization state and activity                       |
+|   — | Agent                  | agent dry-run validation                               |
+|   — | Browse                 | context / service / item hierarchy (metadata only)     |
+|   — | Help                   | the full keymap, in five topics                        |
+|   — | Storage docs           | read-only storage summary                              |
+
 Mouse input uses the SGR protocol, with the legacy X10 encoding also decoded so
 terminals that track clicks but ignore SGR 1006 cannot leak printable mouse
 bytes into masked fields. A control sequence that arrives split by the terminal is
@@ -219,6 +305,21 @@ the current folder while preserving the filename. It never reads file contents.
 Secure default paths start browsing at the home folder, so a first installation
 does not require the artifact directory to exist already.
 Inputs support cursor arrows, Home/End, Delete, and `Ctrl+A/E/U`.
+
+### Editing a typed answer
+
+The main app's overlay fields (passphrases, paths, vault and profile names,
+policy and grant values) are linear strings, so they offer the line-editing keys
+that a linear field can honour exactly rather than a caret it does not have:
+
+| Key                      | Effect                                               |
+| ------------------------ | ---------------------------------------------------- |
+| `Backspace`              | delete one character (code point, never half a pair) |
+| `Ctrl+U`                 | clear the field; the overlay stays open              |
+| `Ctrl+W`                 | delete the last word and the space before it         |
+| `Ctrl+Shift+V` / `Cmd+V` | paste                                                |
+
+Every field keeps its own length bound, and these keys do not loosen one.
 
 MongoDB addresses remain masked. `Ctrl+T` tests the connection; Enter tests an
 unverified address before continuing. Remote connections require TLS; insecure

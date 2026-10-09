@@ -9,6 +9,7 @@ import {
 import {
   AuthenticationError,
   canonicalAssociatedData,
+  CryptoInputError,
   encryptAead,
   generateItemKey,
 } from '../src/index.js';
@@ -289,6 +290,20 @@ describe('authenticated envelopes', () => {
     await expect(
       decryptAead(envelope, generateItemKey(), itemPayloadAad()),
     ).rejects.toEqual(new AuthenticationError());
+  });
+
+  it('separates a malformed input from a wrong key', async () => {
+    // A caller defect (bad key length, non-canonical encoding) must not be
+    // reported as an authentication failure: the two shapes call for different
+    // operator responses, and the state/backup envelopes already draw this line.
+    const key = generateItemKey();
+    const aad = itemPayloadAad();
+    const envelope = await encryptAead(plaintext, key, aad);
+
+    await expect(decryptAead(envelope, new Uint8Array(16), aad)).rejects.toBeInstanceOf(
+      CryptoInputError,
+    );
+    await expect(decryptAead(envelope, key, aad)).resolves.toEqual(plaintext);
   });
 
   it.each(unknownDiscriminantCases)(

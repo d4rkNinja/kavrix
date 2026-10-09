@@ -45,6 +45,9 @@ export type DatabaseFlatCommandOptions = Readonly<{
   passphraseStdin?: boolean;
   valueStdin?: boolean;
   valueStdinBase64?: boolean;
+  /** Reads one structured-vault note body from protected stdin. */
+  contentStdin?: boolean;
+  contentStdinBase64?: boolean;
   allowInsecureTransport?: boolean;
 }>;
 
@@ -153,6 +156,8 @@ export async function readDatabaseFlatSecrets(
     if (kind === 'database-url') return options.databaseUrlStdin === true;
     if (kind === 'passphrase') return options.passphraseStdin === true;
     if (kind === 'field-value-base64') return options.valueStdinBase64 === true;
+    if (kind === 'note-content-base64') return options.contentStdinBase64 === true;
+    if (kind === 'note-content') return options.contentStdin === true;
     return options.valueStdin === true;
   });
   const anyStdin = flags.some(Boolean);
@@ -163,6 +168,8 @@ export async function readDatabaseFlatSecrets(
         if (kind === 'database-url') return '--database-url-stdin';
         if (kind === 'passphrase') return '--passphrase-stdin';
         if (kind === 'field-value-base64') return '--value-stdin-base64';
+        if (kind === 'note-content-base64') return '--content-stdin-base64';
+        if (kind === 'note-content') return '--content-stdin';
         return '--value-stdin';
       });
     const firstMissing = missingFlags[0] ?? '--value-stdin';

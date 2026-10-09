@@ -69,6 +69,9 @@ for database files.
 No API server, sync daemon, or SQLite store is required. The active
 `@kavrix/tui` workspace supplies schema-driven Ink onboarding and management
 screens; it owns no persistence or cryptographic state and is loaded lazily.
+Its screen actions are described once in `packages/tui/src/app/commands.ts`, and
+the command palette, the footer chips, and the router all read that one
+catalogue, so an action's key, its hint, and its behaviour cannot drift apart.
 The CLI-owned TUI backend leases storage per operation while retaining unlocked
 keys for at most two idle minutes or fifteen minutes since unlock. Protected
 key-file identity, routing, full authenticated state, and rollback anchors are

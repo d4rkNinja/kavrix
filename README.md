@@ -518,8 +518,9 @@ Details: [threat model](docs/threat-model.md),
 - Project contexts, groups/services, structured items, typed fields, notes,
   expiry/rotation metadata, and encrypted attachment/history records are
   modeled in database vaults. Root flat commands intentionally expose only the
-  default context/service projection; the current CLI does not claim
-  attachment/history transfer or mutation commands.
+  default context/service projection. Encrypted history records carry no
+  wrapped-key record, so this CLI can list their metadata but cannot reveal,
+  restore, or diff a snapshot value; attachment transfer remains unimplemented.
 - Windows command scripts (`.bat`, `.cmd`, `.com`) are refused for execution
   because launching them requires shell argument re-parsing; invoke real
   executables.

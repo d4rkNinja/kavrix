@@ -28,7 +28,9 @@ export type LocalSecretKind =
   | 'recovery-passphrase'
   | 'new-passphrase'
   | 'field-value'
-  | 'field-value-base64';
+  | 'field-value-base64'
+  | 'note-content'
+  | 'note-content-base64';
 
 export type ConfirmableLocalSecretKind =
   'passphrase' | 'recovery-passphrase' | 'new-passphrase';
@@ -399,7 +401,7 @@ function requirementFor(kind: LocalSecretKind, confirmation: boolean): string {
   if (isConfirmableKind(kind)) {
     return `Requirement: use at least ${String(MIN_PASSPHRASE_BYTES)} UTF-8 bytes in one line.`;
   }
-  if (kind === 'field-value-base64') {
+  if (kind === 'field-value-base64' || kind === 'note-content-base64') {
     return 'Requirement: enter valid base64 that decodes to UTF-8 text.';
   }
   if (kind === 'label') {
@@ -425,6 +427,8 @@ function labelFor(kind: LocalSecretKind): string {
   if (kind === 'vault-label') return 'private vault label';
   if (kind === 'field-value') return 'credential value';
   if (kind === 'field-value-base64') return 'credential value (base64)';
+  if (kind === 'note-content') return 'note content';
+  if (kind === 'note-content-base64') return 'note content (base64)';
   if (kind === 'recovery-passphrase') return 'recovery-kit passphrase';
   if (kind === 'new-passphrase') return 'new passphrase';
   return 'passphrase';
@@ -469,7 +473,9 @@ function decodeBase64Value(frame: string): string {
 }
 
 function validateSecret(value: string, kind?: LocalSecretKind): string {
-  if (kind === 'field-value-base64') return decodeBase64Value(value);
+  if (kind === 'field-value-base64' || kind === 'note-content-base64') {
+    return decodeBase64Value(value);
+  }
   if (
     value.length === 0 ||
     Buffer.byteLength(value, 'utf8') > MAX_SECRET_BYTES ||
@@ -568,7 +574,11 @@ function assertUnlockPassphraseValueFrameOrder(
   frames: readonly string[],
 ): void {
   const hasValueFrame = kinds.some(
-    (kind) => kind === 'field-value' || kind === 'field-value-base64',
+    (kind) =>
+      kind === 'field-value' ||
+      kind === 'field-value-base64' ||
+      kind === 'note-content' ||
+      kind === 'note-content-base64',
   );
   if (!hasValueFrame) return;
   for (const [index, kind] of kinds.entries()) {

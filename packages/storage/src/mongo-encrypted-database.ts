@@ -225,28 +225,37 @@ export class MongoEncryptedDatabaseStore
     }
   }
 
+  /**
+   * Proves the deployment can run a transaction before a caller invests in one.
+   *
+   * Fail closed in both directions: a reply that positively identifies a
+   * standalone is rejected outright, and a reply that never arrives is treated as
+   * an unusable deployment rather than as "probably fine". Silently assuming
+   * capability here would only move the failure into the transaction, after a
+   * caller had already published state.
+   */
   async #assertTransactionCapable(): Promise<void> {
+    let hello: unknown;
     try {
-      const hello = (await this.#database.command({ hello: 1 })) as
-        Record<string, unknown> | null | undefined;
-      if (
-        hello === null ||
-        hello === undefined ||
-        typeof hello !== 'object' ||
-        typeof hello['setName'] === 'string' ||
-        hello['msg'] === 'isdbgrid' ||
-        hello['isWritablePrimary'] === false
-      ) {
-        return;
-      }
-      if (hello['ok'] === 1 || hello['ok'] === true) {
-        // Standalone without replica set: writes that require transactions cannot succeed.
-        throw new EncryptedDatabaseStoreError('unsupported');
-      }
-    } catch (error) {
-      if (error instanceof EncryptedDatabaseStoreError && error.code === 'unsupported')
-        throw error;
+      hello = await this.#database.command({ hello: 1 });
+    } catch {
+      throw new EncryptedDatabaseStoreError('connection');
+    }
+
+    if (
+      hello === null ||
+      hello === undefined ||
+      typeof hello !== 'object' ||
+      typeof (hello as Record<string, unknown>)['setName'] === 'string' ||
+      (hello as Record<string, unknown>)['msg'] === 'isdbgrid' ||
+      (hello as Record<string, unknown>)['isWritablePrimary'] === false
+    ) {
       return;
+    }
+    const reply = hello as Record<string, unknown>;
+    if (reply['ok'] === 1 || reply['ok'] === true) {
+      // Standalone without replica set: writes that require transactions cannot succeed.
+      throw new EncryptedDatabaseStoreError('unsupported');
     }
   }
 

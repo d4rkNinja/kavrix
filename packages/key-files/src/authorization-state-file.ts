@@ -1,4 +1,9 @@
-import { decryptStateEnvelope, encryptStateEnvelope } from '@kavrix/crypto';
+import {
+  AuthenticationError,
+  CryptoInputError,
+  decryptStateEnvelope,
+  encryptStateEnvelope,
+} from '@kavrix/crypto';
 import {
   authorizationStateDocumentSchema,
   authorizationStateEnvelopeSchema,
@@ -23,6 +28,9 @@ import { PortableKeyFileError } from './errors.js';
 export const AUTHORIZATION_STATE_SUFFIX = '.authorization';
 const UTF8_ENCODER = new TextEncoder();
 const UTF8_DECODER = new TextDecoder('utf-8', { fatal: true });
+
+/** Mirrors `STATE_ENVELOPE_KEY_BYTES` in `@kavrix/crypto`, which owns the value. */
+const AUTHORIZATION_STATE_KEY_BYTES = 32;
 
 export type AuthorizationScope = Readonly<{
   scopeKind: AuthorizationScopeKind;
@@ -136,11 +144,16 @@ function unsealEnvelope(
       }
     })
     .catch((error: unknown) => {
-      throw mapUnsealError(error);
+      throw mapUnsealError(error, key);
     });
 }
 
-function mapUnsealError(error: unknown): unknown {
+/**
+ * Classified by error class rather than by message text: `@kavrix/crypto` owns
+ * its wording, and a reworded message must not silently turn an integrity
+ * failure into a generic pass-through.
+ */
+function mapUnsealError(error: unknown, key: Uint8Array): unknown {
   if (error instanceof AuthorizationStateFileError) return error;
   if (error instanceof SyntaxError) {
     return new AuthorizationStateFileError('INVALID_FORMAT');
@@ -148,11 +161,15 @@ function mapUnsealError(error: unknown): unknown {
   if (error instanceof Error && error.name === 'ZodError') {
     return new AuthorizationStateFileError('INVALID_FORMAT');
   }
-  if (error instanceof Error && error.message.includes('Authentication failed')) {
+  if (error instanceof AuthenticationError) {
     return new AuthorizationStateFileError('INTEGRITY_FAILURE');
   }
-  if (error instanceof Error && error.message.includes('32 bytes')) {
-    return new AuthorizationStateFileError('KEY_INVALID');
+  if (error instanceof CryptoInputError) {
+    // Only a key of the wrong length reaches here as a crypto input error;
+    // everything else the envelope trusts is already schema-bounded.
+    return key.byteLength === AUTHORIZATION_STATE_KEY_BYTES
+      ? new AuthorizationStateFileError('INVALID_FORMAT')
+      : new AuthorizationStateFileError('KEY_INVALID');
   }
   if (error instanceof ProtectedJsonDocumentError) {
     return new AuthorizationStateFileError('INVALID_FORMAT');

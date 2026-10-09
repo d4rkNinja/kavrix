@@ -134,11 +134,21 @@ the passphrase always still works — nothing about it is weakened.
 `kavrix` (or `kavrix tui`) opens a full interactive app: profiles, vaults,
 credentials, policies, grants, recovery, doctor, and session unlock, with
 secrets masked by default and reveal explicitly guarded (`r` then `y`, with a
-visible countdown). Screens are reachable by number or Tab, long lists have
-`/` search, and motion respects your reduced-motion setting. Press `t` to
+visible countdown). Screens are reachable by number or Tab, and `/` filters
+credential names live as you type, and motion respects your reduced-motion
+setting. Press `t` to
 switch between five color themes (Gold, Ocean, Magma, Forest, Violet) with
 a live preview — your choice is saved, or set it per launch with
 `kavrix tui --theme`.
+
+Press `:` or `Ctrl+K` on any screen for the command palette: a grouped list of
+every action that screen can perform, with the key and a plain-language
+description. Type to filter, `1`–`9` to jump, `Enter` to run. Choosing an entry
+dispatches the same keystroke as pressing the key. An action that cannot run yet
+stays listed and says why — "Unlock the vault first (u) to add a credential."
+— instead of silently doing nothing. The keys that behave the same everywhere
+(`u`, `l`, `t`, `a`, `?`, `Tab`, `Esc`, `q`) are advertised on every screen's
+footer, not only Home.
 
 Common database TUI actions reuse authenticated keys, with fresh protected-file,
 datastore, and rollback-anchor checks per operation. Storage closes between

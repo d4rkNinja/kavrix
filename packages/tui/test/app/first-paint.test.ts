@@ -251,7 +251,7 @@ describe('TUI first paint reliability', () => {
     expect(help).not.toMatch(/Vault environment/i);
   });
 
-  it('virtualizes and searches a large credential fixture', () => {
+  it('virtualizes and filters a large credential fixture without an overlay', () => {
     const credentials = Array.from({ length: 400 }, (_, index) => ({
       name: index === 317 ? 'zz-needle' : `cred-${String(index).padStart(3, '0')}`,
       maskedValue: '********',
@@ -283,31 +283,36 @@ describe('TUI first paint reliability', () => {
     const window = visibleListWindow(filteredCredentials(state), state.listIndex, 12);
     expect(window.items.length).toBeLessThanOrEqual(12);
     expect(window.items.length).toBeGreaterThan(0);
+    // `/` starts a live name filter. No modal opens, so nothing the user types
+    // can be invisible to them, and every keystroke is already applied.
     state = transitionAppRouter(state, {
       type: 'key',
       key: { text: '/' },
       nowMs: 0,
     }).state;
-    expect(state.overlay).toBe('input-search');
+    expect(state.overlay).toBe('none');
+    expect(state.filtering).toBe(true);
+    expect(state.credentialFilter).toBe('');
     state = transitionAppRouter(state, {
       type: 'key',
-      key: { text: 'zz-needle' },
+      key: { text: 'zz-' },
       nowMs: 1,
     }).state;
+    expect(state.credentialFilter).toBe('zz-');
+    expect(filteredCredentials(state)).toHaveLength(1);
     state = transitionAppRouter(state, {
       type: 'key',
-      key: { name: 'return' },
+      key: { text: 'needle' },
       nowMs: 2,
     }).state;
-    expect(state.overlay).toBe('none');
     expect(state.credentialFilter).toBe('zz-needle');
-    const filtered = filteredCredentials(state);
-    expect(filtered).toHaveLength(1);
-    expect(filtered[0]?.name).toBe('zz-needle');
+    expect(filteredCredentials(state)).toHaveLength(1);
+    expect(filteredCredentials(state)[0]?.name).toBe('zz-needle');
     const painted = renderToString(createElement(CredentialsScreen, { state }), {
       columns: 80,
     });
     expect(painted).toContain('zz-needle');
+    expect(painted).toContain('filter: zz-needle_');
     expect(painted).not.toContain('cred-000');
   });
 

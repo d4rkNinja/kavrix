@@ -298,9 +298,13 @@ export function KavrixApp({
   });
 
   // Bracketed paste arrives here (not via useInput) so multi-char paste never
-  // looks like Enter. Overlay fields append the full sanitized string once.
+  // looks like Enter. Overlay fields append the full sanitized string once, and
+  // the Credentials name filter accepts a pasted name the same way.
   usePaste((text) => {
-    if (!stateRef.current.overlay.startsWith('input-')) return;
+    const active = stateRef.current;
+    const typingIntoFilter =
+      active.filtering && active.overlay === 'none' && active.screen === 'credentials';
+    if (!typingIntoFilter && !active.overlay.startsWith('input-')) return;
     const cleaned = sanitizePasteText(text);
     if (cleaned.length === 0) return;
     dispatch({ type: 'key', key: { text: cleaned }, nowMs: now() });

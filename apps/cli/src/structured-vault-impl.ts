@@ -14,6 +14,9 @@ import {
   groupTemplateSchema,
   itemIdSchema,
   itemPayloadSchema,
+  noteIdSchema,
+  noteSchema,
+  nonEmptyTextSchema,
   projectContextIdSchema,
   projectContextPayloadSchema,
   recordRevisionSchema,
@@ -31,6 +34,8 @@ import {
   type FieldValue,
   type GroupTemplate,
   type ItemPayload,
+  type Note,
+  type NoteId,
   type ProjectContextPayload,
   type StructuredGroupPayload,
   type StructuredVaultPayload,
@@ -100,6 +105,33 @@ export type StructuredFieldSetInput = Readonly<{
   sensitive?: boolean;
   publicValue?: boolean;
   now?: string;
+}>;
+
+/** Note input that has already crossed the protected input boundary. */
+export type StructuredNoteInput = Readonly<{
+  title: string;
+  content: string;
+  sensitive?: boolean;
+  pinned?: boolean;
+  now?: string;
+}>;
+
+/** One note mutation: the next aggregate and the note the mutation touched. */
+export type StructuredNoteMutation = Readonly<{
+  payload: StructuredVaultPayload;
+  note: Note;
+}>;
+
+/** Non-secret note metadata emitted by list/show; the body is never included. */
+export type StructuredNoteSummary = Readonly<{
+  id: string;
+  title: string;
+  sensitive: boolean;
+  pinned: boolean;
+  tags: readonly string[];
+  sortOrder: number;
+  createdAt: string;
+  updatedAt: string;
 }>;
 
 export type StructuredCommandResult = Readonly<Record<string, unknown>>;
@@ -572,6 +604,115 @@ export function removeStructuredField(
   });
 }
 
+/** Attach one note to an item. The note body never leaves the protected input path. */
+export function addStructuredNote(
+  payload: StructuredVaultPayload,
+  contextName: string,
+  serviceName: string,
+  itemTitle: string,
+  input: StructuredNoteInput,
+): StructuredNoteMutation {
+  const context = resolveProjectContext(payload, contextName);
+  const group = resolveService(payload, context.id, serviceName);
+  const item = resolveItem(payload, group.id, itemTitle);
+  const note = createNote(item, input);
+  const nextItem = itemPayloadSchema.parse({
+    ...item,
+    notes: [...item.notes, note],
+    revision: incrementRevision(item.revision),
+    updatedAt: note.updatedAt,
+  });
+  return {
+    payload: parseStructuredPayload({
+      ...payload,
+      items: payload.items.map((entry) => (entry.id === item.id ? nextItem : entry)),
+    }),
+    note,
+  };
+}
+
+/**
+ * Archive one note inside the item aggregate. Consistent with field removal,
+ * the encrypted note is retained rather than silently discarded; only the
+ * active projection drops it. The returned note is the archived record.
+ */
+export function removeStructuredNote(
+  payload: StructuredVaultPayload,
+  contextName: string,
+  serviceName: string,
+  itemTitle: string,
+  noteId: string,
+  now = timestampNow(),
+): StructuredNoteMutation {
+  const context = resolveProjectContext(payload, contextName);
+  const group = resolveService(payload, context.id, serviceName);
+  const item = resolveItem(payload, group.id, itemTitle);
+  const target = resolveNote(item, noteId);
+  const at = parseTimestamp(now);
+  const archived = noteSchema.parse({ ...target, archivedAt: at, updatedAt: at });
+  const nextItem = itemPayloadSchema.parse({
+    ...item,
+    notes: item.notes.map((entry) => (entry.id === target.id ? archived : entry)),
+    revision: incrementRevision(item.revision),
+    updatedAt: at,
+  });
+  return {
+    payload: parseStructuredPayload({
+      ...payload,
+      items: payload.items.map((entry) => (entry.id === item.id ? nextItem : entry)),
+    }),
+    note: archived,
+  };
+}
+
+/** Note metadata only; the archived flag never carries the note body. */
+export function projectStructuredNotes(
+  item: ItemPayload,
+): readonly StructuredNoteSummary[] {
+  return item.notes
+    .filter((entry) => entry.archivedAt === undefined)
+    .map((note) => ({
+      id: note.id,
+      title: sanitizeText(note.title),
+      sensitive: note.isSensitive,
+      pinned: note.isPinned,
+      tags: note.tags.map((tag) => sanitizeText(tag)),
+      sortOrder: note.sortOrder,
+      createdAt: note.createdAt,
+      updatedAt: note.updatedAt,
+    }))
+    .sort((left, right) =>
+      left.sortOrder === right.sortOrder
+        ? left.id.localeCompare(right.id)
+        : left.sortOrder - right.sortOrder,
+    );
+}
+
+/**
+ * Return the display token for one note read. A sensitive note body is masked
+ * unless the caller has already passed the note-level reveal guard.
+ */
+export function displayStructuredNoteContent(note: Note, reveal: boolean): string {
+  if (note.isSensitive && !reveal) return REDACTED;
+  return sanitizeText(note.content);
+}
+
+/** Reference one note for the stored authorization policy, as field reads do. */
+export function structuredNoteReference(
+  contextName: string,
+  serviceName: string,
+  itemTitle: string,
+  noteId: string,
+): string {
+  const reference = `${contextName}/${serviceName}/${itemTitle}/${noteId}`;
+  if (reference.length > MAX_POLICY_REFERENCE_CHARS) {
+    throw new StructuredVaultCommandError(
+      'Structured note reference is too long for authorization policy.',
+    );
+  }
+  return reference;
+}
+
 export function resolveProjectContext(
   payload: StructuredVaultPayload,
   name: string,
@@ -742,6 +883,70 @@ function resolveFieldOptional(
   if (matches.length > 1)
     throw new StructuredVaultCommandError('Field name is ambiguous.');
   return matches[0];
+}
+
+/** Build one canonical note; identifiers and timestamps are generated here. */
+function createNote(item: ItemPayload, input: StructuredNoteInput): Note {
+  const title = parseNoteTitle(input.title);
+  const content = parseNoteContent(input.content);
+  const now = parseTimestamp(input.now ?? timestampNow());
+  if (
+    item.notes.some((entry) => entry.archivedAt === undefined && entry.title === title)
+  ) {
+    throw new StructuredVaultCommandError(
+      'A note with this title already exists on this item.',
+    );
+  }
+  return noteSchema.parse({
+    id: noteIdSchema.parse(`note_${randomUUID()}`),
+    title,
+    content,
+    isSensitive: input.sensitive === true,
+    isPinned: input.pinned === true,
+    tags: [],
+    sortOrder: item.notes.length,
+    createdAt: now,
+    updatedAt: now,
+  });
+}
+
+/** Resolve exactly one active note identifier, failing closed on any miss. */
+function resolveNote(item: ItemPayload, noteId: string): Note {
+  const id = parseNoteId(noteId);
+  const matches = item.notes.filter(
+    (entry) => entry.id === id && entry.archivedAt === undefined,
+  );
+  if (matches.length !== 1) {
+    throw new StructuredVaultCommandError('Note was not found.');
+  }
+  const match = matches[0];
+  if (match === undefined) throw new StructuredVaultCommandError('Note was not found.');
+  return match;
+}
+
+function parseNoteId(value: string): NoteId {
+  const parsed = noteIdSchema.safeParse(value.trim());
+  if (!parsed.success) throw new StructuredVaultCommandError('Note ID is invalid.');
+  return parsed.data;
+}
+
+function parseNoteTitle(value: string): string {
+  const normalized = value.trim();
+  if (
+    normalized.length === 0 ||
+    normalized.length > 256 ||
+    containsC0Control(normalized)
+  ) {
+    throw new StructuredVaultCommandError('Note title is invalid.');
+  }
+  return nonEmptyTextSchema.parse(normalized);
+}
+
+function parseNoteContent(value: string): string {
+  if (value.length === 0) {
+    throw new StructuredVaultCommandError('Note content is empty.');
+  }
+  return secretValueSchema.parse(value);
 }
 
 function createMinimalTemplate(now: string): GroupTemplate {
@@ -1108,6 +1313,8 @@ function commandOptions(command: Command): DatabaseFlatCommandOptions {
     ...(options['passphraseStdin'] === true ? { passphraseStdin: true } : {}),
     ...(options['valueStdin'] === true ? { valueStdin: true } : {}),
     ...(options['valueStdinBase64'] === true ? { valueStdinBase64: true } : {}),
+    ...(options['contentStdin'] === true ? { contentStdin: true } : {}),
+    ...(options['contentStdinBase64'] === true ? { contentStdinBase64: true } : {}),
     ...(options['allowInsecureTransport'] === true
       ? { allowInsecureTransport: true }
       : {}),
@@ -1719,6 +1926,189 @@ export async function fieldRemove(
       service: sanitizeText(serviceName),
       item: sanitizeText(itemTitle),
       name: sanitizeText(name),
+      revision: updated.revision,
+    });
+  });
+}
+
+/** Handler for `note list <item>`. */
+export async function noteList(
+  itemTitle: string,
+  options: Record<string, unknown>,
+  command: Command,
+): Promise<void> {
+  const flat = commandOptions(command);
+  const contextName = requiredOption(options, 'context');
+  const serviceName = requiredOption(options, 'service');
+  const values = await readDatabaseFlatSecrets(flat, []);
+  await withDatabaseFlatVault(flat, values, async (session, vaultId) => {
+    let result: StructuredCommandResult = {};
+    const document = await session.inspectStructuredVault(vaultId, (payload) => {
+      const context = resolveProjectContext(payload, contextName);
+      const group = resolveService(payload, context.id, serviceName);
+      const item = resolveItem(payload, group.id, itemTitle);
+      result = {
+        context: sanitizeText(context.name),
+        service: sanitizeText(group.name),
+        item: sanitizeText(item.title),
+        notes: projectStructuredNotes(item),
+      };
+    });
+    writeJsonResult({ ...result, revision: document.revision });
+  });
+}
+
+/** Handler for `note add <item> <title>`. */
+export async function noteAdd(
+  itemTitle: string,
+  title: string,
+  options: Record<string, unknown>,
+  command: Command,
+): Promise<void> {
+  const flat = commandOptions(command);
+  if (flat.contentStdin === true && flat.contentStdinBase64 === true) {
+    throw new StructuredVaultCommandError(
+      'Use either --content-stdin or --content-stdin-base64, not both.',
+    );
+  }
+  const contextName = requiredOption(options, 'context');
+  const serviceName = requiredOption(options, 'service');
+  const kind =
+    flat.contentStdinBase64 === true ? 'note-content-base64' : 'note-content';
+  const values = await readDatabaseFlatSecrets(flat, [kind]);
+  const rawContent = values.extras[0];
+  if (rawContent === undefined)
+    throw new DatabaseFlatCommandError('Secret input is incomplete.');
+  await withDatabaseFlatVault(flat, values, async (session, vaultId) => {
+    let mutation: StructuredNoteMutation | undefined;
+    const updated = await session.updateStructuredVault(vaultId, (payload) => {
+      mutation = addStructuredNote(payload, contextName, serviceName, itemTitle, {
+        title,
+        content: rawContent,
+        ...(options['sensitive'] === true ? { sensitive: true } : {}),
+        ...(options['pin'] === true ? { pinned: true } : {}),
+        ...(options['pin'] === false ? { pinned: false } : {}),
+      });
+      return mutation.payload;
+    });
+    const created = mutation;
+    if (created === undefined)
+      throw new StructuredVaultCommandError('Note was not created.');
+    writeJsonResult({
+      added: true,
+      type: 'note',
+      context: sanitizeText(contextName),
+      service: sanitizeText(serviceName),
+      item: sanitizeText(itemTitle),
+      id: created.note.id,
+      title: sanitizeText(created.note.title),
+      sensitive: created.note.isSensitive,
+      pinned: created.note.isPinned,
+      revision: updated.revision,
+    });
+  });
+}
+
+/** Handler for `note show <item> <noteId>`. */
+export async function noteShow(
+  itemTitle: string,
+  noteId: string,
+  options: Record<string, unknown>,
+  command: Command,
+): Promise<void> {
+  const flat = commandOptions(command);
+  const contextName = requiredOption(options, 'context');
+  const serviceName = requiredOption(options, 'service');
+  const reveal = options['reveal'] === true;
+  const values = await readDatabaseFlatSecrets(flat, []);
+  await withDatabaseFlatVault(flat, values, async (session, vaultId, profile) => {
+    let observed:
+      | Readonly<{
+          note: Note;
+          itemTitle: string;
+          contextName: string;
+          serviceName: string;
+        }>
+      | undefined;
+    const document = await session.inspectStructuredVault(vaultId, (payload) => {
+      const context = resolveProjectContext(payload, contextName);
+      const group = resolveService(payload, context.id, serviceName);
+      const item = resolveItem(payload, group.id, itemTitle);
+      observed = {
+        note: resolveNote(item, noteId),
+        itemTitle: item.title,
+        contextName: context.name,
+        serviceName: group.name,
+      };
+    });
+    const observation = observed;
+    if (observation === undefined)
+      throw new StructuredVaultCommandError('Note was not found.');
+    // Permission to read a note never implies permission to print it: a
+    // sensitive body passes the same stored reveal policy as a field read.
+    if (reveal && observation.note.isSensitive) {
+      await enforceRevealPolicy(
+        session,
+        profile,
+        structuredNoteReference(
+          observation.contextName,
+          observation.serviceName,
+          observation.itemTitle,
+          observation.note.id,
+        ),
+      );
+    }
+    writeJsonResult({
+      context: sanitizeText(observation.contextName),
+      service: sanitizeText(observation.serviceName),
+      item: sanitizeText(observation.itemTitle),
+      id: observation.note.id,
+      title: sanitizeText(observation.note.title),
+      sensitive: observation.note.isSensitive,
+      pinned: observation.note.isPinned,
+      tags: observation.note.tags.map((tag) => sanitizeText(tag)),
+      sortOrder: observation.note.sortOrder,
+      createdAt: observation.note.createdAt,
+      updatedAt: observation.note.updatedAt,
+      content: displayStructuredNoteContent(observation.note, reveal),
+      revision: document.revision,
+    });
+  });
+}
+
+/** Handler for `note remove <item> <noteId>`. */
+export async function noteRemove(
+  itemTitle: string,
+  noteId: string,
+  options: Record<string, unknown>,
+  command: Command,
+): Promise<void> {
+  const flat = commandOptions(command);
+  const contextName = requiredOption(options, 'context');
+  const serviceName = requiredOption(options, 'service');
+  const values = await readDatabaseFlatSecrets(flat, []);
+  await withDatabaseFlatVault(flat, values, async (session, vaultId) => {
+    let mutation: StructuredNoteMutation | undefined;
+    const updated = await session.updateStructuredVault(vaultId, (payload) => {
+      mutation = removeStructuredNote(
+        payload,
+        contextName,
+        serviceName,
+        itemTitle,
+        noteId,
+      );
+      return mutation.payload;
+    });
+    const removed = mutation;
+    if (removed === undefined)
+      throw new StructuredVaultCommandError('Note was not found.');
+    writeJsonResult({
+      removed: true,
+      type: 'note',
+      context: sanitizeText(contextName),
+      service: sanitizeText(serviceName),
+      item: sanitizeText(itemTitle),
+      id: removed.note.id,
       revision: updated.revision,
     });
   });

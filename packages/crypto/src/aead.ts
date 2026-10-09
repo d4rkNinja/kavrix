@@ -100,7 +100,12 @@ export async function decryptAead(
       nonce,
       key,
     );
-  } catch {
+  } catch (error) {
+    // A malformed envelope or an unusable key is a caller/schema defect, not a
+    // wrong-key signal. Preserving that distinction keeps the two failure shapes
+    // observable instead of collapsing every cause into `AuthenticationError`,
+    // which is what the state and backup envelope paths already do.
+    if (error instanceof CryptoInputError) throw error;
     throw new AuthenticationError();
   } finally {
     zeroize(nonce);

@@ -14,7 +14,7 @@ describe('terminal-filling app layouts', () => {
     ['input-put-value', true],
     ['credential-detail', false],
     ['confirm-reveal', false],
-    ['input-search', false],
+    ['input-run', false],
   ] as const)(
     'keeps %s dialog controls visible in a compact viewport',
     (overlay, protectedInput) => {
