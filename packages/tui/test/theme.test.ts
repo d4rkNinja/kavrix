@@ -11,6 +11,8 @@ import {
   screenAccent,
   THEMES,
   toneAccent,
+  toneGlyph,
+  toneGlyphLead,
   TUI_THEME_IDS,
 } from '../src/app/theme.js';
 
@@ -94,5 +96,26 @@ describe('TUI theme registry', () => {
     expect(screenAccent('credentials')).toBe('green');
     expect(screenAccent('recovery')).toBe('red');
     expect(screenAccent('help')).toBe(CHROME.heading);
+  });
+
+  it('separates a leading tone glyph from its text in both text modes', () => {
+    // The ASCII tokens carry no padding and the Unicode ones already have it,
+    // so the lead form must normalise instead of gluing `[i]text` together.
+    for (const tone of ['success', 'warning', 'error', 'info'] as const) {
+      expect(toneGlyphLead(tone, true)).toMatch(/^\[[^\]]*\] $/u);
+      expect(toneGlyphLead(tone, true)).not.toMatch(/\]\[/u);
+    }
+    // `muted` keeps its own spaced dash rather than a bracketed token.
+    expect(toneGlyphLead('muted', true)).toBe(' - ');
+    for (const tone of ['success', 'warning', 'error', 'info', 'muted'] as const) {
+      expect(toneGlyphLead(tone, true)).toBe(`${toneGlyph(tone, true).trimEnd()} `);
+      expect(toneGlyphLead(tone, false)).toBe(`${toneGlyph(tone, false).trimEnd()} `);
+      // Exactly one separating space in either mode: none glues the glyph to
+      // the text, two would double the gap the Unicode tokens already carry.
+      expect(toneGlyphLead(tone, true).endsWith(' ')).toBe(true);
+      expect(toneGlyphLead(tone, true).endsWith('  ')).toBe(false);
+      expect(toneGlyphLead(tone, false).endsWith(' ')).toBe(true);
+      expect(toneGlyphLead(tone, false).endsWith('  ')).toBe(false);
+    }
   });
 });

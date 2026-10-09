@@ -244,7 +244,7 @@ describe('TUI first paint reliability', () => {
     expect(recovery).toMatch(/Doctor heal is/i);
     expect(recovery).toMatch(/different command/i);
     expect(doctor).toMatch(/Doctor \/ heal/i);
-    expect(doctor).toMatch(/not recovery kit/i);
+    expect(doctor).toMatch(/not the recovery kit/i);
     expect(browse).toMatch(/Vault context/i);
     expect(browse).toMatch(/not[\s\S]*run --environment/i);
     expect(help).toMatch(/project-file --environment is CLI-only/i);

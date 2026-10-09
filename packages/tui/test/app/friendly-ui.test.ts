@@ -4,16 +4,19 @@ import { describe, expect, it } from 'vitest';
 
 import {
   APP_MENU,
+  LIST_HINT_MAX_CELLS,
   NAV_GROUPS,
   groupedNavRows,
   groupedNavWindow,
   screenGuide,
   type AppNavGroup,
+  type AppScreenId,
 } from '../../src/index.js';
 import {
   AppChrome,
   CredentialsScreen,
   HomeScreen,
+  PolicyScreen,
   ProfilesScreen,
   VaultsScreen,
   renderActiveScreen,
@@ -206,6 +209,15 @@ describe('friendly chrome', () => {
       expect(frame).toMatch(ASCII_ONLY);
     }
   });
+
+  it('separates every leading tone glyph from the text it introduces', () => {
+    for (const entry of APP_MENU) {
+      const frame = chrome(navigateToScreen(hydrated(), entry.id), 100);
+      // `[i]text` / `[!]text` glues the glyph to the first word in ASCII mode.
+      expect(frame).not.toMatch(/\[(?:i|ok|x|!)\]\S/u);
+    }
+    expect(chrome(hydrated(), 100)).toMatch(/\[i\] friendly fixture/u);
+  });
 });
 
 describe('grouped Home menu rendering', () => {
@@ -238,6 +250,19 @@ describe('grouped Home menu rendering', () => {
 });
 
 describe('empty states carry the next step', () => {
+  it('labels the offered key as the next step and points at it', () => {
+    const state = hydrated();
+    const cleared: AppRouterState = {
+      ...state,
+      snapshot: { ...state.snapshot, profiles: [] },
+    };
+    const frame = renderToString(
+      createElement(ProfilesScreen, { state: navigateToScreen(cleared, 'profiles') }),
+      { columns: 100 },
+    );
+    expect(frame).toMatch(/Next step > n create a file profile/u);
+  });
+
   it('offers put on an empty, unlocked credentials list', () => {
     const state = {
       ...hydrated({ credentials: 0, unlocked: true }),
@@ -299,9 +324,132 @@ describe('empty states carry the next step', () => {
   });
 
   it('states the row guidance once rows exist', () => {
-    const frame = renderToString(createElement(ProfilesScreen, { state: hydrated() }), {
+    const state = hydrated();
+    const cleared: AppRouterState = {
+      ...state,
+      snapshot: {
+        ...state.snapshot,
+        profiles: [
+          {
+            id: 'profile.file',
+            datastore: 'file',
+            selected: true,
+            detail: 'local encrypted file',
+          },
+        ],
+      },
+    };
+    const frame = renderToString(createElement(ProfilesScreen, { state: cleared }), {
       columns: 100,
     });
-    expect(frame).toMatch(/Enter uses the selected profile/u);
+    expect(frame).toMatch(/Enter uses it/u);
+  });
+
+  it('separates two offered keys so they do not read as one line', () => {
+    const state = hydrated({ width: 100, height: 30 });
+    const cleared: AppRouterState = {
+      ...state,
+      snapshot: { ...state.snapshot, policies: [] },
+      screen: 'policy',
+    };
+    const frame = renderToString(createElement(PolicyScreen, { state: cleared }), {
+      columns: 100,
+    });
+    expect(frame).toContain('n create policy');
+    expect(frame).toContain('g issue a grant');
+    // The separator is what stops the two chips reading as a single affordance.
+    expect(frame).toMatch(/n create policy\s*-\s*g issue a grant/u);
+  });
+});
+
+describe('list guidance is never clipped', () => {
+  const withRows = (): AppRouterState => ({
+    ...hydrated({ width: 80, height: 24 }),
+    snapshot: {
+      ...hydrated({ width: 80, height: 24 }).snapshot,
+      profiles: [
+        {
+          id: 'profile.file',
+          datastore: 'file',
+          selected: true,
+          detail: 'local encrypted file',
+        },
+      ],
+    },
+    screen: 'profiles',
+  });
+
+  it('shows the whole guidance row at 80 columns', () => {
+    const frame = renderToString(createElement(ProfilesScreen, { state: withRows() }), {
+      columns: 80,
+    });
+    // The consequence of x is the part a one-line cell used to cut off.
+    expect(frame).toContain('keeping its files');
+  });
+
+  it('keeps every list hint inside the one-cell budget', () => {
+    for (const hint of [
+      'Enter uses it · n file · m mongodb · x removes it, keeping its files',
+      'Enter uses it · n creates a vault once unlocked',
+      'OS keychain · n enables after unlock · x removes · Enter refreshes status',
+      'Each slot is a share of the key material. The last slot is protected.',
+      'Labels only: context, service and item names, never values. Enter refreshes.',
+    ]) {
+      expect(hint.length, hint).toBeLessThanOrEqual(LIST_HINT_MAX_CELLS);
+    }
+  });
+
+  it('still fills the frame exactly across the layout matrix', () => {
+    for (const [width, height] of [
+      [80, 24],
+      [100, 30],
+      [120, 36],
+      [80, 14],
+      [40, 18],
+    ] as const) {
+      const state = navigateToScreen(hydrated({ width, height }), 'profiles');
+      const frame = chrome(state, width);
+      expect(frame.split('\n')).toHaveLength(height);
+      expect(frame.split('\n').every((line) => line.length <= width)).toBe(true);
+    }
+  });
+});
+
+describe('readable panel titles', () => {
+  it('names each screen with its menu label rather than internal prose', () => {
+    const cases: readonly (readonly [AppScreenId, string])[] = [
+      ['profiles', '[ PROFILES ]'],
+      ['vaults', '[ VAULTS ]'],
+      ['doctor', '[ DOCTOR / HEAL ]'],
+      ['recovery', '[ RECOVERY KIT ]'],
+      ['run', '[ RUN PREVIEW ]'],
+      ['policy', '[ POLICY / GRANT / AUDIT ]'],
+      ['session', '[ SESSION UNLOCK ]'],
+      ['showcase', '[ STORAGE DOCS ]'],
+    ];
+    for (const [screen, title] of cases) {
+      const frame = chrome(navigateToScreen(hydrated(), screen), 100);
+      expect(frame).toContain(title);
+    }
+  });
+
+  it('keeps the disambiguation the short titles dropped as screen copy', () => {
+    const doctor = chrome(navigateToScreen(hydrated(), 'doctor'), 100);
+    expect(doctor).toMatch(/not the recovery kit/u);
+    const recovery = chrome(navigateToScreen(hydrated(), 'recovery'), 100);
+    expect(recovery).toMatch(/Doctor heal is[\s\S]*different command/u);
+    const run = chrome(navigateToScreen(hydrated(), 'run'), 100);
+    expect(run).toMatch(/never placed on argv/u);
+    const session = chrome(navigateToScreen(hydrated(), 'session'), 100);
+    expect(session).toMatch(/OS keychain/u);
+  });
+});
+
+describe('list pager copy', () => {
+  it('reads as a sentence instead of a row count with a pipe', () => {
+    const credentials = chrome(navigateToScreen(hydrated(), 'credentials'), 100);
+    expect(credentials).toMatch(/Showing 1-6 of 6 credentials/u);
+    expect(credentials).toMatch(/press \/ to filter names/u);
+    expect(credentials).not.toMatch(/\/ 6 {2}\|/u);
   });
 });

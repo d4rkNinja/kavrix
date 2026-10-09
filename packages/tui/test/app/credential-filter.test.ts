@@ -305,7 +305,7 @@ describe('a filter with no matches is stated, not silent', () => {
     });
     expect(frame).toContain('No credentials match this search.');
     expect(frame).toContain('Esc clears it');
-    expect(frame).toContain('0/4 credentials');
+    expect(frame).toContain('0 of 4 credentials');
 
     // Enter has no row to open, so it says so rather than closing the filter.
     const entered = pressKey(state, { name: 'return' });

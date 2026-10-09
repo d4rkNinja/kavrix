@@ -99,6 +99,13 @@ export function screenGuide(screen: AppScreenId, filtering = false): string {
   return SCREEN_GUIDES[screen];
 }
 
+/**
+ * Cell budget for `ListScreen` guidance rows. The row is one cell tall, so the
+ * copy has to fit the 80-column layout matrix; anything longer is cut off, and
+ * the part that disappears is the key or the consequence it was naming.
+ */
+export const LIST_HINT_MAX_CELLS = 76;
+
 export interface AppMenuEntry {
   readonly id: AppScreenId;
   readonly label: string;

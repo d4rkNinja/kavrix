@@ -153,21 +153,41 @@ printable key is filter text at that moment. Below 16 terminal rows the line is
 dropped so a compact viewport spends its budget on the body.
 
 The Home menu groups its twelve destinations into four named sections — **Set
-up**, **Secrets**, **Security**, **Tools** — each introducing itself with the
+up**, **Secrets**, **Security**, and **Tools** — each introducing itself with the
 number of destinations it holds. A section header is never the last visible row
 of a truncated list, and the bands never take a cursor slot, so the digit
 shortcuts and `Tab` cycling still index the same screens in the same order.
 
-Every empty list offers the one key that moves you forward: Profiles shows
-`n create a file profile`, Credentials shows `n put a credential` (or
-`u unlock your vault` while the vault is locked), Recovery shows
-`n create a recovery kit`, and Doctor shows `d run doctor checks`. An
-affordance the screen cannot honour is not offered at all: Vaults and Session
-only show an unlock chip while the vault is actually locked.
+Panel titles name the screen with the same label the menu uses
+(`[ PROFILES ]`, `[ DOCTOR / HEAL ]`, `[ RECOVERY KIT ]`), so the body never
+renames a destination the tab strip already named. The disambiguation a short
+title would drop stays as screen copy instead: the Doctor row says "Local
+storage health, not the recovery kit", and the Recovery row says "Doctor heal is
+a different command."
+
+Every empty list offers the one key that moves you forward, introduced by
+`Next step >`: Profiles shows `n create a file profile`, Credentials shows
+`n put a credential` (or `u unlock your vault` while the vault is locked),
+Recovery shows `n create a recovery kit`, and Doctor shows `d run doctor
+checks`. Where a screen has two first steps, Policy shows
+`n create policy · g issue a grant` — the `·` separator is what stops two chips
+reading as one affordance. An affordance the screen cannot honour is not offered
+at all: Vaults and Session only show an unlock chip while the vault is actually
+locked.
+
+Guidance under a list is one cell tall, so its copy is bounded to
+`LIST_HINT_MAX_CELLS` (76) cells — the same discipline `SCREEN_GUIDES` already
+follows for the header hint. A hint long enough to be cut loses the tail, and
+the tail is usually the key or the consequence it was naming ("x removes it,
+keeping its files"). Rows that carry several badges put the identifier first and
+the badges after it (`policy.read [POLICY]`, `grant.agent [GRANT] [ACTIVE]`),
+because `policy policy.read` reads like a typo.
 
 The notice row below the body carries a tone glyph (`✓`, `⚠`, `✕`, `ℹ`) beside
-its colour, so a session with `NO_COLOR` or `--ascii` still reads whether the
-last operation succeeded, warned, or failed.
+its colour, followed by exactly one space, so a session with `NO_COLOR` or
+`--ascii` still reads whether the last operation succeeded, warned, or failed.
+The header's orientation row follows the same spacing rule; it used to render
+`[i]Pick a destination…`, with the glyph glued to the first word, in ASCII mode.
 
 On Home, press `u` to unlock and `4` to open Credentials. `Shift+U` always
 opens protected passphrase input, so an unavailable OS keychain cannot trap

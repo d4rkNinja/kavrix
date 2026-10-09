@@ -3,9 +3,13 @@ import type { ReactElement } from 'react';
 
 import { resolveMotionPolicy, useCursorVisible } from '../motion.js';
 import { PRODUCT_LABEL } from '../product.js';
-import { sanitizeTerminalText, secretMask } from '../terminal-text.js';
+import {
+  sanitizeTerminalText,
+  secretMask,
+  truncateTerminalText,
+} from '../terminal-text.js';
 import type { AppSnapshot } from './backend.js';
-import { APP_MENU, HELP_TOPICS, screenGuide } from './ids.js';
+import { APP_MENU, HELP_TOPICS, LIST_HINT_MAX_CELLS, screenGuide } from './ids.js';
 import { useAppInteraction } from './interaction.js';
 import { ClickTarget } from './mouse.js';
 import { groupedNavRows, groupedNavWindow, type NavRow } from './navigation.js';
@@ -28,10 +32,11 @@ import {
   screenAccent,
   THEMES,
   toneAccent,
-  toneGlyph,
+  toneGlyphLead,
   type AppAccent,
 } from './theme.js';
 import {
+  ActionChips,
   CardRow,
   EmptyState,
   GroupBand,
@@ -740,7 +745,9 @@ function Footer({ state }: Readonly<{ state: AppRouterState }>): ReactElement {
   const noticeAccent = toneAccent(snapshot.noticeTone);
   // A wordless glyph makes the notice readable at a glance without relying on
   // color, and `NO_COLOR` / ASCII sessions keep the bracketed token instead.
-  const noticeGlyph = toneGlyph(snapshot.noticeTone, ascii);
+  // The lead form carries its separating space, so the glyph never glues to
+  // the first word in ASCII mode.
+  const noticeGlyph = toneGlyphLead(snapshot.noticeTone, ascii);
   const sep = ascii ? ' | ' : ' · ';
   const chips = prioritizeFooterChips(
     footerChips(state),
@@ -1014,7 +1021,7 @@ export function HomeScreen({
   );
   const statusPanel = (
     <Panel
-      title="Home / Dashboard"
+      title="Home"
       accent={CHROME.accent}
       ascii={ascii}
       color={color}
@@ -1191,7 +1198,7 @@ export function ProfilesScreen({
         title="Profiles"
         accent={CHROME.accent}
         empty="No datastore profiles found. Press n (file) or m (mongodb)."
-        hint="Enter uses the selected profile · n file · m mongodb · x removes it and keeps its files"
+        hint="Enter uses it · n file · m mongodb · x removes it, keeping its files"
         emptyAction={
           <KeyChip keyLabel="n" hint="create a file profile" color={color} />
         }
@@ -1222,7 +1229,7 @@ export function VaultsScreen({
             ? 'No vaults in this datastore yet. Press n to create one.'
             : 'No vaults yet. Select a profile, then unlock (u).'
         }
-        hint="Enter uses the selected vault · n creates a new one once the vault is unlocked"
+        hint="Enter uses it · n creates a vault once unlocked"
         // An unlock affordance on an already-unlocked vault is a promise this
         // screen cannot keep, so it appears only while the vault is locked.
         emptyAction={
@@ -1266,7 +1273,7 @@ export function CredentialsScreen({
       >
         <Text {...accentColor(color, CHROME.muted)}>
           {safe(
-            `Values stay masked. ${String(filtered.length)}/${String(snapshot.credentials.length)} credentials${
+            `Values stay masked. ${String(filtered.length)} of ${String(snapshot.credentials.length)} credentials${
               state.credentialFilter.length > 0
                 ? ` · filter: ${state.credentialFilter}${state.filtering ? '_' : ''}`
                 : ''
@@ -1356,9 +1363,14 @@ export function CredentialsScreen({
           })
         )}
         {filtered.length > 0 ? (
-          <Text
-            dimColor
-          >{`${String(window.start + 1)}-${String(window.start + window.items.length)} / ${String(filtered.length)}  |  ${state.filtering ? 'Esc clears the filter' : '/ filter names'}`}</Text>
+          <Text dimColor>
+            {safe(
+              `Showing ${String(window.start + 1)}-${String(window.start + window.items.length)} of ${String(filtered.length)} credentials · ${
+                state.filtering ? 'Esc clears the filter' : 'press / to filter names'
+              }`,
+              ascii,
+            )}
+          </Text>
         ) : null}
       </Panel>
     </Box>
@@ -1385,10 +1397,10 @@ export function SessionScreen({
     <Box flexDirection="column" flexGrow={1}>
       <ListScreen
         state={state}
-        title="Session unlock (OS keychain)"
+        title="Session unlock"
         accent={CHROME.accent}
         empty="No session unlock for this profile. Unlock with the passphrase (u), then press n to enable."
-        hint="n enables it after a passphrase unlock · x removes it · Enter refreshes the status"
+        hint="OS keychain · n enables after unlock · x removes · Enter refreshes status"
         // Session unlock only exists on an unlocked profile; the chip is offered
         // while the vault is locked, which is when unlock is the next step.
         emptyAction={
@@ -1417,7 +1429,7 @@ export function DoctorScreen({
   const pendingAt = useListStagger(rows.length, allowMotion());
   return (
     <Panel
-      title="Doctor / heal (local health, not recovery kit)"
+      title="Doctor / heal"
       accent={CHROME.accent}
       ascii={ascii}
       color={color}
@@ -1427,7 +1439,7 @@ export function DoctorScreen({
       {rows.length === 0 ? (
         <EmptyState
           title="Press d to run doctor checks."
-          hint="Checks stay on this machine. Failures are generic — they never name unlock material."
+          hint="Local storage health, not the recovery kit. Checks stay on this machine and never name unlock material."
           color={color}
           ascii={ascii}
           action={<KeyChip keyLabel="d" hint="run doctor checks" color={color} />}
@@ -1465,10 +1477,10 @@ export function RecoveryScreen({
   return (
     <ListScreen
       state={state}
-      title="Recovery kit (key material)"
+      title="Recovery kit"
       accent={CHROME.danger}
-      empty="No recovery-kit slots. n create · v verify · Enter/x revoke (last slot blocked). Doctor heal is a different command."
-      hint="n creates a kit · v verifies one · x revokes a slot. The final slot is protected."
+      empty="No recovery-kit slots. n create · v verify · Enter/x revoke. Doctor heal is a different command."
+      hint="Each slot is a share of the key material. The last slot is protected."
       emptyAction={<KeyChip keyLabel="n" hint="create a recovery kit" color={color} />}
       rows={state.snapshot.recovery.map((slot) => ({
         id: slot.slotId,
@@ -1485,7 +1497,7 @@ export function RunScreen({
   const { color, ascii, snapshot } = state;
   return (
     <Panel
-      title="Run (dry preview)"
+      title="Run preview"
       accent={CHROME.accent}
       ascii={ascii}
       color={color}
@@ -1524,10 +1536,10 @@ export function PolicyScreen({
           color={color}
           ascii={ascii}
           action={
-            <Box flexDirection="row" columnGap={1}>
+            <ActionChips color={color} ascii={ascii}>
               <KeyChip keyLabel="n" hint="create policy" color={color} />
               <KeyChip keyLabel="g" hint="issue a grant" color={color} />
-            </Box>
+            </ActionChips>
           }
         />
       ) : (
@@ -1536,10 +1548,16 @@ export function PolicyScreen({
           const active = index === listIndex;
           const inactiveGrant =
             row.kind === 'grant' && row.status !== undefined && row.status !== 'active';
-          const label =
-            row.kind === 'grant' && row.status !== undefined
-              ? `${row.kind} ${row.id} ${statusTag(row.status)}`
-              : `${row.kind} ${row.id}`;
+          // The identifier leads and the row's kind and status trail it as
+          // badges: `policy policy.read` reads like a typo, while
+          // `policy.read [POLICY]` states which list the row came from.
+          const badges = [
+            `[${row.kind.toUpperCase()}]`,
+            ...(row.kind === 'grant' && row.status !== undefined
+              ? [statusTag(row.status)]
+              : []),
+          ];
+          const label = `${row.id} ${badges.join(' ')}`;
           const rowAccent = inactiveGrant
             ? CHROME.muted
             : row.kind === 'grant'
@@ -1597,7 +1615,7 @@ export function StorageDocsScreen({
   const doctor = snapshot.doctor;
   return (
     <Panel
-      title="Storage docs (read-only)"
+      title="Storage docs"
       accent={CHROME.accent}
       ascii={ascii}
       color={color}
@@ -1669,7 +1687,7 @@ export function BrowseScreen({
       title="Vault context / service / item"
       accent={CHROME.accent}
       empty="No vault-context rows. Unlock and press Enter to load vault context / service / item lists (not run --environment)."
-      hint="Labels only: context, service and item names, never field values. Enter refreshes."
+      hint="Labels only: context, service and item names, never values. Enter refreshes."
       rows={state.snapshot.browse.map((node) => ({
         id: node.id,
         primary: `${node.kind}: ${node.label}`,
@@ -1804,6 +1822,13 @@ function ListScreen({
   const { color, ascii, listIndex } = state;
   const window = visibleListWindow(rows, listIndex, Math.max(1, state.height - 17));
   const pendingAt = useListStagger(rows.length, allowMotion());
+  // The guidance row is one cell tall, so over-long copy is cut by the cell
+  // bounds and the part that disappears is the key or the consequence it was
+  // naming. Bound it here rather than trusting every caller to be laconic.
+  const guidance =
+    hint === undefined
+      ? undefined
+      : truncateTerminalText(hint, LIST_HINT_MAX_CELLS - (ascii ? 3 : 1));
   return (
     <Panel
       title={title}
@@ -1849,12 +1874,18 @@ function ListScreen({
       )}
       {rows.length > 0 ? (
         <>
-          <Text
-            dimColor
-          >{`${String(window.start + 1)}-${String(window.start + window.items.length)} / ${String(rows.length)}  |  arrows / wheel to move`}</Text>
+          <Text dimColor>
+            {safe(
+              `Showing ${String(window.start + 1)}-${String(window.start + window.items.length)} of ${String(rows.length)} · arrows or the wheel move the selection`,
+              ascii,
+            )}
+          </Text>
           {hint === undefined ? null : (
+            // Guidance is a single-cell row, so its copy is bounded by
+            // `LIST_HINT_MAX_CELLS` (asserted in the friendly-ui suite): a hint
+            // that loses its tail loses the key or the consequence it names.
             <SingleLine {...accentColor(color, CHROME.muted)}>
-              {safe(hint, ascii)}
+              {safe(guidance ?? hint, ascii)}
             </SingleLine>
           )}
         </>

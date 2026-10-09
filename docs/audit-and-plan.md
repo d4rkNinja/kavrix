@@ -288,8 +288,35 @@ Fixed in `packages/tui/src/app/ids.ts` (`AppNavGroup`, `NAV_GROUPS`,
 - The notice row prefixes the snapshot's tone glyph, so `NO_COLOR`, `--ascii`,
   and dumb terminals read the same information a colour terminal does.
 
+The follow-on pass in the same release fixes the chrome that still _wrote like an
+implementer_ rather than a product, all in `packages/tui/src/app/theme.ts`
+(`toneGlyphLead`), `packages/tui/src/app/ids.ts` (`LIST_HINT_MAX_CELLS`),
+`packages/tui/src/app/widgets.tsx` (`ActionChips`), and
+`packages/tui/src/app/screens.tsx`:
+
+- Panel titles are the menu label, not internal prose. `[ DOCTOR / HEAL ]` and
+  `[ RECOVERY KIT ]` replace `Doctor / heal (local health, not recovery kit)` and
+  `Recovery kit (key material)`; the disambiguation those parentheticals carried
+  moved into the body copy that already discusses it.
+- `toneGlyphLead` joins the pre-padded Unicode glyph and the unpadded ASCII
+  token into one form that always ends in exactly one space. ASCII sessions
+  rendered `[i]Pick a destination…` and `[ok]Vault default is loaded.` before
+  this.
+- Empty-state chips are prefixed `Next step >`, and `ActionChips` separates
+  multiple steps with a dim `·`, so Policy no longer renders one glued line,
+  `n create policy g issue a grant`.
+- `ListScreen` truncates guidance to `LIST_HINT_MAX_CELLS` (76) cells instead of
+  trusting every caller to be laconic, and every hint was rewritten to fit. The
+  Profiles hint previously lost its tail at 80 columns, so the user never read
+  "…keeping its files" and could believe removal deletes data.
+- Policy rows lead with the identifier and trail the badges
+  (`policy.read [POLICY]`, `grant.agent [GRANT] [ACTIVE]`) rather than
+  `policy policy.read`.
+
 No screen, keybinding, mnemonic, palette entry, or masking rule changed.
-Tests: `packages/tui/test/app/friendly-ui.test.ts` (new, 26 tests).
+Tests: `packages/tui/test/app/friendly-ui.test.ts` (new, 26 tests) plus the
+title, spacing, separator, and copy-bound assertions added in the follow-on pass,
+and `packages/tui/test/theme.test.ts` for `toneGlyphLead`.
 
 ## 5. Missing capabilities (the honest product gap)
 

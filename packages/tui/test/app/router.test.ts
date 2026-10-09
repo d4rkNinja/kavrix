@@ -462,7 +462,7 @@ describe('ASCII and NO_COLOR presentation', () => {
   it('snapshots home and credentials in ASCII and NO_COLOR modes', () => {
     const asciiHome = frame(navigateToScreen(hydrate(true, false), 'home'));
     const asciiCreds = frame(navigateToScreen(hydrate(true, false), 'credentials'));
-    expect(asciiHome).toContain('HOME / DASHBOARD');
+    expect(asciiHome).toContain('[ HOME ]');
     expect(asciiHome).not.toContain('\u276f');
     expect(asciiCreds).toContain('api-key');
     expect(asciiCreds).toContain('********');

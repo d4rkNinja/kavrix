@@ -1,6 +1,6 @@
 import { Box, Text } from 'ink';
 import type { ComponentProps, ReactElement, ReactNode } from 'react';
-import { useEffect, useState } from 'react';
+import { Children, useEffect, useState } from 'react';
 
 import { subscribeToFrameClock } from '../frame-clock.js';
 import {
@@ -31,6 +31,7 @@ import {
   sectionTitle,
   sectionTitleWide,
   toneGlyph,
+  toneGlyphLead,
   type AppAccent,
 } from './theme.js';
 
@@ -97,9 +98,43 @@ export function ScreenHint({
 }: Readonly<{ hint: string; color: boolean; ascii: boolean }>): ReactElement {
   return (
     <SingleLine {...accentColor(color, CHROME.muted)}>
-      <Text {...accentColor(color, CHROME.info)}>{toneGlyph('info', ascii)}</Text>
+      <Text {...accentColor(color, CHROME.info)}>{toneGlyphLead('info', ascii)}</Text>
       {safe(hint, ascii)}
     </SingleLine>
+  );
+}
+
+/**
+ * Row of action chips separated by a dim `·` so adjacent chips stay distinct.
+ * Two chips rendered side by side with only a column gap read as one glued
+ * line (`n create policy g issue a grant`); the separator says where one
+ * affordance ends and the next begins. `·` degrades to `-` in ASCII mode.
+ */
+export function ActionChips({
+  children,
+  color,
+  ascii,
+}: Readonly<{ children: ReactNode; color: boolean; ascii: boolean }>): ReactElement {
+  const items = Children.toArray(children);
+  const separator = ascii ? '-' : '\u00b7';
+  return (
+    <Box flexDirection="row" columnGap={1} alignItems="center" flexWrap="wrap">
+      {items.map((child, index) => (
+        <Box
+          key={`action-${String(index)}`}
+          flexDirection="row"
+          columnGap={1}
+          alignItems="center"
+        >
+          {index === 0 ? null : (
+            <Text dimColor {...accentColor(color, CHROME.muted)}>
+              {separator}
+            </Text>
+          )}
+          {child}
+        </Box>
+      ))}
+    </Box>
   );
 }
 
@@ -509,7 +544,15 @@ export function EmptyState({
       </Text>
       <Text {...accentColor(color, CHROME.muted)}>{safe(hint, ascii)}</Text>
       {action === undefined ? null : (
-        <Box flexDirection="row" columnGap={1} marginTop={1}>
+        <Box flexDirection="row" columnGap={1} marginTop={1} alignItems="center">
+          {/* A lone key chip can read as decoration; naming it as the step and
+              pointing at it makes the affordance unmistakable. */}
+          <Text dimColor {...accentColor(color, CHROME.muted)}>
+            Next step
+          </Text>
+          <Text dimColor {...accentColor(color, CHROME.accent)}>
+            {pointerGlyph(ascii)}
+          </Text>
           {action}
         </Box>
       )}

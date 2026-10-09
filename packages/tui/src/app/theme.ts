@@ -301,6 +301,16 @@ export function toneGlyph(tone: AppTone, ascii: boolean): string {
   }
 }
 
+/**
+ * {@link toneGlyph} plus the one space that separates it from the text it leads.
+ * The Unicode tokens are already padded, so trimming and re-adding a single
+ * space is what keeps both modes reading `[i] text` / ` ℹ text` instead of
+ * gluing the glyph to the first word (`[i]text`) in the ASCII form.
+ */
+export function toneGlyphLead(tone: AppTone, ascii: boolean): string {
+  return `${toneGlyph(tone, ascii).trimEnd()} `;
+}
+
 /** Variable-length masked-input bullets; ASCII mode keeps `*` only. */
 export function maskBullets(length: number, ascii: boolean, max = 32): string {
   const unit = ascii ? '*' : '\u2022';
