@@ -1,5 +1,5 @@
 name: Deploy selected branch to server
-run-name: "Server ${{ inputs.mode }} — ${{ inputs.branch }}"
+run-name: 'Server ${{ inputs.mode }} — ${{ inputs.branch }}'
 on:
   workflow_dispatch:
     inputs:
@@ -7,27 +7,27 @@ on:
         description: Select branch to build/deploy (list refreshes every 5 minutes)
         required: true
         type: choice
-        default: "main"
+        default: 'main'
         options:
-          - "main"
-          - "ci/windows-verify-faster"
-          - "development"
-          - "fix/0.2.15-windows-ci-flakes"
-          - "fix/0.2.19-live-qa-p1s"
-          - "fix/0.2.19-live-qa-p2-ux"
-          - "fix/0.2.20-qa-and-tui-release"
-          - "fix/0.2.21-windows-heal"
-          - "fix/ci-0.2.14-lint-smoke"
-          - "fix/ci-0214-lint-smoke"
-          - "fix/ci-after-153-file-default"
-          - "fix/p1-followups-0.2.14"
+          - 'main'
+          - 'ci/windows-verify-faster'
+          - 'development'
+          - 'fix/0.2.15-windows-ci-flakes'
+          - 'fix/0.2.19-live-qa-p1s'
+          - 'fix/0.2.19-live-qa-p2-ux'
+          - 'fix/0.2.20-qa-and-tui-release'
+          - 'fix/0.2.21-windows-heal'
+          - 'fix/ci-0.2.14-lint-smoke'
+          - 'fix/ci-0214-lint-smoke'
+          - 'fix/ci-after-153-file-default'
+          - 'fix/p1-followups-0.2.14'
       mode:
-        description: "Build and deploy runs validation, build and activation; build only verifies; validate checks configuration"
+        description: 'Build and deploy runs validation, build and activation; build only verifies; validate checks configuration'
         required: true
         type: choice
-        default: "Build and deploy"
+        default: 'Build and deploy'
         options:
-          - "Build and deploy"
+          - 'Build and deploy'
           - build
           - deploy
           - validate
