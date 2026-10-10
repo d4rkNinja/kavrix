@@ -194,8 +194,10 @@ def main():
                 p=root/q
                 if p.exists() or p.is_symlink():
                     dest=backup/'outputs'/q; dest.parent.mkdir(parents=True,exist_ok=True); p.rename(dest); moved.append(q)
+            if config['static'] and P('dist') in moved:
+                shutil.copytree(backup/'outputs/dist',root/'dist')
             run(['git','-c','core.hooksPath=/dev/null','reset','--hard'],root)
-            clean=['git','clean','-fd','-e','.deploy/','-e','.env*','-e','node_modules/','-e','uploads/','-e','storage/','-e','data/','-e','logs/','-e','.venv/','-e','target/']
+            clean=['git','clean','-fd','-e','.deploy/','-e','dist/','-e','.env*','-e','node_modules/','-e','uploads/','-e','storage/','-e','data/','-e','logs/','-e','.venv/','-e','target/']
             run(clean,root)
             run(['git','-c','core.hooksPath=/dev/null','checkout','-B',branch,sha],root)
             run(['git','-c','core.hooksPath=/dev/null','reset','--hard',sha],root)
