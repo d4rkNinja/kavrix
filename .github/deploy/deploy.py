@@ -96,7 +96,8 @@ def healthy(config):
                 if runtime['kind']=='go' and not runtime.get('health_path'):
                     with socket.create_connection(('127.0.0.1',runtime['port']),timeout=2): pass
                 else:
-                    with urllib.request.urlopen('http://127.0.0.1:'+str(runtime['port'])+runtime.get('health_path','/'),timeout=5) as response:
+                    request=urllib.request.Request('http://127.0.0.1:'+str(runtime['port'])+runtime.get('health_path','/'),headers={'Host':runtime['health_host']} if runtime.get('health_host') else {})
+                    with urllib.request.urlopen(request,timeout=5) as response:
                         if response.status >=400: good=False
             except (OSError, urllib.error.URLError): good=False
         if good:
