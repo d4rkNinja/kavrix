@@ -108,6 +108,14 @@ def healthy(config):
     return False
 
 
+def restore_environment(root, envfiles):
+    for relative,(content,mode) in envfiles.items():
+        p=root/relative
+        if p.is_file() and p.read_bytes()==content: continue
+        p.parent.mkdir(parents=True,exist_ok=True)
+        if p.is_symlink(): p.unlink()
+        p.write_bytes(content); p.chmod(mode)
+
 def remove(path):
     if path.is_symlink() or path.is_file(): path.unlink()
     elif path.is_dir(): shutil.rmtree(path)
@@ -170,7 +178,9 @@ def main():
             if not any(q==x or q.is_relative_to(x) for x in outputs): outputs.append(q)
         moved=[]; restarted=False; building=False
         try:
-            run(['git','-c','core.hooksPath=/dev/null','fetch','--no-tags',str(source),sha],root)
+            fetch=['git','-c','core.hooksPath=/dev/null','fetch','--no-tags']
+            if run(['git','rev-parse','--is-shallow-repository'],root,capture=True).strip()=='true': fetch.append('--unshallow')
+            run(fetch+[str(source),sha],root)
             tracked=run(['git','ls-tree','-r','--name-only',sha],root,capture=True).splitlines()
             if any(P(n).parts[0] in {'.deploy','uploads','storage','data','logs'} for n in tracked): raise RuntimeError('Selected code overlaps server state/data')
             for name in active_root: run([PM2,'stop',name])
@@ -183,8 +193,7 @@ def main():
             run(clean,root)
             run(['git','-c','core.hooksPath=/dev/null','checkout','-B',branch,sha],root)
             run(['git','-c','core.hooksPath=/dev/null','reset','--hard',sha],root)
-            for relative,(content,mode) in envfiles.items():
-                p=root/relative; p.parent.mkdir(parents=True,exist_ok=True); p.write_bytes(content); p.chmod(mode)
+            restore_environment(root,envfiles)
             if run(['git','rev-parse','HEAD'],root,capture=True).strip()!=sha: raise RuntimeError('Project checkout revision mismatch')
             if config.get('source_archive') and not (root/'src').exists():
                 with zipfile.ZipFile(root/config['source_archive']) as archive:
@@ -224,8 +233,7 @@ def main():
                 if building or q in moved: remove(root/q)
             for q in moved:
                 (root/q).parent.mkdir(parents=True,exist_ok=True); (backup/'outputs'/q).rename(root/q)
-            for relative,(content,mode) in envfiles.items():
-                p=root/relative; p.parent.mkdir(parents=True,exist_ok=True); p.write_bytes(content); p.chmod(mode)
+            restore_environment(root,envfiles)
             if restarted:
                 now={e['name'] for e in json.loads(run([PM2,'jlist'],capture=True))}
                 for name in names:
