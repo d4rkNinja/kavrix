@@ -202,6 +202,8 @@ def main():
             run(clean,root)
             run(['git','-c','core.hooksPath=/dev/null','checkout','-B',branch,sha],root)
             run(['git','-c','core.hooksPath=/dev/null','reset','--hard',sha],root)
+            run(['git','update-ref','refs/remotes/origin/'+branch,sha],root)
+            run(['git','branch','--set-upstream-to=origin/'+branch,'--',branch],root)
             restore_environment(root,envfiles)
             if run(['git','rev-parse','HEAD'],root,capture=True).strip()!=sha: raise RuntimeError('Project checkout revision mismatch')
             if config.get('source_archive') and not (root/'src').exists():
