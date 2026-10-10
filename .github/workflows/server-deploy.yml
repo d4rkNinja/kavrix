@@ -59,9 +59,28 @@ jobs:
         with:
           ref: refs/heads/${{ inputs.branch }}
           path: source
+          fetch-depth: 0
           persist-credentials: false
+      - name: Verify selected branch commit
+        id: source_revision
+        working-directory: source
+        env:
+          DEPLOY_BRANCH: ${{ inputs.branch }}
+        run: |
+          python3 - <<'PYCODE'
+          import os, subprocess
+          branch = os.environ['DEPLOY_BRANCH']
+          commit = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+          fetched = subprocess.check_output(['git', 'rev-parse', 'refs/remotes/origin/'+branch], text=True).strip()
+          if commit != fetched:
+              raise SystemExit('Selected source does not match the fetched branch tip')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write('commit='+commit+'\n')
+          print('Fetched selected branch: '+branch+' commit '+commit)
+          PYCODE
       - name: Build or deploy selected branch
         env:
           DEPLOY_BRANCH: ${{ inputs.branch }}
+          DEPLOY_COMMIT: ${{ steps.source_revision.outputs.commit }}
           DEPLOY_MODE: ${{ inputs.mode == 'Build and deploy' && 'deploy' || inputs.mode }}
         run: python3 control/.github/deploy/deploy.py --config control/.github/deploy/server.json --source source --mode "$DEPLOY_MODE"
