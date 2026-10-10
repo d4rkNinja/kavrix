@@ -178,9 +178,15 @@ def main():
             if not any(q==x or q.is_relative_to(x) for x in outputs): outputs.append(q)
         moved=[]; restarted=False; building=False
         try:
-            fetch=['git','-c','core.hooksPath=/dev/null','fetch','--no-tags']
-            if run(['git','rev-parse','--is-shallow-repository'],root,capture=True).strip()=='true': fetch.append('--unshallow')
-            run(fetch+[str(source),sha],root)
+            # Replace stale/shallow metadata with complete selected-source history.
+            # Local metadata is retained privately; application builds still run at root.
+            metadata=backup/'fresh-git'
+            run(['git','clone','--no-checkout','--no-hardlinks',str(source),str(metadata)])
+            run(['git','remote','set-url','origin','https://github.com/'+config['repository']+'.git'],metadata)
+            (root/'.git').rename(backup/'previous-git')
+            (metadata/'.git').rename(root/'.git')
+            exclude=root/'.git/info/exclude'
+            with exclude.open('a') as f: f.write('\n/.deploy/\n')
             tracked=run(['git','ls-tree','-r','--name-only',sha],root,capture=True).splitlines()
             if any(P(n).parts[0] in {'.deploy','uploads','storage','data','logs'} for n in tracked): raise RuntimeError('Selected code overlaps server state/data')
             for name in active_root: run([PM2,'stop',name])
