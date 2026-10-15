@@ -87,7 +87,7 @@ describe('CliTuiSession child command bounding', () => {
       'hanging-child.mjs',
       [
         "import { writeFileSync } from 'node:fs';",
-        `setTimeout(() => { writeFileSync(${JSON.stringify(marker)}, 'alive'); }, ${String(CHILD_SURVIVAL_MARKER_DELAY_MS)});`,
+        `setTimeout(() => { writeFileSync(new URL('./child-survived.txt', import.meta.url), 'alive'); }, ${String(CHILD_SURVIVAL_MARKER_DELAY_MS)});`,
         'setInterval(() => undefined, 250);',
         '',
       ].join('\n'),

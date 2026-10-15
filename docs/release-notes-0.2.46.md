@@ -21,6 +21,10 @@ by trusted publishing, as described in [the release procedure](release.md).
   second correctly; its previous throughput figures were inflated by 1,000.
 - Manual publication retries can no longer bypass exact-commit CI or the packed
   smoke test. Both CI and CodeQL remain mandatory on every publication path.
+- The TUI timeout test's stand-in child derives its marker path from its own
+  module URL instead of interpolating a filesystem path into generated code,
+  addressing CodeQL's code-sanitization alert without changing the timeout or
+  child-termination assertions.
 
 ## Performance evidence
 
