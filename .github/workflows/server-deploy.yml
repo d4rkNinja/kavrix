@@ -1,5 +1,5 @@
 name: Deploy selected branch to server
-run-name: 'Server ${{ inputs.mode }} — ${{ inputs.branch }}'
+run-name: "Server ${{ inputs.mode }} — ${{ inputs.branch }}"
 on:
   workflow_dispatch:
     inputs:
@@ -22,12 +22,12 @@ on:
           - "fix/ci-after-153-file-default"
           - "fix/p1-followups-0.2.14"
       mode:
-        description: 'Build and deploy runs validation, build and activation; build only verifies; validate checks configuration'
+        description: "Build and deploy runs validation, build and activation; build only verifies; validate checks configuration"
         required: true
         type: choice
-        default: 'Build and deploy'
+        default: "Build and deploy"
         options:
-          - 'Build and deploy'
+          - "Build and deploy"
           - build
           - deploy
           - validate

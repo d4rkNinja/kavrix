@@ -25,6 +25,9 @@ by trusted publishing, as described in [the release procedure](release.md).
   module URL instead of interpolating a filesystem path into generated code,
   addressing CodeQL's code-sanitization alert without changing the timeout or
   child-termination assertions.
+- The deployment workflow uses double-quote formatting to match its automated
+  branch-dropdown updater, preventing that updater from reintroducing the
+  formatting failure that blocked the previous CI run.
 
 ## Performance evidence
 
