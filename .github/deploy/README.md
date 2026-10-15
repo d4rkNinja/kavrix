@@ -1,36 +1,3 @@
-# Branch deployment to Sudarsan
+# Direct server deployment
 
-Open Actions > Deploy selected branch to server > Run workflow.
-Keep **Use workflow from** on `main`. Select the target repository branch in the **branch** dropdown.
-The server refreshes branch choices every five minutes; reopen or refresh the Actions page after adding a branch.
-The default **Build and deploy** validates configuration, builds the selected branch and activates it in one run.
-Choose **build** to check a build without activation, **deploy** for the existing full deployment action,
-or **validate** for configuration/source checks only. Activation failures retain the existing rollback behavior.
-Projects without a configured runtime publish their built release without starting a service.
-The branch input works even when an older branch has no deployment workflow.
-Pushes and pull requests do not deploy. Existing CI and release workflows are preserved.
-
-Target: `/home/gandiv/projects/kavrix/app`. Runner label: `sudarsan-d4rkninja-kavrix`.
-The workflow uses pinned checkout and a read-only token. Only trusted repository writers
-may run server deployments; branch code executes on the production host as gandiv.
-Do not add pull_request or pull_request_target triggers to this production workflow.
-The server's private LAN address needs no public inbound SSH access.
-
-Builds use committed lockfiles in isolated `.deploy/releases` directories. Server env files
-are linked locally, never committed or uploaded. Original source checkout and local changes
-are preserved. Build logs and runtime configuration remain protected on the server.
-A global lock serializes builds across projects to bound memory use.
-
-Deployment switches only this project's PM2 processes or static dist path. Nginx's existing
-canonical roots remain valid. Failed runtime health checks restore the prior targeted PM2
-configuration/static path. At most the current and previous successful releases are retained
-after activation. Do not manually erase `.deploy` while a release is running.
-DevProfile checks /health/ready; Karnsha checks process/listener availability, which does not prove all database readiness.
-Database migrations are deliberately separate and must be reviewed for the selected branch.
-No automatic database migration, npm publication, CLI network operation, or artifact signing occurs.
-
-This project has no currently registered production service. Deploy publishes the built
-release through `.deploy/current`; it does not start a new API/CLI/network service.
-
-Deployment state is excluded from the server checkout through git info/exclude. Builds use their own cloned git metadata, so git-aware scripts see the selected commit. The global lock is stored under ~/.local/state/server-deploy.
-The current main branch builds the Kavrix CLI; it no longer contains the older API workspace. The CLI output is validated without npm publication.
+Dispatch the main-branch workflow, choose the source branch, and select Build and deploy. The workflow verifies the selected Git SHA, fetches it into the original project checkout, discards local code edits and untracked source files, builds there, and restarts only configured PM2 apps. Environment files and mutable runtime data are preserved. No isolated release is built. Existing build outputs and PM2 configuration are backed up locally for failure recovery. Validation changes nothing. Build-only is refused when it would overwrite an active direct runtime or static site; use Build and deploy. Global locking serializes server builds. Protected build logs are in `.deploy/build.log`. No database migrations are run.
