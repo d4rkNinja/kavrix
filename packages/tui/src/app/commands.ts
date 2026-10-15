@@ -271,7 +271,12 @@ function selectedGrantRow(state: AppRouterState): string | null {
  * scannable, which is the whole point: a flat 30-item menu is not discoverable
  * either.
  */
+const groupsByScreen = new Map<AppScreenId, readonly CommandGroup[]>();
+const commandsByScreen = new Map<AppScreenId, readonly ScreenCommand[]>();
+
 export function commandGroups(state: AppRouterState): readonly CommandGroup[] {
+  const cached = groupsByScreen.get(state.screen);
+  if (cached !== undefined) return cached;
   const screen = screenCommands(state.screen);
   const groups: CommandGroup[] = [];
   if (screen.length > 0) {
@@ -280,12 +285,19 @@ export function commandGroups(state: AppRouterState): readonly CommandGroup[] {
     groups.push({ label: menuLabel, commands: screen });
   }
   groups.push({ label: 'Always available', commands: GLOBAL_COMMANDS });
+  // Descriptors depend only on the screen. Availability is evaluated against
+  // the current state at use time; no snapshot or secret enters this cache.
+  groupsByScreen.set(state.screen, groups);
   return groups;
 }
 
 /** Flattened, order-preserving list used for cursor movement and digits 1-9. */
 export function allCommands(state: AppRouterState): readonly ScreenCommand[] {
-  return commandGroups(state).flatMap((group) => group.commands);
+  const cached = commandsByScreen.get(state.screen);
+  if (cached !== undefined) return cached;
+  const commands = commandGroups(state).flatMap((group) => group.commands);
+  commandsByScreen.set(state.screen, commands);
+  return commands;
 }
 
 /**

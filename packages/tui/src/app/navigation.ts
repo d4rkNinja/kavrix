@@ -1,4 +1,4 @@
-import { NAV_GROUPS, type AppMenuEntry, type AppNavGroup } from './ids.js';
+import { APP_MENU, NAV_GROUPS, type AppMenuEntry, type AppNavGroup } from './ids.js';
 
 /**
  * A Home-menu row: either a group band that names what follows, or one
@@ -30,6 +30,13 @@ export function groupedNavRows(entries: readonly AppMenuEntry[]): readonly NavRo
   }
   return rows;
 }
+
+/** Stable row indexes keep mouse selection and digit shortcuts compatible. */
+export const HOME_ENTRIES = APP_MENU.filter((entry) => entry.id !== 'home');
+export const HOME_NAV_ROWS = groupedNavRows(HOME_ENTRIES);
+export const HOME_NAV_ORDER = HOME_NAV_ROWS.flatMap((row) =>
+  row.kind === 'entry' ? [row.index] : [],
+);
 
 export interface NavWindow {
   readonly rows: readonly NavRow[];

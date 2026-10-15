@@ -1,6 +1,6 @@
 import { createElement } from 'react';
 import { renderToString } from 'ink';
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   APP_MENU,
@@ -30,6 +30,13 @@ import {
 import { emptySnapshot, type AppSnapshot } from '../../src/app/backend.js';
 
 const ASCII_ONLY = /^[\x20-\x7e\n]*$/u;
+
+beforeEach(() => {
+  // These assertions exercise fullscreen layout, independent of the terminal
+  // running Vitest. Accessible line-oriented modes have their own coverage.
+  vi.stubEnv('TERM', 'xterm-256color');
+  vi.stubEnv('INK_SCREEN_READER', 'false');
+});
 
 function fixtureSnapshot(
   options: Readonly<{ unlocked?: boolean; credentials?: number }> = {},

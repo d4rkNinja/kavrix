@@ -69,7 +69,7 @@ export async function throughput(operation, { iterations, warmup = 0 }) {
   return {
     ...timing,
     basisMs: round(basisMs),
-    opsPerSecond: basisMs > 0 ? Math.round(1e6 / basisMs) : null,
+    opsPerSecond: basisMs > 0 ? Math.round(1e3 / basisMs) : null,
   };
 }
 

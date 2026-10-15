@@ -152,6 +152,10 @@ That line is state-aware: while the Credentials name filter is open it becomes
 printable key is filter text at that moment. Below 16 terminal rows the line is
 dropped so a compact viewport spends its budget on the body.
 
+Home arrow keys, `j`/`k`, and Page Up/Down follow the displayed group order.
+Digit shortcuts retain the numbers in the tab strip; clicking a row opens that
+same destination.
+
 The Home menu groups its twelve destinations into four named sections — **Set
 up**, **Secrets**, **Security**, and **Tools** — each introducing itself with the
 number of destinations it holds. A section header is never the last visible row

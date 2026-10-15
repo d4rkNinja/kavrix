@@ -12,7 +12,12 @@ import type { AppSnapshot } from './backend.js';
 import { APP_MENU, HELP_TOPICS, LIST_HINT_MAX_CELLS, screenGuide } from './ids.js';
 import { useAppInteraction } from './interaction.js';
 import { ClickTarget } from './mouse.js';
-import { groupedNavRows, groupedNavWindow, type NavRow } from './navigation.js';
+import {
+  HOME_ENTRIES,
+  HOME_NAV_ROWS,
+  groupedNavWindow,
+  type NavRow,
+} from './navigation.js';
 import { TerminalViewport, terminalFullscreenEnabled } from './viewport.js';
 import {
   filteredCredentials,
@@ -132,8 +137,9 @@ export function CommandPaletteRows({
   const { rows, start } = paletteWindow(state);
   const cursor = state.paletteIndex;
   const filter = safe(state.paletteFilter, ascii);
-  // The catalogue is rebuilt on every call, so membership and cursor position
-  // are matched by stable id rather than by object identity.
+  const commandIndexes = new Map(
+    allCommands(state).map((entry, index) => [entry.id, index]),
+  );
   const visibleIds = new Set(rows.map((entry) => entry.id));
 
   return (
@@ -170,7 +176,7 @@ export function CommandPaletteRows({
               />
             ) : null}
             {groupRows.map((entry) => {
-              const index = allCommands(state).findIndex((row) => row.id === entry.id);
+              const index = commandIndexes.get(entry.id) ?? -1;
               const blocked = entry.blocked(state);
               const selected = index === cursor;
               const accent: AppAccent =
@@ -1008,12 +1014,12 @@ export function HomeScreen({
 }: Readonly<{ state: AppRouterState }>): ReactElement {
   const interaction = useAppInteraction();
   const { color, ascii, snapshot, menuIndex, width } = state;
-  const entries = APP_MENU.filter((entry) => entry.id !== 'home');
+  const entries = HOME_ENTRIES;
   const pendingAt = useListStagger(entries.length, allowMotion());
   const wide = width >= 80;
   // Group bands share the body budget with destinations, so the window is sized
   // over grouped rows rather than destinations alone.
-  const navRows = groupedNavRows(entries);
+  const navRows = HOME_NAV_ROWS;
   const window = groupedNavWindow(
     navRows,
     menuIndex,

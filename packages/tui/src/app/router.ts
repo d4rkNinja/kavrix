@@ -16,6 +16,7 @@ import {
 } from './theme.js';
 import { defaultFileProfilePaths, defaultMongoProfilePaths } from './paths.js';
 import { sanitizeTerminalText } from '../terminal-text.js';
+import { HOME_ENTRIES, HOME_NAV_ORDER } from './navigation.js';
 
 export interface AppKey {
   readonly name?:
@@ -613,24 +614,26 @@ function unlockIntent(
 }
 
 function homeKey(state: AppRouterState, key: AppKey): AppRouterTransition {
-  const entries = APP_MENU.filter((entry) => entry.id !== 'home');
+  const entries = HOME_ENTRIES;
+  const position = Math.max(0, HOME_NAV_ORDER.indexOf(state.menuIndex));
   const jump = listJumpIndex(
     key,
-    state.menuIndex,
+    position,
     entries.length,
     Math.max(1, state.height - 17),
   );
-  if (jump !== null) return unchanged({ ...state, menuIndex: jump });
+  if (jump !== null)
+    return unchanged({ ...state, menuIndex: HOME_NAV_ORDER[jump] ?? 0 });
   if (key.name === 'up' || key.text === 'k') {
     return unchanged({
       ...state,
-      menuIndex: clamp(state.menuIndex - 1, entries.length),
+      menuIndex: HOME_NAV_ORDER[clamp(position - 1, entries.length)] ?? 0,
     });
   }
   if (key.name === 'down' || key.text === 'j') {
     return unchanged({
       ...state,
-      menuIndex: clamp(state.menuIndex + 1, entries.length),
+      menuIndex: HOME_NAV_ORDER[clamp(position + 1, entries.length)] ?? 0,
     });
   }
   if (key.name === 'return' || key.name === 'right') {
@@ -2502,6 +2505,12 @@ const filteredCredentialsByList = new WeakMap<
   Map<string, AppRouterState['snapshot']['credentials']>
 >();
 const MAX_CREDENTIAL_FILTER_ENTRIES = 32;
+// Only normalized names are retained, never values. Weak ownership releases
+// this index when a refresh replaces the immutable credentials list.
+const normalizedCredentialNames = new WeakMap<
+  AppRouterState['snapshot']['credentials'],
+  readonly string[]
+>();
 
 export function filteredCredentials(
   state: AppRouterState,
@@ -2519,9 +2528,13 @@ export function filteredCredentials(
   }
   const cached = byQuery.get(query);
   if (cached !== undefined) return cached;
-  const filtered = credentials.filter((credential) =>
-    credential.name.toLocaleLowerCase().includes(query),
-  );
+  let names = normalizedCredentialNames.get(credentials);
+  if (names === undefined) {
+    names = credentials.map((credential) => credential.name.toLocaleLowerCase());
+    normalizedCredentialNames.set(credentials, names);
+  }
+  const normalized = names;
+  const filtered = credentials.filter((_, index) => normalized[index]?.includes(query));
   if (byQuery.size >= MAX_CREDENTIAL_FILTER_ENTRIES) byQuery.clear();
   byQuery.set(query, filtered);
   return filtered;

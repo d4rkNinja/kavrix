@@ -71,6 +71,11 @@ kavrix tui    # full app
 Use `kavrix init --no-tui` for classic line prompts, or stdin/explicit routing
 for scripts.
 
+Version 0.2.46 makes Home arrow and page navigation follow the displayed groups
+and speeds up command lookup and successive credential name searches. Digit
+shortcuts and mouse row targets retain their existing destinations. See
+[changes and limits](https://github.com/d4rkNinja/kavrix/blob/v0.2.46/docs/release-notes-0.2.46.md).
+
 Version 0.2.45 redesigns the TUI around orientation and next steps. The Home
 menu groups its destinations into Set up, Secrets, Security, and Tools; every
 screen states what it is for and which keys act on it; empty lists offer the one

@@ -77,6 +77,7 @@ remains a command reference and is not loaded automatically.
   [0.2.36 — fullscreen setup and pointer controls](release-notes-0.2.36.md);
   [0.2.44 — discoverable TUI and honest history](release-notes-0.2.44.md);
   [0.2.45 — friendly TUI](release-notes-0.2.45.md);
+  [0.2.46 — navigation and search performance candidate](release-notes-0.2.46.md);
   [0.2.43 — precise agent denials](release-notes-0.2.43.md);
   [0.2.42 — verified candidate with complete TUI fixes](release-notes-0.2.42.md);
   [0.2.41 — bounded TUI sessions and concurrent agent requests](release-notes-0.2.41.md);

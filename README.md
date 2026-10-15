@@ -68,6 +68,10 @@ it is for and which keys act on it, empty lists offer the key that moves you
 forward, and notice rows carry a tone glyph for `NO_COLOR` sessions. See
 [0.2.45 changes](docs/release-notes-0.2.45.md).
 
+The 0.2.46 candidate makes Home arrow and page navigation follow the displayed
+groups, reuses command descriptors, and indexes credential names for faster
+successive searches. See [0.2.46 changes](docs/release-notes-0.2.46.md).
+
 ## Run tools without pasting secrets
 
 ```sh
