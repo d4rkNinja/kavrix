@@ -11,7 +11,7 @@ Give applications and AI agents access to credentials without handing them your
 or grant, and records what happened — without shipping secrets to a Kavrix
 cloud.
 
-![Kavrix interactive TUI — unlocked home](docs/assets/demo-frame-home-unlocked.png)
+![Current Kavrix Home — grouped destinations and vault status](docs/assets/demo-frame-home-unlocked.png)
 
 ## Why not paste a `.env`?
 
@@ -29,14 +29,20 @@ cloud.
 The encrypted vault is infrastructure. The product is the secrets firewall in
 front of it.
 
-## Demo
+## Current TUI
 
-Interactive management for the secrets firewall (profiles, vaults, credentials,
-doctor, recovery, and more):
+Current Ink UI captures with demonstration names and masked values. Home above
+groups the destinations and shows the active vault.
 
-[![Kavrix TUI demo](docs/assets/kavrix-tui-demo.gif)](docs/assets/kavrix-tui-demo.mp4)
+**Credentials:** see names and masked values, filter with `/`, and open detail
+with Enter. Copy and reveal remain explicit actions.
 
-Video: [`docs/assets/kavrix-tui-demo.mp4`](docs/assets/kavrix-tui-demo.mp4).
+![Current Credentials screen — six demonstration credentials, all values masked](docs/assets/demo-frame-credentials.png)
+
+**Actions:** press `:` or `Ctrl+K` to see available commands, shortcuts, and why
+an action is blocked.
+
+![Current Actions palette — credential commands and availability explanations](docs/assets/demo-frame-actions.png)
 
 ```sh
 kavrix        # interactive TTY: onboarding on first run, then the TUI

@@ -1,11 +1,22 @@
-# Kavrix TUI demo assets
+# Kavrix TUI assets
 
-- `kavrix-tui-demo.mp4` — terminal-window-only demo (~13s): animated splash → unlock → profiles → credentials → help.
-- `kavrix-tui-demo.gif` — same walkthrough for README embeds.
-- `demo-hero.png` — unlocked Home after splash (primary hero still).
-- `demo-frame-home-unlocked.png` — copy of the hero still for npm/README embeds.
-- `demo-frame-profiles.png` / `demo-frame-mid.png` — older stills kept for docs.
+- `demo-frame-home-unlocked.png` — current Home, including every grouped destination.
+- `demo-frame-credentials.png` — current Credentials list, with all values masked.
+- `demo-frame-actions.png` — current command palette, including blocked-action reasons.
+- `kavrix-tui-demo.gif` — these three settled frames, held for 4/5/5 seconds.
 
-Recorded from the interactive Ink TUI (`kavrix tui`) against a real local vault (no mocks). Splash is presentation-only (`--no-splash` / `KAVRIX_TUI_NO_SPLASH=1` to skip).
+These are reproducible captures of the actual Ink components at 104×34 cells,
+using explicitly synthetic metadata. They are not a recording of a real vault
+or evidence of backend execution. No passphrase, credential value, local path,
+or other user data is used. Terminal colors use a readable dark palette.
 
-npm ships copies of the hero PNG and GIF as `apps/cli/media/` so the published package README can render them.
+Regenerate with `pnpm exec tsx --tsconfig packages/tui/tsconfig.json scripts/capture-readme-tui.mjs`.
+The script requires `sharp`; if supplied by an external tool runtime, set
+`KAVRIX_SCREENSHOT_SHARP` to that module's entry file before running.
+
+The Home PNG and GIF are copied to `apps/cli/media/`. npm's existing README
+loads those paths from GitHub `HEAD`, so refreshing them also refreshes the
+already-published npm page without changing an immutable package version.
+
+`kavrix-tui-demo.mp4`, `demo-hero.png`, `demo-frame-profiles.png`, and
+`demo-frame-mid.png` are historical assets, not current README illustrations.

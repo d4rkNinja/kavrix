@@ -12,7 +12,7 @@ temporary grants bound what each executable may do; `kavrix agent run` brokers
 every request from AI coding agents. Encrypted storage stays on your machine
 (local file or your own MongoDB) — no Kavrix server, account, or telemetry.
 
-![Kavrix interactive TUI — unlocked home](media/demo-frame-home-unlocked.png)
+![Current Kavrix Home — grouped destinations and vault status](media/demo-frame-home-unlocked.png)
 
 ## Installation
 
@@ -136,13 +136,17 @@ Version 0.2.34, **TUI refreshed**, adds compact session context, clickable
 tabs/rows/action chips, wheel navigation, bounded lists, and Help topics, and
 paints the workspace full-screen. Mouse input requires a terminal with SGR
 reporting support. Use `kavrix tui --no-mouse` for native selection. Reveal and
-destructive actions retain confirmation. The recording below shows an earlier
-interface.
+destructive actions retain confirmation.
 
-![Kavrix TUI demo](media/kavrix-tui-demo.gif)
+Current Ink UI captures use demonstration names and masked values.
 
-Full video on GitHub:
-[kavrix-tui-demo.mp4](https://github.com/d4rkNinja/kavrix/blob/main/docs/assets/kavrix-tui-demo.mp4).
+**Credentials:** `/` filters names; Enter opens detail. Values remain masked.
+
+![Current Credentials screen — demonstration credentials with masked values](https://raw.githubusercontent.com/d4rkNinja/kavrix/main/docs/assets/demo-frame-credentials.png)
+
+**Actions:** `:` or `Ctrl+K` shows commands, shortcuts, and availability.
+
+![Current Actions palette — credential commands and availability explanations](https://raw.githubusercontent.com/d4rkNinja/kavrix/main/docs/assets/demo-frame-actions.png)
 
 ## Quick start
 
