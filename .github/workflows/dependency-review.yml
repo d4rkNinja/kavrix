@@ -9,8 +9,8 @@ permissions:
 
 jobs:
   review:
-    if: ${{ github.event.repository.visibility == 'public' }}
-    runs-on: ubuntu-24.04
+    if: ${{ (github.event.repository.visibility == 'public') && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+    runs-on: [self-hosted, linux, x64, sudarsan-d4rkninja-kavrix]
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
