@@ -138,11 +138,16 @@ export function ActionChips({
   );
 }
 
-/** Clip at cell boundaries without Ink inserting a Unicode ellipsis in ASCII mode. */
+/**
+ * One terminal row. With `ascii={false}` an overflowing row ends in a Unicode
+ * ellipsis; otherwise it clips at the cell boundary so ASCII mode never emits
+ * a non-ASCII marker.
+ */
 export function SingleLine({
   children,
+  ascii = true,
   ...props
-}: ComponentProps<typeof Text>): ReactElement {
+}: ComponentProps<typeof Text> & { ascii?: boolean }): ReactElement {
   return (
     <Box
       height={1}
@@ -152,7 +157,7 @@ export function SingleLine({
       flexGrow={1}
       overflow="hidden"
     >
-      <Text {...props} wrap="hard">
+      <Text {...props} wrap={ascii ? 'hard' : 'truncate-end'}>
         {children}
       </Text>
     </Box>
@@ -389,7 +394,7 @@ export function SelectRow({
       enabled={interaction.enabled && onPress !== undefined}
       {...(onPress === undefined ? {} : { onClick: onPress })}
     >
-      <SingleLine dimColor={pending || !active}>
+      <SingleLine ascii={ascii} dimColor={pending || !active}>
         <Text
           bold={active}
           {...accentColor(color, active ? accent : CHROME.muted)}

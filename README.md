@@ -87,6 +87,9 @@ The 0.2.48 update makes the TUI responsive: panels keep their borders on short
 terminals, credentials take one row from 60 columns, and lists size their page
 from the terminal height. See [0.2.48 changes](docs/release-notes-0.2.48.md).
 
+The 0.2.49 update lines list details up in one column and ends cut-off rows
+with an ellipsis. See [0.2.49 changes](docs/release-notes-0.2.49.md).
+
 ## Run tools without pasting secrets
 
 ```sh

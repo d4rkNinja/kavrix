@@ -553,7 +553,7 @@ export function AppChrome({
   return (
     <TerminalViewport width={width} height={state.height}>
       {compactOverlay ? (
-        <SingleLine {...accentColor(color, CHROME.heading)}>
+        <SingleLine ascii={ascii} {...accentColor(color, CHROME.heading)}>
           {safe(
             `${PRODUCT_LABEL} / ${home.profileId ?? 'no profile'} / ${vaultShort}`,
             ascii,
@@ -586,7 +586,7 @@ export function AppChrome({
               ascii={ascii}
             />
           </Box>
-          <SingleLine {...accentColor(color, CHROME.heading)}>
+          <SingleLine ascii={ascii} {...accentColor(color, CHROME.heading)}>
             {safe(`${home.profileId ?? 'no profile'} / ${vaultShort}`, ascii)}
           </SingleLine>
         </Box>
@@ -594,7 +594,7 @@ export function AppChrome({
         <>
           <Panel accent={accent} ascii={ascii} color={color} paddingX={1} paddingY={0}>
             <Box flexDirection="row" justifyContent="space-between">
-              <SingleLine bold {...accentColor(color, CHROME.accent)}>
+              <SingleLine ascii={ascii} bold {...accentColor(color, CHROME.accent)}>
                 {PRODUCT_LABEL} /{' '}
                 {safe(
                   APP_MENU.find((entry) => entry.id === state.screen)?.short ??
@@ -623,7 +623,7 @@ export function AppChrome({
                 color={color}
                 ascii={ascii}
               />
-              <SingleLine {...accentColor(color, CHROME.heading)}>
+              <SingleLine ascii={ascii} {...accentColor(color, CHROME.heading)}>
                 {safe(`${home.profileId ?? 'no profile'} / ${vaultShort}`, ascii)}
               </SingleLine>
               {width >= 72 ? (
@@ -813,7 +813,7 @@ function Footer({ state }: Readonly<{ state: AppRouterState }>): ReactElement {
   return (
     <Box flexDirection="column" flexShrink={0}>
       {notice === null ? null : (
-        <SingleLine {...accentColor(color, noticeAccent)}>
+        <SingleLine ascii={ascii} {...accentColor(color, noticeAccent)}>
           {safe(`${noticeGlyph}${notice}`, ascii)}
         </SingleLine>
       )}
@@ -1103,10 +1103,10 @@ export function HomeScreen({
       )}
       {wide && state.height >= 24 ? (
         <Box flexDirection="column" marginTop={1}>
-          <SingleLine {...accentColor(color, CHROME.muted)}>
+          <SingleLine ascii={ascii} {...accentColor(color, CHROME.muted)}>
             Secrets stay masked.
           </SingleLine>
-          <SingleLine {...accentColor(color, CHROME.muted)}>
+          <SingleLine ascii={ascii} {...accentColor(color, CHROME.muted)}>
             {interaction.mouse ? 'Click / wheel to move' : 'Arrows / Enter to open'}
           </SingleLine>
           <KeyChip keyLabel="r" hint="refresh session" color={color} />
@@ -1197,7 +1197,7 @@ export function HomeScreen({
   }
   return (
     <Box flexDirection="column" gap={0} flexGrow={1}>
-      <SingleLine {...accentColor(color, CHROME.muted)}>
+      <SingleLine ascii={ascii} {...accentColor(color, CHROME.muted)}>
         {safe(
           snapshot.home.profileId === null
             ? 'Start: 2 Profiles > create a profile'
@@ -1238,7 +1238,7 @@ function StatusBlock({
           {safe(home.datastore ?? '(none)', ascii)}
         </Text>
       </Text>
-      <SingleLine {...accentColor(color, CHROME.muted)}>
+      <SingleLine ascii={ascii} {...accentColor(color, CHROME.muted)}>
         {safe(home.message, ascii)}
       </SingleLine>
     </Box>
@@ -1339,7 +1339,7 @@ export function CredentialsScreen({
         color={color}
         paddingX={1}
       >
-        <SingleLine {...accentColor(color, CHROME.muted)}>
+        <SingleLine ascii={ascii} {...accentColor(color, CHROME.muted)}>
           {safe(
             `Values stay masked. ${String(filtered.length)} of ${String(snapshot.credentials.length)} credentials${
               state.credentialFilter.length > 0
@@ -1454,7 +1454,7 @@ export function CredentialsScreen({
           })
         )}
         {filtered.length > 0 ? (
-          <SingleLine dimColor>
+          <SingleLine ascii={ascii} dimColor>
             {safe(
               `Showing ${String(window.start + 1)}-${String(window.start + window.items.length)} of ${String(filtered.length)} credentials · ${
                 state.filtering ? 'Esc clears the filter' : 'press / to filter names'
@@ -1518,6 +1518,9 @@ export function DoctorScreen({
   const rows = state.snapshot.doctor;
   const window = visibleListWindow(rows, listIndex, listWindowSize(state));
   const pendingAt = useListStagger(rows.length, allowMotion());
+  const doctorLabel = (check: (typeof rows)[number]): string =>
+    `${check.status.toUpperCase()} ${check.name}`;
+  const labelWidth = listLabelWidth(rows.map(doctorLabel), state);
   return (
     <Panel
       title="Doctor / heal"
@@ -1544,8 +1547,9 @@ export function DoctorScreen({
             <SelectRow
               key={check.name}
               active={active}
-              label={`${check.status.toUpperCase()} ${check.name}`}
+              label={doctorLabel(check)}
               hint={check.detail}
+              {...(labelWidth === undefined ? {} : { labelWidth })}
               accent={statusAccent}
               color={color}
               ascii={ascii}
@@ -1557,6 +1561,14 @@ export function DoctorScreen({
           );
         })
       )}
+      {rows.length > 0 ? (
+        <ListPosition
+          start={window.start}
+          shown={window.items.length}
+          total={rows.length}
+          ascii={ascii}
+        />
+      ) : null}
     </Panel>
   );
 }
@@ -1611,6 +1623,18 @@ export function PolicyScreen({
   const window = visibleListWindow(rows, listIndex, listWindowSize(state));
   const pendingAt = useListStagger(rows.length, allowMotion());
   const statusTag = (status: string): string => `[${status.toUpperCase()}]`;
+  // The identifier leads and the row's kind and status trail it as badges:
+  // `policy policy.read` reads like a typo, while `policy.read [POLICY]`
+  // states which list the row came from.
+  const policyLabel = (row: (typeof rows)[number]): string =>
+    [
+      row.id,
+      `[${row.kind.toUpperCase()}]`,
+      ...(row.kind === 'grant' && row.status !== undefined
+        ? [statusTag(row.status)]
+        : []),
+    ].join(' ');
+  const labelWidth = listLabelWidth(rows.map(policyLabel), state);
   return (
     <Panel
       title="Policy / Grant / Audit"
@@ -1639,16 +1663,7 @@ export function PolicyScreen({
           const active = index === listIndex;
           const inactiveGrant =
             row.kind === 'grant' && row.status !== undefined && row.status !== 'active';
-          // The identifier leads and the row's kind and status trail it as
-          // badges: `policy policy.read` reads like a typo, while
-          // `policy.read [POLICY]` states which list the row came from.
-          const badges = [
-            `[${row.kind.toUpperCase()}]`,
-            ...(row.kind === 'grant' && row.status !== undefined
-              ? [statusTag(row.status)]
-              : []),
-          ];
-          const label = `${row.id} ${badges.join(' ')}`;
+          const label = policyLabel(row);
           const rowAccent = inactiveGrant
             ? CHROME.muted
             : row.kind === 'grant'
@@ -1660,6 +1675,7 @@ export function PolicyScreen({
               active={active}
               label={label}
               hint={row.summary}
+              {...(labelWidth === undefined ? {} : { labelWidth })}
               accent={rowAccent}
               color={color}
               ascii={ascii}
@@ -1671,6 +1687,14 @@ export function PolicyScreen({
           );
         })
       )}
+      {rows.length > 0 ? (
+        <ListPosition
+          start={window.start}
+          shown={window.items.length}
+          total={rows.length}
+          ascii={ascii}
+        />
+      ) : null}
     </Panel>
   );
 }
@@ -1883,6 +1907,44 @@ export function HelpScreen({
   );
 }
 
+function ListPosition({
+  start,
+  shown,
+  total,
+  ascii,
+}: Readonly<{
+  start: number;
+  shown: number;
+  total: number;
+  ascii: boolean;
+}>): ReactElement {
+  return (
+    <SingleLine ascii={ascii} dimColor>
+      {safe(
+        `Showing ${String(start + 1)}-${String(start + shown)} of ${String(total)} · arrows or the wheel move the selection`,
+        ascii,
+      )}
+    </SingleLine>
+  );
+}
+
+/**
+ * Shared label column for list rows so details line up. Below 60 columns the
+ * label keeps its natural width: a padded column would leave the detail no room.
+ */
+function listLabelWidth(
+  labels: readonly string[],
+  state: Readonly<{ width: number; ascii: boolean }>,
+): number | undefined {
+  if (state.width < 60 || labels.length === 0) return undefined;
+  // Panel border and padding take four cells and the row gutter three more.
+  const cap = Math.max(8, Math.floor((state.width - 7) * 0.45));
+  return Math.min(
+    cap,
+    Math.max(...labels.map((label) => safe(label, state.ascii).length)),
+  );
+}
+
 function ListScreen({
   state,
   title,
@@ -1913,6 +1975,10 @@ function ListScreen({
   const { color, ascii, listIndex } = state;
   const window = visibleListWindow(rows, listIndex, listWindowSize(state));
   const pendingAt = useListStagger(rows.length, allowMotion());
+  const labelWidth = listLabelWidth(
+    rows.map((row) => row.primary),
+    state,
+  );
   // The guidance row is one cell tall, so over-long copy is cut by the cell
   // bounds and the part that disappears is the key or the consequence it was
   // naming. Bound it here rather than trusting every caller to be laconic.
@@ -1947,6 +2013,7 @@ function ListScreen({
               active={active}
               label={row.primary}
               hint={row.secondary}
+              {...(labelWidth === undefined ? {} : { labelWidth })}
               accent={accent}
               color={color}
               ascii={ascii}
@@ -1965,17 +2032,17 @@ function ListScreen({
       )}
       {rows.length > 0 ? (
         <>
-          <SingleLine dimColor>
-            {safe(
-              `Showing ${String(window.start + 1)}-${String(window.start + window.items.length)} of ${String(rows.length)} · arrows or the wheel move the selection`,
-              ascii,
-            )}
-          </SingleLine>
+          <ListPosition
+            start={window.start}
+            shown={window.items.length}
+            total={rows.length}
+            ascii={ascii}
+          />
           {hint === undefined ? null : (
             // Guidance is a single-cell row, so its copy is bounded by
             // `LIST_HINT_MAX_CELLS` (asserted in the friendly-ui suite): a hint
             // that loses its tail loses the key or the consequence it names.
-            <SingleLine {...accentColor(color, CHROME.muted)}>
+            <SingleLine ascii={ascii} {...accentColor(color, CHROME.muted)}>
               {safe(guidance ?? hint, ascii)}
             </SingleLine>
           )}

@@ -97,10 +97,11 @@ function renderScreen(
   screen: (typeof APP_SCREEN_IDS)[number],
   width: number,
   height: number,
+  ascii = false,
 ): string {
   const state = navigateToScreen(
     {
-      ...createInitialAppRouterState({ width, height, ascii: false, color: false }),
+      ...createInitialAppRouterState({ width, height, ascii, color: false }),
       snapshot: populatedSnapshot(),
     },
     screen,
@@ -192,6 +193,43 @@ describe('responsive layout integrity', () => {
     const frame = renderScreen('credentials', 40, 12);
     const notice = frame.split('\n').find((line) => line.includes('Vault refreshed.'));
     expect(notice?.trim()).toBe('✓ Vault refreshed.');
+  });
+
+  it('aligns list details in one column from 60 columns', () => {
+    const rows = renderScreen('profiles', 80, 24)
+      .split('\n')
+      .filter((line) => line.includes('work (file)') || line.includes('cloud-team-'));
+    expect(rows).toHaveLength(2);
+    const detailColumn = (line: string, detail: string): number => line.indexOf(detail);
+    expect(detailColumn(rows[0] ?? '', 'C:/Users')).toBe(
+      detailColumn(rows[1] ?? '', 'mongodb database'),
+    );
+
+    const doctor = renderScreen('doctor', 80, 24).split('\n');
+    const ok = doctor.find((line) => line.includes('OK key-file')) ?? '';
+    const warning = doctor.find((line) => line.includes('WARNING session')) ?? '';
+    expect(ok.indexOf('Owner-only')).toBe(warning.indexOf('Session caching'));
+  });
+
+  it('ends an overflowing row with an ellipsis and keeps list position visible', () => {
+    const doctor = renderScreen('doctor', 80, 24);
+    expect(doctor).toMatch(/Session caching is disabled[^│]*…\s*│/u);
+    expect(doctor).toContain('Showing 1-2 of 2');
+    expect(renderScreen('policy', 80, 24)).toContain('Showing 1-1 of 1');
+  });
+
+  it('never emits a non-ASCII glyph in ASCII mode', () => {
+    for (const [width, height] of [
+      [40, 12],
+      [80, 24],
+    ] as const) {
+      for (const screen of APP_SCREEN_IDS) {
+        const frame = renderScreen(screen, width, height, true);
+        expect(frame, `${screen} at ${String(width)}x${String(height)}`).toMatch(
+          /^[\x20-\x7e\n]*$/u,
+        );
+      }
+    }
   });
 
   it('shows each credential on one row with its mask from 60 columns', () => {
