@@ -21,7 +21,9 @@ import {
 import { TerminalViewport, terminalFullscreenEnabled } from './viewport.js';
 import {
   filteredCredentials,
+  credentialRowsAreSingleLine,
   credentialWindowSize,
+  listWindowSize,
   paletteWindow,
   visibleListWindow,
   type AppOverlay,
@@ -49,6 +51,7 @@ import {
   ModalFrame,
   MotionEnter,
   Panel,
+  PanelFillContext,
   RevealCountdown,
   ScreenHint,
   SectionTitle,
@@ -526,6 +529,9 @@ export function AppChrome({
   // The orientation row costs one line of chrome, so the body budget pays for
   // it: the frame still fills exactly `height` rows with the footer pinned.
   const showGuide = overlay === null && state.height >= 16;
+  // Below 16 rows a bordered three-line header would leave the screen body a
+  // single row, so the header collapses to one plain line.
+  const compactHeader = overlay === null && state.height < 16;
   const overlayActions = (
     <OverlayActions
       color={color}
@@ -553,6 +559,37 @@ export function AppChrome({
             ascii,
           )}
         </SingleLine>
+      ) : compactHeader ? (
+        <Box
+          flexDirection="row"
+          columnGap={1}
+          height={1}
+          overflow="hidden"
+          paddingX={1}
+        >
+          <Box flexShrink={0}>
+            <Text bold {...accentColor(color, CHROME.accent)}>
+              {PRODUCT_LABEL} /{' '}
+              {safe(
+                APP_MENU.find((entry) => entry.id === state.screen)?.short ??
+                  state.screen,
+                ascii,
+              )}
+            </Text>
+          </Box>
+          <Box flexShrink={0}>
+            <StatusPill
+              label="lock"
+              value={home.unlocked ? 'open' : 'locked'}
+              accent={home.unlocked ? CHROME.success : CHROME.warning}
+              color={color}
+              ascii={ascii}
+            />
+          </Box>
+          <SingleLine {...accentColor(color, CHROME.heading)}>
+            {safe(`${home.profileId ?? 'no profile'} / ${vaultShort}`, ascii)}
+          </SingleLine>
+        </Box>
       ) : (
         <>
           <Panel accent={accent} ascii={ascii} color={color} paddingX={1} paddingY={0}>
@@ -614,36 +651,49 @@ export function AppChrome({
         </>
       )}
 
-      <Box
-        flexDirection="column"
-        flexShrink={0}
-        // A modal spends its rows on the frame, so it gets a tighter budget than
-        // the screen body. The confirm/apply row must survive that budget: a
-        // clipped action row leaves the user with no way to tell what Enter does.
-        maxHeight={Math.max(
-          1,
-          state.height -
-            (compactOverlay
-              ? fullscreen
-                ? 4
-                : 2
-              : overlay === null
-                ? showGuide
-                  ? 11
-                  : 10
-                : state.height < 20
-                  ? 4
-                  : 7),
-        )}
-        overflow="hidden"
-        paddingX={0}
-        paddingY={0}
-      >
-        {overlay === null ? (
-          <MotionEnter enabled={false} key={`${state.screen}:${state.navDirection}`}>
-            {children}
-          </MotionEnter>
-        ) : (
+      {overlay === null ? (
+        // The body takes exactly the rows the header and footer leave, and its
+        // top-level panels fill and clip inside that space.
+        <Box
+          flexDirection="column"
+          flexGrow={1}
+          flexShrink={1}
+          minHeight={0}
+          overflow="hidden"
+          // Without a fixed viewport (screen readers, dumb terminals) nothing
+          // bounds the flex body, so it keeps an explicit row budget.
+          {...(fullscreen
+            ? {}
+            : {
+                maxHeight: Math.max(
+                  1,
+                  state.height - (compactHeader ? 7 : showGuide ? 11 : 10),
+                ),
+              })}
+        >
+          <PanelFillContext.Provider value>
+            <MotionEnter enabled={false} key={`${state.screen}:${state.navDirection}`}>
+              {children}
+            </MotionEnter>
+          </PanelFillContext.Provider>
+        </Box>
+      ) : null}
+      {overlay === null ? null : (
+        <Box
+          flexDirection="column"
+          flexShrink={0}
+          // A modal spends its rows on the frame, so it gets a tighter budget than
+          // the screen body. The confirm/apply row must survive that budget: a
+          // clipped action row leaves the user with no way to tell what Enter does.
+          maxHeight={Math.max(
+            1,
+            state.height -
+              (compactOverlay ? (fullscreen ? 4 : 2) : state.height < 20 ? 4 : 7),
+          )}
+          overflow="hidden"
+          paddingX={0}
+          paddingY={0}
+        >
           <ModalFrame
             title={overlay.title}
             accent={overlay.accent}
@@ -678,10 +728,10 @@ export function AppChrome({
             )}
             {fullscreen ? null : overlayActions}
           </ModalFrame>
-        )}
-      </Box>
+        </Box>
+      )}
 
-      <Box flexGrow={1} minHeight={0} />
+      {overlay === null ? null : <Box flexGrow={1} minHeight={0} />}
       {fullscreen && overlay !== null ? (
         <Box flexShrink={0} paddingX={1}>
           {overlayActions}
@@ -1023,7 +1073,9 @@ export function HomeScreen({
   const window = groupedNavWindow(
     navRows,
     menuIndex,
-    Math.max(3, state.height - (wide ? 15 : 16)),
+    // Body rows left by the chrome, minus panel border, title and the
+    // "destinations shown" line (and the next-step line on narrow layouts).
+    Math.max(3, state.height - (state.height < 16 ? 9 : wide ? 14 : 15)),
   );
   const statusPanel = (
     <Panel
@@ -1268,6 +1320,16 @@ export function CredentialsScreen({
   const windowSize = credentialWindowSize(state);
   const window = visibleListWindow(filtered, listIndex, windowSize);
   const pendingAt = useListStagger(window.items.length, allowMotion());
+  const singleRow = credentialRowsAreSingleLine(state);
+  // Panel border and padding take four cells; the name column takes at most
+  // three fifths so the masked value column always stays visible.
+  const nameWidth = Math.min(
+    Math.max(
+      8,
+      ...window.items.map((credential) => safe(credential.name, ascii).length),
+    ),
+    Math.floor((state.width - 6) * 0.6),
+  );
   return (
     <Box flexDirection="column" flexGrow={1}>
       <Panel
@@ -1277,7 +1339,7 @@ export function CredentialsScreen({
         color={color}
         paddingX={1}
       >
-        <Text {...accentColor(color, CHROME.muted)}>
+        <SingleLine {...accentColor(color, CHROME.muted)}>
           {safe(
             `Values stay masked. ${String(filtered.length)} of ${String(snapshot.credentials.length)} credentials${
               state.credentialFilter.length > 0
@@ -1286,7 +1348,7 @@ export function CredentialsScreen({
             }`,
             ascii,
           )}
-        </Text>
+        </SingleLine>
         {filtered.length === 0 ? (
           <EmptyState
             title={
@@ -1328,23 +1390,46 @@ export function CredentialsScreen({
             const revealed = revealedName === credential.name;
             return (
               <Box key={credential.name} flexDirection="column" marginTop={0}>
-                <CardRow
-                  active={active}
-                  title={credential.name}
-                  subtitle={revealed ? '' : credential.maskedValue || secretMask(ascii)}
-                  accent={CHROME.accent}
-                  color={color}
-                  ascii={ascii}
-                  pending={pendingAt(offset)}
-                  onPress={() => {
-                    interaction.dispatch({
-                      type: 'select-row',
-                      index,
-                      activate: true,
-                      nowMs: state.nowMs,
-                    });
-                  }}
-                />
+                {singleRow ? (
+                  <SelectRow
+                    active={active}
+                    label={credential.name}
+                    hint={revealed ? '' : credential.maskedValue || secretMask(ascii)}
+                    labelWidth={nameWidth}
+                    accent={CHROME.accent}
+                    color={color}
+                    ascii={ascii}
+                    pending={pendingAt(offset)}
+                    onPress={() => {
+                      interaction.dispatch({
+                        type: 'select-row',
+                        index,
+                        activate: true,
+                        nowMs: state.nowMs,
+                      });
+                    }}
+                  />
+                ) : (
+                  <CardRow
+                    active={active}
+                    title={credential.name}
+                    subtitle={
+                      revealed ? '' : credential.maskedValue || secretMask(ascii)
+                    }
+                    accent={CHROME.accent}
+                    color={color}
+                    ascii={ascii}
+                    pending={pendingAt(offset)}
+                    onPress={() => {
+                      interaction.dispatch({
+                        type: 'select-row',
+                        index,
+                        activate: true,
+                        nowMs: state.nowMs,
+                      });
+                    }}
+                  />
+                )}
                 {revealed ? (
                   <Panel
                     accent={CHROME.danger}
@@ -1369,14 +1454,14 @@ export function CredentialsScreen({
           })
         )}
         {filtered.length > 0 ? (
-          <Text dimColor>
+          <SingleLine dimColor>
             {safe(
               `Showing ${String(window.start + 1)}-${String(window.start + window.items.length)} of ${String(filtered.length)} credentials · ${
                 state.filtering ? 'Esc clears the filter' : 'press / to filter names'
               }`,
               ascii,
             )}
-          </Text>
+          </SingleLine>
         ) : null}
       </Panel>
     </Box>
@@ -1431,7 +1516,7 @@ export function DoctorScreen({
   const interaction = useAppInteraction();
   const { color, ascii, listIndex } = state;
   const rows = state.snapshot.doctor;
-  const window = visibleListWindow(rows, listIndex, Math.max(1, state.height - 15));
+  const window = visibleListWindow(rows, listIndex, listWindowSize(state));
   const pendingAt = useListStagger(rows.length, allowMotion());
   return (
     <Panel
@@ -1523,7 +1608,7 @@ export function PolicyScreen({
   const interaction = useAppInteraction();
   const { color, ascii, listIndex } = state;
   const rows = state.snapshot.policies;
-  const window = visibleListWindow(rows, listIndex, Math.max(1, state.height - 15));
+  const window = visibleListWindow(rows, listIndex, listWindowSize(state));
   const pendingAt = useListStagger(rows.length, allowMotion());
   const statusTag = (status: string): string => `[${status.toUpperCase()}]`;
   return (
@@ -1826,7 +1911,7 @@ function ListScreen({
 }>): ReactElement {
   const interaction = useAppInteraction();
   const { color, ascii, listIndex } = state;
-  const window = visibleListWindow(rows, listIndex, Math.max(1, state.height - 17));
+  const window = visibleListWindow(rows, listIndex, listWindowSize(state));
   const pendingAt = useListStagger(rows.length, allowMotion());
   // The guidance row is one cell tall, so over-long copy is cut by the cell
   // bounds and the part that disappears is the key or the consequence it was
@@ -1880,12 +1965,12 @@ function ListScreen({
       )}
       {rows.length > 0 ? (
         <>
-          <Text dimColor>
+          <SingleLine dimColor>
             {safe(
               `Showing ${String(window.start + 1)}-${String(window.start + window.items.length)} of ${String(rows.length)} · arrows or the wheel move the selection`,
               ascii,
             )}
-          </Text>
+          </SingleLine>
           {hint === undefined ? null : (
             // Guidance is a single-cell row, so its copy is bounded by
             // `LIST_HINT_MAX_CELLS` (asserted in the friendly-ui suite): a hint

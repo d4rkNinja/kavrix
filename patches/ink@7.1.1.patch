@@ -1,0 +1,27 @@
+diff --git a/build/output.js b/build/output.js
+index c763b7763c5fc133c7fbb53c54c466cdf51c282b..ee3dc66cfefe5ce5dc2bac3251fe95bac14f58ab 100644
+--- a/build/output.js
++++ b/build/output.js
+@@ -86,7 +86,21 @@ export default class Output {
+         const clips = [];
+         for (const operation of this.operations) {
+             if (operation.type === 'clip') {
+-                clips.push(operation.clip);
++                // Intersect with the enclosing clip so a nested overflow box
++                // cannot paint outside an ancestor's clipped region.
++                const parent = clips.at(-1);
++                const next = { ...operation.clip };
++                if (parent) {
++                    if (typeof parent.x1 === 'number' && typeof parent.x2 === 'number') {
++                        next.x1 = typeof next.x1 === 'number' ? Math.max(next.x1, parent.x1) : parent.x1;
++                        next.x2 = typeof next.x2 === 'number' ? Math.min(next.x2, parent.x2) : parent.x2;
++                    }
++                    if (typeof parent.y1 === 'number' && typeof parent.y2 === 'number') {
++                        next.y1 = typeof next.y1 === 'number' ? Math.max(next.y1, parent.y1) : parent.y1;
++                        next.y2 = typeof next.y2 === 'number' ? Math.min(next.y2, parent.y2) : parent.y2;
++                    }
++                }
++                clips.push(next);
+             }
+             if (operation.type === 'unclip') {
+                 clips.pop();

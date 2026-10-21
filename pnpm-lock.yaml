@@ -36,6 +36,9 @@ overrides:
   source-map-js@>=1.0.0 <1.2.2: 1.2.2
   vite@>=8.2.0 <8.2.4: '>=8.2.4'
 
+patchedDependencies:
+  ink@7.1.1: 6af9a11024743d4c03502d7275d94a5a732a2e823103fcd60851ea08c541c099
+
 importers:
 
   .:
@@ -88,7 +91,7 @@ importers:
         version: 4.9.0
       ink:
         specifier: 'catalog:'
-        version: 7.1.1(@types/react@19.2.18)(react@19.2.8)
+        version: 7.1.1(patch_hash=6af9a11024743d4c03502d7275d94a5a732a2e823103fcd60851ea08c541c099)(@types/react@19.2.18)(react@19.2.8)
       prettier:
         specifier: 3.9.6
         version: 3.9.6
@@ -197,7 +200,7 @@ importers:
         version: link:../schemas
       ink:
         specifier: 'catalog:'
-        version: 7.1.1(@types/react@19.2.18)(react@19.2.8)
+        version: 7.1.1(patch_hash=6af9a11024743d4c03502d7275d94a5a732a2e823103fcd60851ea08c541c099)(@types/react@19.2.18)(react@19.2.8)
       react:
         specifier: 'catalog:'
         version: 19.2.8
@@ -2128,7 +2131,7 @@ snapshots:
 
   indent-string@5.0.0: {}
 
-  ink@7.1.1(@types/react@19.2.18)(react@19.2.8):
+  ink@7.1.1(patch_hash=6af9a11024743d4c03502d7275d94a5a732a2e823103fcd60851ea08c541c099)(@types/react@19.2.18)(react@19.2.8):
     dependencies:
       '@alcalzone/ansi-tokenize': 0.3.0
       ansi-escapes: 7.3.0

@@ -1,6 +1,6 @@
 import { Box, Text } from 'ink';
 import type { ComponentProps, ReactElement, ReactNode } from 'react';
-import { Children, useEffect, useState } from 'react';
+import { Children, createContext, useContext, useEffect, useState } from 'react';
 
 import { subscribeToFrameClock } from '../frame-clock.js';
 import {
@@ -144,7 +144,14 @@ export function SingleLine({
   ...props
 }: ComponentProps<typeof Text>): ReactElement {
   return (
-    <Box height={1} minHeight={1} minWidth={0} flexGrow={1} overflow="hidden">
+    <Box
+      height={1}
+      minHeight={1}
+      maxHeight={1}
+      minWidth={0}
+      flexGrow={1}
+      overflow="hidden"
+    >
       <Text {...props} wrap="hard">
         {children}
       </Text>
@@ -169,6 +176,14 @@ export function SectionTitle({
     </Text>
   );
 }
+
+/**
+ * Set by the app chrome around the screen body. A top-level panel there fills
+ * the rows left between header and footer and clips its content inside its own
+ * border, so a short terminal never loses the closing border or paints body
+ * text over the notice row. Nested panels stay content-sized.
+ */
+export const PanelFillContext = createContext(false);
 
 /**
  * OpenTUI-style bordered panel. Ink has no `title=` on borders, so the title
@@ -198,23 +213,45 @@ export function Panel({
   kind?: 'panel' | 'modal';
 }>): ReactElement {
   const borderStyle = panelBorderStyle(ascii, kind);
-  return (
-    <Box
-      flexDirection="column"
-      flexShrink={0}
-      borderStyle={borderStyle}
-      {...(color ? { borderColor: accent } : {})}
-      {...(flexGrow === undefined ? {} : { flexGrow })}
-      {...(width === undefined ? {} : { width })}
-      paddingX={paddingX}
-      paddingY={paddingY}
-    >
+  const fill = useContext(PanelFillContext);
+  const content = (
+    <>
       {title === undefined ? null : (
         <Box marginBottom={0}>
           <SectionTitle label={title} ascii={ascii} color={color} accent={accent} />
         </Box>
       )}
       {children}
+    </>
+  );
+  return (
+    <Box
+      flexDirection="column"
+      borderStyle={borderStyle}
+      {...(color ? { borderColor: accent } : {})}
+      {...(fill
+        ? {
+            flexGrow: flexGrow ?? 1,
+            flexShrink: 1,
+            minHeight: 0,
+            overflow: 'hidden' as const,
+          }
+        : { flexShrink: 0, ...(flexGrow === undefined ? {} : { flexGrow }) })}
+      {...(width === undefined ? {} : { width })}
+      paddingX={paddingX}
+      paddingY={paddingY}
+    >
+      {fill ? (
+        // Content keeps its natural height so Yoga never squeezes text rows
+        // into each other; the panel clips whatever no longer fits.
+        <PanelFillContext.Provider value={false}>
+          <Box flexDirection="column" flexShrink={0}>
+            {content}
+          </Box>
+        </PanelFillContext.Provider>
+      ) : (
+        content
+      )}
     </Box>
   );
 }
@@ -340,11 +377,12 @@ export function SelectRow({
   const pointer = pointerGlyph(ascii);
   const bar = active ? pointer : ' ';
   const rawLabel = safe(label, ascii);
+  const ellipsis = ascii ? '...' : '\u2026';
   const paddedLabel =
     labelWidth === undefined
       ? rawLabel
-      : rawLabel.length >= labelWidth
-        ? rawLabel.slice(0, labelWidth)
+      : rawLabel.length > labelWidth
+        ? `${rawLabel.slice(0, Math.max(1, labelWidth - ellipsis.length))}${ellipsis}`
         : `${rawLabel}${' '.repeat(labelWidth - rawLabel.length)}`;
   return (
     <ClickTarget

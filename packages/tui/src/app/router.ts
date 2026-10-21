@@ -654,7 +654,7 @@ function screenKey(state: AppRouterState, key: AppKey): AppRouterTransition {
   const pageSize =
     state.screen === 'credentials'
       ? credentialWindowSize(state)
-      : Math.max(1, state.height - 17);
+      : listWindowSize(state);
   const jump = listJumpIndex(key, state.listIndex, length, pageSize);
   if (jump !== null) return unchanged({ ...state, listIndex: jump });
   if (key.name === 'up' || key.text === 'k') {
@@ -2478,14 +2478,35 @@ export function navigateToScreen(
   return { ...state, screen, listIndex: 0, overlay: 'none' };
 }
 
+/**
+ * Rows a generic list screen can show: the body left by the chrome, minus the
+ * panel border, title, range line and guidance line. Shared by rendering and
+ * keyboard paging so Page Down moves by exactly one visible page.
+ */
+export function listWindowSize(state: Pick<AppRouterState, 'height'>): number {
+  return Math.max(1, state.height - (state.height < 16 ? 10 : 15));
+}
+
+/** Terminals this wide show a credential's name and mask on one row. */
+export function credentialRowsAreSingleLine(
+  state: Pick<AppRouterState, 'width'>,
+): boolean {
+  return state.width >= 60;
+}
+
 /** Shared row bound for credential rendering and keyboard paging. */
 export function credentialWindowSize(state: AppRouterState): number {
+  const reveal = state.revealedName === null ? 0 : 4;
+  if (credentialRowsAreSingleLine(state)) {
+    // Chrome around single-line rows: bordered header (5), tab strip (1),
+    // panel border, title, summary and range lines (5), notice (1) and footer
+    // (3). Short terminals use a one-line header and no tab strip.
+    const chrome = state.height < 16 ? 10 : 15;
+    return Math.max(1, Math.min(40, state.height - chrome - reveal));
+  }
   return Math.max(
     1,
-    Math.min(
-      20,
-      Math.floor((state.height - 16 - (state.revealedName === null ? 0 : 5)) / 2),
-    ),
+    Math.min(20, Math.floor((state.height - 16 - (reveal === 0 ? 0 : 5)) / 2)),
   );
 }
 

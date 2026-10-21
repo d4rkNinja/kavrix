@@ -39,11 +39,11 @@ describe('responsive list navigation and reveal rendering', () => {
   it('pages by the visible credential rows and clamps at both ends', () => {
     let state = credentials();
     state = press(state, 'page-down');
-    expect(state.listIndex).toBe(4);
+    expect(state.listIndex).toBe(9);
     state = press(state, 'end');
     expect(state.listIndex).toBe(99);
     expect(press(state, 'page-down').listIndex).toBe(99);
-    expect(press(state, 'page-up').listIndex).toBe(95);
+    expect(press(state, 'page-up').listIndex).toBe(90);
     state = press(state, 'home');
     expect(state.listIndex).toBe(0);
     expect(press(state, 'page-up').listIndex).toBe(0);
@@ -114,6 +114,6 @@ describe('responsive list navigation and reveal rendering', () => {
       nowMs: 100_000,
     }).state;
     expect(revealed.revealedUntilMs - revealed.nowMs).toBe(15_000);
-    expect(press(revealed, 'page-down').listIndex).toBe(1);
+    expect(press(revealed, 'page-down').listIndex).toBe(5);
   });
 });

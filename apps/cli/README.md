@@ -71,6 +71,9 @@ kavrix tui    # full app
 Use `kavrix init --no-tui` for classic line prompts, or stdin/explicit routing
 for scripts.
 
+Version 0.2.48 makes the TUI responsive on short and narrow terminals. See
+[changes](https://github.com/d4rkNinja/kavrix/blob/v0.2.48/docs/release-notes-0.2.48.md).
+
 Version 0.2.47 adds `kavrix export`, `kavrix import archive`, and
 `kavrix generate`. See
 [changes and limits](https://github.com/d4rkNinja/kavrix/blob/v0.2.47/docs/release-notes-0.2.47.md).

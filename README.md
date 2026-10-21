@@ -83,6 +83,10 @@ passphrase-sealed vault transfer, and `kavrix generate` for locally generated
 secrets that are stored without display. See
 [0.2.47 changes](docs/release-notes-0.2.47.md).
 
+The 0.2.48 update makes the TUI responsive: panels keep their borders on short
+terminals, credentials take one row from 60 columns, and lists size their page
+from the terminal height. See [0.2.48 changes](docs/release-notes-0.2.48.md).
+
 ## Run tools without pasting secrets
 
 ```sh

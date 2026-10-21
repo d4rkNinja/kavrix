@@ -251,13 +251,13 @@ describe('terminal list shortcuts', () => {
     input.write('4');
     await waitForFrame(output, 'credential-01');
     input.write(`${ESC}[6~`);
-    await waitForFrame(output, 'Showing 3-6 of 100 credentials');
+    await waitForFrame(output, 'Showing 6-14 of 100 credentials');
     input.write(`${ESC}[F`);
-    await waitForFrame(output, 'Showing 97-100 of 100 credentials');
+    await waitForFrame(output, 'Showing 92-100 of 100 credentials');
     input.write(`${ESC}[5~`);
-    await waitForFrame(output, 'Showing 94-97 of 100 credentials');
+    await waitForFrame(output, 'Showing 87-95 of 100 credentials');
     input.write(`${ESC}[H`);
-    await waitForFrame(output, 'Showing 1-4 of 100 credentials');
+    await waitForFrame(output, 'Showing 1-9 of 100 credentials');
     expect(actions).toEqual([]);
   });
 });
