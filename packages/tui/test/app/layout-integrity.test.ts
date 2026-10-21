@@ -8,6 +8,7 @@ import { renderOnboardingScreen } from '../../src/app/onboarding-app.js';
 import { createInitialOnboardingState } from '../../src/app/onboarding-router.js';
 import { createInitialAppRouterState, navigateToScreen } from '../../src/app/router.js';
 import { AppChrome, renderActiveScreen } from '../../src/app/screens.js';
+import { activeTuiThemeId, applyTuiTheme, type ThemeId } from '../../src/app/theme.js';
 import { Panel, PanelFillContext, SingleLine } from '../../src/app/widgets.js';
 
 const SIZES = [
@@ -112,12 +113,19 @@ function renderScreen(
   );
 }
 
+// The active theme picks the panel border (square, round, bold, or double),
+// so every glyph set is accepted.
+const OPEN_CORNER = /[┌╭┏╔]/gu;
+const CLOSE_CORNER = /[└╰┗╚]/gu;
+const CLOSING_ROW = /^\s*[└╰┗╚]/u;
+const PURE_BORDER_ROW = /^[\s└╰┗╚┘╯┛╝─━═]+$/u;
+
 /** A closing border row must contain only border glyphs; text there is bleed. */
 function bleedingBorderRows(frame: string): string[] {
   return frame
     .split('\n')
-    .filter((line) => line.trimStart().startsWith('└'))
-    .filter((line) => !/^[\s└┘─]+$/u.test(line));
+    .filter((line) => CLOSING_ROW.test(line))
+    .filter((line) => !PURE_BORDER_ROW.test(line));
 }
 
 function assertFrameFits(frame: string, width: number, height: number): void {
@@ -126,31 +134,41 @@ function assertFrameFits(frame: string, width: number, height: number): void {
   // Every glyph the TUI draws is a single-cell code point, so code points count cells.
   for (const line of lines) expect(Array.from(line).length).toBeLessThanOrEqual(width);
   expect(bleedingBorderRows(frame)).toEqual([]);
-  const opened = (frame.match(/┌/gu) ?? []).length;
-  const closed = (frame.match(/└/gu) ?? []).length;
+  const opened = (frame.match(OPEN_CORNER) ?? []).length;
+  const closed = (frame.match(CLOSE_CORNER) ?? []).length;
+  expect(opened).toBeGreaterThan(0);
   expect(closed).toBe(opened);
 }
 
+/** One theme per panel border style: single, round, and double. */
+const BORDER_THEMES: readonly ThemeId[] = ['ocean', 'gold', 'magma'];
+
 describe('responsive layout integrity', () => {
+  let originalTheme: ThemeId;
   beforeEach(() => {
+    originalTheme = activeTuiThemeId();
     vi.stubEnv('TERM', 'xterm-256color');
     vi.stubEnv('INK_SCREEN_READER', '');
   });
   afterEach(() => {
+    applyTuiTheme(originalTheme);
     vi.unstubAllEnvs();
   });
 
   for (const [width, height] of SIZES) {
     it(`every screen fits and keeps closed panels at ${String(width)}x${String(height)}`, () => {
-      for (const screen of APP_SCREEN_IDS) {
-        const frame = renderScreen(screen, width, height);
-        try {
-          assertFrameFits(frame, width, height);
-        } catch (error) {
-          throw new Error(
-            `${screen} at ${String(width)}x${String(height)}:\n${frame}`,
-            { cause: error },
-          );
+      for (const theme of BORDER_THEMES) {
+        applyTuiTheme(theme);
+        for (const screen of APP_SCREEN_IDS) {
+          const frame = renderScreen(screen, width, height);
+          try {
+            assertFrameFits(frame, width, height);
+          } catch (error) {
+            throw new Error(
+              `${screen} (${theme}) at ${String(width)}x${String(height)}:\n${frame}`,
+              { cause: error },
+            );
+          }
         }
       }
     });
@@ -203,7 +221,7 @@ describe('responsive layout integrity', () => {
     );
     const lines = frame.split('\n');
     expect(lines).toHaveLength(4);
-    expect(lines[3]).toMatch(/^└─+┘$/u);
+    expect(lines[3]).toMatch(/^[└╰┗╚][─━═]+[┘╯┛╝]$/u);
     expect(frame).not.toContain('row three');
   });
 });

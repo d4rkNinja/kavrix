@@ -30,7 +30,8 @@ followed by trusted publishing, as described in
 ## Tests
 
 `packages/tui/test/app/layout-integrity.test.ts` renders every screen and the
-setup wizard at 40x12, 60x20, 80x24, 120x36, and 200x50. It asserts that each
+setup wizard at 40x12, 60x20, 80x24, 120x36, and 200x50, with screens drawn
+under the single, round, and double panel border themes. It asserts that each
 frame fits the terminal, that every opened panel closes, and that no closing
 border row contains text. It also covers the one-row credential layout, the
 clear notice row, and nested clipping inside a filled panel. Existing paging
