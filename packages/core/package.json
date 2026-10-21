@@ -26,5 +26,8 @@
   },
   "dependencies": {
     "@kavrix/schemas": "workspace:*"
+  },
+  "devDependencies": {
+    "fast-check": "catalog:"
   }
 }

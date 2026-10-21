@@ -78,6 +78,11 @@ The 0.2.46 update makes Home arrow and page navigation follow the displayed
 groups, reuses command descriptors, and indexes credential names for faster
 successive searches. See [0.2.46 changes](docs/release-notes-0.2.46.md).
 
+The 0.2.47 update adds `kavrix export` and `kavrix import archive` for
+passphrase-sealed vault transfer, and `kavrix generate` for locally generated
+secrets that are stored without display. See
+[0.2.47 changes](docs/release-notes-0.2.47.md).
+
 ## Run tools without pasting secrets
 
 ```sh

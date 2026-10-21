@@ -1,3 +1,9 @@
+/**
+ * Reserved wire contracts for a device-sync protocol that Kavrix does not ship.
+ * No command, adapter, or service executes them; only `tombstoneRecordSchema`
+ * is consumed (by the encrypted backup entry schema). Do not document these
+ * shapes as an available API.
+ */
 import { z } from 'zod';
 
 import { apiScopesSchema } from './authorization.js';

@@ -67,6 +67,7 @@
     "commander": "15.0.0",
     "esbuild": "0.28.1",
     "eslint": "10.0.1",
+    "fast-check": "catalog:",
     "ink": "catalog:",
     "prettier": "3.9.6",
     "react": "catalog:",

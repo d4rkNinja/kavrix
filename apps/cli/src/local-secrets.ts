@@ -27,6 +27,7 @@ export type LocalSecretKind =
   | 'passphrase'
   | 'recovery-passphrase'
   | 'new-passphrase'
+  | 'archive-passphrase'
   | 'field-value'
   | 'field-value-base64'
   | 'note-content'
@@ -431,6 +432,7 @@ function labelFor(kind: LocalSecretKind): string {
   if (kind === 'note-content-base64') return 'note content (base64)';
   if (kind === 'recovery-passphrase') return 'recovery-kit passphrase';
   if (kind === 'new-passphrase') return 'new passphrase';
+  if (kind === 'archive-passphrase') return 'export archive passphrase';
   return 'passphrase';
 }
 

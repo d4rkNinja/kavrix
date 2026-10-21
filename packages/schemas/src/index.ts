@@ -1,4 +1,3 @@
-export * from './api.js';
 export * from './audit.js';
 export * from './authorization.js';
 export * from './backup.js';
@@ -18,6 +17,7 @@ export * from './payloads.js';
 export * from './policy.js';
 export * from './primitives.js';
 export * from './rotation.js';
+export * from './secret-generation.js';
 export * from './session-lifetime.js';
 export * from './session-unlock.js';
 export * from './sync.js';
@@ -26,3 +26,4 @@ export * from './transfer.js';
 export * from './structured-vault.js';
 export * from './setup-tools.js';
 export * from './vault-browse.js';
+export * from './vault-export-archive.js';

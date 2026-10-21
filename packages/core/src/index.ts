@@ -1,1 +1,1 @@
-export * from './collaboration-policy.js';
+export * from './secret-generator.js';

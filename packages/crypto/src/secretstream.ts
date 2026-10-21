@@ -574,11 +574,27 @@ function isPositiveBoundedInteger(value: number, maximum: number): boolean {
 function clearAndFreeSecretStreamState(state: SecretStreamState): void {
   const runtime = (sodium as unknown as { readonly libsodium?: RawSodiumRuntime })
     .libsodium;
-  if (runtime === undefined) {
+  // Private libsodium surface pinned by test/libsodium-runtime-contract.test.ts;
+  // verify its shape so an upgrade that changes it fails closed, not silently.
+  if (
+    runtime === undefined ||
+    !(runtime.HEAPU8 instanceof Uint8Array) ||
+    typeof runtime._free !== 'function' ||
+    typeof runtime._crypto_secretstream_xchacha20poly1305_statebytes !== 'function'
+  ) {
     throw new CryptoInputError('Libsodium runtime is unavailable');
   }
   const stateBytes = runtime._crypto_secretstream_xchacha20poly1305_statebytes();
   const address = state as unknown as number;
+  if (
+    !Number.isSafeInteger(address) ||
+    address <= 0 ||
+    !Number.isSafeInteger(stateBytes) ||
+    stateBytes <= 0 ||
+    address + stateBytes > runtime.HEAPU8.byteLength
+  ) {
+    throw new CryptoInputError('Libsodium stream state is invalid');
+  }
   runtime.HEAPU8.fill(0, address, address + stateBytes);
   runtime._free(address);
 }

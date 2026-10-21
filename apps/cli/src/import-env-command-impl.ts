@@ -183,7 +183,26 @@ async function confirmSourceDeletion(path: string): Promise<boolean> {
   return answer?.trim().toLowerCase() === 'y';
 }
 
-function flatOptions(options: ImportEnvCommandOptions): DatabaseFlatCommandOptions {
+/** Routing options shared by every database-vault transfer command. */
+export type DatabaseVaultRoutingOptions = Pick<
+  ImportEnvCommandOptions,
+  | 'profile'
+  | 'profileConfigDir'
+  | 'vault'
+  | 'datastore'
+  | 'dataFile'
+  | 'database'
+  | 'collection'
+  | 'keyFile'
+  | 'databaseUrlStdin'
+  | 'passphraseStdin'
+  | 'session'
+  | 'allowInsecureTransport'
+>;
+
+export function flatOptions(
+  options: DatabaseVaultRoutingOptions,
+): DatabaseFlatCommandOptions {
   const vault = options.vault;
   return {
     ...(options.profile === undefined ? {} : { profile: options.profile }),

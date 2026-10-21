@@ -33,7 +33,6 @@ import {
   vaultRevisionSchema,
   type AeadEnvelope,
   type ApiScope,
-  type ApiSessionResponse,
   type AttachmentId,
   type AttachmentSecretStreamRecord,
   type ChangeRecord,
@@ -46,22 +45,17 @@ import {
   type EncryptedGroupRecord,
   type EncryptedHistoryRecord,
   type EncryptedItemRecord,
-  type EnrollmentCompleteRequest,
   type GroupId,
   type GroupTemplate,
   type ItemId,
   type ItemPayload,
-  type InviteIssueRequest,
   type KeyVersion,
-  type PublicDeviceRecord,
-  type PublicInviteRecord,
   type RecordRevision,
   type SchemaVersion,
   type TemplateVersion,
   type TombstoneRecord,
   type TokenVersion,
   type VaultId,
-  type VaultBootstrapRequest,
   type VaultRecord,
   type VaultRevision,
 } from '../src/index.js';
@@ -472,22 +466,7 @@ describe('sync metadata invariants', () => {
     expectTypeOf<
       EncryptedHistoryRecord['schemaVersion']
     >().toEqualTypeOf<SchemaVersion>();
-    expectTypeOf<PublicDeviceRecord['schemaVersion']>().toEqualTypeOf<SchemaVersion>();
-    expectTypeOf<PublicDeviceRecord['tokenVersion']>().toEqualTypeOf<TokenVersion>();
-    expectTypeOf<InviteIssueRequest['scopes'][number]>().toEqualTypeOf<ApiScope>();
-    expectTypeOf<PublicInviteRecord['scopes'][number]>().toEqualTypeOf<ApiScope>();
-    expectTypeOf<ApiSessionResponse['scopes'][number]>().toEqualTypeOf<ApiScope>();
-    expectTypeOf<PublicDeviceRecord['scopes'][number]>().toEqualTypeOf<ApiScope>();
     expectTypeOf<DeviceRecord['scopes'][number]>().toEqualTypeOf<ApiScope>();
-    expectTypeOf<
-      Exclude<PublicDeviceRecord['encryptedLabel'], undefined>
-    >().toEqualTypeOf<AeadEnvelope>();
-    expectTypeOf<
-      EnrollmentCompleteRequest['schemaVersion']
-    >().toEqualTypeOf<SchemaVersion>();
-    expectTypeOf<
-      VaultBootstrapRequest['device']['schemaVersion']
-    >().toEqualTypeOf<SchemaVersion>();
   });
 
   it('separates broad format values from current support without pinning counters', () => {

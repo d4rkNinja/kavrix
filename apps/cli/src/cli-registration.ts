@@ -9,6 +9,8 @@
  * CLI surface.
  */
 import { Command } from 'commander';
+import { CLI_EXIT_CODES } from '@kavrix/schemas/cli-exit-codes';
+import { commanderExitCode, sessionUnlockExitCode } from './cli-exit-mapping.js';
 import { addDatabaseOwnerCommands } from './database-commands.js';
 import { LocalCliError } from './cli-error.js';
 import { InitOnboardingCancelledError } from './init-onboarding.js';
@@ -20,6 +22,10 @@ import { registerTuiCommand } from './tui-command.js';
 import { registerSelfUpdateCommand } from './self-update.js';
 import { registerBackupCommands } from './backup-command.js';
 import { registerImportCommands } from './import-env-command.js';
+import {
+  registerExportCommand,
+  registerGenerateCommand,
+} from './vault-transfer-commands.js';
 import {
   addMongoPingDatastoreOption,
   addRootDatastoreOption,
@@ -89,15 +95,10 @@ function classifyLightCliFailure(
     typeof (error as { code?: unknown }).code === 'string' &&
     typeof (error as { exitCode?: unknown }).exitCode === 'number'
   ) {
-    const code = (error as { code: string }).code;
-    if (
-      code === 'commander.help' ||
-      code === 'commander.helpDisplayed' ||
-      code === 'commander.version'
-    ) {
-      return { message: '', exitCode: 0 };
-    }
-    return { message: '', exitCode: 2 };
+    return {
+      message: '',
+      exitCode: commanderExitCode((error as { code: string }).code),
+    };
   }
   if (
     typeof error === 'object' &&
@@ -113,7 +114,7 @@ function classifyLightCliFailure(
     error !== null &&
     (error as { name?: unknown }).name === 'LocalSecretInputError'
   ) {
-    return { message: (error as Error).message, exitCode: 2 };
+    return { message: (error as Error).message, exitCode: CLI_EXIT_CODES.usageError };
   }
   if (
     typeof error === 'object' &&
@@ -121,20 +122,17 @@ function classifyLightCliFailure(
     (error as { name?: unknown }).name === 'SessionUnlockError' &&
     typeof (error as { code?: unknown }).code === 'string'
   ) {
-    const code = (error as { code: string }).code;
-    const message = (error as Error).message;
-    if (code === 'tampered') return { message, exitCode: 16 };
-    if (code === 'keychain-unavailable') return { message, exitCode: 15 };
-    return { message, exitCode: 14 };
+    return {
+      message: (error as Error).message,
+      exitCode: sessionUnlockExitCode((error as { code: string }).code),
+    };
   }
-  if (error instanceof AggregateError) {
-    return { message: error.message, exitCode: 1 };
-  }
-  if (error instanceof InitOnboardingCancelledError) {
-    return { message: error.message, exitCode: 1 };
-  }
-  if (error instanceof LocalCliError) {
-    return { message: error.message, exitCode: 1 };
+  if (
+    error instanceof AggregateError ||
+    error instanceof InitOnboardingCancelledError ||
+    error instanceof LocalCliError
+  ) {
+    return { message: error.message, exitCode: CLI_EXIT_CODES.unclassifiedFailure };
   }
   if (
     error instanceof Error &&
@@ -144,7 +142,7 @@ function classifyLightCliFailure(
   ) {
     return {
       message: `Kavrix command failed: ${error.message}`,
-      exitCode: 1,
+      exitCode: CLI_EXIT_CODES.unclassifiedFailure,
     };
   }
   return undefined;
@@ -793,6 +791,8 @@ export function buildLocalCli(): Command {
   registerCredentialHistoryCommands(program);
   registerBackupCommands(program);
   registerImportCommands(program);
+  registerExportCommand(program);
+  registerGenerateCommand(program);
   registerFramesCommand(program);
   registerSelfUpdateCommand(program);
   applyStdinFrameHelp(program);

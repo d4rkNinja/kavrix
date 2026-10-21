@@ -858,6 +858,69 @@ kavrix import env --file ./.env --delete-source --json
   hygiene, not a guarantee. Declined or failed deletions leave the file
   untouched and report `sourceDeleted: false`.
 
+## 17. Encrypted export and archive import
+
+`kavrix export` seals the flat credentials of one database vault into a
+passphrase-protected archive that can be imported into a different database
+or vault. Unlike `backup`, which copies the whole encrypted database file,
+an export carries decrypted name/value records re-sealed under the export
+passphrase.
+
+```sh
+kavrix export --file ./work.kavrix-export --profile work
+kavrix export --file ./payments.kavrix-export --prefix payments/ --json
+kavrix import archive --file ./work.kavrix-export --prefix staging/ --profile other
+```
+
+- `export` unlocks the vault, then asks for a new export passphrase
+  (minimum 16 bytes, confirmed twice, masked). The archive is one JSON
+  document sealed with XChaCha20-Poly1305 under an Argon2id-derived key; the
+  header (format, version, creation time, entry count, plaintext length, and
+  derivation parameters) is authenticated associated data. The archive holds
+  no database, vault, or key identifiers.
+- `--prefix` exports only names starting with that prefix. An empty selection
+  fails with exit `11` and writes nothing. The file is created with owner-only
+  permissions and is never replaced without `--overwrite`. The summary prints
+  names and counts, never values.
+- `import archive` parses the archive before requesting any unlock material;
+  a malformed file fails with exit `16`. A wrong archive passphrase and a
+  modified archive are indistinguishable (exit `10`). The import is one atomic
+  vault update; an existing name fails the whole import unless `--overwrite`
+  is explicit. `--prefix` renames every imported credential under a prefix.
+- Stdin frames: `export` expects `[mongodb-url,] passphrase,
+archive-passphrase, archive-passphrase-confirm`; `import archive` expects
+  `[mongodb-url,] passphrase, archive-passphrase` (see `kavrix frames export`).
+- Scope: database-container profiles and the root compatibility credentials
+  (default context/service `value` field) only. Structured fields, notes,
+  policies, grants, and audit records are not exported. Archives are bounded
+  to 10,000 entries and 64 MiB of plaintext. Anyone with the archive and its
+  passphrase can read every exported value; store them separately.
+
+## 18. Generate a secret
+
+`kavrix generate` creates a random secret locally from the operating system
+CSPRNG, using rejection sampling (no modulo bias):
+
+```sh
+kavrix generate production/api-token --profile work
+kavrix generate db/password --length 48 --exclude-ambiguous --overwrite
+kavrix generate --reveal --format hex --length 64
+```
+
+- With a name, the value is generated inside the authenticated vault update
+  and stored without being displayed. The summary reports the format, length,
+  and an estimated entropy in bits. An existing name requires `--overwrite`.
+- Without a name, `--reveal` prints the value to stdout and reads no secret
+  input. Passing both a name and `--reveal` is a usage error (exit `2`).
+- `--format` is `password` (default), `hex`, or `base64url`; `--length` is 8 to
+  1024 characters (default 32). For passwords, `--no-lowercase`,
+  `--no-uppercase`, `--no-digits`, and `--no-symbols` remove character classes,
+  and every remaining class appears at least once. `--exclude-ambiguous`
+  removes look-alike characters. The entropy estimate is conservative and
+  does not count the per-class guarantee as extra randomness.
+- Storing requires a database-container profile. Stdin frames:
+  `[mongodb-url,] passphrase`.
+
 ## Advanced destructive operation
 
 The whole-vault destruction command is intentionally absent from normal help,

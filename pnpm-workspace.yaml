@@ -21,6 +21,8 @@ trustPolicy: no-downgrade
 overrides:
   'brace-expansion@>=4.0.0 <5.0.11': '>=5.0.11'
   'source-map-js@>=1.0.0 <1.2.2': '1.2.2'
+  # GHSA-587h-7wmj-h5pm (launch-editor existence-check bypass on Windows).
+  'vite@>=8.2.0 <8.2.4': '>=8.2.4'
 
 allowBuilds:
   esbuild: true

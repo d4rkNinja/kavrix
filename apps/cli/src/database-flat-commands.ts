@@ -154,7 +154,15 @@ export async function readDatabaseFlatSecrets(
   ];
   const flags = kinds.map((kind) => {
     if (kind === 'database-url') return options.databaseUrlStdin === true;
-    if (kind === 'passphrase') return options.passphraseStdin === true;
+    // Archive passphrases travel with the unlock passphrase: one stdin flag
+    // selects framed input for every passphrase the command reads.
+    if (
+      kind === 'passphrase' ||
+      kind === 'new-passphrase' ||
+      kind === 'archive-passphrase'
+    ) {
+      return options.passphraseStdin === true;
+    }
     if (kind === 'field-value-base64') return options.valueStdinBase64 === true;
     if (kind === 'note-content-base64') return options.contentStdinBase64 === true;
     if (kind === 'note-content') return options.contentStdin === true;
@@ -166,7 +174,13 @@ export async function readDatabaseFlatSecrets(
       .filter((_, index) => flags[index] !== true)
       .map((kind) => {
         if (kind === 'database-url') return '--database-url-stdin';
-        if (kind === 'passphrase') return '--passphrase-stdin';
+        if (
+          kind === 'passphrase' ||
+          kind === 'new-passphrase' ||
+          kind === 'archive-passphrase'
+        ) {
+          return '--passphrase-stdin';
+        }
         if (kind === 'field-value-base64') return '--value-stdin-base64';
         if (kind === 'note-content-base64') return '--content-stdin-base64';
         if (kind === 'note-content') return '--content-stdin';

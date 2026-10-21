@@ -6,6 +6,7 @@ import {
 } from '@kavrix/crypto';
 import {
   deleteSecureFile,
+  MAX_SECURE_STREAM_CHUNK_BYTES,
   readSecureFile,
   writeSecureStreamFile,
 } from '@kavrix/key-files';
@@ -122,16 +123,24 @@ function writeJsonResult(value: unknown): void {
 }
 
 /** Publishes protected bytes as a new file; --overwrite replaces an existing one. */
-async function publishProtectedFile(
+export async function publishProtectedFile(
   path: string,
   contents: Uint8Array,
   overwrite: boolean,
   subject: string,
   maximumBytes: number,
 ): Promise<void> {
+  // The secure stream writer refuses chunks above MAX_SECURE_STREAM_CHUNK_BYTES,
+  // so contents larger than one chunk must be sliced rather than yielded whole.
   const source = async function* (): AsyncIterable<Uint8Array> {
     await Promise.resolve();
-    yield contents;
+    for (
+      let offset = 0;
+      offset < contents.byteLength;
+      offset += MAX_SECURE_STREAM_CHUNK_BYTES
+    ) {
+      yield contents.subarray(offset, offset + MAX_SECURE_STREAM_CHUNK_BYTES);
+    }
   };
   try {
     await writeSecureStreamFile(path, source(), maximumBytes);

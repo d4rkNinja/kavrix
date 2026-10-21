@@ -96,6 +96,12 @@ export const STDIN_FRAME_CONTRACTS: Readonly<Record<string, string>> = Object.fr
   'backup verify': 'backup-passphrase',
   'backup restore': 'backup-passphrase',
   'import env': '[mongodb-url with --database-url-stdin,] passphrase',
+  'import archive':
+    '[mongodb-url with --database-url-stdin,] passphrase, archive-passphrase',
+  export:
+    '[mongodb-url with --database-url-stdin,] passphrase, archive-passphrase, archive-passphrase-confirm',
+  generate:
+    '[mongodb-url with --database-url-stdin,] passphrase (only when storing under a name; --reveal reads no secrets)',
 });
 
 /** Adds the exact frame contract to a command's help description. */

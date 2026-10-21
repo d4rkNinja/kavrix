@@ -4,8 +4,15 @@ import {
   FileLocalVaultError,
 } from '@kavrix/storage';
 import { PortableKeyFileError } from '@kavrix/key-files';
+import { CLI_EXIT_CODES } from '@kavrix/schemas/cli-exit-codes';
 
 import { LocalCliError } from './cli-error.js';
+import {
+  commanderExitCode,
+  databaseMigrationExitCode,
+  portableKeyFileExitCode,
+  sessionUnlockExitCode,
+} from './cli-exit-mapping.js';
 import { keyFileGuidance } from './key-file-guidance.js';
 import { DatabaseFlatCommandError } from './database-flat-commands.js';
 import { DatabaseMigrationError } from './database-migration.js';
@@ -32,20 +39,6 @@ function isCommanderError(error: unknown): error is CommanderErrorLike {
   );
 }
 
-function portableKeyFileExitCode(error: PortableKeyFileError): number {
-  switch (error.code) {
-    case 'KEY_FILE_NOT_FOUND':
-      return 11;
-    case 'KEY_FILE_ALREADY_EXISTS':
-    case 'KEY_FILE_INVALID_PATH':
-    case 'KEY_FILE_UNSAFE':
-      return 14;
-    default:
-      // BUSY and OPERATION_FAILED are protected-file transport problems.
-      return 15;
-  }
-}
-
 /**
  * Maps one thrown failure to its stable documented presentation: a single
  * sanitized line plus the exit-code contract from the CLI reference
@@ -60,19 +53,9 @@ export function classifyCliFailure(error: unknown): Readonly<{
   exitCode: number;
 }> {
   if (isCommanderError(error)) {
-    // Help (`--help`, `--version`) exits successfully after commander has
-    // already written its output through the configured streams.
-    if (
-      error.code === 'commander.help' ||
-      error.code === 'commander.helpDisplayed' ||
-      error.code === 'commander.version'
-    ) {
-      return { message: '', exitCode: 0 };
-    }
-    // Commander has already rendered the sanitized error and command-local
-    // usage through the configured output stream. Returning no second message
-    // prevents duplicate error lines while preserving the documented exit 2.
-    return { message: '', exitCode: 2 };
+    // Commander has already rendered help, version, or the sanitized usage
+    // error through the configured streams; a second message would duplicate it.
+    return { message: '', exitCode: commanderExitCode(error.code) };
   }
   if (
     typeof error === 'object' &&
@@ -87,37 +70,24 @@ export function classifyCliFailure(error: unknown): Readonly<{
     return { message: error.message, exitCode: error.cliExitCode };
   }
   if (error instanceof DatabaseMigrationError) {
-    // Migration input problems are configuration mistakes; verification and
-    // ambiguous-commit outcomes are integrity/datastore failures.
-    const exitCode =
-      error.code === 'invalid'
-        ? 14
-        : error.code === 'authentication'
-          ? 10
-          : error.code === 'conflict'
-            ? 15
-            : 16;
-    return { message: error.message, exitCode };
+    return { message: error.message, exitCode: databaseMigrationExitCode(error.code) };
   }
   if (
     error instanceof DatabaseMigrationCommandError ||
     error instanceof DatabaseFlatCommandError
   ) {
-    return {
-      message: error.message,
-      exitCode: 14,
-    };
+    return { message: error.message, exitCode: CLI_EXIT_CODES.invalidConfiguration };
   }
   if (error instanceof DatastoreProfileError) {
     // Profile routing failures are operator configuration mistakes.
-    return { message: error.message, exitCode: 14 };
+    return { message: error.message, exitCode: CLI_EXIT_CODES.invalidConfiguration };
   }
   if (
     error instanceof FileLocalVaultError ||
     error instanceof EncryptedDatabaseStoreError ||
     error instanceof EncryptedVaultStoreError
   ) {
-    return { message: error.message, exitCode: 15 };
+    return { message: error.message, exitCode: CLI_EXIT_CODES.datastoreFailure };
   }
   if (error instanceof PortableKeyFileError) {
     const message =
@@ -126,7 +96,7 @@ export function classifyCliFailure(error: unknown): Readonly<{
         : error.code === 'KEY_FILE_UNSAFE'
           ? keyFileGuidance(error)
           : error.message;
-    return { message, exitCode: portableKeyFileExitCode(error) };
+    return { message, exitCode: portableKeyFileExitCode(error.code) };
   }
   // Secret-input framing problems are operator usage mistakes.
   if (
@@ -134,16 +104,14 @@ export function classifyCliFailure(error: unknown): Readonly<{
     error !== null &&
     (error as { name?: unknown }).name === 'LocalSecretInputError'
   ) {
-    return { message: (error as Error).message, exitCode: 2 };
+    return { message: (error as Error).message, exitCode: CLI_EXIT_CODES.usageError };
   }
-  if (error instanceof AggregateError) {
-    return { message: error.message, exitCode: 1 };
-  }
-  if (error instanceof InitOnboardingCancelledError) {
-    return { message: error.message, exitCode: 1 };
-  }
-  if (error instanceof LocalCliError) {
-    return { message: error.message, exitCode: 1 };
+  if (
+    error instanceof AggregateError ||
+    error instanceof InitOnboardingCancelledError ||
+    error instanceof LocalCliError
+  ) {
+    return { message: error.message, exitCode: CLI_EXIT_CODES.unclassifiedFailure };
   }
   if (
     typeof error === 'object' &&
@@ -151,13 +119,10 @@ export function classifyCliFailure(error: unknown): Readonly<{
     (error as { name?: unknown }).name === 'SessionUnlockError' &&
     typeof (error as { code?: unknown }).code === 'string'
   ) {
-    // Tampering is integrity; expiry/configuration is operator setup; an
-    // unavailable OS credential store degrades to the datastore exit code.
-    const code = (error as { code: string }).code;
-    const message = (error as Error).message;
-    if (code === 'tampered') return { message, exitCode: 16 };
-    if (code === 'keychain-unavailable') return { message, exitCode: 15 };
-    return { message, exitCode: 14 };
+    return {
+      message: (error as Error).message,
+      exitCode: sessionUnlockExitCode((error as { code: string }).code),
+    };
   }
   // Bundle/runtime module-load failures are safe to surface: they never carry
   // vault secrets and otherwise collapse to a generic line that hides the fix.
@@ -169,8 +134,11 @@ export function classifyCliFailure(error: unknown): Readonly<{
   ) {
     return {
       message: `Kavrix command failed: ${error.message}`,
-      exitCode: 1,
+      exitCode: CLI_EXIT_CODES.unclassifiedFailure,
     };
   }
-  return { message: 'Kavrix command failed.', exitCode: 1 };
+  return {
+    message: 'Kavrix command failed.',
+    exitCode: CLI_EXIT_CODES.unclassifiedFailure,
+  };
 }

@@ -36,6 +36,9 @@ defined in the [glossary](glossary.md).
 - Migrating is one command: `kavrix import env --file ./.env` turns a
   `.env` file into credentials (guarded parsing, values never echoed, and
   an offer to shred the source file afterward).
+- `kavrix generate <name>` creates a random password or token locally and
+  stores it without ever displaying it; `kavrix generate --reveal` prints
+  one instead.
 
 ## Run programs without pasting secrets
 
@@ -119,6 +122,9 @@ feeds it to automation.
 - `kavrix backup create` seals the whole database file into one
   passphrase-protected archive; `backup verify` authenticates it, and
   `backup restore` writes it back — see [backups](#keys-recovery-and-health).
+- `kavrix export` seals one vault's credentials into a passphrase-protected
+  archive that `kavrix import archive` loads into another database or vault.
+  Structured fields, notes, and policies are not exported.
 
 ## Stop typing your passphrase
 

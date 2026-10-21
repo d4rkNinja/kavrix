@@ -13,13 +13,15 @@ import { passphraseDerivationSchema } from './encrypted-records.js';
  */
 export const MAX_DATABASE_BACKUP_PLAINTEXT_BYTES = 128 * 1024 * 1024;
 
-const backupNonceSchema = base64UrlSchema
+/** 24-byte XChaCha20-Poly1305 nonce shared by passphrase-sealed archive formats. */
+export const sealedArchiveNonceSchema = base64UrlSchema
   .length(32)
   .refine((value) => Buffer.from(value, 'base64url').byteLength === 24, {
     error: 'Nonce must canonically encode exactly 24 bytes',
   });
 
-const backupTagSchema = base64UrlSchema
+/** 16-byte Poly1305 tag shared by passphrase-sealed archive formats. */
+export const sealedArchiveTagSchema = base64UrlSchema
   .length(22)
   .refine((value) => Buffer.from(value, 'base64url').byteLength === 16, {
     error: 'Authentication tag must canonically encode exactly 16 bytes',
@@ -54,8 +56,8 @@ export const databaseBackupArchiveSchema = z
       .positive()
       .max(MAX_DATABASE_BACKUP_PLAINTEXT_BYTES),
     derivation: passphraseDerivationSchema,
-    nonce: backupNonceSchema,
-    authenticationTag: backupTagSchema,
+    nonce: sealedArchiveNonceSchema,
+    authenticationTag: sealedArchiveTagSchema,
     ciphertext: backupCiphertextSchema,
   })
   .strict();

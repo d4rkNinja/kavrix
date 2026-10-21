@@ -116,29 +116,41 @@ Not yet fixed. Ordered by how much damage a mistake here would do.
    `SessionUnlockError`, `PortableKeyFileError`, and `DatabaseMigrationError`
    exit-code mappings in `apps/cli/src/cli-errors.ts` and
    `cli-registration.ts:124-127` repeat literal code tables instead of reading
-   `CLI_EXIT_CODES`. They can drift from the single source of truth. Fix by
-   deriving them.
+   `CLI_EXIT_CODES`. They can drift from the single source of truth.
+   **Done (0.2.47):** `apps/cli/src/cli-exit-mapping.ts` derives every table
+   from `CLI_EXIT_CODES`.
 2. **`libsodium-wrappers` private API use.** `packages/crypto/src/secretstream.ts`
    reaches into `sodium.libsodium.HEAPU8` and `_free` to wipe WASM stream state.
    A dependency upgrade could break state cleanup and turn a successful encrypt
-   into a runtime error. Needs a version pin with a test that fails loudly.
+   into a runtime error. **Done (0.2.47):** the cleanup validates the runtime
+   heap shape, and `packages/crypto/test/libsodium-runtime-contract.test.ts`
+   pins 0.8.4 and fails loudly if the private API changes.
 3. **`@kavrix/core` holds a second, uncalled copy of the collaboration policy.**
    `packages/core/src/collaboration-policy.ts` (1,123 lines) re-derives
    authorization decisions that are independently encoded as Zod refinements in
    `packages/schemas/src/collaboration.ts` (~2,750 lines). **No source file in
    the workspace imports `@kavrix/core`.** This is the largest duplication in the
    repository and the most likely place for a security rule to be strengthened in
-   one copy and not the other. Either wire core into the real paths or delete it.
+   one copy and not the other. **Done (0.2.47):** the duplicate was deleted;
+   `@kavrix/core` now hosts the secret generator used by `kavrix generate`.
 4. **`packages/schemas/src/api.ts` (~1,017 lines) and much of `sync.ts` are
    wire contracts for an HTTP service that does not exist.** They are tested but
    never executed. That is honest test spend on unreachable code; it also
    invites someone to document a hosted API that is not shipped.
+   **Done (0.2.47):** `api.ts` was removed; `sync.ts` is marked reserved, and
+   only its tombstone record is used (by backups).
 5. **Two unimplemented envelopes.** `storage/vitest.config.ts` includes
    `mongo-collaboration.integration.test.ts` but the root `vitest.config.ts`
    does not, so no MongoDB integration coverage runs in a default `pnpm test`.
    Same for `packages/key-files/test/integration/platform-key-file.integration.ts`.
+   **Done (0.2.47):** the root config discovers the key-files and storage
+   suites by glob, so the MongoDB integration suites are now part of the
+   default run (they still skip unless their environment gate is set). The
+   key-files integration path named above no longer exists in the tree.
 6. **`fast-check` is declared as a devDependency in `packages/schemas` and
-   `packages/crypto` with no property-based test in either.**
+   `packages/crypto` with no property-based test in either. **Done (0.2.47):**
+   property tests cover AAD injectivity, the export envelope, `.env` parsing,
+   and the generator.**
 7. **`apps/cli`'s explicit `include` lists are a silent release-verification
    gap.** Both `tsconfig.build.json` and `tsconfig.json` enumerate source files,
    so a new file that is not added compiles **never** — yet `tsc -b`, `tsc -p`,
@@ -327,7 +339,7 @@ ships. Ordered by usefulness.
 | ----------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Secret versioning / rotation / history**      | `encryptedHistoryRecordSchema` is real, fully refined, and bounded at 1,000,000 records by the structured payload — but two blockers make it unusable as versioning: (a) **no production code path writes a history record** (it is declared, authenticated, counted by `item show`, item-scoped, and never appended to); and (b) an `encryptedHistoryRecord` carries **no wrapped-key record**, so no key reachable from an authenticated vault can decrypt one. `kavrix item history list/show` now exposes the non-sensitive metadata. | High — restoring, revealing, or diffing a snapshot needs a new write path **and** a key-wrap schema decision, which is a migration rather than a command. |
 | **Key-slot rotation is not credential history** | `packages/crypto/src/rotation.ts` and `portable-key-rotation.ts` (668 lines, tested, RFC-vector-backed) rotate **key slots**, not item content.                                                                                                                                                                                                                                                                                                                                                                                           | Informational — the most commonly misread files in the repository; the audit originally made the same mistake.                                            |
-| **Export**                                      | `import env` exists; there is no `export`. `encryptedBackupHeaderSchema`/`Footer` exist and `backup create/verify/restore` work, so an encrypted export is close to free.                                                                                                                                                                                                                                                                                                                                                                 | High                                                                                                                                                      |
+| **Export**                                      | **Shipped (0.2.47):** `kavrix export` / `import archive` for root credentials; structured fields and notes are not exported yet. Before: `import env` existed; there was no `export`. `encryptedBackupHeaderSchema`/`Footer` exist and `backup create/verify/restore` work, so an encrypted export is close to free.                                                                                                                                                                                                                      | High                                                                                                                                                      |
 | **Notes**                                       | `noteSchema`/`noteCollectionSchema` are canonical and embedded in item and group payloads; `kavrix note list/add/show/remove` now covers item notes through the encrypted structured-vault mutation path. Service/group note collections still have no command.                                                                                                                                                                                                                                                                           | Medium — item notes shipped; group notes and note tags/pinning in the TUI remain                                                                          |
 | **Search on values**                            | `kavrix search` matches names only, never values. Safe by design (no value-side index), but there is no scoped "search within this credential's field labels" either.                                                                                                                                                                                                                                                                                                                                                                     | Medium                                                                                                                                                    |
 | **MCP server**                                  | Nothing in the repository references MCP. There is no local HTTP server either — only the NDJSON broker socket.                                                                                                                                                                                                                                                                                                                                                                                                                           | Medium — the broker protocol is already a working, authenticated local transport, so an MCP surface on top is an adapter, not a rewrite.                  |
@@ -351,11 +363,11 @@ overhead, plus concurrency and memory, measured rather than asserted.
    path plus a wrapped-key record for snapshots, or delete `encryptedHistoryRecordSchema`
    and its schema test surface. A read-only viewer over records this CLI cannot
    produce is an honest stopgap, not a destination.
-3. Drive the exit-code tables from `CLI_EXIT_CODES` (§3.1).
-4. Decide `@kavrix/core`: wire it in or delete it (§3.3).
-5. Encrypted export (§5, third row).
+3. ~~Drive the exit-code tables from `CLI_EXIT_CODES` (§3.1)~~ — done (0.2.47).
+4. ~~Decide `@kavrix/core`: wire it in or delete it (§3.3)~~ — duplicate deleted (0.2.47).
+5. ~~Encrypted export (§5, third row)~~ — shipped for root credentials (0.2.47).
 6. MCP surface over the existing broker (§5, sixth row).
-7. Delete or clearly quarantine the unused HTTP/sync contract surface (§3.4).
+7. ~~Delete or clearly quarantine the unused HTTP/sync contract surface (§3.4)~~ — done (0.2.47).
 
 Every item above is independent of the others and can be implemented and
 reviewed separately.
