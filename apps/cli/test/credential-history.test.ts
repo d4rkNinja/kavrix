@@ -597,16 +597,16 @@ async function resolveItemCoordinates(
   }
 }
 
-function swapAdjacentCharacters(value: string): string {
-  const characters = Array.from(value);
-  const first = characters[1];
-  const second = characters[2];
-  if (first === undefined || second === undefined || first === second) {
+function tamperCiphertext(value: string): string {
+  const bytes = Buffer.from(value, 'base64url');
+  const first = bytes[0];
+  if (first === undefined) {
     throw new Error('fixture ciphertext is too short to tamper');
   }
-  characters[1] = second;
-  characters[2] = first;
-  return characters.join('');
+  // Always change authenticated bytes, even when adjacent random base64
+  // characters happen to be identical. Re-encode canonically after mutation.
+  bytes[0] = first ^ 1;
+  return bytes.toString('base64url');
 }
 
 describe('credential history commands against the real encrypted datastore', () => {
@@ -786,6 +786,8 @@ describe('credential history commands against the real encrypted datastore', () 
     try {
       const [document] = await store.listVaults(databaseId);
       if (document === undefined) throw new Error('vault document missing');
+      const tamperedCiphertext = tamperCiphertext(document.encryptedPayload.ciphertext);
+      expect(tamperedCiphertext).not.toBe(document.encryptedPayload.ciphertext);
       await store.updateVault({
         vault: {
           ...document,
@@ -796,7 +798,7 @@ describe('credential history commands against the real encrypted datastore', () 
               ...document.encryptedPayload.aad,
               revision: vaultRevisionSchema.parse(document.revision + 1),
             },
-            ciphertext: swapAdjacentCharacters(document.encryptedPayload.ciphertext),
+            ciphertext: tamperedCiphertext,
           },
         },
         expectedVaultRevision: document.revision,

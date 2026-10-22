@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join, relative, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { smokeOnboarding } from './smoke-onboarding.js';
+import { smokeTuiChildCommands } from './smoke-tui-child.js';
 
 const cliRoot = fileURLToPath(new URL('..', import.meta.url));
 const npmCommand = process.platform === 'win32' ? process.execPath : 'npm';
@@ -54,13 +55,14 @@ function provePackageAllowlistRejectsExtras() {
   assert(rejected, 'Package allowlist accepted a private debug artifact');
 }
 
-function run(command, args, cwd, expectedStatus = 0) {
+function run(command, args, cwd, expectedStatus = 0, env = process.env) {
   const result = spawnSync(command, args, {
     cwd,
     encoding: 'utf8',
     timeout: 180_000,
     windowsHide: true,
     stdio: ['ignore', 'pipe', 'pipe'],
+    env,
   });
   if (result.error)
     fail(`${command} ${args.join(' ')} failed: ${result.error.message}`);
@@ -282,6 +284,7 @@ async function main() {
 
     const bin = join(packageRoot, 'dist', 'bin.js');
     await smokeOnboarding(bin, installRoot);
+    await smokeTuiChildCommands(bin, installRoot);
     const version = run(process.execPath, [bin, '--version'], installRoot);
     assertSafeText(version.stdout + version.stderr, 'kavrix --version output');
     assert(version.stderr.trim() === '', 'kavrix --version wrote to stderr');
@@ -289,6 +292,21 @@ async function main() {
       version.stdout.trim() === manifest.version,
       'Installed kavrix version does not match package.json',
     );
+    for (const forceColor of ['0', '1', '3']) {
+      const colorConflict = run(process.execPath, [bin, '--version'], installRoot, 0, {
+        ...process.env,
+        NO_COLOR: '1',
+        FORCE_COLOR: forceColor,
+      });
+      assert(
+        colorConflict.stderr === '',
+        'Installed CLI emitted a color-conflict warning',
+      );
+      assert(
+        colorConflict.stdout === `${manifest.version}\n`,
+        'Installed CLI changed version output under conflicting color flags',
+      );
+    }
     const bareRoot = run(process.execPath, [bin], installRoot);
     const bareRootOutput = bareRoot.stdout + bareRoot.stderr;
     assertSafeText(bareRootOutput, 'bare kavrix output');

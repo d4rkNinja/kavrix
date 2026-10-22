@@ -76,6 +76,53 @@ async function scratch(label: string): Promise<string> {
 const PASSPHRASE = 'LiveQaPassphrase22!';
 
 describe('0.2.22 live TUI CRUD journey (real CLI, isolated home)', () => {
+  it('uses the default packaged child launcher for creation, doctor, policy and browse', async () => {
+    const home = await scratch('default-launcher');
+    const backend = createCliTuiBackend({
+      profileConfigDir: join(home, 'config'),
+      kavrixArtifactDir: join(home, '.kavrix'),
+      ascii: true,
+    });
+    try {
+      const created = await backend.dispatch({
+        type: 'create-file-profile',
+        profileId: 'default-launcher',
+        dataFile: join(home, '.kavrix', 'database.kavrix'),
+        keyFile: join(home, '.kavrix', 'owner.key'),
+        passphrase: PASSPHRASE,
+      });
+      expect(created.snapshot.noticeTone).toBe('success');
+      expect(created.snapshot.home.unlocked).toBe(true);
+      const doctor = await backend.dispatch({ type: 'run-doctor' });
+      expect(doctor.snapshot.noticeTone).toBe('success');
+      expect(doctor.snapshot.doctor.length).toBeGreaterThan(0);
+      const put = await backend.dispatch({
+        type: 'put-credential',
+        name: 'demo/launcher',
+        value: 'default-launcher-test-canary',
+      });
+      expect(put.snapshot.noticeTone).toBe('success');
+      const policy = await backend.dispatch({
+        type: 'policy-create',
+        id: 'launcher-policy',
+        secret: 'demo/launcher',
+        command: 'node',
+      });
+      expect(policy.snapshot.noticeTone).toBe('success');
+      expect(policy.snapshot.policies.some((row) => row.id === 'launcher-policy')).toBe(
+        true,
+      );
+      const browse = await backend.dispatch({ type: 'refresh-browse' });
+      expect(browse.snapshot.noticeTone).toBe('success');
+      expect(JSON.stringify(browse.snapshot)).not.toContain(
+        'default-launcher-test-canary',
+      );
+      expect(JSON.stringify(browse.snapshot)).not.toContain(PASSPHRASE);
+    } finally {
+      await backend.dispose();
+    }
+  });
+
   it(
     'creates a profile, then exercises credential/policy/grant/recovery/run CRUD end to end',
     async () => {

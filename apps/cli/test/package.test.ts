@@ -1,4 +1,5 @@
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { join, relative } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -26,6 +27,35 @@ function listFiles(root: string, current = root): string[] {
 }
 
 describe('npm package contract', () => {
+  it.each([
+    ['1', '1'],
+    ['1', '0'],
+    ['1', '3'],
+    ['', '1'],
+  ])(
+    'honors NO_COLOR=%j without a Node warning when FORCE_COLOR=%j',
+    (noColor, forceColor) => {
+      for (const args of [['--version'], ['tui', '--help']]) {
+        const result = spawnSync(
+          process.execPath,
+          [join(distRoot, 'bin.js'), ...args],
+          {
+            encoding: 'utf8',
+            env: { ...process.env, NO_COLOR: noColor, FORCE_COLOR: forceColor },
+            timeout: 30_000,
+          },
+        );
+        expect(result.error).toBeUndefined();
+        expect(result.status).toBe(0);
+        expect(result.stderr).toBe('');
+        expect(result.stdout).not.toContain('\u001b[');
+        expect(result.stdout).toContain(
+          args[0] === '--version' ? packageManifest.version : 'Usage: kavrix tui',
+        );
+      }
+    },
+  );
+
   it('declares a publishable kavrix package with one runtime dependency', () => {
     expect(packageManifest.name).toBe('kavrix');
     expect(packageManifest.private).toBe(false);

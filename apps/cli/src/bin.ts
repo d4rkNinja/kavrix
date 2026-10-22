@@ -16,6 +16,13 @@
  */
 import { enableCompileCache } from 'node:module';
 
+// Kavrix honors NO_COLOR. Normalize conflicting inherited color flags before
+// application imports initialize Node's color-aware console or terminal UI.
+// This avoids Node's precedence warning without suppressing unrelated warnings.
+if (process.env['NO_COLOR'] !== undefined) {
+  delete process.env['FORCE_COLOR'];
+}
+
 enableCompileCache();
 
 await import('./cli-main.js');

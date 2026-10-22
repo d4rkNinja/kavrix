@@ -1,5 +1,4 @@
 import { spawn } from 'node:child_process';
-import { createRequire } from 'node:module';
 import { existsSync } from 'node:fs';
 import { lstat, realpath } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
@@ -247,8 +246,6 @@ type CliCommandOutcome =
   | Readonly<{ kind: 'exited'; exitCode: number | null }>
   | Readonly<{ kind: 'spawn-failed'; error: Error }>
   | Readonly<{ kind: 'timed-out' }>;
-
-const require = createRequire(import.meta.url);
 
 /**
  * Hard ceiling on one `kavrix` child. Every TUI intent awaits a child, and
@@ -2541,12 +2538,10 @@ class CliTuiSession {
 
   #binPath(): string {
     if (this.#options.binPath !== undefined) return this.#options.binPath;
-    try {
-      return require.resolve('kavrix/dist/bin.js');
-    } catch {
-      const here = dirname(fileURLToPath(import.meta.url));
-      return join(here, 'bin.js');
-    }
+    // Resolve the package's public ESM entry, not a private exports subpath or
+    // this module's location: production puts this session inside dist/chunks.
+    const publicEntry = fileURLToPath(import.meta.resolve('kavrix'));
+    return join(dirname(publicEntry), 'bin.js');
   }
 
   async #runJsonCommand(

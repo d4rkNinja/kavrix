@@ -9,7 +9,13 @@ const root = fileURLToPath(new URL('..', import.meta.url));
 const isWindows = platform === 'win32';
 const pnpmBin = isWindows ? 'pnpm.cmd' : 'pnpm';
 
-const useColor = Boolean(process.stdout.isTTY) && !process.env.NO_COLOR;
+const useColor = Boolean(process.stdout.isTTY) && process.env.NO_COLOR === undefined;
+const childEnvironment = { ...process.env };
+if (process.env.NO_COLOR !== undefined) {
+  delete childEnvironment.FORCE_COLOR;
+} else {
+  childEnvironment.FORCE_COLOR = useColor ? '1' : '0';
+}
 const paint = (code, text) => (useColor ? `\x1b[${code}m${text}\x1b[0m` : text);
 const bold = (text) => paint(1, text);
 const dim = (text) => paint(2, text);
@@ -61,11 +67,11 @@ function spawnStep(command, args) {
       ? spawn([command, ...args].join(' '), {
           cwd: root,
           shell: true,
-          env: { ...process.env, FORCE_COLOR: useColor ? '1' : '0' },
+          env: childEnvironment,
         })
       : spawn(command, args, {
           cwd: root,
-          env: { ...process.env, FORCE_COLOR: useColor ? '1' : '0' },
+          env: childEnvironment,
         });
 
     let stdout = '';

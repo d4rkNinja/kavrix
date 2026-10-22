@@ -71,6 +71,12 @@ kavrix tui    # full app
 Use `kavrix init --no-tui` for classic line prompts, or stdin/explicit routing
 for scripts.
 
+Version 0.2.50 resolves conflicting inherited `NO_COLOR` / `FORCE_COLOR` flags
+before startup, preventing Node's color-precedence warning while preserving
+other runtime warnings. It also repairs the packaged TUI's child-command
+launcher, including Doctor and setup actions. See
+[changes](https://github.com/d4rkNinja/kavrix/blob/v0.2.50/docs/release-notes-0.2.50.md).
+
 Version 0.2.49 aligns TUI list details in one column and marks cut-off rows
 with an ellipsis. See
 [changes](https://github.com/d4rkNinja/kavrix/blob/v0.2.49/docs/release-notes-0.2.49.md).
