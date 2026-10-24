@@ -11,6 +11,7 @@ on:
         options:
           - "main"
           - "ci/windows-verify-faster"
+          - "codex/kavrix-ci-tui-check"
           - "development"
           - "fix/0.2.15-windows-ci-flakes"
           - "fix/0.2.19-live-qa-p1s"
