@@ -216,7 +216,8 @@ export function KavrixApp({
     let settled = false;
     const timeout = setTimeout(() => {
       if (cancelled || settled) return;
-      settled = true;
+      // The warning does not cancel the backend's existing operation. Accept a
+      // later validated snapshot until it settles or this mount closes.
       setHydrateError(
         'Vault session hydrate timed out. Press q to quit, then retry with --no-splash or check --config-dir.',
       );
@@ -229,6 +230,7 @@ export function KavrixApp({
         if (cancelled || settled) return;
         settled = true;
         clearTimeout(timeout);
+        setHydrateError(null);
         dispatchRef.current({ type: 'hydrate', snapshot });
         setBackendReady(true);
         setPaintEpoch((epoch) => epoch + 1);

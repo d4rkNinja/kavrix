@@ -448,6 +448,48 @@ describe('KavrixApp vault-shell first paint', () => {
     );
   });
 
+  it('recovers when a validated profile load finishes after the hydrate notice', async () => {
+    const stdout = new TestOutput();
+    const stdin = new TestInput();
+    const chunks: Buffer[] = [];
+    stdout.on('data', (chunk: Buffer) => chunks.push(chunk));
+    const snapshot = { ...midSnapshot(), notice: 'Validated slow profile loaded.' };
+    const { backend, resolveLoad } = deferredLoadBackend(snapshot);
+    instance = render(
+      createElement(KavrixApp, {
+        backend,
+        ascii: true,
+        color: false,
+        noSplash: true,
+      }),
+      {
+        stdout: stdout as unknown as NodeJS.WriteStream,
+        stdin: stdin as unknown as NodeJS.ReadStream,
+        exitOnCtrlC: false,
+        patchConsole: false,
+        interactive: true,
+      },
+    );
+    await instance.waitUntilRenderFlush();
+    await vi.waitFor(
+      () => {
+        const painted = stripAnsi(Buffer.concat(chunks).toString('utf8'));
+        expect(painted).toMatch(/hydrate timed out/i);
+        expect(painted).not.toContain('Validated slow profile loaded.');
+      },
+      { timeout: 10_000, interval: 50 },
+    );
+    chunks.length = 0;
+    resolveLoad();
+    await vi.waitFor(
+      () => {
+        const painted = stripAnsi(Buffer.concat(chunks).toString('utf8'));
+        expect(painted).toContain('Validated slow profile loaded.');
+        expect(painted).not.toMatch(/Hydrate failed|Loading vault session/i);
+      },
+      { timeout: 3_000, interval: 40 },
+    );
+  }, 20_000);
   it('paints a hydrate error instead of staying blank', async () => {
     const stdout = new TestOutput();
     const stdin = new TestInput();
