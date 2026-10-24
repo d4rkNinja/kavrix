@@ -38,7 +38,7 @@ catalog:
   libsodium-wrappers: 0.8.4
   mongodb: 7.5.0
   react: 19.2.8
-  zod: 4.4.3
+  zod: 4.6.6
 
 patchedDependencies:
   ink@7.1.1: patches/ink@7.1.1.patch
