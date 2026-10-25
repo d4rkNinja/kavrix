@@ -44,22 +44,6 @@ function formatDuration(ms) {
   return `${minutes}m ${Math.round(seconds % 60)}s`;
 }
 
-function canRunDocker() {
-  return new Promise((resolvePromise) => {
-    const child = spawn(
-      isWindows ? 'docker.cmd' : 'docker',
-      ['info', '--format', '{{.ServerVersion}}'],
-      {
-        cwd: root,
-        shell: isWindows,
-        stdio: 'ignore',
-      },
-    );
-    child.on('error', () => resolvePromise(false));
-    child.on('close', (code) => resolvePromise(code === 0));
-  });
-}
-
 function spawnStep(command, args) {
   return new Promise((resolvePromise) => {
     const startedAt = Date.now();
@@ -167,22 +151,17 @@ async function buildPlan(flags) {
   }
 
   if (!flags.has('--quick')) {
-    if (await canRunDocker()) {
-      stages.push({
-        name: 'Database container acceptance',
-        steps: [
-          {
-            name: 'acceptance:database-container',
-            args: ['run', 'acceptance:database-container'],
-          },
-        ],
-      });
-    } else {
-      skipped.push({
-        name: 'acceptance:database-container',
-        reason: 'Docker not available here; CI runs it on Linux',
-      });
-    }
+    // "Container" means the encrypted database file format. This journey
+    // installs the packed CLI and exercises the file datastore, without Docker.
+    stages.push({
+      name: 'Database container acceptance',
+      steps: [
+        {
+          name: 'acceptance:database-container',
+          args: ['run', 'acceptance:database-container'],
+        },
+      ],
+    });
     stages.push({ name: 'Packed CLI acceptance', steps: packedCliAcceptance });
   }
 

@@ -1,8 +1,8 @@
 # Reliability audit: 2026-10-25
 
-Status: local validation passed; native cross-platform validation remains open.
-These are local fixes, not a release or a claim that every supported platform
-has passed validation.
+Status: local validation and native OS test suites passed. Final CI acceptance
+status is tracked in [PR #173](https://github.com/d4rkNinja/kavrix/pull/173/checks).
+This audit is not a release or a guarantee about every terminal environment.
 
 ## Implemented fixes
 
@@ -24,6 +24,9 @@ has passed validation.
   child termination and a generic error after child closure.
 - Local `.tmp` artifacts are excluded from lint and formatting, consistently with
   the existing Git exclusion. Product source remains covered by both checks.
+- Full and acceptance-only verification always run packed database-container
+  acceptance. Its file-datastore journey needs no Docker service; the former
+  Docker availability check incorrectly skipped this gate on Docker-free hosts.
 - Zod is pinned to 4.6.6 for the bounded-collection validation fix
   ([GHSA-mrhx-c7xc-m3w5](https://github.com/advisories/GHSA-mrhx-c7xc-m3w5)).
   The canonical vault-list regression rejects an oversized list with one size
@@ -71,11 +74,25 @@ isolated test, complete file, and final full-suite run passed without changing
 the implementation or weakening its assertions. The original intermittent
 failure was not reproduced; no storage fix is claimed for that observation.
 
+After merging the current base, commit `f057a81` passed 575 focused local tests
+and the native Linux x64 and macOS arm64 full suites (2,252 passed and 16
+service/platform-gated skips each). All four Windows x64 test shards passed.
+CodeQL, dependency review/audit, package contents, active-source coverage, static
+checks, Linux packed-CLI runtime checks, and the real MongoDB setup probe passed.
+The PR checks link records the remaining packed Windows acceptance result.
+
+The database-container acceptance command also passed directly on the local
+Docker-free Windows host. The corrected verifier's `--acceptance-only` flow
+then passed database-container acceptance, all-command acceptance, and package
+smoke without a Docker installation. A native PowerShell probe confirmed the production
+UTF-8 stdin decoder preserves Japanese text, Greek characters, and emoji, using
+an output sink without accessing the clipboard.
+
 ## Outstanding platform evidence and limits
 
-- Native macOS/Linux execution is unavailable on this Windows host. The existing
-  CI matrix covers Linux/macOS/Windows, but it has not run these local changes.
-  POSIX permission and symlink regressions must pass on those runners.
+- Native macOS/Linux execution is unavailable on this Windows host. CI supplied
+  the native Linux/macOS evidence above, including the POSIX permission and
+  symlink regressions; it does not prove every OS version or architecture.
 - Clipboard backend selection and failure handling have unit coverage for all
   three OS families. This is not evidence of native clipboard interoperability on
   each OS or terminal support for OSC 52. OSC 52 clearing remains best effort;
