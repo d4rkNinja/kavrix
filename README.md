@@ -90,11 +90,10 @@ from the terminal height. See [0.2.48 changes](docs/release-notes-0.2.48.md).
 The 0.2.49 update lines list details up in one column and ends cut-off rows
 with an ellipsis. See [0.2.49 changes](docs/release-notes-0.2.49.md).
 
-Version 0.2.50 keeps startup quiet when both `NO_COLOR` and `FORCE_COLOR` are
-inherited: Kavrix honors `NO_COLOR` before loading its CLI and TUI. Other Node
-warnings remain visible. It also repairs the packaged TUI's child-command
-launcher, including Doctor and setup actions.
-See [0.2.50 changes](docs/release-notes-0.2.50.md).
+Version 0.2.51 repairs typed and pasted TUI searches, filtered action selection,
+clipboard failure handling, and cancellation during process startup. It also
+includes the packaged TUI launcher, quiet color startup, and slow-profile-loading
+recovery fixes. See [0.2.51 changes](docs/release-notes-0.2.51.md).
 
 ## Run tools without pasting secrets
 

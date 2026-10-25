@@ -182,16 +182,16 @@ describe('`/` opens a live name filter on the Credentials screen', () => {
     expect(pressKey(state, { text: 'c', ctrl: true }).quit).toBe(true);
   });
 
-  it('moves the cursor through matches with arrows and j/k', () => {
+  it('moves the cursor through matches with arrows', () => {
     let state = credentialsScreen();
     state = pressKey(state, { text: '/' });
     state = type(state, 'a');
     expect(state.listIndex).toBe(0);
     state = pressKey(state, { name: 'down' });
     expect(state.listIndex).toBe(1);
-    state = pressKey(state, { text: 'k' });
+    state = pressKey(state, { name: 'up' });
     expect(state.listIndex).toBe(0);
-    state = pressKey(state, { text: 'j' });
+    state = pressKey(state, { name: 'down' });
     expect(state.listIndex).toBe(1);
     state = pressKey(state, { name: 'end' });
     expect(state.listIndex).toBe(2);
@@ -199,6 +199,18 @@ describe('`/` opens a live name filter on the Credentials screen', () => {
     expect(state.listIndex).toBe(1);
     state = pressKey(state, { name: 'home' });
     expect(state.listIndex).toBe(0);
+  });
+
+  it('accepts j and k as filter text so typed names match pasted names', () => {
+    const opened = pressKey(credentialsScreen(), { text: '/' });
+    for (const name of ['api-key', 'project-key']) {
+      let typed = opened;
+      for (const character of name) typed = pressKey(typed, { text: character });
+      const pasted = pressKey(opened, { text: name });
+      expect(typed.credentialFilter).toBe(name);
+      expect(typed.credentialFilter).toBe(pasted.credentialFilter);
+      expect(names(typed)).toEqual(names(pasted));
+    }
   });
 });
 
@@ -389,7 +401,7 @@ describe('the footer only advertises `/` where it works', () => {
     const chips = footerChips(state);
     expect(chips.map((chip) => `${chip.keyLabel} ${chip.hint}`)).toEqual([
       'Enter detail',
-      'j/k move',
+      'Up/Down move',
       'Backspace edit',
       'Esc clear filter',
       'Tab screens',

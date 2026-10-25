@@ -95,10 +95,15 @@ or platform adapters. UI and commands call use cases instead of databases.
 - Do not publish, tag, push, or create releases unless the user has authorized the
   external action and the exact target has been verified.
 
-## `publish with rocket` release authorization
+## Rocket release authorization
 
-When the repository owner uses the exact phrase `publish with rocket`, treat it
-as explicit authorization to complete the current Kavrix release end to end:
+When the repository owner explicitly invokes `publish with rocket` or
+`release with rocket` as a release instruction, treat it as authorization to
+complete the current Kavrix release end to end. Unless the owner specifies a
+version, increment the current public CLI
+manifest version by one patch (`0.0.1`), verify that the npm version and matching
+tag are unused, and announce the exact target before proceeding. An occupied
+target requires clarification; it does not authorize another version.
 
 1. Confirm the intended package version and release scope.
 2. Run the complete local release gates and stop on any failure.

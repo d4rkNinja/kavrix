@@ -81,7 +81,8 @@ remains a command reference and is not loaded automatically.
   [0.2.47 — encrypted export and secret generator](release-notes-0.2.47.md);
   [0.2.48 — responsive TUI layout](release-notes-0.2.48.md);
   [0.2.49 — aligned TUI lists](release-notes-0.2.49.md);
-  [0.2.50 — repaired TUI commands and quiet startup](release-notes-0.2.50.md);
+  [0.2.50 — packaged startup fixes (unpublished candidate)](release-notes-0.2.50.md);
+  [0.2.51 — reliable TUI actions and process boundaries](release-notes-0.2.51.md);
   [0.2.43 — precise agent denials](release-notes-0.2.43.md);
   [0.2.42 — verified candidate with complete TUI fixes](release-notes-0.2.42.md);
   [0.2.41 — bounded TUI sessions and concurrent agent requests](release-notes-0.2.41.md);

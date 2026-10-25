@@ -244,6 +244,21 @@ function mount(
 }
 
 describe('terminal list shortcuts', () => {
+  it('accepts pasted palette filters and activates the displayed filtered row', async () => {
+    const actions: AppBackendAction[] = [];
+    const { input, output } = mount(snapshot(), actions);
+    await waitForFrame(output, 'kavrix /');
+    input.write('4');
+    await waitForFrame(output, 'credential-01');
+    input.write(':');
+    await waitForFrame(output, 'Actions');
+    input.write(`${ESC}[200~reveal${ESC}[201~`);
+    const frame = await waitForFrame(output, /filter\s+reveal/u);
+    expect(frame).toMatch(/>\s+r\s+reveal value/u);
+    await clickUntil(output, input, 'reveal value', 'REVEAL selected secret?');
+    expect(actions).toEqual([]);
+  });
+
   it('decodes common Home/End and paging sequences into bounded list movement', async () => {
     const actions: AppBackendAction[] = [];
     const { input, output } = mount(snapshot({ count: 100 }), actions, { rows: 24 });

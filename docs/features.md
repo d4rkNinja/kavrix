@@ -149,7 +149,8 @@ a live preview — your choice is saved, or set it per launch with
 
 Press `:` or `Ctrl+K` on any screen for the command palette: a grouped list of
 every action that screen can perform, with the key and a plain-language
-description. Type to filter, `1`–`9` to jump, `Enter` to run. Choosing an entry
+description. Type or paste to filter, arrows to move, `1`–`9` to run a visible
+row, or `Enter` to run the highlighted row. Choosing an entry
 dispatches the same keystroke as pressing the key. An action that cannot run yet
 stays listed and says why — "Unlock the vault first (u) to add a credential."
 — instead of silently doing nothing. The keys that behave the same everywhere

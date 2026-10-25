@@ -2,6 +2,7 @@ coverage
 dist
 node_modules
 pnpm-lock.yaml
+.tmp/
 
 # Local agent-skill installations (external docs, not product source)
 .agents/

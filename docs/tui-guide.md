@@ -61,8 +61,10 @@ Actions                                    (packages/tui/src/app/commands.ts)
     q      quit
 ```
 
-- `j`/`k` or the arrow keys move; `1`–`9` jump to a row; `Enter` runs it.
-- Typing filters by label, hint, or key — `reveal` narrows to one row.
+- Arrow keys move; `1`–`9` run the corresponding visible row; `Enter` runs the
+  highlighted row.
+- Typing or pasting filters by label, hint, or key — `reveal` narrows to one row.
+  Typed `j` and `k` are search text while the palette is open.
 - When an action cannot run, its row stays visible and shows why, for example
   "Unlock the vault first (u) to add a credential." A blocked action never
   silently does nothing.
@@ -93,8 +95,8 @@ These are advertised in the footer of every screen, not only Home:
 `/` starts a live name filter on the Credentials screen. Typing narrows the list
 on every keystroke — no search box opens, so nothing you type is ever invisible.
 `Backspace` edits, `Esc` clears the filter and restores every row, `Enter` opens
-the highlighted credential, and `j`/`k` plus the arrow keys move through the
-matches. While a filter is open every other printable key is filter text, so
+the highlighted credential, and the arrow keys move through the matches. While
+a filter is open every printable key, including `j` and `k`, is filter text, so
 screen shortcuts are suspended until you press `Esc`. `/` is a Credentials-only
 control; on any other screen it answers that search lives on Credentials (press 4) instead of opening a search box that screen could not use.
 

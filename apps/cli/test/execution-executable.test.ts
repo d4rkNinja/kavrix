@@ -1,5 +1,5 @@
 ﻿import { createHash } from 'node:crypto';
-import { chmod, mkdir, realpath, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { delimiter, join, sep } from 'node:path';
 
@@ -137,6 +137,52 @@ describe('resolveExecutable', () => {
     if (resolution.status !== 'resolved') return;
     expect(resolution.absolutePath).toBe(await realpath(tool));
   });
+
+  it('resolves relative PATH directories against the requested child cwd', async () => {
+    await mkdir(join(directory, 'tools'));
+    const tool = await writeExecutable(join('tools', 'relative-path-tool'));
+    const resolution = await resolveExecutable('relative-path-tool', {
+      cwd: directory,
+      pathValue: 'tools',
+    });
+    expect(resolution.status).toBe('resolved');
+    if (resolution.status !== 'resolved') return;
+    expect(resolution.absolutePath).toBe(await realpath(tool));
+  });
+
+  it.skipIf(process.platform === 'win32')(
+    'skips non-executable PATH candidates on POSIX',
+    async () => {
+      await mkdir(join(directory, 'first'));
+      await mkdir(join(directory, 'second'));
+      const blocked = await writeExecutable(join('first', 'permission-tool'));
+      await chmod(blocked, 0o644);
+      const tool = await writeExecutable(join('second', 'permission-tool'));
+      const resolution = await resolveExecutable('permission-tool', {
+        pathValue: [join(directory, 'first'), join(directory, 'second')].join(
+          delimiter,
+        ),
+      });
+      expect(resolution.status).toBe('resolved');
+      if (resolution.status !== 'resolved') return;
+      expect(resolution.absolutePath).toBe(await realpath(tool));
+      expect((await resolveExecutable(blocked)).status).toBe('unresolved');
+    },
+  );
+
+  it.skipIf(process.platform === 'win32')(
+    'refuses Windows scripts hidden behind a symlink with an executable name',
+    async () => {
+      const script = await writeExecutable('hidden.cmd');
+      const link = join(directory, 'alias.exe');
+      await symlink(script, link);
+      expect(await resolveExecutable(link, { platform: 'win32' })).toEqual({
+        status: 'refused',
+        request: link,
+        reason: 'windows-command-script',
+      });
+    },
+  );
 
   it('returns unresolved when PATH is empty or missing', async () => {
     await writeExecutable('orphan-tool');

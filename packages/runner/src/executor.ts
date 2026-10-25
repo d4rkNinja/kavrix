@@ -226,6 +226,11 @@ function spawnChild(
   environment: PreparedEnvironment,
   stdio: readonly ('ignore' | 'inherit' | 'pipe')[],
 ): ChildProcess {
+  // Directory validation yields to the event loop. Cancellation during that
+  // work must prevent execution, even if the initial signal check passed.
+  if (request.signal?.aborted === true) {
+    throw new RunnerError('RUNNER_ABORTED');
+  }
   try {
     return spawn(request.executable, argumentsList, {
       cwd,
@@ -309,7 +314,6 @@ export async function runSecureCommand(
       'pipe',
       'pipe',
     ]);
-    request.onSpawn?.(child);
     const stdout: CaptureState = { chunks: [], bytes: 0, truncated: false };
     const stderr: CaptureState = { chunks: [], bytes: 0, truncated: false };
 
@@ -319,6 +323,7 @@ export async function runSecureCommand(
       let timeout: NodeJS.Timeout | undefined;
       let forceKillTimeout: NodeJS.Timeout | undefined;
       let settled = false;
+      let observerFailed = false;
 
       const clearLifecycle = (): void => {
         if (timeout !== undefined) clearTimeout(timeout);
@@ -372,6 +377,12 @@ export async function runSecureCommand(
         if (settled) return;
         settled = true;
         clearLifecycle();
+        if (observerFailed) {
+          clearCapture(stdout);
+          clearCapture(stderr);
+          reject(new RunnerError('RUNNER_SPAWN_FAILED'));
+          return;
+        }
         const termination =
           requestedTermination ?? (signal === null ? 'exit' : 'signal');
         const outputTruncated = stdout.truncated || stderr.truncated;
@@ -393,6 +404,14 @@ export async function runSecureCommand(
       }
       request.signal?.addEventListener('abort', abort, { once: true });
       if (request.signal?.aborted === true) abort();
+      // Install supervision before exposing the handle. A callback may throw
+      // or cancel; never let it orphan a child or disclose its error message.
+      try {
+        request.onSpawn?.(child);
+      } catch {
+        observerFailed = true;
+        child.kill('SIGKILL');
+      }
     });
   } finally {
     environment.clear();
@@ -417,12 +436,12 @@ async function runStreamingChild(
   stdio: readonly ('ignore' | 'inherit' | 'pipe')[],
 ): Promise<SecureRunResult> {
   const child = spawnChild(request, argumentsList, cwd, environment, stdio);
-  request.onSpawn?.(child);
   return await new Promise<SecureRunResult>((resolve, reject) => {
     let requestedTermination: Exclude<RunTermination, 'exit' | 'signal'> | null = null;
     let timeout: NodeJS.Timeout | undefined;
     let forceKillTimeout: NodeJS.Timeout | undefined;
     let settled = false;
+    let observerFailed = false;
 
     const clearLifecycle = (): void => {
       if (timeout !== undefined) clearTimeout(timeout);
@@ -455,6 +474,10 @@ async function runStreamingChild(
       if (settled) return;
       settled = true;
       clearLifecycle();
+      if (observerFailed) {
+        reject(new RunnerError('RUNNER_SPAWN_FAILED'));
+        return;
+      }
       resolve({
         exitCode,
         signal,
@@ -470,5 +493,11 @@ async function runStreamingChild(
     }
     request.signal?.addEventListener('abort', abort, { once: true });
     if (request.signal?.aborted === true) abort();
+    try {
+      request.onSpawn?.(child);
+    } catch {
+      observerFailed = true;
+      child.kill('SIGKILL');
+    }
   });
 }

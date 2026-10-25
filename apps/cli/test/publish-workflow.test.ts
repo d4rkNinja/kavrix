@@ -43,4 +43,17 @@ describe('publication gates cannot be bypassed by a manual retry', () => {
       'node apps/cli/scripts/smoke-packed-package.js "$PACKAGE_ARCHIVE"',
     ]);
   });
+
+  it('inspects the current pinned Zod version in both notices and the SBOM', async () => {
+    const workspace = parse(
+      await readFile(new URL('../../../pnpm-workspace.yaml', import.meta.url), 'utf8'),
+    ) as { catalog: Record<string, string> };
+    const version = workspace.catalog['zod'];
+    expect(version).toMatch(/^\d+\.\d+\.\d+$/u);
+    const smoke = workflow.jobs.validate.steps.find((step) =>
+      step.name?.includes('Inspect and smoke-test'),
+    );
+    expect(smoke?.run).toContain(`'zod@${String(version)} (MIT)'`);
+    expect(smoke?.run).toContain(`'pkg:npm/zod@${String(version)}'`);
+  });
 });

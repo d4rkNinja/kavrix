@@ -200,6 +200,15 @@ describe('command palette catalogue', () => {
     expect(cleared.paletteFilter).toBe('them');
   });
 
+  it('keeps j and k in typed palette searches', () => {
+    for (const query of ['unlock', 'project']) {
+      let state = press(baseScreen('credentials'), { text: ':' });
+      for (const character of query) state = press(state, { text: character });
+      expect(state.paletteFilter).toBe(query);
+      expect(paletteEntries(state)).toEqual(filterCommands(allCommands(state), query));
+    }
+  });
+
   it('groups screen actions ahead of always-available ones', () => {
     const groups = commandGroups(baseScreen('policy'));
     expect(groups.length).toBe(2);
@@ -222,6 +231,7 @@ describe('command palette catalogue', () => {
       },
     );
     expect(frame).toMatch(/reveal value/u);
+    expect(frame).toMatch(/[>❯]\s+r\s+reveal value/u);
 
     const locked = press(baseScreen('credentials', false), { text: ':' });
     let lockedFiltered = locked;

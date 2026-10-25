@@ -6,6 +6,7 @@
 import { spawn } from 'node:child_process';
 
 const CLIPBOARD_CLEAR_MS = 30_000;
+const CLIPBOARD_COMMAND_TIMEOUT_MS = 5_000;
 const OSC_CLEAR_TIMERS = new Set<ReturnType<typeof setTimeout>>();
 
 export function clipboardCopyNotice(backend: 'osc52' | 'system'): string {
@@ -51,21 +52,39 @@ function runClipboardCommand(
     const child = spawn(executable, [...args], {
       stdio: ['pipe', 'ignore', 'ignore'],
       env: process.env,
+      shell: false,
+      windowsHide: true,
     });
     let settled = false;
+    const timeout = setTimeout(() => {
+      fail(new Error(`${executable} timed out`));
+    }, CLIPBOARD_COMMAND_TIMEOUT_MS);
     const fail = (error: Error): void => {
       if (settled) return;
       settled = true;
+      clearTimeout(timeout);
+      child.stdin.destroy();
+      child.kill('SIGKILL');
       reject(error);
     };
-    child.on('error', fail);
+    child.on('error', () => {
+      fail(new Error(`${executable} is unavailable`));
+    });
+    child.stdin.on('error', () => {
+      fail(new Error(`${executable} input failed`));
+    });
     child.on('close', (code) => {
       if (settled) return;
       settled = true;
+      clearTimeout(timeout);
       if (code === 0) resolve();
       else reject(new Error(`${executable} exited ${String(code ?? 'null')}`));
     });
-    child.stdin.end(stdin, 'utf8');
+    try {
+      child.stdin.end(stdin, 'utf8');
+    } catch {
+      fail(new Error(`${executable} input failed`));
+    }
   });
 }
 
@@ -83,7 +102,7 @@ async function trySystemClipboard(value: string): Promise<void> {
         '-NoProfile',
         '-NonInteractive',
         '-Command',
-        'Set-Clipboard -Value ([Console]::In.ReadToEnd())',
+        '[Console]::InputEncoding = [System.Text.UTF8Encoding]::new($false); Set-Clipboard -Value ([Console]::In.ReadToEnd())',
       ],
       value,
     );

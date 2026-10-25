@@ -306,7 +306,12 @@ export function KavrixApp({
     const active = stateRef.current;
     const typingIntoFilter =
       active.filtering && active.overlay === 'none' && active.screen === 'credentials';
-    if (!typingIntoFilter && !active.overlay.startsWith('input-')) return;
+    if (
+      !typingIntoFilter &&
+      active.overlay !== 'command-palette' &&
+      !active.overlay.startsWith('input-')
+    )
+      return;
     const cleaned = sanitizePasteText(text);
     if (cleaned.length === 0) return;
     dispatch({ type: 'key', key: { text: cleaned }, nowMs: now() });

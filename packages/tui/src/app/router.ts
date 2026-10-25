@@ -555,7 +555,7 @@ function keyTransition(
       paletteIndex: 0,
       paletteFilter: '',
       message:
-        'Actions on this screen — j/k move, Enter runs, type to filter, Esc closes.',
+        'Actions on this screen — arrows move, Enter runs, type to filter, Esc closes.',
     });
   }
 
@@ -1952,13 +1952,13 @@ function paletteKey(
       paletteIndex: 0,
     });
   }
-  if (key.name === 'up' || key.text === 'k') {
+  if (key.name === 'up') {
     return unchanged({
       ...state,
       paletteIndex: Math.max(0, state.paletteIndex - 1),
     });
   }
-  if (key.name === 'down' || key.text === 'j') {
+  if (key.name === 'down') {
     const last = Math.max(0, paletteCommands(state).length - 1);
     return unchanged({
       ...state,
@@ -2053,8 +2053,8 @@ export const PALETTE_PAGE_ROWS = 12;
  *
  * The list narrows on every keystroke, so nothing is hidden behind a modal:
  * what is typed is what is being matched, and it stays visible while it is
- * edited. Escape clears, Enter opens the highlighted row, and j/k plus the
- * arrow keys keep the list-navigation meaning they have everywhere else.
+ * edited. Escape clears, Enter opens the highlighted row, and arrow keys move
+ * the list. Every printable character belongs to the name being searched.
  */
 function credentialFilterKey(state: AppRouterState, key: AppKey): AppRouterTransition {
   if (key.name === 'escape') {
@@ -2112,9 +2112,7 @@ function credentialFilterKey(state: AppRouterState, key: AppKey): AppRouterTrans
       filtering: false,
     });
   }
-  // j/k and the arrow keys stay list movement, exactly as in the command
-  // palette; every other printable character is filter text.
-  if (key.name !== undefined || key.text === 'j' || key.text === 'k') {
+  if (key.name !== undefined) {
     return unchanged(moveCredentialFilterCursor(state, key));
   }
   return appendCredentialFilter(state, key.text);
@@ -2142,7 +2140,7 @@ function enterCredentialFilter(state: AppRouterState): AppRouterTransition {
     ...state,
     filtering: true,
     listIndex: 0,
-    message: 'Filter credential names: type to narrow, j/k move, Esc clears.',
+    message: 'Filter credential names: type to narrow, arrows move, Esc clears.',
   });
 }
 

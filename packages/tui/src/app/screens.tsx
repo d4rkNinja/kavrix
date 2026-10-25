@@ -29,7 +29,7 @@ import {
   type AppOverlay,
   type AppRouterState,
 } from './router.js';
-import { commandGroups, allCommands } from './commands.js';
+import { commandGroups } from './commands.js';
 import {
   accentColor,
   CHROME,
@@ -140,9 +140,7 @@ export function CommandPaletteRows({
   const { rows, start } = paletteWindow(state);
   const cursor = state.paletteIndex;
   const filter = safe(state.paletteFilter, ascii);
-  const commandIndexes = new Map(
-    allCommands(state).map((entry, index) => [entry.id, index]),
-  );
+  const commandIndexes = new Map(rows.map((entry, index) => [entry.id, start + index]));
   const visibleIds = new Set(rows.map((entry) => entry.id));
 
   return (
@@ -180,6 +178,14 @@ export function CommandPaletteRows({
             ) : null}
             {groupRows.map((entry) => {
               const index = commandIndexes.get(entry.id) ?? -1;
+              const activate = (): void => {
+                interaction.dispatch({
+                  type: 'select-row',
+                  index: Math.max(0, index),
+                  activate: true,
+                  nowMs: 0,
+                });
+              };
               const blocked = entry.blocked(state);
               const selected = index === cursor;
               const accent: AppAccent =
@@ -195,17 +201,7 @@ export function CommandPaletteRows({
                   >
                     {selected ? pointerGlyph(ascii) : ' '}
                   </Text>
-                  <ClickTarget
-                    enabled={interaction.enabled}
-                    onClick={() => {
-                      interaction.dispatch({
-                        type: 'select-row',
-                        index: Math.max(0, index),
-                        activate: true,
-                        nowMs: 0,
-                      });
-                    }}
-                  >
+                  <ClickTarget enabled={interaction.enabled} onClick={activate}>
                     <KeyChip
                       keyLabel={entry.keyLabel}
                       hint={entry.hint}
@@ -213,6 +209,7 @@ export function CommandPaletteRows({
                       keyAccent={accent}
                       disabled={blocked !== null}
                       active={selected}
+                      onPress={activate}
                     />
                   </ClickTarget>
                   <Text
@@ -316,7 +313,7 @@ function overlayCopy(
         title: 'Actions',
         body: '(palette list)',
         accent: CHROME.accent,
-        hint: 'j/k or 1-9 move · Enter runs · type to filter · Esc closes',
+        hint: 'Arrows move · 1-9 runs row · Enter runs · type to filter · Esc closes',
       };
     case 'input-run':
       return {
@@ -882,7 +879,7 @@ export function footerChips(state: AppRouterState): readonly FooterChip[] {
       if (state.filtering) {
         return [
           { keyLabel: 'Enter', hint: 'detail', accent: key },
-          { keyLabel: 'j/k', hint: 'move', accent: key },
+          { keyLabel: 'Up/Down', hint: 'move', accent: key },
           { keyLabel: 'Backspace', hint: 'edit', accent: key },
           { keyLabel: 'Esc', hint: 'clear filter', accent: CHROME.heading },
           { keyLabel: 'Tab', hint: 'screens', accent: key },

@@ -1,6 +1,6 @@
 ﻿import { createHash } from 'node:crypto';
-import { createReadStream } from 'node:fs';
-import { lstat, realpath, stat } from 'node:fs/promises';
+import { constants, createReadStream } from 'node:fs';
+import { access, lstat, realpath, stat } from 'node:fs/promises';
 import { basename, delimiter, isAbsolute, join, resolve } from 'node:path';
 const MAX_EXECUTABLE_BYTES = 512 * 1024 * 1024;
 const WINDOWS_SCRIPT_EXTENSIONS = new Set(['.bat', '.cmd', '.com']);
@@ -59,6 +59,10 @@ export async function resolveExecutable(
     return { status: 'unresolved', request };
   }
 
+  if (windowsScriptExtension(canonicalPath, platform)) {
+    return { status: 'refused', request, reason: 'windows-command-script' };
+  }
+
   const digest = await sha256File(canonicalPath).catch(() => undefined);
   if (digest === undefined) return { status: 'unresolved', request };
 
@@ -80,24 +84,25 @@ async function locate(
   const platform = options.platform ?? process.platform;
   if (isAbsolute(request) || /[\\/]/u.test(request)) {
     const direct = resolve(cwd, request);
-    return (await isRegularFile(direct)) ? direct : undefined;
+    return (await isExecutableFile(direct, platform)) ? direct : undefined;
   }
   const directories = searchDirectories(options.pathValue ?? searchPathEnvironment());
   if (platform === 'win32') {
     const extensions = pathExtEntries(options.pathExtValue ?? DEFAULT_PATHEXT);
-    for (const directory of directories) {
+    for (const entry of directories) {
+      const directory = resolve(cwd, entry);
       for (const extension of extensions) {
         const candidate = join(directory, `${request}${extension}`);
-        if (await isRegularFile(candidate)) return candidate;
+        if (await isExecutableFile(candidate, platform)) return candidate;
       }
       const plain = join(directory, request);
-      if (await isRegularFile(plain)) return plain;
+      if (await isExecutableFile(plain, platform)) return plain;
     }
     return undefined;
   }
   for (const directory of directories) {
-    const candidate = join(directory, request);
-    if (await isRegularFile(candidate)) return candidate;
+    const candidate = resolve(cwd, directory, request);
+    if (await isExecutableFile(candidate, platform)) return candidate;
   }
   return undefined;
 }
@@ -151,10 +156,15 @@ function extensionOf(value: string): string {
   return index <= 0 ? '' : value.slice(index).toLowerCase();
 }
 
-async function isRegularFile(candidate: string): Promise<boolean> {
+async function isExecutableFile(
+  candidate: string,
+  platform: NodeJS.Platform,
+): Promise<boolean> {
   try {
     const metadata = await stat(candidate);
-    return metadata.isFile();
+    if (!metadata.isFile()) return false;
+    if (platform !== 'win32') await access(candidate, constants.X_OK);
+    return true;
   } catch {
     return false;
   }
