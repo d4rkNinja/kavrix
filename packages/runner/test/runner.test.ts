@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import type { ChildProcess } from 'node:child_process';
 
 import {
   exitCodeForCliError,
@@ -470,6 +471,62 @@ describe('runSecureCommand', () => {
     expect(result.stdout).toBeUndefined();
     expect(result.stderr).toBeUndefined();
   });
+});
+
+describe('runner setup lifecycle', () => {
+  it.each(['capture', 'pipe', 'inherit'] as const)(
+    'does not spawn after cancellation during %s setup',
+    async (mode) => {
+      const controller = new AbortController();
+      let spawned = false;
+      const pending = runSecureCommand(
+        nodeRequest('process.exit(0)', {
+          signal: controller.signal,
+          output: { mode },
+          onSpawn() {
+            spawned = true;
+          },
+        }),
+      );
+      controller.abort();
+
+      await expect(pending).rejects.toMatchObject({ code: 'RUNNER_ABORTED' });
+      expect(spawned).toBe(false);
+    },
+  );
+
+  it.each(['capture', 'pipe', 'inherit'] as const)(
+    'reaps the child and sanitizes a throwing observer in %s mode',
+    async (mode) => {
+      const canary = 'observer-error-private-canary';
+      let child: ChildProcess | undefined;
+      let closed = false;
+      let close: Promise<void> | undefined;
+      try {
+        await expectRunnerError(
+          nodeRequest('setTimeout(() => {}, 2000)', {
+            output: { mode },
+            onSpawn(spawnedChild) {
+              child = spawnedChild;
+              close = new Promise<void>((resolve) => {
+                spawnedChild.once('close', () => {
+                  closed = true;
+                  resolve();
+                });
+              });
+              throw new Error(canary);
+            },
+          }),
+          'RUNNER_SPAWN_FAILED',
+          canary,
+        );
+        expect(closed).toBe(true);
+      } finally {
+        child?.kill('SIGKILL');
+        await close;
+      }
+    },
+  );
 });
 
 describe('request and environment validation', () => {

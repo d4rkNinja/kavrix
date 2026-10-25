@@ -255,7 +255,7 @@ async function main() {
     );
     for (const [name, version] of [
       ['commander', '15.0.0'],
-      ['zod', '4.4.3'],
+      ['zod', '4.6.6'],
       ['mongodb', '7.5.0'],
       ['@mongodb-js/saslprep', '1.4.13'],
       ['@types/webidl-conversions', '7.0.3'],

@@ -4,6 +4,13 @@ import { EventEmitter } from 'node:events';
 const clipboardProcess = vi.hoisted(() => ({ spawn: vi.fn() }));
 vi.mock('node:child_process', () => ({ spawn: clipboardProcess.spawn }));
 
+function clipboardChild(end = vi.fn()) {
+  return Object.assign(new EventEmitter(), {
+    stdin: Object.assign(new EventEmitter(), { end, destroy: vi.fn() }),
+    kill: vi.fn(),
+  });
+}
+
 import { clipboardCopyNotice, copySecretToClipboard } from '../src/tui-clipboard.js';
 
 describe('copySecretToClipboard', () => {
@@ -30,7 +37,7 @@ describe('copySecretToClipboard', () => {
       Object.defineProperty(process, 'platform', { configurable: true, value: os });
       const end = vi.fn();
       clipboardProcess.spawn.mockImplementation(() => {
-        const child = Object.assign(new EventEmitter(), { stdin: { end } });
+        const child = clipboardChild(end);
         void Promise.resolve().then(() => child.emit('close', 0));
         return child;
       });
@@ -44,6 +51,10 @@ describe('copySecretToClipboard', () => {
       );
       expect(JSON.stringify(args)).not.toContain(canary);
       expect(options).toMatchObject({ stdio: ['pipe', 'ignore', 'ignore'] });
+      if (os === 'win32') {
+        expect(args.join(' ')).toContain('[Console]::InputEncoding');
+        expect(args.join(' ')).toContain('UTF8Encoding');
+      }
       expect(stdout.write).not.toHaveBeenCalled();
     },
   );
@@ -53,7 +64,7 @@ describe('copySecretToClipboard', () => {
     const end = vi.fn();
     let attempt = 0;
     clipboardProcess.spawn.mockImplementation(() => {
-      const child = Object.assign(new EventEmitter(), { stdin: { end } });
+      const child = clipboardChild(end);
       attempt += 1;
       const result = attempt;
       void Promise.resolve().then(() => {
@@ -77,7 +88,7 @@ describe('copySecretToClipboard', () => {
   it('reports exhausted backends and handles a null exit code', async () => {
     Object.defineProperty(process, 'platform', { configurable: true, value: 'linux' });
     clipboardProcess.spawn.mockImplementation(() => {
-      const child = Object.assign(new EventEmitter(), { stdin: { end: vi.fn() } });
+      const child = clipboardChild();
       void Promise.resolve().then(() => child.emit('close', null));
       return child;
     });
@@ -91,7 +102,7 @@ describe('copySecretToClipboard', () => {
   it('falls back when terminal clipboard output is unavailable and settles only once', async () => {
     Object.defineProperty(process, 'platform', { configurable: true, value: 'darwin' });
     clipboardProcess.spawn.mockImplementation(() => {
-      const child = Object.assign(new EventEmitter(), { stdin: { end: vi.fn() } });
+      const child = clipboardChild();
       void Promise.resolve().then(() => {
         child.emit('close', 0);
         child.emit('error', new Error('late process error'));
@@ -124,6 +135,47 @@ describe('copySecretToClipboard', () => {
     });
     await vi.advanceTimersByTimeAsync(20);
     expect(write).toHaveBeenCalledTimes(3);
+  });
+
+  it('handles a broken stdin pipe and tries the next Linux backend', async () => {
+    Object.defineProperty(process, 'platform', { configurable: true, value: 'linux' });
+    const children: ReturnType<typeof clipboardChild>[] = [];
+    clipboardProcess.spawn.mockImplementation(() => {
+      const child = clipboardChild();
+      children.push(child);
+      void Promise.resolve().then(() => {
+        if (children.length === 1) {
+          child.stdin.emit('error', new Error('EPIPE-private-canary'));
+          child.emit('close', 1);
+        } else child.emit('close', 0);
+      });
+      return child;
+    });
+    await expect(
+      copySecretToClipboard('copy-canary', {
+        stdout: { isTTY: false } as NodeJS.WriteStream,
+      }),
+    ).resolves.toBe('system');
+    expect(children[0]?.kill).toHaveBeenCalledWith('SIGKILL');
+    expect(clipboardProcess.spawn.mock.calls.map(([name]) => name)).toEqual([
+      'wl-copy',
+      'xclip',
+    ]);
+  });
+
+  it('kills a hung clipboard helper and rejects within a bounded time', async () => {
+    vi.useFakeTimers();
+    Object.defineProperty(process, 'platform', { configurable: true, value: 'darwin' });
+    const child = clipboardChild();
+    clipboardProcess.spawn.mockReturnValue(child);
+    const pending = expect(
+      copySecretToClipboard('hung-helper-canary', {
+        stdout: { isTTY: false } as NodeJS.WriteStream,
+      }),
+    ).rejects.toThrow('pbcopy timed out');
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(child.kill).toHaveBeenCalledWith('SIGKILL');
+    await pending;
   });
 
   it('writes an OSC 52 sequence to stdout on TTY and schedules a clear', async () => {

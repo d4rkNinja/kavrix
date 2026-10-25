@@ -121,7 +121,7 @@ describe('npm package contract', () => {
       (sbom.components ?? []).map((component) => [component.name, component.version]),
     );
     expect(versions.get('commander')).toBe('15.0.0');
-    expect(versions.get('zod')).toBe('4.4.3');
+    expect(versions.get('zod')).toBe('4.6.6');
     expect(versions.get('mongodb')).toBe('7.5.0');
     expect(versions.get('@mongodb-js/saslprep')).toBe('1.4.13');
     expect(versions.get('@types/webidl-conversions')).toBe('7.0.3');
