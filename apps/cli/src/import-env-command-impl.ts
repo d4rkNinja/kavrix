@@ -1,11 +1,13 @@
 import {
   closeSync,
   fstatSync,
+  fsyncSync,
   openSync,
   readFileSync,
   unlinkSync,
   writeSync,
 } from 'node:fs';
+import { randomFillSync } from 'node:crypto';
 
 import {
   type DatabaseFlatCommandOptions,
@@ -15,7 +17,8 @@ import {
   withDatabaseFlatVault,
 } from './database-flat-commands.js';
 import { LocalCliError } from './cli-error.js';
-import { LocalSecretInput } from './local-secrets.js';
+import { readVisibleLine } from './local-secrets.js';
+import { sanitizeTerminalText } from './terminal-presentation.js';
 
 const MAX_ENV_FILE_BYTES = 1024 * 1024;
 const MAX_ENV_ENTRIES = 500;
@@ -63,8 +66,10 @@ export function validateImportedName(name: string): void {
     name === '.' ||
     name === '..'
   ) {
+    // Names can come from a hostile archive or .env document; the offending
+    // value must never reach the terminal with its control bytes intact.
     throw new LocalCliError(
-      `Credential name "${name}" is invalid: names must be 1-256 characters without whitespace or control characters, must not start or end with "/", contain "//", or be a dot segment.`,
+      `Credential name "${sanitizeTerminalText(name)}" is invalid: names must be 1-256 characters without whitespace or control characters, must not start or end with "/", contain "//", or be a dot segment.`,
     );
   }
 }
@@ -140,9 +145,10 @@ export function readEnvFile(path: string): string {
 }
 
 /**
- * Shreds then unlinks the source file: one random overwrite pass of the
- * full length, flush, truncate, close, unlink. Best effort in JavaScript;
- * callers must treat this as hygiene, not a guarantee.
+ * Overwrites the source file in place with one pass of cryptographically
+ * random bytes (randomFillSync) sized to the file, flushes the overwrite to
+ * disk with fsync, closes, then unlinks. Best effort in JavaScript; callers
+ * must treat this as hygiene, not a guarantee.
  */
 export function shredAndUnlink(path: string): void {
   let descriptor: number | undefined;
@@ -150,16 +156,14 @@ export function shredAndUnlink(path: string): void {
     descriptor = openSync(path, 'r+');
     const size = fstatSync(descriptor).size;
     if (size > 0) {
-      const noise = new Uint8Array(size);
-      for (let offset = 0; offset < noise.length; offset += 65536) {
-        const end = Math.min(offset + 65536, noise.length);
-        for (let index = offset; index < end; index += 1) {
-          noise[index] = Math.floor(Math.random() * 256);
-        }
-        writeSync(descriptor, noise, offset, end - offset, offset);
+      const noise = Buffer.alloc(size);
+      randomFillSync(noise);
+      let offset = 0;
+      while (offset < size) {
+        offset += writeSync(descriptor, noise, offset, size - offset, offset);
       }
     }
-    writeSync(descriptor, Buffer.alloc(0), 0, 0, 0);
+    fsyncSync(descriptor);
     closeSync(descriptor);
     descriptor = undefined;
     unlinkSync(path);
@@ -177,10 +181,12 @@ export function shredAndUnlink(path: string): void {
 
 async function confirmSourceDeletion(path: string): Promise<boolean> {
   if (!process.stdin.isTTY) return false;
-  process.stderr.write(`Delete the imported source file ${path}? (y/N) `);
-  const input = new LocalSecretInput(process.stdin, process.stderr);
-  const [answer] = await input.read(['label'], false);
-  return answer?.trim().toLowerCase() === 'y';
+  const answer = await readVisibleLine(
+    process.stdin,
+    process.stderr,
+    `Delete the imported source file ${sanitizeTerminalText(path)}? (y/N) `,
+  );
+  return answer.trim().toLowerCase() === 'y';
 }
 
 /** Routing options shared by every database-vault transfer command. */

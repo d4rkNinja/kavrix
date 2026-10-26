@@ -374,7 +374,8 @@ export async function withDatabaseFlatVault(
   try {
     await operation(handle.session, handle.vaultId, handle.profile);
   } finally {
-    await handle.session.close();
+    // A failed close must never mask the operation's own error or exit code.
+    await handle.session.close().catch(() => undefined);
   }
 }
 
@@ -429,12 +430,11 @@ async function matchExplicitPathsToAmbientBoundProfile(
   const overrides = options.routingOverrides ?? {};
   if (overrides.datastore !== undefined) return null;
   if (overrides.dataFile === undefined && overrides.keyFile === undefined) return null;
-  let registry: Awaited<ReturnType<typeof DatastoreProfileRegistry.openIfPresent>>;
-  try {
-    registry = await DatastoreProfileRegistry.openIfPresent(registryOptions);
-  } catch {
-    return null;
-  }
+  // `openIfPresent` returns null when the registry is genuinely absent; a
+  // corrupt or unsafe registry throws a reviewed DatastoreProfileError that
+  // must fail closed instead of silently degrading to legacy standalone
+  // routing.
+  const registry = await DatastoreProfileRegistry.openIfPresent(registryOptions);
   if (registry === null) return null;
   const current = await registry.current();
   if (current?.databaseId === undefined) return null;
@@ -462,12 +462,9 @@ async function rejectConflictingAmbientBoundProfile(
   registryOptions: Readonly<{ configDirectory?: string }>,
 ): Promise<void> {
   const overrides = options.routingOverrides ?? {};
-  let registry: Awaited<ReturnType<typeof DatastoreProfileRegistry.openIfPresent>>;
-  try {
-    registry = await DatastoreProfileRegistry.openIfPresent(registryOptions);
-  } catch {
-    return;
-  }
+  // A corrupt or unsafe registry must fail closed with its reviewed error
+  // instead of being treated as "no ambient profile".
+  const registry = await DatastoreProfileRegistry.openIfPresent(registryOptions);
   if (registry === null) return;
   const current = await registry.current();
   if (current?.databaseId === undefined) return;
@@ -503,15 +500,12 @@ export async function resolveLegacyFileProfileRouting<
     options.profileConfigDir === undefined
       ? {}
       : { configDirectory: options.profileConfigDir };
-  let registry: Awaited<ReturnType<typeof DatastoreProfileRegistry.openIfPresent>>;
-  try {
-    registry =
-      options.profile === undefined
-        ? await DatastoreProfileRegistry.openIfPresent(registryOptions)
-        : await DatastoreProfileRegistry.open(registryOptions);
-  } catch {
-    return options;
-  }
+  // A corrupt or unsafe registry must fail closed with its reviewed error
+  // instead of silently routing the command as legacy standalone.
+  const registry =
+    options.profile === undefined
+      ? await DatastoreProfileRegistry.openIfPresent(registryOptions)
+      : await DatastoreProfileRegistry.open(registryOptions);
   if (registry === null) return options;
   let profile: DatastoreProfile | null;
   try {

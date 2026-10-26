@@ -1,4 +1,4 @@
-﻿import { realpath, stat } from 'node:fs/promises';
+import { realpath, stat } from 'node:fs/promises';
 import { isAbsolute } from 'node:path';
 import { spawn, type ChildProcess } from 'node:child_process';
 
@@ -36,9 +36,10 @@ function assertRequest(request: SecureRunRequest): readonly string[] {
     typeof request.executable !== 'string' ||
     request.executable.length === 0 ||
     request.executable.includes('\0') ||
+    typeof request.cwd !== 'string' ||
+    request.cwd.includes('\0') ||
     !Array.isArray(argumentInput) ||
-    argumentInput.length > MAX_ARGUMENTS ||
-    request.cwd.includes('\0')
+    argumentInput.length > MAX_ARGUMENTS
   ) {
     throw new RunnerError('RUNNER_INVALID_REQUEST');
   }
@@ -237,11 +238,111 @@ function spawnChild(
       env: environment.childEnvironment,
       shell: false,
       windowsHide: true,
+      // POSIX: the child leads its own process group, so tree termination can
+      // signal every descendant (see requestTreeTermination). Windows is
+      // excluded because console-group assignment there would change
+      // terminal signal delivery, and Windows tree termination uses taskkill.
+      detached: process.platform !== 'win32',
       stdio: [...stdio],
     });
   } catch {
     throw new RunnerError('RUNNER_SPAWN_FAILED');
   }
+}
+
+const IS_POSIX = process.platform !== 'win32';
+
+/**
+ * Signals the POSIX process group led by the child. Detached spawning makes
+ * the child a group leader, so the negative pid reaches every descendant.
+ * ESRCH only reports that the group is already gone.
+ */
+function killChildProcessGroup(child: ChildProcess, signal: NodeJS.Signals): boolean {
+  const pid = child.pid;
+  if (pid === undefined) return false;
+  try {
+    process.kill(-pid, signal);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Requests the first-phase termination of the child's whole tree. POSIX
+ * signals the process group with the requested signal (catchable, honoring
+ * the grace period) and falls back to the direct child when the group no
+ * longer exists. Windows has no signalable group here and its direct-child
+ * signal mapping (TerminateProcess) would land within the same tick and turn
+ * a later sweep into a no-op against an exited pid, so the tree sweep is the
+ * termination request itself: taskkill /T /F walks the parent chain while the
+ * tree is still alive and force-terminates descendants and the direct child.
+ */
+function requestTreeTermination(child: ChildProcess, signal: NodeJS.Signals): void {
+  if (IS_POSIX) {
+    if (!killChildProcessGroup(child, signal)) {
+      child.kill(signal);
+    }
+    return;
+  }
+  const pid = child.pid;
+  if (pid === undefined) {
+    // The spawn itself failed; keep the harmless direct kill.
+    child.kill(signal);
+    return;
+  }
+  try {
+    const taskkill = spawn('taskkill', ['/pid', String(pid), '/t', '/f'], {
+      shell: false,
+      windowsHide: true,
+      stdio: 'ignore',
+    });
+    taskkill.once('error', () => {
+      // Absorbed by contract: a sweep that cannot run (taskkill missing, or a
+      // tree that already exited) is the desired end state, not an error. The
+      // grace escalation still force-kills the direct child if it survived.
+    });
+  } catch {
+    // spawn rejects only on invalid arguments; guard the timer callback so a
+    // termination request can never throw into the event loop. The grace
+    // escalation below remains the terminator of last resort.
+  }
+}
+
+/**
+ * Grace-period escalation. POSIX signals the group with SIGKILL, falling back
+ * to the direct child when the group is gone. Windows ends the direct child
+ * through the SIGKILL-to-TerminateProcess mapping; the tree was already swept
+ * when termination was requested, and a descendant that escaped that sweep is
+ * out of reach for a pid-scoped kill (a second taskkill would see the direct
+ * child die first and become a no-op for the rest of the tree).
+ */
+function forceTreeTermination(child: ChildProcess): void {
+  if (IS_POSIX && killChildProcessGroup(child, 'SIGKILL')) {
+    return;
+  }
+  child.kill('SIGKILL');
+}
+
+/**
+ * Attributes a child close to this runner's own termination request. A direct
+ * child.kill reports the requested signal on every platform, but the Windows
+ * tree sweep is an external taskkill: the close event then carries the raw
+ * TerminateProcess artifact (exit code 1, no signal) instead of the signal a
+ * caller would observe for the same requested SIGTERM-equivalent kill. When
+ * this runner requested termination and the child closed with that artifact,
+ * report the requested signal so requested terminations keep one observable
+ * shape across platforms and across direct and tree kills. A child that
+ * exited on its own with another code keeps its real exit code.
+ */
+function attributeRequestedClose(
+  exitCode: number | null,
+  signal: NodeJS.Signals | null,
+): { exitCode: number | null; signal: NodeJS.Signals | null } {
+  if (IS_POSIX || signal !== null || exitCode !== 1) {
+    return { exitCode, signal };
+  }
+  return { exitCode: null, signal: 'SIGTERM' };
 }
 
 /**
@@ -258,9 +359,23 @@ function spawnChild(
  * copies a fixed set of shell variables (including PATH, SYSTEMROOT, TEMP, and
  * the USER* family) into every child regardless of the environment supplied
  * here, so a child there always observes more names than were mapped or
- * inherited; none of them carry a released value. Termination also reaches only
- * the spawned process, so a child that has already forked keeps its descendants
- * running past a timeout, an abort, or an output-limit kill.
+ * inherited; none of them carry a released value.
+ *
+ * Termination reaches the spawned tree, not only the direct child. POSIX
+ * children lead their own process group (spawned detached), so a timeout, an
+ * abort, or an output-limit kill signals every group member, honoring the
+ * grace period, with the direct child as the fallback once the group is gone.
+ * Because of that group, terminal-generated signals such as Ctrl+C are not
+ * delivered to the child implicitly; callers that need them must forward
+ * signals through the onSpawn handle. Windows has no signalable group here:
+ * the termination request is a taskkill /T /F sweep over the live parent
+ * chain, and the grace-timeout escalation ends a surviving direct child
+ * through TerminateProcess. Requested terminations are reported with the
+ * requested signal on every platform, whatever mechanism landed the kill, so
+ * callers observe one result shape. A descendant that escapes both (for
+ * example one re-parented between the sweep and the escalation) can still
+ * outlive the run; tree termination is best-effort process hygiene, not a
+ * sandbox.
  */
 export async function runSecureCommand(
   request: SecureRunRequest,
@@ -334,10 +449,10 @@ export async function runSecureCommand(
       const terminate = (reason: Exclude<RunTermination, 'exit' | 'signal'>): void => {
         if (requestedTermination !== null || settled) return;
         requestedTermination = reason;
-        child.kill('SIGTERM');
+        requestTreeTermination(child, 'SIGTERM');
         const grace = request.terminationGraceMs ?? DEFAULT_TERMINATION_GRACE_MS;
         forceKillTimeout = setTimeout(() => {
-          if (!settled) child.kill('SIGKILL');
+          if (!settled) forceTreeTermination(child);
         }, grace);
       };
 
@@ -383,13 +498,17 @@ export async function runSecureCommand(
           reject(new RunnerError('RUNNER_SPAWN_FAILED'));
           return;
         }
+        const observed =
+          requestedTermination === null
+            ? { exitCode, signal }
+            : attributeRequestedClose(exitCode, signal);
         const termination =
-          requestedTermination ?? (signal === null ? 'exit' : 'signal');
+          requestedTermination ?? (observed.signal === null ? 'exit' : 'signal');
         const outputTruncated = stdout.truncated || stderr.truncated;
         const boundaryMayTruncate = outputTruncated || termination !== 'exit';
         resolve({
-          exitCode,
-          signal,
+          exitCode: observed.exitCode,
+          signal: observed.signal,
           termination,
           outputTruncated,
           stdout: finishCapture(stdout, environment.secretBuffers, boundaryMayTruncate),
@@ -410,7 +529,7 @@ export async function runSecureCommand(
         request.onSpawn?.(child);
       } catch {
         observerFailed = true;
-        child.kill('SIGKILL');
+        forceTreeTermination(child);
       }
     });
   } finally {
@@ -419,14 +538,11 @@ export async function runSecureCommand(
 }
 
 /**
- * Runs one child with this process's own stdio streams. Nothing is captured,
- * buffered, or redacted; the child writes directly to the terminal and reads
- * directly from the inherited input stream when requested.
- */
-/**
- * Runs one child whose streams are handed through directly (inherit) or to the
- * caller via onSpawn (pipe). Nothing is captured, buffered, or redacted in
- * these modes; timeouts and aborts still terminate the child.
+ * Runs one child whose streams are handed through directly (inherit) or to
+ * the caller via onSpawn (pipe). Nothing is captured, buffered, or redacted
+ * in these modes; timeouts and aborts still terminate the tree. With
+ * `input: 'pipe'` the caller owns the child's stdin: it must be written and
+ * ended through the onSpawn handle, since nothing closes it automatically.
  */
 async function runStreamingChild(
   request: SecureRunRequest,
@@ -452,10 +568,10 @@ async function runStreamingChild(
     const terminate = (reason: Exclude<RunTermination, 'exit' | 'signal'>): void => {
       if (requestedTermination !== null || settled) return;
       requestedTermination = reason;
-      child.kill('SIGTERM');
+      requestTreeTermination(child, 'SIGTERM');
       const grace = request.terminationGraceMs ?? DEFAULT_TERMINATION_GRACE_MS;
       forceKillTimeout = setTimeout(() => {
-        if (!settled) child.kill('SIGKILL');
+        if (!settled) forceTreeTermination(child);
       }, grace);
     };
 
@@ -478,10 +594,15 @@ async function runStreamingChild(
         reject(new RunnerError('RUNNER_SPAWN_FAILED'));
         return;
       }
+      const observed =
+        requestedTermination === null
+          ? { exitCode, signal }
+          : attributeRequestedClose(exitCode, signal);
       resolve({
-        exitCode,
-        signal,
-        termination: requestedTermination ?? (signal === null ? 'exit' : 'signal'),
+        exitCode: observed.exitCode,
+        signal: observed.signal,
+        termination:
+          requestedTermination ?? (observed.signal === null ? 'exit' : 'signal'),
         outputTruncated: false,
       });
     });
@@ -497,7 +618,7 @@ async function runStreamingChild(
       request.onSpawn?.(child);
     } catch {
       observerFailed = true;
-      child.kill('SIGKILL');
+      forceTreeTermination(child);
     }
   });
 }

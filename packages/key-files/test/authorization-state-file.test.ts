@@ -123,6 +123,28 @@ describe('sealed authorization state file', () => {
     });
   });
 
+  it('classifies a tampered envelope in a transition by error class, not message text', async () => {
+    const path = authorizationStatePath(keyFile);
+    const key = deriveAuthorizationStateKey(rootKey(), scope);
+    await initializeAuthorizationStateFile(path, key, scope, emptyState());
+    const fs = await import('node:fs/promises');
+    const parsed = JSON.parse(await fs.readFile(path, 'utf8')) as Record<
+      string,
+      string
+    >;
+    const ciphertext = Buffer.from(parsed['ciphertext'], 'base64url');
+    ciphertext[0] ^= 0xff;
+    parsed['ciphertext'] = ciphertext.toString('base64url');
+    await fs.writeFile(path, JSON.stringify(parsed), 'utf8');
+
+    await expect(
+      transitionAuthorizationStateFile(path, key, scope, (current) => ({
+        nextState: current,
+        result: undefined,
+      })),
+    ).rejects.toMatchObject({ code: 'INTEGRITY_FAILURE' });
+  });
+
   it('refuses a sidecar that belongs to a different scope', async () => {
     const path = authorizationStatePath(keyFile);
     const otherScope: AuthorizationScope = {

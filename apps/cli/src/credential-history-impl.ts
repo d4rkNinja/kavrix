@@ -116,17 +116,62 @@ export function projectCredentialHistory(
     limit: number;
   }>,
 ): CredentialHistoryProjection {
+  const base = projectItemHistory(payload, request);
+  const limit = normalizeListLimit(request.limit);
+  return {
+    context: base.context,
+    service: base.service,
+    item: base.item,
+    history: base.entries.slice(0, limit),
+    truncated: base.entries.length > limit,
+  };
+}
+
+/**
+ * Full projection for exact entry resolution. The list ceiling bounds display
+ * output only: `credential history show <version>` must resolve the requested
+ * entry against every collected record, so a version beyond the 500-record
+ * list limit still resolves instead of reporting a missing credential.
+ */
+export function projectCredentialHistoryForResolve(
+  payload: StructuredVaultPayload,
+  request: Readonly<{
+    context: string;
+    service: string;
+    item: string;
+  }>,
+): CredentialHistoryProjection {
+  const base = projectItemHistory(payload, request);
+  return {
+    context: base.context,
+    service: base.service,
+    item: base.item,
+    history: base.entries,
+    truncated: false,
+  };
+}
+
+function projectItemHistory(
+  payload: StructuredVaultPayload,
+  request: Readonly<{
+    context: string;
+    service: string;
+    item: string;
+  }>,
+): Readonly<{
+  context: string;
+  service: string;
+  item: string;
+  entries: readonly CredentialHistoryEntry[];
+}> {
   const context = resolveContextOrMissing(payload, request.context);
   const group = resolveServiceOrMissing(payload, context.id, request.service);
   const item = resolveItemOrMissing(payload, group.id, request.item);
-  const limit = normalizeListLimit(request.limit);
-  const entries = collectHistoryEntries(payload, item.id, group.id, payload.vaultId);
   return {
     context: context.name,
     service: group.name,
     item: item.title,
-    history: entries.slice(0, limit),
-    truncated: entries.length > limit,
+    entries: collectHistoryEntries(payload, item.id, group.id, payload.vaultId),
   };
 }
 
@@ -204,11 +249,12 @@ export async function credentialHistoryShow(
   await withDatabaseFlatVault(flat, values, async (session, vaultId) => {
     let result: Record<string, unknown> | undefined;
     const document = await session.inspectStructuredVault(vaultId, (payload) => {
-      const projection = projectCredentialHistory(payload, {
+      // Resolution uses the full collected entry set: the list ceiling bounds
+      // display only, so an entry beyond it still resolves with `show`.
+      const projection = projectCredentialHistoryForResolve(payload, {
         context: contextName,
         service: serviceName,
         item: title,
-        limit: CREDENTIAL_HISTORY_MAX_LIST_LIMIT,
       });
       const entry = resolveCredentialHistoryEntry(projection.history, version);
       result = {

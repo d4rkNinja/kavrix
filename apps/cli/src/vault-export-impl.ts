@@ -1,4 +1,5 @@
 import {
+  AuthenticationError,
   openVaultExportArchive,
   parseVaultExportArchive,
   sealVaultExportArchive,
@@ -162,7 +163,11 @@ export async function handleImportArchive(
   let entries: readonly VaultExportEntry[];
   try {
     entries = (await openVaultExportArchive(archive, passphrase)).entries;
-  } catch {
+  } catch (error) {
+    // Only a genuine authentication failure (wrong passphrase or a tampered
+    // archive) may surface as the authentication exit; any other error keeps
+    // its own reviewed classification instead of masquerading as user error.
+    if (!(error instanceof AuthenticationError)) throw error;
     throw authenticationFailure(
       'Export archive authentication failed. Check the archive passphrase and the file integrity.',
     );

@@ -16,6 +16,7 @@ import {
 } from './theme.js';
 import { defaultFileProfilePaths, defaultMongoProfilePaths } from './paths.js';
 import { sanitizeTerminalText } from '../terminal-text.js';
+import { MOTION } from '../motion.js';
 import { HOME_ENTRIES, HOME_NAV_ORDER } from './navigation.js';
 
 export interface AppKey {
@@ -311,7 +312,9 @@ export function transitionAppRouter(
             action.revealedSecret === undefined ? state.pendingRevealName : null,
           revealedName: acceptReveal ? state.pendingRevealName : state.revealedName,
           revealedValue: acceptReveal ? action.revealedSecret : state.revealedValue,
-          revealedUntilMs: acceptReveal ? action.nowMs + 15_000 : state.revealedUntilMs,
+          revealedUntilMs: acceptReveal
+            ? action.nowMs + MOTION.revealWindowMs
+            : state.revealedUntilMs,
           nowMs: acceptReveal ? action.nowMs : state.nowMs,
           sessionReady: true,
         }),
@@ -2422,7 +2425,11 @@ function removeLast(value: string): string {
 
 /**
  * Normalize pasted text for overlay fields.
- * Strips bracketed-paste markers and trailing CR/LF so paste never acts as Enter.
+ *
+ * Escape sequences are removed whole through the display sanitizer — dropping
+ * only the ESC byte would leave payloads such as `[31m` behind — and
+ * bracketed-paste markers plus all CR/LF are stripped so paste never acts as
+ * Enter. Remaining C0/C1 controls are dropped; printable text survives.
  */
 export function sanitizePasteText(raw: string): string {
   let text = raw;
@@ -2430,8 +2437,10 @@ export function sanitizePasteText(raw: string): string {
   text = text.replace(/\x1b\[200~/gu, '').replace(/\x1b\[201~/gu, '');
   // eslint-disable-next-line no-control-regex -- strip OSC sequences terminated by BEL/ST
   text = text.replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/gu, '');
-  text = text.replace(/\r/gu, '');
-  text = text.replace(/^\n+/u, '').replace(/\n+$/u, '');
+  // Newlines are removed before the display sanitizer, which would otherwise
+  // render them as spaces instead of dropping them.
+  text = text.replace(/\r/gu, '').replace(/\n/gu, '');
+  text = sanitizeTerminalText(text);
   // Drop remaining C0/C1 controls (keep printable + spaces).
   text = text.replace(/\p{C}/gu, '');
   return text;

@@ -349,6 +349,7 @@ describe('database owner command composition', () => {
     );
     const session = {
       databaseId: 'db_remove_clear',
+      getVault: vi.fn(async () => Object.freeze({})),
       deleteVault: vi.fn(async () => undefined),
       listVaults: vi.fn(() => [
         { id: 'vault_other', label: 'other', createdAt: '2026-01-01T00:00:00.000Z' },
@@ -362,6 +363,7 @@ describe('database owner command composition', () => {
     } as never);
     vi.spyOn(LocalSecretInput.prototype, 'read').mockResolvedValue([
       'owner-passphrase-secret-canary',
+      'REMOVE vault_selected',
     ]);
     vi.spyOn(DatabaseSession, 'openWithSecret').mockImplementation(async (options) => {
       await options.readPassphrase();
@@ -412,6 +414,7 @@ describe('database owner command composition', () => {
     );
     const session = {
       databaseId: 'db_remove_reselect',
+      getVault: vi.fn(async () => Object.freeze({})),
       deleteVault: vi.fn(async () => undefined),
       listVaults: vi.fn(() => [
         { id: 'vault_kept', label: 'kept', createdAt: '2026-01-01T00:00:00.000Z' },
@@ -424,6 +427,7 @@ describe('database owner command composition', () => {
     } as never);
     vi.spyOn(LocalSecretInput.prototype, 'read').mockResolvedValue([
       'owner-passphrase-secret-canary',
+      'REMOVE vault_selected',
     ]);
     vi.spyOn(DatabaseSession, 'openWithSecret').mockImplementation(async (options) => {
       await options.readPassphrase();
@@ -454,6 +458,102 @@ describe('database owner command composition', () => {
     expect(await fixture.registry.get('remove-reselect' as never)).toMatchObject({
       defaultVaultId: 'vault_kept',
     });
+  });
+
+  it('refuses vault removal when the confirmation frame does not match', async () => {
+    const fixture = await fileProfileFixture('remove-gate', 'db_remove_gate', true);
+    const session = {
+      databaseId: 'db_remove_gate',
+      getVault: vi.fn(async () => Object.freeze({})),
+      deleteVault: vi.fn(async () => undefined),
+      listVaults: vi.fn(() => [
+        { id: 'vault_kept', label: 'kept', createdAt: '2026-01-01T00:00:00.000Z' },
+      ]),
+      close: vi.fn(async () => undefined),
+    };
+    vi.spyOn(FileEncryptedDatabaseStore, 'validatePath').mockResolvedValue();
+    vi.spyOn(FileEncryptedDatabaseStore, 'open').mockResolvedValue({
+      close: vi.fn(async () => undefined),
+    } as never);
+    vi.spyOn(LocalSecretInput.prototype, 'read').mockResolvedValue([
+      'owner-passphrase-secret-canary',
+      'REMOVE vault_other',
+    ]);
+    vi.spyOn(DatabaseSession, 'openWithSecret').mockImplementation(async (options) => {
+      await options.readPassphrase();
+      return session as never;
+    });
+
+    await expect(
+      buildLocalCli().parseAsync([
+        'node',
+        'kavrix',
+        'db',
+        'vault',
+        'remove',
+        'vault_selected',
+        '--profile-config-dir',
+        fixture.directory,
+        '--secrets-stdin',
+        '--json',
+      ]),
+    ).rejects.toThrow('Vault removal was cancelled.');
+    expect(session.deleteVault).not.toHaveBeenCalled();
+  });
+
+  it('fails vault removal closed without a terminal confirmation or stdin frame', async () => {
+    const fixture = await fileProfileFixture('remove-closed', 'db_remove_closed', true);
+    const session = {
+      databaseId: 'db_remove_closed',
+      getVault: vi.fn(async () => Object.freeze({})),
+      deleteVault: vi.fn(async () => undefined),
+      listVaults: vi.fn(() => []),
+      close: vi.fn(async () => undefined),
+    };
+    vi.spyOn(FileEncryptedDatabaseStore, 'validatePath').mockResolvedValue();
+    vi.spyOn(FileEncryptedDatabaseStore, 'open').mockResolvedValue({
+      close: vi.fn(async () => undefined),
+    } as never);
+    // No --secrets-stdin: the unlock is mocked, but stdin is not a terminal,
+    // so the visible confirmation gate must fail closed.
+    vi.spyOn(LocalSecretInput.prototype, 'read').mockResolvedValue([
+      'owner-passphrase-secret-canary',
+    ]);
+    vi.spyOn(DatabaseSession, 'openWithSecret').mockImplementation(async (options) => {
+      await options.readPassphrase();
+      return session as never;
+    });
+
+    await expect(
+      buildLocalCli().parseAsync([
+        'node',
+        'kavrix',
+        'db',
+        'vault',
+        'remove',
+        'vault_selected',
+        '--profile-config-dir',
+        fixture.directory,
+        '--json',
+      ]),
+    ).rejects.toThrow(/Vault removal confirmation requires a terminal/u);
+    expect(session.deleteVault).not.toHaveBeenCalled();
+  });
+
+  it('rejects a malformed profile id with the reviewed input error', async () => {
+    const fixture = await fileProfileFixture('profile-shape', 'db_profile_shape', true);
+    await expect(
+      buildLocalCli().parseAsync([
+        'node',
+        'kavrix',
+        'db',
+        'status',
+        '--profile',
+        'not a profile id',
+        '--profile-config-dir',
+        fixture.directory,
+      ]),
+    ).rejects.toThrow('Profile ID is invalid.');
   });
 
   it('rejects selection when the authenticated profile is replaced before publication', async () => {

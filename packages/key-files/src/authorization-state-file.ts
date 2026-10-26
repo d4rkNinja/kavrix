@@ -294,7 +294,7 @@ export async function transitionAuthorizationStateFile<T>(
       throw new AuthorizationStateFileError('INVALID_FORMAT');
     }
     if (error instanceof AuthorizationStateFileError) throw error;
-    if (error instanceof Error && error.message.includes('Authentication failed')) {
+    if (error instanceof AuthenticationError) {
       throw new AuthorizationStateFileError('INTEGRITY_FAILURE');
     }
     throw mapReadError(error);

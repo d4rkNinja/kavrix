@@ -1423,3 +1423,102 @@ describe('CliTuiSession mutations (mocked spawn)', () => {
     }
   });
 });
+
+describe('TUI insecure-transport opt-in', () => {
+  const dirs: string[] = [];
+
+  afterEach(async () => {
+    await Promise.all(
+      dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })),
+    );
+  });
+
+  async function dispatchMongoProfileCreation(
+    allowInsecureTransport: boolean | undefined,
+  ): Promise<Array<{ args: readonly string[] }>> {
+    const dir = await mkdtemp(join(tmpdir(), 'kavrix-tui-transport-'));
+    dirs.push(dir);
+    const calls: Array<{ args: readonly string[] }> = [];
+    const remoteUrl = 'mongodb://mongo.internal.example:27017/credentials';
+    const passphrase = 'correct horse battery staple';
+    const backend = createCliTuiBackend({
+      profileConfigDir: dir,
+      ascii: true,
+      ...(allowInsecureTransport === true ? { allowInsecureTransport: true } : {}),
+      commandRunner: async (args) => {
+        calls.push({ args: [...args] });
+        if (args[0] === 'db' && args[1] === 'profile' && args[2] === 'add') {
+          const registry = await DatastoreProfileRegistry.open({
+            configDirectory: dir,
+          });
+          await registry.add({
+            id: profileIdSchema.parse('mongo'),
+            datastore: 'mongodb',
+            database: 'credentials',
+            databaseCollection: 'kavrix_databases',
+            vaultCollection: 'kavrix_vaults',
+            keyFile: join(dir, 'owner.key'),
+          });
+          return '';
+        }
+        if (args[0] === 'db' && args[1] === 'profile' && args[2] === 'use') {
+          const registry = await DatastoreProfileRegistry.open({
+            configDirectory: dir,
+          });
+          await registry.use(profileIdSchema.parse('mongo'));
+          return '';
+        }
+        if (args[0] === 'db' && args[1] === 'init') {
+          const registry = await DatastoreProfileRegistry.open({
+            configDirectory: dir,
+          });
+          await registry.bindDatabaseIdForInitialization(
+            profileIdSchema.parse('mongo'),
+            databaseIdSchema.parse('db_mongo'),
+          );
+          return '';
+        }
+        if (args.includes('vault') && args.includes('create')) {
+          return JSON.stringify({ vaultId: 'vault_mongo' });
+        }
+        if (args.includes('vault') && args.includes('use')) return '';
+        return JSON.stringify({ names: [] });
+      },
+    });
+    const result = await backend.dispatch({
+      type: 'create-mongodb-profile',
+      profileId: 'mongo',
+      database: 'credentials',
+      keyFile: join(dir, 'owner.key'),
+      databaseUrl: remoteUrl,
+      passphrase,
+      databaseLabel: 'mongo-db',
+      vaultLabel: 'mongo-vault',
+    });
+    expect(result.snapshot.noticeTone).not.toBe('error');
+    expect(calls.length).toBeGreaterThan(0);
+    return calls;
+  }
+
+  it('never auto-enables non-TLS transport for a remote MongoDB host', async () => {
+    const calls = await dispatchMongoProfileCreation(undefined);
+    const spawnKindCalls = calls.filter((call) =>
+      call.args.includes('--database-url-stdin'),
+    );
+    expect(spawnKindCalls.length).toBeGreaterThan(0);
+    for (const call of calls) {
+      expect(call.args).not.toContain('--allow-insecure-transport');
+    }
+  });
+
+  it('forwards --allow-insecure-transport only when the operator opted in', async () => {
+    const calls = await dispatchMongoProfileCreation(true);
+    const spawnKindCalls = calls.filter((call) =>
+      call.args.includes('--database-url-stdin'),
+    );
+    expect(spawnKindCalls.length).toBeGreaterThan(0);
+    for (const call of spawnKindCalls) {
+      expect(call.args).toContain('--allow-insecure-transport');
+    }
+  });
+});

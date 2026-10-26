@@ -1,6 +1,10 @@
 import { PassThrough } from 'node:stream';
 
-import { fieldDefinitionSchema, groupPayloadSchema } from '@kavrix/schemas';
+import {
+  fieldDefinitionSchema,
+  groupPayloadSchema,
+  itemPayloadSchema,
+} from '@kavrix/schemas';
 import { createElement } from 'react';
 import { render, renderToString } from 'ink';
 import { describe, expect, it, vi } from 'vitest';
@@ -75,6 +79,104 @@ function deferred(): Readonly<{
     promise,
     resolve: () => resolvePromise?.(),
   };
+}
+
+/**
+ * Non-sensitive repeatable fixture so the editor rows render their values and
+ * a Shift+Up/Down reorder is observable in the frame and in the saved draft.
+ */
+const reorderTimestamp = '2026-08-10T00:00:00.000Z';
+const reorderField = fieldDefinitionSchema.parse({
+  ...usernameField,
+  id: 'field.reorder',
+  stableKey: 'reorder_items',
+  label: 'Reorder items',
+  type: 'text',
+  repeatable: true,
+  sortOrder: 0,
+});
+const reorderGroup = groupPayloadSchema.parse({
+  ...group,
+  id: 'group.reorder',
+  template: { ...group.template, id: 'template.reorder', fields: [reorderField] },
+});
+const reorderItem = itemPayloadSchema.parse({
+  ...item,
+  id: 'item.reorder',
+  templateId: reorderGroup.template.id,
+  templateValues: [
+    {
+      fieldId: reorderField.id,
+      stableKey: reorderField.stableKey,
+      value: {
+        version: 1,
+        state: 'present',
+        content: {
+          cardinality: 'multiple',
+          elements: ['alpha', 'beta'].map((value, index) => ({
+            id: `reorder.${String(index)}`,
+            value: { kind: 'text' as const, value },
+            lifecycle: { version: 1, status: 'available' as const },
+          })),
+        },
+      },
+      updatedAt: reorderTimestamp,
+    },
+  ],
+});
+
+function mountReorderFixture(): Readonly<{
+  instance: ReturnType<typeof render>;
+  listItems: ReturnType<typeof vi.fn<TuiUseCasePort['listItems']>>;
+  saveItem: ReturnType<typeof vi.fn<TuiUseCasePort['saveItem']>>;
+  lock: ReturnType<typeof vi.fn<TuiUseCasePort['lock']>>;
+  stdin: TestInput;
+  chunks: Buffer[];
+}> {
+  const stdout = new TestOutput();
+  const stdin = new TestInput();
+  const chunks: Buffer[] = [];
+  stdout.on('data', (chunk: Buffer) => chunks.push(chunk));
+  const saveItem = vi
+    .fn<TuiUseCasePort['saveItem']>()
+    .mockImplementation((draft) => Promise.resolve({ status: 'saved', item: draft }));
+  const lock = vi.fn<TuiUseCasePort['lock']>().mockResolvedValue();
+  const listItems = vi
+    .fn<TuiUseCasePort['listItems']>()
+    .mockResolvedValue([reorderItem]);
+  const useCases: TuiUseCasePort = {
+    listGroups: vi.fn<TuiUseCasePort['listGroups']>().mockResolvedValue([reorderGroup]),
+    listItems,
+    copyField: vi.fn<TuiUseCasePort['copyField']>().mockResolvedValue(),
+    authorizeReveal: vi.fn<TuiUseCasePort['authorizeReveal']>().mockResolvedValue(),
+    saveItem,
+    lock,
+  };
+  const instance = render(createElement(VaultTui, { useCases, now: () => 1_000 }), {
+    stdout: stdout as unknown as NodeJS.WriteStream,
+    stdin: stdin as unknown as NodeJS.ReadStream,
+    interactive: true,
+    exitOnCtrlC: false,
+    patchConsole: false,
+    maxFps: 1_000,
+  });
+  return { instance, listItems, saveItem, lock, stdin, chunks };
+}
+
+function savedElementValues(
+  saveItem: ReturnType<typeof mountReorderFixture>['saveItem'],
+): string[] {
+  const item = saveItem.mock.calls[0]?.[0];
+  const stored = item?.templateValues.find(
+    (candidate) => candidate.fieldId === reorderField.id,
+  );
+  const value = stored?.value;
+  if (value?.state !== 'present' || value.content.cardinality !== 'multiple') {
+    return [];
+  }
+  return value.content.elements.map((element) =>
+    element.value.kind === 'text' ? element.value.value : '<non-text>',
+  );
 }
 
 describe('Ink components', () => {
@@ -533,5 +635,63 @@ describe('Ink components', () => {
     await vi.waitFor(() => {
       expect(lock).toHaveBeenCalledOnce();
     });
+  });
+
+  it('reorders repeatable elements with Shift+Up in the editor', async () => {
+    const { instance, listItems, saveItem, lock, stdin, chunks } =
+      mountReorderFixture();
+    await vi.waitFor(() => {
+      expect(listItems).toHaveBeenCalledWith(reorderGroup.id, expect.any(AbortSignal));
+    });
+    await instance.waitUntilRenderFlush();
+
+    for (const key of ['\t', '\t', 'e']) {
+      stdin.write(key);
+      await instance.waitUntilRenderFlush();
+    }
+    stdin.write('\u001b[B'); // Down: select the second element.
+    await instance.waitUntilRenderFlush();
+    chunks.length = 0;
+    stdin.write('\u001b[1;2A'); // Shift+Up: reorder the selected element up.
+    await instance.waitUntilRenderFlush();
+    expect(Buffer.concat(chunks).toString('utf8')).toContain('1: beta');
+
+    stdin.write('\r'); // Commit the reordered elements.
+    await instance.waitUntilRenderFlush();
+    stdin.write('s'); // Save the draft.
+    await vi.waitFor(() => {
+      expect(saveItem).toHaveBeenCalled();
+    });
+    expect(savedElementValues(saveItem)).toEqual(['beta', 'alpha']);
+
+    stdin.write('l');
+    await instance.waitUntilExit();
+    expect(lock).toHaveBeenCalledOnce();
+  });
+
+  it('reorders repeatable elements with Shift+Down in the editor', async () => {
+    const { instance, listItems, saveItem, lock, stdin } = mountReorderFixture();
+    await vi.waitFor(() => {
+      expect(listItems).toHaveBeenCalledWith(reorderGroup.id, expect.any(AbortSignal));
+    });
+    await instance.waitUntilRenderFlush();
+
+    for (const key of ['\t', '\t', 'e']) {
+      stdin.write(key);
+      await instance.waitUntilRenderFlush();
+    }
+    stdin.write('\u001b[1;2B'); // Shift+Down: reorder the selected element down.
+    await instance.waitUntilRenderFlush();
+    stdin.write('\r'); // Commit the reordered elements.
+    await instance.waitUntilRenderFlush();
+    stdin.write('s'); // Save the draft.
+    await vi.waitFor(() => {
+      expect(saveItem).toHaveBeenCalled();
+    });
+    expect(savedElementValues(saveItem)).toEqual(['beta', 'alpha']);
+
+    stdin.write('l');
+    await instance.waitUntilExit();
+    expect(lock).toHaveBeenCalledOnce();
   });
 });

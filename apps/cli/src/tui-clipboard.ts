@@ -7,11 +7,25 @@ import { spawn } from 'node:child_process';
 
 const CLIPBOARD_CLEAR_MS = 30_000;
 const CLIPBOARD_COMMAND_TIMEOUT_MS = 5_000;
-const OSC_CLEAR_TIMERS = new Set<ReturnType<typeof setTimeout>>();
+// Terminals routinely cap OSC 52 payloads (many well below this bound) and
+// silently drop or truncate oversized sequences. Above this base64-payload
+// bound the copy is refused with a clear error instead of writing a sequence
+// the terminal may only partially apply, which would leave a truncated secret
+// resident with no way to clear it.
+export const MAX_OSC52_PAYLOAD_CHARS = 64 * 1024;
+
+/**
+ * The one still-resident terminal copy. A newer copy evicts it immediately
+ * (clear written before the new payload) so at most one secret is ever
+ * resident, no matter how quickly copies follow each other.
+ */
+let pendingOsc52Clear:
+  | Readonly<{ stdout: NodeJS.WriteStream; timer: ReturnType<typeof setTimeout> }>
+  | undefined;
 
 export function clipboardCopyNotice(backend: 'osc52' | 'system'): string {
   return backend === 'osc52'
-    ? 'Copied via terminal clipboard; best-effort clear scheduled in ~30s while Kavrix stays open.'
+    ? 'Copied via terminal clipboard escape; best-effort clear scheduled in ~30s while Kavrix stays open.'
     : 'Copied via system clipboard; automatic clearing is unavailable. Clear it manually after use.';
 }
 
@@ -26,13 +40,22 @@ export function clearOsc52Clipboard(stdout: NodeJS.WriteStream): void {
   stdout.write('\x1b]52;c;\x07');
 }
 
-function scheduleOsc52Clear(stdout: NodeJS.WriteStream, clearAfterMs: number): void {
-  for (const timer of OSC_CLEAR_TIMERS) {
-    clearTimeout(timer);
+/** Evicts the previous terminal copy immediately, before a new one lands. */
+function clearPendingOsc52Copy(): void {
+  const pending = pendingOsc52Clear;
+  pendingOsc52Clear = undefined;
+  if (pending === undefined) return;
+  clearTimeout(pending.timer);
+  try {
+    clearOsc52Clipboard(pending.stdout);
+  } catch {
+    // Best-effort clear; ignore closed streams.
   }
-  OSC_CLEAR_TIMERS.clear();
+}
+
+function scheduleOsc52Clear(stdout: NodeJS.WriteStream, clearAfterMs: number): void {
   const timer = setTimeout(() => {
-    OSC_CLEAR_TIMERS.delete(timer);
+    if (pendingOsc52Clear?.timer === timer) pendingOsc52Clear = undefined;
     try {
       clearOsc52Clipboard(stdout);
     } catch {
@@ -40,7 +63,7 @@ function scheduleOsc52Clear(stdout: NodeJS.WriteStream, clearAfterMs: number): v
     }
   }, clearAfterMs);
   timer.unref();
-  OSC_CLEAR_TIMERS.add(timer);
+  pendingOsc52Clear = { stdout, timer };
 }
 
 function runClipboardCommand(
@@ -132,7 +155,8 @@ async function trySystemClipboard(value: string): Promise<void> {
 
 /**
  * Copy an already-authorized secret. Prefer OSC 52; fall back to OS clipboard
- * CLIs. Schedules a best-effort OSC 52 clear after ~30s when OSC is used.
+ * CLIs. A still-resident previous terminal copy is cleared immediately before
+ * the new payload, and a best-effort OSC 52 clear is scheduled after ~30s.
  */
 export async function copySecretToClipboard(
   value: string,
@@ -144,8 +168,18 @@ export async function copySecretToClipboard(
   const clearAfterMs = options.clearAfterMs ?? CLIPBOARD_CLEAR_MS;
   const stdout = options.stdout ?? process.stdout;
   if (stdout.isTTY) {
+    // The cap is checked outside the fallback try: an oversized value must
+    // fail honestly with its own diagnosis instead of silently degrading to a
+    // system backend (or to a truncated escape sequence).
+    const payload = Buffer.from(value, 'utf8').toString('base64');
+    if (payload.length > MAX_OSC52_PAYLOAD_CHARS) {
+      throw new Error(
+        `The value exceeds the terminal clipboard escape size cap (${String(MAX_OSC52_PAYLOAD_CHARS)} base64 characters); refusing to write a sequence terminals may truncate.`,
+      );
+    }
     try {
-      writeOsc52Clipboard(stdout, value);
+      clearPendingOsc52Copy();
+      stdout.write(`\x1b]52;c;${payload}\x07`);
       scheduleOsc52Clear(stdout, clearAfterMs);
       return 'osc52';
     } catch {

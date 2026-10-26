@@ -71,7 +71,7 @@ vi.mock('mongodb', () => {
 });
 
 import { MongoEncryptedDatabaseStore } from '../src/mongo-encrypted-database.js';
-import { EncryptedDatabaseStoreError } from '../src/encrypted-database-store.js';
+import { EncryptedDatabaseStoreError } from '@kavrix/core';
 import {
   databaseDocument,
   databaseRevision,
@@ -83,6 +83,18 @@ import {
 
 const URI = 'mongodb://localhost/kavrix';
 const DATABASE_NAME = 'kavrix_test';
+
+/**
+ * A `database.command` fake that answers the capability preflight's `hello`
+ * with a replica-set reply and everything else (ping) with a success document.
+ */
+function commandWithCapableHello(): typeof mongodb.database.command {
+  return vi.fn(async (command: Record<string, unknown>) =>
+    command['hello'] === 1
+      ? { ok: 1, setName: 'kavrix-test-rs', isWritablePrimary: true }
+      : { ok: 1 },
+  );
+}
 
 describe('MongoEncryptedDatabaseStore', () => {
   beforeEach(() => {
@@ -258,7 +270,7 @@ describe('MongoEncryptedDatabaseStore', () => {
     mongodb.client.db.mockReturnValue({
       ...mongodb.database,
       ...mongodb.database,
-      command: vi.fn(),
+      command: commandWithCapableHello(),
       collection: vi.fn((name: string) =>
         name === 'kavrix_databases'
           ? mongodb.databaseCollection
@@ -406,7 +418,7 @@ describe('MongoEncryptedDatabaseStore', () => {
     mongodb.client.db.mockReturnValue({
       ...mongodb.database,
       ...mongodb.database,
-      command: vi.fn(),
+      command: commandWithCapableHello(),
       collection: vi.fn((name: string) =>
         name === 'kavrix_databases'
           ? mongodb.databaseCollection
@@ -423,6 +435,203 @@ describe('MongoEncryptedDatabaseStore', () => {
     await expect(store.ping()).rejects.toEqual(
       new EncryptedDatabaseStoreError('closed'),
     );
+  });
+
+  it('proves transaction capability with a replica-set hello reply before publishing', async () => {
+    const database = databaseDocument(
+      makeDatabaseId('db_01JMONGOCAPABLE'),
+      databaseRevision(0),
+    );
+    const command = commandWithCapableHello();
+    mongodb.client.db.mockReturnValue({
+      ...mongodb.database,
+      ...mongodb.database,
+      command,
+      collection: vi.fn((name: string) =>
+        name === 'kavrix_databases'
+          ? mongodb.databaseCollection
+          : mongodb.vaultCollection,
+      ),
+    });
+    const store = await MongoEncryptedDatabaseStore.connect(URI, DATABASE_NAME);
+
+    await expect(store.createDatabase(database)).resolves.toBeUndefined();
+    expect(command).toHaveBeenCalledWith({ hello: 1 });
+    expect(mongodb.databaseCollection.insertOne).toHaveBeenCalledOnce();
+    await store.close();
+  });
+
+  it('fails closed on hello replies that cannot prove transaction capability', async () => {
+    const rows = [
+      { name: 'standalone', reply: { ok: 1, isWritablePrimary: true } },
+      { name: 'error reply', reply: { ok: 0, errmsg: 'not authorized', code: 13 } },
+      { name: 'malformed reply', reply: {} },
+    ] as const;
+    for (const row of rows) {
+      const database = databaseDocument(
+        makeDatabaseId(`db_01JCAPABLE${row.name.length}`),
+        databaseRevision(0),
+      );
+      mongodb.client.db.mockReturnValue({
+        ...mongodb.database,
+        ...mongodb.database,
+        command: vi.fn(async (command: Record<string, unknown>) =>
+          command['hello'] === 1 ? row.reply : { ok: 1 },
+        ),
+        collection: vi.fn((name: string) =>
+          name === 'kavrix_databases'
+            ? mongodb.databaseCollection
+            : mongodb.vaultCollection,
+        ),
+      });
+      const store = await MongoEncryptedDatabaseStore.connect(URI, DATABASE_NAME);
+
+      await expect(store.createDatabase(database)).rejects.toEqual(
+        new EncryptedDatabaseStoreError('unsupported'),
+      );
+      expect(mongodb.databaseCollection.insertOne).not.toHaveBeenCalled();
+      await store.close();
+    }
+  });
+
+  it('maps a thrown ok: 0 hello to unsupported and a reply-less failure to connection', async () => {
+    const database = databaseDocument(
+      makeDatabaseId('db_01JMONGOHELLO'),
+      databaseRevision(0),
+    );
+    mongodb.client.db.mockReturnValue({
+      ...mongodb.database,
+      ...mongodb.database,
+      // mongodb 7.5 surfaces an `ok: 0` reply as a thrown server error that
+      // carries the reply document's fields.
+      command: vi.fn(async (command: Record<string, unknown>) => {
+        if (command['hello'] === 1) {
+          throw Object.assign(new Error('Command hello requires auth'), {
+            ok: 0,
+            code: 13,
+            codeName: 'Unauthorized',
+          });
+        }
+        return { ok: 1 };
+      }),
+      collection: vi.fn((name: string) =>
+        name === 'kavrix_databases'
+          ? mongodb.databaseCollection
+          : mongodb.vaultCollection,
+      ),
+    });
+    const unauthorized = await MongoEncryptedDatabaseStore.connect(URI, DATABASE_NAME);
+
+    await expect(unauthorized.createDatabase(database)).rejects.toEqual(
+      new EncryptedDatabaseStoreError('unsupported'),
+    );
+    await unauthorized.close();
+
+    mongodb.client.db.mockReturnValue({
+      ...mongodb.database,
+      ...mongodb.database,
+      command: vi.fn(async (command: Record<string, unknown>) => {
+        if (command['hello'] === 1) throw new Error('connection destroyed');
+        return { ok: 1 };
+      }),
+      collection: vi.fn((name: string) =>
+        name === 'kavrix_databases'
+          ? mongodb.databaseCollection
+          : mongodb.vaultCollection,
+      ),
+    });
+    const unreachable = await MongoEncryptedDatabaseStore.connect(URI, DATABASE_NAME);
+
+    await expect(unreachable.createDatabase(database)).rejects.toEqual(
+      new EncryptedDatabaseStoreError('connection'),
+    );
+    await unreachable.close();
+  });
+
+  it('treats a lost create-collection race as success and confirms the collection', async () => {
+    const namespaceExists = Object.assign(
+      new Error('Collection already exists. NS: kavrix_test.kavrix_databases'),
+      { ok: 0, code: 48, codeName: 'NamespaceExists' },
+    );
+    const createCollection = vi.fn(async () => {
+      throw namespaceExists;
+    });
+    const listCollections = vi
+      .fn()
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ name: 'kavrix_databases' }]);
+    const databasesCollection = {
+      ...mongodb.databaseCollection,
+      collectionName: 'kavrix_databases',
+    };
+    const vaultsCollection = {
+      ...mongodb.vaultCollection,
+      collectionName: 'kavrix_vaults',
+    };
+    mongodb.client.db.mockReturnValue({
+      ...mongodb.database,
+      ...mongodb.database,
+      command: vi.fn(),
+      listCollections,
+      createCollection,
+      collection: vi.fn((name: string) =>
+        name === 'kavrix_databases' ? databasesCollection : vaultsCollection,
+      ),
+    });
+
+    const store = await MongoEncryptedDatabaseStore.connect(URI, DATABASE_NAME);
+
+    expect(createCollection).toHaveBeenCalledOnce();
+    expect(createCollection).toHaveBeenCalledWith('kavrix_databases');
+    expect(listCollections).toHaveBeenCalledWith({ name: 'kavrix_databases' });
+    expect(listCollections).toHaveBeenCalledTimes(2);
+    await store.close();
+  });
+
+  it('fails closed when a lost create-collection race cannot be confirmed', async () => {
+    const rows = [
+      {
+        name: 'collection still absent',
+        createCollection: vi.fn(async (): Promise<undefined> => {
+          throw Object.assign(new Error('lost race'), {
+            code: 48,
+            codeName: 'NamespaceExists',
+          });
+        }),
+        listCollections: vi.fn(async () => []),
+      },
+      {
+        name: 'unrelated create failure',
+        createCollection: vi.fn(async (): Promise<undefined> => {
+          throw Object.assign(new Error('not authorized'), {
+            ok: 0,
+            code: 13,
+            codeName: 'Unauthorized',
+          });
+        }),
+        listCollections: vi.fn(async () => []),
+      },
+    ] as const;
+    for (const row of rows) {
+      mongodb.client.db.mockReturnValue({
+        ...mongodb.database,
+        ...mongodb.database,
+        command: vi.fn(),
+        listCollections: row.listCollections,
+        createCollection: row.createCollection,
+        collection: vi.fn((name: string) =>
+          name === 'kavrix_databases'
+            ? mongodb.databaseCollection
+            : mongodb.vaultCollection,
+        ),
+      });
+
+      await expect(
+        MongoEncryptedDatabaseStore.connect(URI, DATABASE_NAME),
+      ).rejects.toEqual(new EncryptedDatabaseStoreError('connection'));
+      expect(mongodb.client.close).toHaveBeenCalledOnce();
+      vi.clearAllMocks();
+    }
   });
 
   it('maps arbitrary normal and transactional driver errors to redacted operation errors', async () => {

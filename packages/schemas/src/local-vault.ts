@@ -174,6 +174,13 @@ export const localVaultDocumentSchema = z
         path: ['encryptedPayload', 'aad'],
       });
     }
+    if (aad.entityType !== 'vault-preferences') {
+      context.addIssue({
+        code: 'custom',
+        message: 'Local vault payload has invalid associated data',
+        path: ['encryptedPayload', 'aad'],
+      });
+    }
   });
 
 export type LocalVaultFormat = z.infer<typeof localVaultFormatSchema>;

@@ -2,13 +2,13 @@ import { describe, expect, it } from 'vitest';
 
 import {
   createInitialAppRouterState,
-  createStaticAppBackend,
   emptySnapshot,
   transitionAppRouter,
   type AppKey,
   type AppRouterState,
   type AppSnapshot,
 } from '../../src/index.js';
+import { createStaticAppBackend } from '../../src/app/static-backend.js';
 import { activeTuiThemeId, applyTuiTheme, THEMES } from '../../src/app/theme.js';
 
 function key(state: AppRouterState, input: Readonly<Partial<AppKey>>): AppRouterState {

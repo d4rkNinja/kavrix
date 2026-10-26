@@ -64,6 +64,26 @@ describe('init TUI onboarding helpers', () => {
     expect(text).toContain('separate secure locations');
   });
 
+  it('strips every control character from an echoed recovery kit path', () => {
+    const lines: string[] = [];
+    writeInitTuiOnboardingComplete({
+      write: (text) => lines.push(text),
+      profileId: 'work',
+      datastore: 'file',
+      recoveryFile: `/tmp/kit\u001b]0;evil\u0007dir/work.recovery`,
+      color: false,
+    });
+    const text = lines.join('');
+    // The path is echoed to the terminal: no ESC, BEL, or any other control
+    // byte may survive the banner rendering (line breaks aside).
+    expect(text).not.toContain('\u001b');
+    expect(text).not.toContain('\u0007');
+    expect(text).not.toMatch(/(?!\n)[\u0000-\u001f\u007f-\u009f]/u);
+    expect(text).toContain(']0;evil');
+    expect(text).toContain('/tmp/kit');
+    expect(text).toContain('work.recovery');
+  });
+
   describe('interactive host options and cleanup', () => {
     const platform = Object.getOwnPropertyDescriptor(process, 'platform');
     const argv = process.argv;

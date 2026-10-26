@@ -13,6 +13,7 @@ import {
 const {
   maxEnvironmentEntries: MAX_ENVIRONMENT_ENTRIES,
   maxEnvironmentValueBytes: MAX_ENVIRONMENT_VALUE_BYTES,
+  maxInheritedEnvironmentValueBytes: MAX_INHERITED_ENVIRONMENT_VALUE_BYTES,
   maxEnvironmentTotalBytes: MAX_ENVIRONMENT_TOTAL_BYTES,
 } = RUNNER_LIMITS;
 
@@ -63,11 +64,13 @@ function environmentValue(
   }
 }
 
-function assertEnvironmentValue(value: string): void {
-  if (
-    value.includes('\0') ||
-    Buffer.byteLength(value, 'utf8') > MAX_ENVIRONMENT_VALUE_BYTES
-  ) {
+/**
+ * Bounds one child-environment value. Mapped values (text or secret) are held
+ * to the tight cap; inherited allowlisted values are never secret and use the
+ * platform-sized cap so a real Windows PATH still fits.
+ */
+function assertEnvironmentValue(value: string, maxBytes: number): void {
+  if (value.includes('\0') || Buffer.byteLength(value, 'utf8') > maxBytes) {
     throw new RunnerError('RUNNER_ENVIRONMENT_REJECTED');
   }
 }
@@ -137,7 +140,7 @@ export function prepareEnvironment(
       }
       const inherited = parentValue(inheritedName, parentEnvironment);
       if (inherited !== null) {
-        assertEnvironmentValue(inherited.value);
+        assertEnvironmentValue(inherited.value, MAX_INHERITED_ENVIRONMENT_VALUE_BYTES);
         addEnvironmentEntry(
           childEnvironment,
           occupiedNames,
@@ -160,7 +163,7 @@ export function prepareEnvironment(
         throw new RunnerError('RUNNER_ENVIRONMENT_REJECTED');
       }
       const converted = environmentValue(scalar);
-      assertEnvironmentValue(converted.value);
+      assertEnvironmentValue(converted.value, MAX_ENVIRONMENT_VALUE_BYTES);
       addEnvironmentEntry(childEnvironment, occupiedNames, name, converted.value);
       if (converted.secret) {
         secretValues.push(converted.value);
@@ -173,6 +176,10 @@ export function prepareEnvironment(
     }
   } catch (error) {
     for (const secret of secretBuffers) secret.fill(0);
+    // The buffers above are the only values actively zeroed. JS strings are
+    // immutable, so clearing this array cannot scrub the mapped secret
+    // strings in place; it only drops the references so the values become
+    // collectable by the garbage collector.
     secretValues.fill('');
     for (const name of Object.keys(childEnvironment)) {
       Reflect.deleteProperty(childEnvironment, name);
@@ -186,6 +193,9 @@ export function prepareEnvironment(
     secretValues,
     clear(): void {
       for (const secret of secretBuffers) secret.fill(0);
+      // As in the failure path: buffers are zeroed, while strings are only
+      // dereferenced (immutable values cannot be scrubbed) and left to the
+      // garbage collector.
       secretValues.fill('');
       for (const name of Object.keys(childEnvironment)) {
         Reflect.deleteProperty(childEnvironment, name);

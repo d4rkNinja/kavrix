@@ -1,4 +1,4 @@
-﻿import { isReservedEnvironmentName } from '@kavrix/runner';
+import { isReservedEnvironmentName } from '@kavrix/runner';
 import { environmentVariableNameSchema } from '@kavrix/schemas';
 
 /** Inherited identity names the child must not receive as a secret dest. */

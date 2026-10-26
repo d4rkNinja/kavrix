@@ -2,6 +2,7 @@ import { readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import { sealVaultExportArchive, zeroize } from '@kavrix/crypto';
 import { writeSecureStreamFile } from '@kavrix/key-files';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
@@ -225,6 +226,41 @@ describe('kavrix export and import archive', () => {
       '',
     );
     expect(invalid.exitCode).toBe(16);
+  });
+
+  it('never injects a hostile imported name into the terminal error', async () => {
+    // Names from a hostile archive are only schema-bounded (1-256 chars), so
+    // control characters and OSC sequences are possible; the validator's
+    // message must render them through the control-character sanitizer.
+    const hostileName = '\u001b]52;c;oscroll\u0007?';
+    const passphrase = new TextEncoder().encode(ARCHIVE_PASSPHRASE);
+    let sealed: unknown;
+    try {
+      sealed = await sealVaultExportArchive(
+        [
+          {
+            name: hostileName,
+            value: 'hostile-name-value-canary',
+            updatedAt: '2026-01-01T00:00:00.000Z',
+          },
+        ],
+        passphrase,
+      );
+    } finally {
+      zeroize(passphrase);
+    }
+    const file = join(directory, 'hostile-name.kavrix-export');
+    await writeProtected(file, JSON.stringify(sealed));
+    const result = await runCli(
+      ['import', 'archive', '--file', file, '--json', ...routing()],
+      frames(EXEC_PASSPHRASE, ARCHIVE_PASSPHRASE),
+    );
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain('is invalid');
+    expect(result.stderr).toContain('[CONTROL]');
+    expect(result.stderr).not.toContain('\u001b');
+    expect(result.stderr).not.toContain('\u0007');
+    expect(result.stderr + result.stdout).not.toContain('hostile-name-value-canary');
   });
 });
 

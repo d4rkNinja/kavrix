@@ -23,7 +23,12 @@ import {
   executeAgentExec,
   startAgentBrokerForTest,
 } from '../src/execution/agent-command.js';
-import { MAX_FRAME_BYTES } from '../src/execution/broker-protocol.js';
+import {
+  decodeBrokerFrameLine,
+  deriveBrokerSessionKey,
+  encodeBrokerFrameLine,
+  MAX_FRAME_BYTES,
+} from '../src/execution/broker-protocol.js';
 import * as databaseFlatCommands from '../src/database-flat-commands.js';
 import {
   AuthorizationState,
@@ -64,6 +69,10 @@ async function openRawBrokerRequest(
     socket.once('connect', resolveConnect);
     socket.once('error', rejectConnect);
   });
+  // The broker seals every frame with the session key derived from the
+  // shared token; the fixture speaks the same encrypted protocol as the
+  // production client.
+  const frameKey = deriveBrokerSessionKey(request.token, endpoint);
 
   const frames: AgentBrokerServerFrame[] = [];
   const waiters: Array<{
@@ -86,7 +95,18 @@ async function openRawBrokerRequest(
     buffer += chunk.toString('utf8');
     let newline = buffer.indexOf('\n');
     while (newline >= 0) {
-      const frame = JSON.parse(buffer.slice(0, newline)) as AgentBrokerServerFrame;
+      let frame: AgentBrokerServerFrame;
+      try {
+        frame = decodeBrokerFrameLine(
+          frameKey,
+          'server-to-client',
+          buffer.slice(0, newline),
+        ) as AgentBrokerServerFrame;
+      } catch {
+        buffer = buffer.slice(newline + 1);
+        newline = buffer.indexOf('\n');
+        continue;
+      }
       buffer = buffer.slice(newline + 1);
       frames.push(frame);
       onFrame(frame);
@@ -106,7 +126,7 @@ async function openRawBrokerRequest(
   });
   socket.on('close', finish);
   socket.on('error', finish);
-  socket.write(`${JSON.stringify(request)}\n`);
+  socket.write(`${encodeBrokerFrameLine(frameKey, 'client-to-server', request)}\n`);
 
   return {
     frames,
@@ -120,7 +140,7 @@ async function openRawBrokerRequest(
     },
     sendFrames(clientFrames) {
       for (const frame of clientFrames) {
-        socket.write(`${JSON.stringify(frame)}\n`);
+        socket.write(`${encodeBrokerFrameLine(frameKey, 'client-to-server', frame)}\n`);
       }
     },
     sendRaw(value) {
@@ -620,11 +640,10 @@ describe('in-process broker and client round trip', () => {
           .spyOn(Socket.prototype, 'write')
           .mockImplementation(function (this: Socket, ...args: unknown[]) {
             const chunk = args[0];
-            if (
-              Buffer.isBuffer(chunk) &&
-              chunk.length === 32 * 1024 &&
-              chunk.every((byte) => byte === 120)
-            ) {
+            // Broker frames are encrypted, so the 32 KiB relay no longer
+            // appears byte-for-byte on the wire; the encrypted stdin frame
+            // is still the only write of at least that size in this scenario.
+            if (Buffer.isBuffer(chunk) && chunk.length >= 32 * 1024) {
               this.destroy(
                 Object.assign(new Error(secretValue), { code: inputFailure }),
               );

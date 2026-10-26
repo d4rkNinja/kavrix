@@ -1,4 +1,4 @@
-import { rm } from 'node:fs/promises';
+import { rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
@@ -14,11 +14,13 @@ import {
   DatabaseFlatCommandError,
   readDatabaseFlatSecrets,
   resolveDatabaseVaultId,
+  resolveLegacyFileProfileRouting,
   usesDatabaseContainer,
   withDatabaseFlatVault,
 } from '../src/database-flat-commands.js';
 import { DatabaseSession } from '../src/database-session.js';
 import {
+  DatastoreProfileError,
   DatastoreProfileRegistry,
   type DatastoreProfile,
 } from '../src/datastore-profiles.js';
@@ -324,6 +326,37 @@ describe('flat database command routing', () => {
         vault: 'vault_project',
       }),
     ).resolves.toBe(false);
+  });
+
+  it('fails closed on a corrupt profile registry instead of legacy-routing', async () => {
+    const profile = fileProfile(
+      join(directory, 'corrupt.database'),
+      join(directory, 'corrupt.key'),
+    );
+    await addCurrentProfile(profile);
+    // Registry corruption is not "no ambient profile": routing helpers must
+    // surface the reviewed registry error instead of silently proceeding on
+    // legacy standalone routing.
+    await writeFile(
+      join(directory, 'datastore-profiles.json'),
+      '{"version":2,"profiles":[{"id":"broken"',
+      'utf8',
+    );
+    await expect(
+      resolveLegacyFileProfileRouting({
+        profileConfigDir: directory,
+        vault: 'vault_project',
+      }),
+    ).rejects.toThrowError(DatastoreProfileError);
+    await expect(
+      resolveLegacyFileProfileRouting({
+        profileConfigDir: directory,
+        vault: 'vault_project',
+        datastore: 'file',
+        dataFile: join(directory, 'standalone.database'),
+        keyFile: join(directory, 'standalone.key'),
+      }),
+    ).rejects.toThrowError(DatastoreProfileError);
   });
 
   it('validates flat secret routing before opening a database session', async () => {

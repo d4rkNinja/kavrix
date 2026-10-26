@@ -581,14 +581,18 @@ function canonicalizeExistingPathSync(input: string): string {
  * Refuse to chmod filesystem roots and other shared directories. Heal must
  * never lock down `/`, `$TMPDIR` when it is a top-level root, `$HOME`,
  * `/workspace`, or other top-level roots even if a mis-resolved key path
- * named them as its parent.
+ * named them as its parent. A path that is its own parent is a filesystem
+ * root on every platform, which also covers a drive root other than the
+ * current one (e.g. `D:\` for a key file directly on another Windows drive —
+ * `canonicalizeExistingPathSync('/')` only ever sees the current drive).
  */
-function isBroadFilesystemRoot(directory: string): boolean {
+export function isBroadFilesystemRoot(directory: string): boolean {
   const resolved = canonicalizeExistingPathSync(directory);
   const home = canonicalizeExistingPathSync(homedir());
   const fsRoot = canonicalizeExistingPathSync('/');
   if (resolved === fsRoot || resolved === home) return true;
   const parent = dirname(resolved);
+  if (parent === resolved) return true;
   // Top-level dirs directly under `/` (and macOS `/private`): tmp, workspace, home, …
   if (parent === fsRoot || parent === canonicalizeExistingPathSync('/private')) {
     return true;

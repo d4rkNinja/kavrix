@@ -1,5 +1,7 @@
 import type { Readable, Writable } from 'node:stream';
 
+import { createInterface } from 'node:readline/promises';
+
 import { MIN_PASSPHRASE_BYTES } from '@kavrix/crypto';
 import { databaseCatalogPayloadSchema } from '@kavrix/schemas';
 
@@ -10,7 +12,8 @@ import {
   type TerminalStatusKind,
 } from './terminal-presentation.js';
 
-const MAX_SECRET_BYTES = 1_048_576;
+/** One stdin frame or visible answer is bounded to 1 MiB of UTF-8 text. */
+export const MAX_SECRET_BYTES = 1_048_576;
 // MongoDB-source migration into a new local database is the widest supported
 // command: source URL, source passphrase, expected source-vault label,
 // destination passphrase and confirmation, database label, and vault label.
@@ -31,7 +34,14 @@ export type LocalSecretKind =
   | 'field-value'
   | 'field-value-base64'
   | 'note-content'
-  | 'note-content-base64';
+  | 'note-content-base64'
+  /**
+   * One non-secret operator confirmation line for an irreversible command
+   * (for example `REMOVE <vaultId>`). Framed stdin carries it in the same
+   * single pass as the command's secrets; interactive runs collect it through
+   * a visible typed prompt instead of this kind.
+   */
+  | 'confirmation';
 
 export type ConfirmableLocalSecretKind =
   'passphrase' | 'recovery-passphrase' | 'new-passphrase';
@@ -339,7 +349,12 @@ export class LocalSecretInput {
         input.on('data', onData);
         rawModeAttempted = true;
         setRawMode(true);
-        if (!input.listeners('data').includes(onData)) return;
+        if (!input.listeners('data').includes(onData)) {
+          // A listener registration that silently failed would leave this
+          // prompt pending forever; fail closed instead of hanging the CLI.
+          finish(new LocalSecretInputError('Secret input could not be read.'));
+          return;
+        }
         const color = terminalColorEnabled(this.#output);
         this.#output.write(
           renderTerminalStatus(
@@ -379,6 +394,70 @@ export class LocalSecretInputError extends Error {
   }
 }
 
+/**
+ * Reads one visible (echoed) line from the terminal for non-secret operator
+ * confirmations, such as destructive-operation gates. The answer is not a
+ * secret, so echo stays on; the read still fails closed when the input is not
+ * an interactive terminal or ends before an answer arrives.
+ */
+export async function readVisibleLine(
+  input: Readable & { isTTY?: boolean },
+  output: Writable,
+  prompt: string,
+): Promise<string> {
+  if (input.isTTY !== true) {
+    throw new LocalSecretInputError('A visible confirmation requires a terminal.');
+  }
+  if (input.readableEnded) {
+    throw new LocalSecretInputError(
+      'Confirmation input ended before a value was entered.',
+    );
+  }
+  const interface_ = createInterface({ input, output });
+  // Readline re-emits input stream errors on the interface; without a
+  // listener the synthetic event would escape as an uncaught exception.
+  interface_.on('error', () => undefined);
+  let abort = (): void => undefined;
+  const ended = new Promise<never>((_, reject) => {
+    abort = (): void => {
+      reject(
+        new LocalSecretInputError(
+          'Confirmation input ended before a value was entered.',
+        ),
+      );
+    };
+  });
+  try {
+    input.on('end', abort);
+    input.on('close', abort);
+    input.on('error', abort);
+    let answer: string;
+    try {
+      answer = await Promise.race([interface_.question(prompt), ended]);
+    } catch (error) {
+      if (error instanceof LocalSecretInputError) throw error;
+      // The interface died (stream ended or errored): fail closed with the
+      // module's reviewed error instead of a raw readline diagnostic or an
+      // indefinitely pending promise.
+      throw new LocalSecretInputError(
+        'Confirmation input ended before a value was entered.',
+      );
+    }
+    if (
+      Buffer.byteLength(answer, 'utf8') > MAX_SECRET_BYTES ||
+      /[\r\n\0]/u.test(answer)
+    ) {
+      throw new LocalSecretInputError('Confirmation input is invalid.');
+    }
+    return answer;
+  } finally {
+    input.off('end', abort);
+    input.off('close', abort);
+    input.off('error', abort);
+    interface_.close();
+  }
+}
+
 type SecretPrompt = Readonly<{ label: string; confirmation: boolean }>;
 
 function isConfirmableKind(kind: LocalSecretKind): kind is ConfirmableLocalSecretKind {
@@ -408,6 +487,9 @@ function requirementFor(kind: LocalSecretKind, confirmation: boolean): string {
   if (kind === 'label') {
     return 'Requirement: use 1-256 characters after trimming whitespace.';
   }
+  if (kind === 'confirmation') {
+    return 'Requirement: enter the exact confirmation line shown.';
+  }
   return 'Requirement: enter one non-empty line.';
 }
 
@@ -433,6 +515,7 @@ function labelFor(kind: LocalSecretKind): string {
   if (kind === 'recovery-passphrase') return 'recovery-kit passphrase';
   if (kind === 'new-passphrase') return 'new passphrase';
   if (kind === 'archive-passphrase') return 'export archive passphrase';
+  if (kind === 'confirmation') return 'confirmation line';
   return 'passphrase';
 }
 

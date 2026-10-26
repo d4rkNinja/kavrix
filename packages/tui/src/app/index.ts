@@ -31,7 +31,6 @@ export {
   type ThemeId,
   type TuiTheme,
 } from './theme.js';
-export * from './static-backend.js';
 export {
   KavrixApp,
   mountKavrixApp,

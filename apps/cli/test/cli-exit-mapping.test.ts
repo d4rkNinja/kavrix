@@ -2,7 +2,11 @@ import { describe, expect, it } from 'vitest';
 
 import { CLI_EXIT_CODES } from '@kavrix/schemas/cli-exit-codes';
 
+import { classifyCliFailure } from '../src/cli-errors.js';
+import { DatabaseMigrationError } from '../src/database-migration.js';
+import { DatabaseSessionError } from '../src/database-session.js';
 import {
+  classifyAggregateFailure,
   commanderExitCode,
   databaseMigrationExitCode,
   portableKeyFileExitCode,
@@ -64,5 +68,71 @@ describe('shared CLI exit-code mapping', () => {
         expect(DOCUMENTED.has(mapping(code))).toBe(true);
       }
     }
+  });
+});
+
+describe('aggregate failure classification', () => {
+  it('reports the wrapped migration failure exit code and message', () => {
+    // The redacted migration cleanup aggregate used to degrade to generic
+    // exit 1 before its members were inspected.
+    const result = classifyCliFailure(
+      new AggregateError(
+        [
+          new DatabaseMigrationError('authentication'),
+          new DatabaseMigrationError('ambiguous-commit'),
+        ],
+        'Migration cleanup failed.',
+      ),
+    );
+    expect(result.exitCode).toBe(CLI_EXIT_CODES.authenticationFailed);
+    expect(result.message).toContain('Migration cleanup failed.');
+    expect(result.message).toContain('Legacy vault migration authentication failed');
+  });
+
+  it('reports the wrapped session failure exit code and message', () => {
+    const result = classifyCliFailure(
+      new AggregateError(
+        [new DatabaseSessionError('busy'), new DatabaseSessionError('operation')],
+        'Database cleanup failed.',
+      ),
+    );
+    expect(result.exitCode).toBe(CLI_EXIT_CODES.datastoreFailure);
+    expect(result.message).toContain('Database cleanup failed.');
+    expect(result.message).toContain('locked by another Kavrix process');
+  });
+
+  it('stays generic when no member classifies, keeping the aggregate summary', () => {
+    const result = classifyCliFailure(
+      new AggregateError([new Error('unmapped internal failure')], 'Cleanup failed.'),
+    );
+    expect(result.exitCode).toBe(CLI_EXIT_CODES.unclassifiedFailure);
+    expect(result.message).toBe('Cleanup failed.');
+  });
+
+  it('prefers the first member with a non-generic exit code', () => {
+    const result = classifyAggregateFailure(
+      new AggregateError(
+        [
+          new Error('unclassifiable'),
+          new DatabaseSessionError('invalid'),
+          new DatabaseSessionError('busy'),
+        ],
+        'Database cleanup failed.',
+      ),
+      (member) =>
+        member instanceof DatabaseSessionError
+          ? { message: member.message, exitCode: member.cliExitCode }
+          : undefined,
+    );
+    expect(result.exitCode).toBe(CLI_EXIT_CODES.invalidConfiguration);
+    expect(result.message).toContain('The database operation is invalid.');
+  });
+
+  it('bounds the combined member messages', () => {
+    const result = classifyCliFailure(
+      new AggregateError([new DatabaseSessionError('busy')], 'D'.repeat(600)),
+    );
+    expect(result.message.length).toBeLessThanOrEqual(500);
+    expect(result.message.startsWith('DDDD')).toBe(true);
   });
 });

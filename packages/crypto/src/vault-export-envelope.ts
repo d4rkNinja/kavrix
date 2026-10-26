@@ -127,7 +127,11 @@ export async function openVaultExportArchive(
     kek = await derivePassphraseKek(passphrase, archive.derivation);
     nonce = decodeBase64Url(archive.nonce, { exactBytes: EXPORT_NONCE_BYTES });
     tag = decodeBase64Url(archive.authenticationTag, { exactBytes: EXPORT_TAG_BYTES });
-    ciphertext = decodeBase64Url(archive.ciphertext);
+    ciphertext = decodeBase64Url(archive.ciphertext, {
+      // Same bound the export schema enforces; a cast object must not skip it
+      // and force a large allocation before the byteLength check below.
+      maximumBytes: MAX_VAULT_EXPORT_PLAINTEXT_BYTES,
+    });
     if (ciphertext.byteLength !== archive.plaintextBytes) {
       throw new AuthenticationError();
     }

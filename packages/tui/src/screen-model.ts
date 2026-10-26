@@ -370,25 +370,30 @@ function renderFieldValue(
   if (value.state === 'empty') return '<empty>';
   if (value.state === 'inapplicable') return '<not applicable>';
   if (value.state === 'unreadable') return '<unreadable>';
+  // Only a sensitive field's own reveal grant unmasks it; a grant can never
+  // exist for a value that is masked by defense in depth alone.
+  const revealed = (grantKey: string): boolean =>
+    field.sensitive &&
+    itemId !== undefined &&
+    (state.revealedUntil[grantKey] ?? 0) > nowMs;
+  const renderProtected = (scalar: FieldScalarValue, grantKey: string): string =>
+    scalarRequiresMasking(field, scalar) && !revealed(grantKey)
+      ? secretMask(state.ascii)
+      : renderScalar(scalar, state.ascii);
   const parts =
     value.content.cardinality === 'single'
       ? [
-          field.sensitive &&
-          (itemId === undefined ||
-            (state.revealedUntil[revealGrantKey(itemId, field.id)] ?? 0) <= nowMs)
-            ? secretMask(state.ascii)
-            : renderScalar(value.content.value, state.ascii),
+          renderProtected(
+            value.content.value,
+            itemId === undefined ? '' : revealGrantKey(itemId, field.id),
+          ),
         ]
       : value.content.elements.map((element, index) => {
           const elementIndex = index + 1;
-          const isRevealed =
-            itemId !== undefined &&
-            (state.revealedUntil[revealGrantKey(itemId, field.id, element.id)] ?? 0) >
-              nowMs;
-          const rendered =
-            field.sensitive && !isRevealed
-              ? secretMask(state.ascii)
-              : renderScalar(element.value, state.ascii);
+          const rendered = renderProtected(
+            element.value,
+            itemId === undefined ? '' : revealGrantKey(itemId, field.id, element.id),
+          );
           const selected =
             state.selectedField ===
               selectedFields(state).findIndex(({ id }) => id === field.id) &&
@@ -397,6 +402,23 @@ function renderFieldValue(
           return element.lifecycle.status === 'used' ? `${indexed} (used)` : indexed;
         });
   return parts.join(state.ascii ? ' | ' : ' \u00b7 ');
+}
+
+/**
+ * Defense in depth for scalar display: mask not only `field.sensitive` values
+ * but also any scalar that is secret-shaped on its own — a descriptor whose
+ * value kind is secret, or an environment entry classified as secret — even
+ * when a malformed or legacy field definition fails to flag sensitivity.
+ */
+function scalarRequiresMasking(
+  field: FieldDefinition,
+  scalar: FieldScalarValue,
+): boolean {
+  return (
+    field.sensitive ||
+    describeFieldEditor(field).valueKind === 'secret' ||
+    (scalar.kind === 'environment-entry' && scalar.value.classification === 'secret')
+  );
 }
 
 function renderScalar(value: FieldScalarValue, ascii: boolean): string {

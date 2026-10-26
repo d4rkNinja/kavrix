@@ -76,8 +76,10 @@ function sessionFilePathFor(target: SessionUnlockTarget): string {
 
 // ---- OS keychain port -------------------------------------------------------
 // Child-process based; no native build dependencies. Secrets never travel
-// through process arguments: writes feed stdin, reads print the base64 value
-// to stdout, and every spawn uses argument arrays, a stripped environment, no
+// through process arguments: macOS writes feed the single command line to
+// `security -i` over stdin, Linux writes feed secret-tool's stdin, Windows
+// writes ride the helper's own environment, reads print the base64 value to
+// stdout, and every spawn uses argument arrays, a stripped environment, no
 // shell, and a hard timeout.
 
 async function runCommand(
@@ -157,6 +159,15 @@ foreach ($c in $vault.RetrieveAll()) {
 `;
 }
 
+/**
+ * True when the OS credential store itself could not be reached. Load treats
+ * that as "no stored session" (fail-safe: nothing is decrypted and the user
+ * re-authenticates); every other failure still propagates.
+ */
+export function isKeychainUnavailable(error: unknown): boolean {
+  return error instanceof SessionUnlockError && error.code === 'keychain-unavailable';
+}
+
 function windowsPort(account: string): SessionUnlockPort {
   // PasswordVault occasionally rejects operations transiently on loaded
   // runners (and while shard processes contend for the user vault); retry a
@@ -218,7 +229,10 @@ function windowsPort(account: string): SessionUnlockPort {
           return out === null || out.length === 0 ? null : out;
         } catch (error) {
           if (attempt === 2) {
-            if (error instanceof SessionUnlockError && error.code === 'unavailable') {
+            // An unavailable keychain reads as "no stored credential" so the
+            // user is asked to authenticate again instead of failing every
+            // command; any other error still throws.
+            if (isKeychainUnavailable(error)) {
               return null;
             }
             throw error;
@@ -234,19 +248,45 @@ function windowsPort(account: string): SessionUnlockPort {
   };
 }
 
+/**
+ * Builds the single command line `security -i` consumes from stdin. The
+ * service and account are internally derived opaque tokens and the wrapping
+ * key is base64url (no spaces, quotes, or metacharacters), so plain
+ * whitespace-free joining is unambiguous; the guard fails closed if any part
+ * ever grows a character that could split the command line.
+ */
+export function macKeychainStoreCommand(
+  service: string,
+  account: string,
+  valueB64: string,
+): string {
+  const parts = [
+    'add-generic-password',
+    '-s',
+    service,
+    '-a',
+    account,
+    '-U',
+    '-w',
+    valueB64,
+  ];
+  if (parts.some((part) => /\s/u.test(part) || part.length === 0)) {
+    throw new SessionUnlockError(
+      'keychain-unavailable',
+      'The operating system credential store is unavailable.',
+    );
+  }
+  return parts.join(' ');
+}
+
 function macPort(account: string): SessionUnlockPort {
   return {
     store: async (valueB64) => {
-      await runCommand('security', [
-        'add-generic-password',
-        '-s',
-        KEYCHAIN_SERVICE,
-        '-a',
-        account,
-        '-U',
-        '-w',
-        valueB64,
-      ]);
+      // `security -i` reads exactly one command line from stdin, so the
+      // base64 wrapping key never travels through process arguments.
+      await runCommand('security', ['-i'], {
+        input: `${macKeychainStoreCommand(KEYCHAIN_SERVICE, account, valueB64)}\n`,
+      });
     },
     load: async () => {
       const out = await runCommand(
@@ -363,7 +403,6 @@ export async function enableSessionUnlock(options: {
       },
     );
     await port.store(Buffer.from(wrappingKey).toString('base64url'));
-    await port.store(Buffer.from(wrappingKey).toString('base64url'));
   } finally {
     wrappingKey.fill(0);
   }
@@ -410,6 +449,17 @@ function parseSessionDocument(document: Record<string, unknown>): ParsedSessionF
 }
 
 /**
+ * Node filesystem errors carry `code === 'ENOENT'`; the protected-document
+ * reader wraps that into `PortableKeyFileError('KEY_FILE_NOT_FOUND')`. Both
+ * mean the sealed session file does not exist, which is a missing session —
+ * never a tampering signal.
+ */
+function isMissingSessionFileError(error: unknown): boolean {
+  const code = (error as { code?: unknown }).code;
+  return code === 'ENOENT' || code === 'KEY_FILE_NOT_FOUND';
+}
+
+/**
  * Resolves the stored unlock material. Returns `null` when no session is
  * enabled. Fails closed on tampering, keychain loss, or TTL expiry — never
  * falls back to anything weaker.
@@ -440,7 +490,10 @@ export async function resolveSessionUnlock(options: {
     });
   } catch (error) {
     wrappingKey.fill(0);
-    if (error instanceof Error && error.message.includes('ENOENT')) return null;
+    // A missing sealed file means no session is enabled ("removing either
+    // half revokes the session"): readSecureFile maps ENOENT to
+    // KEY_FILE_NOT_FOUND, and a raw ENOENT is covered as defense in depth.
+    if (isMissingSessionFileError(error)) return null;
     throw new SessionUnlockError('tampered', 'The session-unlock file is invalid.');
   }
   let parsed: ParsedSessionFile;

@@ -2,6 +2,7 @@ import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 
 import type { VaultExportEntry } from '@kavrix/schemas';
+import { databaseIdSchema, MAX_VAULT_EXPORT_PLAINTEXT_BYTES } from '@kavrix/schemas';
 
 import { AuthenticationError, CryptoInputError } from '../src/errors.js';
 import {
@@ -10,7 +11,6 @@ import {
   sealVaultExportArchive,
 } from '../src/vault-export-envelope.js';
 import { sealDatabaseBackupArchive } from '../src/backup-envelope.js';
-import { databaseIdSchema } from '@kavrix/schemas';
 
 const PASSPHRASE = (): Uint8Array => new TextEncoder().encode('export-passphrase-16b');
 const AT = '2026-10-21T00:00:00.000Z';
@@ -58,6 +58,19 @@ describe('vault export archive', () => {
         AuthenticationError,
       );
     }
+  });
+
+  it('fails closed on a ciphertext over the schema bound before decoding it', async () => {
+    const archive = await sealVaultExportArchive(entries(), PASSPHRASE());
+    // One character past the encoded length the schema's plaintext cap allows,
+    // so an unvalidated cast object cannot force a large allocation.
+    const maximumEncoded = Math.ceil((MAX_VAULT_EXPORT_PLAINTEXT_BYTES * 4) / 3);
+    await expect(
+      openVaultExportArchive(
+        { ...archive, ciphertext: 'A'.repeat(maximumEncoded + 1) },
+        PASSPHRASE(),
+      ),
+    ).rejects.toThrow(CryptoInputError);
   });
 
   it('fails authentication when any ciphertext bit flips', async () => {

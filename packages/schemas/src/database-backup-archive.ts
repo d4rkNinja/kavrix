@@ -1,7 +1,12 @@
 import { z } from 'zod';
 
 import { databaseIdSchema } from './identifiers.js';
-import { base64UrlSchema, timestampSchema } from './primitives.js';
+import {
+  base64UrlSchema,
+  base64UrlSchemaWithMaxChars,
+  maxBase64UrlCharsForByteLimit,
+  timestampSchema,
+} from './primitives.js';
 import { passphraseDerivationSchema } from './encrypted-records.js';
 
 /**
@@ -12,6 +17,16 @@ import { passphraseDerivationSchema } from './encrypted-records.js';
  * so a hostile archive path cannot make a reader allocate unbounded memory.
  */
 export const MAX_DATABASE_BACKUP_PLAINTEXT_BYTES = 128 * 1024 * 1024;
+
+/**
+ * Character ceiling for archive ciphertext: the largest unpadded base64url
+ * string that cannot decode to more than the plaintext bound. The shared
+ * record-level `base64UrlSchema` ceiling does not apply here because a whole
+ * database file is legitimately larger than a single record payload.
+ */
+export const MAX_DATABASE_BACKUP_CIPHERTEXT_CHARS = maxBase64UrlCharsForByteLimit(
+  MAX_DATABASE_BACKUP_PLAINTEXT_BYTES,
+);
 
 /** 24-byte XChaCha20-Poly1305 nonce shared by passphrase-sealed archive formats. */
 export const sealedArchiveNonceSchema = base64UrlSchema
@@ -27,7 +42,9 @@ export const sealedArchiveTagSchema = base64UrlSchema
     error: 'Authentication tag must canonically encode exactly 16 bytes',
   });
 
-const backupCiphertextSchema = base64UrlSchema.refine(
+const backupCiphertextSchema = base64UrlSchemaWithMaxChars(
+  MAX_DATABASE_BACKUP_CIPHERTEXT_CHARS,
+).refine(
   (value) =>
     Buffer.from(value, 'base64url').byteLength <= MAX_DATABASE_BACKUP_PLAINTEXT_BYTES,
   { error: 'Ciphertext exceeds the supported archive size' },

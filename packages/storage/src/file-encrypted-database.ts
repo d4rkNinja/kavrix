@@ -43,7 +43,7 @@ import {
   type DeleteVaultInput,
   type EncryptedDatabaseStore,
   type UpdateVaultInput,
-} from './encrypted-database-store.js';
+} from '@kavrix/core';
 
 /** The exact maximum serialized UTF-8 size of a local encrypted database. */
 export const MAX_FILE_ENCRYPTED_DATABASE_BYTES = 32 * 1024 * 1024;
@@ -155,12 +155,14 @@ export class FileEncryptedDatabaseStore implements EncryptedDatabaseStore {
   #containerCache:
     | Readonly<{ snapshot: TrustedSnapshot; container: CanonicalFileDatabaseContainer }>
     | undefined;
+  readonly #effects: FileEncryptedDatabaseEffects;
   #closed = false;
 
   private constructor(
     target: ResolvedFileTarget,
     lockHandle: FileHandle,
     lockIdentity: FileIdentity,
+    effects: FileEncryptedDatabaseEffects,
   ) {
     this.#directoryPath = target.directoryPath;
     this.#directoryIdentity = target.directoryIdentity;
@@ -168,6 +170,7 @@ export class FileEncryptedDatabaseStore implements EncryptedDatabaseStore {
     this.#lockPath = target.lockPath;
     this.#lockHandle = lockHandle;
     this.#lockIdentity = lockIdentity;
+    this.#effects = effects;
   }
 
   static async validatePath(path: string): Promise<void> {
@@ -177,21 +180,35 @@ export class FileEncryptedDatabaseStore implements EncryptedDatabaseStore {
     await assertDirectoryIdentity(target);
   }
 
-  static async open(path: string): Promise<FileEncryptedDatabaseStore> {
+  static async open(
+    path: string,
+    internalOptions: FileEncryptedDatabaseStoreInternalOptions = {},
+  ): Promise<FileEncryptedDatabaseStore> {
+    // The effects override is a package-internal fault seam for the storage
+    // tests; production callers never see the options type, so the merge
+    // always resolves to the real filesystem effects.
+    const effects: FileEncryptedDatabaseEffects = {
+      ...defaultFileEncryptedDatabaseEffects,
+      ...internalOptions.effects,
+    };
     const target = await resolveTarget(path);
-    const acquired = await acquireLock(target);
+    const acquired = await acquireLock(target, effects);
     try {
       const store = new FileEncryptedDatabaseStore(
         target,
         acquired.handle,
         acquired.identity,
+        effects,
       );
       await store.ping();
       return store;
     } catch (error) {
-      await releaseLock(acquired.handle, target.lockPath, acquired.identity).catch(
-        () => undefined,
-      );
+      await releaseLock(
+        acquired.handle,
+        target.lockPath,
+        acquired.identity,
+        effects,
+      ).catch(() => undefined);
       if (error instanceof EncryptedDatabaseStoreError) throw error;
       throw new EncryptedDatabaseStoreError('operation');
     }
@@ -229,6 +246,7 @@ export class FileEncryptedDatabaseStore implements EncryptedDatabaseStore {
       'create',
       undefined,
       this.#trustCache,
+      this.#effects,
     );
     await this.#adoptPublishedHandle(database.id, retained, true);
     await this.#notePublishedContainer(container);
@@ -277,8 +295,8 @@ export class FileEncryptedDatabaseStore implements EncryptedDatabaseStore {
     }
     if (truncate) {
       try {
-        await fileEncryptedDatabaseEffects.truncate(owned.retained.handle);
-        await fileEncryptedDatabaseEffects.sync(owned.retained.handle);
+        await this.#effects.truncate(owned.retained.handle);
+        await this.#effects.sync(owned.retained.handle);
         // The data file was emptied in place; no cached container or target
         // snapshot describes it anymore.
         this.#containerCache = undefined;
@@ -294,13 +312,13 @@ export class FileEncryptedDatabaseStore implements EncryptedDatabaseStore {
       }
     }
     try {
-      await fileEncryptedDatabaseEffects.closeOwned(owned.retained.handle);
+      await this.#effects.closeOwned(owned.retained.handle);
     } catch {
       failure = true;
     }
     for (const handle of this.#retireInitializationHandles()) {
       try {
-        await fileEncryptedDatabaseEffects.closeOwned(handle);
+        await this.#effects.closeOwned(handle);
       } catch {
         failure = true;
       }
@@ -472,7 +490,7 @@ export class FileEncryptedDatabaseStore implements EncryptedDatabaseStore {
     let failure = false;
     for (const handle of this.#takeInitializationHandles()) {
       try {
-        await fileEncryptedDatabaseEffects.closeOwned(handle);
+        await this.#effects.closeOwned(handle);
       } catch {
         failure = true;
       }
@@ -483,7 +501,12 @@ export class FileEncryptedDatabaseStore implements EncryptedDatabaseStore {
       failure = true;
     }
     try {
-      await releaseLock(this.#lockHandle, this.#lockPath, this.#lockIdentity);
+      await releaseLock(
+        this.#lockHandle,
+        this.#lockPath,
+        this.#lockIdentity,
+        this.#effects,
+      );
     } catch {
       failure = true;
     }
@@ -588,9 +611,7 @@ export class FileEncryptedDatabaseStore implements EncryptedDatabaseStore {
     const existing = this.#ownedInitialization;
     if (initialize) {
       if (existing !== undefined) {
-        await fileEncryptedDatabaseEffects
-          .closeOwned(retained.handle)
-          .catch(() => undefined);
+        await this.#effects.closeOwned(retained.handle).catch(() => undefined);
         throw new EncryptedDatabaseStoreError('operation');
       }
       this.#ownedInitialization = { databaseId, retained };
@@ -598,21 +619,19 @@ export class FileEncryptedDatabaseStore implements EncryptedDatabaseStore {
     }
     if (existing === undefined) {
       try {
-        await fileEncryptedDatabaseEffects.closeOwned(retained.handle);
+        await this.#effects.closeOwned(retained.handle);
       } catch {
         throw new EncryptedDatabaseStoreError('operation');
       }
       return;
     }
     if (existing.databaseId !== databaseId) {
-      await fileEncryptedDatabaseEffects
-        .closeOwned(retained.handle)
-        .catch(() => undefined);
+      await this.#effects.closeOwned(retained.handle).catch(() => undefined);
       throw new EncryptedDatabaseStoreError('invalid');
     }
     this.#ownedInitialization = { databaseId, retained };
     try {
-      await fileEncryptedDatabaseEffects.closeOwned(existing.retained.handle);
+      await this.#effects.closeOwned(existing.retained.handle);
     } catch {
       this.#retiredInitializationHandles.add(existing.retained.handle);
       throw new EncryptedDatabaseStoreError('operation');
@@ -637,6 +656,7 @@ export class FileEncryptedDatabaseStore implements EncryptedDatabaseStore {
         mode,
         expectedIdentity,
         this.#trustCache,
+        this.#effects,
       );
       await this.#adoptPublishedHandle(databaseId, retained, detached !== undefined);
       await this.#notePublishedContainer(container);
@@ -669,7 +689,7 @@ export class FileEncryptedDatabaseStore implements EncryptedDatabaseStore {
     if (existing === undefined) return undefined;
     this.#ownedInitialization = undefined;
     try {
-      await fileEncryptedDatabaseEffects.closeOwned(existing.retained.handle);
+      await this.#effects.closeOwned(existing.retained.handle);
     } catch {
       this.#ownedInitialization = existing;
       throw new EncryptedDatabaseStoreError('operation');
@@ -957,6 +977,7 @@ async function readLockOwner(lockPath: string): Promise<number | undefined> {
 
 async function acquireLock(
   target: ResolvedFileTarget,
+  effects: FileEncryptedDatabaseEffects,
 ): Promise<Readonly<{ handle: FileHandle; identity: FileIdentity }>> {
   const { lockPath } = target;
   for (let attempt = 0; ; attempt += 1) {
@@ -968,19 +989,17 @@ async function acquireLock(
         constants.O_CREAT | constants.O_EXCL | constants.O_RDWR,
         0o600,
       );
-      await setAndVerifyCreatedFile(lockPath, handle, 'lock');
+      await setAndVerifyCreatedFile(lockPath, handle, 'lock', effects);
       await writeLockMetadata(handle, process.pid);
-      await fileEncryptedDatabaseEffects.sync(handle);
+      await effects.sync(handle);
       const metadata = await handle.stat({ bigint: true });
       await assertDirectoryIdentity(target);
       return { handle, identity: identityOf(metadata) };
     } catch (error) {
       if (handle !== undefined)
-        await fileEncryptedDatabaseEffects.close(handle, 'lock').catch(() => undefined);
+        await effects.close(handle, 'lock').catch(() => undefined);
       if (handle !== undefined)
-        await fileEncryptedDatabaseEffects
-          .unlink(lockPath, 'lock-acquire-cleanup')
-          .catch(() => undefined);
+        await effects.unlink(lockPath, 'lock-acquire-cleanup').catch(() => undefined);
       if (fileErrorCode(error) !== 'EEXIST') {
         throw new EncryptedDatabaseStoreError('operation');
       }
@@ -993,7 +1012,7 @@ async function acquireLock(
         ownerPid !== undefined &&
         !isProcessLive(ownerPid) &&
         attempt + 1 < STALE_LOCK_RECOVERY_ATTEMPTS &&
-        (await removeStaleLock(lockPath, ownerPid))
+        (await removeStaleLock(lockPath, ownerPid, effects))
       ) {
         continue;
       }
@@ -1007,7 +1026,11 @@ async function acquireLock(
  * pathname, and the re-read owner metadata still identify the same file.
  * Any observed replacement keeps the lock in place and reports refusal.
  */
-async function removeStaleLock(lockPath: string, deadPid: number): Promise<boolean> {
+async function removeStaleLock(
+  lockPath: string,
+  deadPid: number,
+  effects: FileEncryptedDatabaseEffects,
+): Promise<boolean> {
   let handle: FileHandle | undefined;
   try {
     handle = await open(lockPath, noFollowReadFlags());
@@ -1023,7 +1046,7 @@ async function removeStaleLock(lockPath: string, deadPid: number): Promise<boole
       )
     )
       return false;
-    await fileEncryptedDatabaseEffects.unlink(lockPath, 'lock-release');
+    await effects.unlink(lockPath, 'lock-release');
     return true;
   } catch {
     return false;
@@ -1036,6 +1059,7 @@ async function releaseLock(
   handle: FileHandle,
   lockPath: string,
   identity: FileIdentity,
+  effects: FileEncryptedDatabaseEffects,
 ): Promise<void> {
   let failure = false;
   try {
@@ -1044,13 +1068,13 @@ async function releaseLock(
     failure = true;
   }
   try {
-    await fileEncryptedDatabaseEffects.close(handle, 'lock');
+    await effects.close(handle, 'lock');
   } catch {
     failure = true;
   }
   if (!failure) {
     try {
-      await fileEncryptedDatabaseEffects.unlink(lockPath, 'lock-release');
+      await effects.unlink(lockPath, 'lock-release');
     } catch {
       failure = true;
     }
@@ -1154,8 +1178,9 @@ async function publishContainer(
   lockIdentity: FileIdentity,
   container: CanonicalFileDatabaseContainer,
   mode: 'create' | 'replace',
-  expectedIdentity?: FileIdentity,
-  trust?: TrustCache,
+  expectedIdentity: FileIdentity | undefined,
+  trust: TrustCache | undefined,
+  effects: FileEncryptedDatabaseEffects,
 ): Promise<RetainedFile> {
   const { directoryPath, targetPath, lockPath } = target;
   await assertTrustedPublicationState(target, lockPath, lockIdentity, trust);
@@ -1182,27 +1207,23 @@ async function publishContainer(
       constants.O_CREAT | constants.O_EXCL | constants.O_RDWR,
       0o600,
     );
-    await setAndVerifyCreatedFile(temporaryPath, handle, 'temporary');
-    await fileEncryptedDatabaseEffects.write(handle, contents);
-    await fileEncryptedDatabaseEffects.sync(handle);
+    await setAndVerifyCreatedFile(temporaryPath, handle, 'temporary', effects);
+    await effects.write(handle, contents);
+    await effects.sync(handle);
     const staged = await handle.stat({ bigint: true });
     await assertOwnedPermissions(staged, temporaryPath, true);
     if (staged.size !== BigInt(contents.byteLength))
       throw new EncryptedDatabaseStoreError('operation');
     const stagedIdentity = identityOf(staged);
-    await fileEncryptedDatabaseEffects.close(handle, 'temporary');
+    await effects.close(handle, 'temporary');
     handle = undefined;
     await assertPathIdentity(temporaryPath, stagedIdentity);
     await assertTrustedPublicationState(target, lockPath, lockIdentity, trust);
-    await fileEncryptedDatabaseEffects.syncDirectory(directoryPath, 'pre-publish');
+    await effects.syncDirectory(directoryPath, 'pre-publish');
     await assertTrustedPublicationState(target, lockPath, lockIdentity, trust);
     if (mode === 'create') {
       try {
-        await fileEncryptedDatabaseEffects.link(
-          temporaryPath,
-          targetPath,
-          'publish-create',
-        );
+        await effects.link(temporaryPath, targetPath, 'publish-create');
       } catch (error) {
         if (fileErrorCode(error) === 'EEXIST')
           throw new EncryptedDatabaseStoreError('exists');
@@ -1213,18 +1234,15 @@ async function publishContainer(
       // successful-looking create behind.
       publishedIdentity = stagedIdentity;
       await assertLinkedPublicationIdentity(targetPath, stagedIdentity);
-      await fileEncryptedDatabaseEffects.unlink(
-        temporaryPath,
-        'temporary-after-create',
-      );
+      await effects.unlink(temporaryPath, 'temporary-after-create');
     } else {
       if (expectedIdentity === undefined)
         throw new EncryptedDatabaseStoreError('operation');
       await assertPathIdentity(targetPath, expectedIdentity);
       await assertTrustedPublicationState(target, lockPath, lockIdentity, trust);
-      await fileEncryptedDatabaseEffects.link(targetPath, backupPath, 'backup');
+      await effects.link(targetPath, backupPath, 'backup');
       backupIdentity = await assertBackupIdentity(backupPath, expectedIdentity);
-      await fileEncryptedDatabaseEffects.rename(temporaryPath, targetPath, 'publish');
+      await effects.rename(temporaryPath, targetPath, 'publish');
       publishedIdentity = stagedIdentity;
       await assertPathIdentity(targetPath, stagedIdentity);
     }
@@ -1236,12 +1254,12 @@ async function publishContainer(
       throw new EncryptedDatabaseStoreError('operation');
     }
     if (process.platform === 'win32') {
-      await fileEncryptedDatabaseEffects.setAcl(targetPath, 'final');
-      await fileEncryptedDatabaseEffects.verifyAcl(targetPath, 'final');
+      await effects.setAcl(targetPath, 'final');
+      await effects.verifyAcl(targetPath, 'final');
       await assertPathIdentity(targetPath, finalIdentity);
     }
-    await fileEncryptedDatabaseEffects.verifyFinalIdentity(targetPath, finalIdentity);
-    const final = await fileEncryptedDatabaseEffects.readFinal(targetPath);
+    await effects.verifyFinalIdentity(targetPath, finalIdentity);
+    const final = await effects.readFinal(targetPath);
     // The published bytes must equal the staged bytes exactly; comparing the
     // parsed container's own text avoids a second full serialization while
     // still proving the on-disk content (the readback re-parses and
@@ -1250,11 +1268,11 @@ async function publishContainer(
       throw new EncryptedDatabaseStoreError('operation');
     }
     await assertTrustedPublicationState(target, lockPath, lockIdentity, trust);
-    await fileEncryptedDatabaseEffects.syncDirectory(directoryPath, 'post-publish');
+    await effects.syncDirectory(directoryPath, 'post-publish');
     await assertTrustedPublicationState(target, lockPath, lockIdentity, trust);
     if (backupIdentity !== undefined) {
       await assertPathIdentity(backupPath, backupIdentity);
-      await fileEncryptedDatabaseEffects.unlink(backupPath, 'backup-cleanup');
+      await effects.unlink(backupPath, 'backup-cleanup');
       backupIdentity = undefined;
     }
     const retained = await openRetainedFile(targetPath, publishedIdentity);
@@ -1271,6 +1289,7 @@ async function publishContainer(
           backupPath,
           backupIdentity,
           trust,
+          effects,
         );
         backupIdentity = undefined;
       } catch {
@@ -1283,21 +1302,13 @@ async function publishContainer(
   } finally {
     contents.fill(0);
     if (handle !== undefined)
-      await fileEncryptedDatabaseEffects
-        .close(handle, 'temporary')
-        .catch(() => undefined);
+      await effects.close(handle, 'temporary').catch(() => undefined);
     if (!published)
-      await fileEncryptedDatabaseEffects
-        .unlink(temporaryPath, 'temporary-cleanup')
-        .catch(() => undefined);
+      await effects.unlink(temporaryPath, 'temporary-cleanup').catch(() => undefined);
     if (!published && publishedIdentity === undefined && backupIdentity !== undefined)
-      await fileEncryptedDatabaseEffects
-        .unlink(backupPath, 'backup-cleanup')
-        .catch(() => undefined);
+      await effects.unlink(backupPath, 'backup-cleanup').catch(() => undefined);
     if (published && backupIdentity !== undefined)
-      await fileEncryptedDatabaseEffects
-        .unlink(backupPath, 'backup-cleanup')
-        .catch(() => undefined);
+      await effects.unlink(backupPath, 'backup-cleanup').catch(() => undefined);
   }
 }
 
@@ -1374,7 +1385,8 @@ async function rollbackPublishedContainer(
   publishedIdentity: FileIdentity,
   backupPath: string,
   backupIdentity: FileIdentity | undefined,
-  trust?: TrustCache,
+  trust: TrustCache | undefined,
+  effects: FileEncryptedDatabaseEffects,
 ): Promise<void> {
   const { directoryPath, lockPath, targetPath } = target;
   await assertTrustedPublicationState(target, lockPath, lockIdentity, trust);
@@ -1385,11 +1397,11 @@ async function rollbackPublishedContainer(
   if (mode === 'create') {
     await assertTrustedPublicationState(target, lockPath, lockIdentity, trust);
     try {
-      await fileEncryptedDatabaseEffects.unlink(targetPath, 'rollback-create');
+      await effects.unlink(targetPath, 'rollback-create');
     } catch {
       await assertTrustedPublicationState(target, lockPath, lockIdentity, trust);
       await assertLinkedPublicationIdentity(targetPath, publishedIdentity);
-      await fileEncryptedDatabaseEffects.unlink(targetPath, 'rollback-create');
+      await effects.unlink(targetPath, 'rollback-create');
     }
   } else {
     if (backupIdentity === undefined)
@@ -1397,22 +1409,22 @@ async function rollbackPublishedContainer(
     await assertPathIdentity(backupPath, backupIdentity);
     await assertTrustedPublicationState(target, lockPath, lockIdentity, trust);
     try {
-      await fileEncryptedDatabaseEffects.rename(backupPath, targetPath, 'rollback');
+      await effects.rename(backupPath, targetPath, 'rollback');
     } catch {
       await assertTrustedPublicationState(target, lockPath, lockIdentity, trust);
       await assertPathIdentity(targetPath, publishedIdentity);
       await assertPathIdentity(backupPath, backupIdentity);
-      await fileEncryptedDatabaseEffects.rename(backupPath, targetPath, 'rollback');
+      await effects.rename(backupPath, targetPath, 'rollback');
     }
     await assertPathIdentity(targetPath, backupIdentity);
   }
   try {
-    await fileEncryptedDatabaseEffects.syncDirectory(directoryPath, 'rollback');
+    await effects.syncDirectory(directoryPath, 'rollback');
   } catch {
     await assertTrustedPublicationState(target, lockPath, lockIdentity, trust);
     if (mode === 'replace' && backupIdentity !== undefined) {
       await assertPathIdentity(targetPath, backupIdentity);
-      await fileEncryptedDatabaseEffects.link(targetPath, backupPath, 'recovery');
+      await effects.link(targetPath, backupPath, 'recovery');
       await assertBackupIdentity(backupPath, backupIdentity);
     }
     throw new EncryptedDatabaseStoreError('operation');
@@ -1448,14 +1460,13 @@ async function setAndVerifyCreatedFile(
   targetPath: string,
   handle: FileHandle,
   role: 'lock' | 'temporary',
+  effects: FileEncryptedDatabaseEffects,
 ): Promise<void> {
-  if (process.platform === 'win32')
-    await fileEncryptedDatabaseEffects.setAcl(targetPath, role);
-  else await fileEncryptedDatabaseEffects.chmod(handle, 0o600);
+  if (process.platform === 'win32') await effects.setAcl(targetPath, role);
+  else await effects.chmod(handle, 0o600);
   const metadata = await handle.stat({ bigint: true });
   await assertOwnedPermissions(metadata, targetPath, true, false);
-  if (process.platform === 'win32')
-    await fileEncryptedDatabaseEffects.verifyAcl(targetPath, role);
+  if (process.platform === 'win32') await effects.verifyAcl(targetPath, role);
 }
 
 async function assertOwnedPermissions(
@@ -1681,7 +1692,11 @@ type FileEffectUnlinkPhase =
 type FileEffectDirectorySyncPhase =
   'close' | 'post-publish' | 'pre-publish' | 'rollback';
 
-type FileEncryptedDatabaseEffects = Readonly<{
+/**
+ * The filesystem effects a store runs. Package-internal: tests type partial
+ * fault-injection overrides with it; deliberately absent from the barrel.
+ */
+export type FileEncryptedDatabaseEffects = Readonly<{
   chmod: (handle: FileHandle, mode: number) => Promise<void>;
   close: (handle: FileHandle, role: 'lock' | 'temporary') => Promise<void>;
   closeOwned: (handle: FileHandle) => Promise<void>;
@@ -1706,7 +1721,12 @@ type FileEncryptedDatabaseEffects = Readonly<{
   syncDirectory: (path: string, phase: FileEffectDirectorySyncPhase) => Promise<void>;
 }>;
 
-const defaultFileEncryptedDatabaseEffects: FileEncryptedDatabaseEffects = {
+/**
+ * The real filesystem effects every store runs unless a caller injects an
+ * override. Exported package-internally so tests can compose gated partial
+ * overrides over it; deliberately absent from the package barrel.
+ */
+export const defaultFileEncryptedDatabaseEffects: FileEncryptedDatabaseEffects = {
   chmod: (handle, mode) => handle.chmod(mode),
   close: (handle) => handle.close(),
   closeOwned: (handle) => handle.close(),
@@ -1723,21 +1743,13 @@ const defaultFileEncryptedDatabaseEffects: FileEncryptedDatabaseEffects = {
   syncDirectory: (path) => syncDirectory(path),
 };
 
-let fileEncryptedDatabaseEffects = defaultFileEncryptedDatabaseEffects;
-
 /**
- * Test-only package-internal fault seam. It is deliberately absent from the
- * storage package barrel, so production consumers cannot configure filesystem
- * behavior. Each replacement is reset after a test.
+ * Package-internal construction options carrying the fault seam. Tests inject
+ * partial filesystem effect overrides here (merged over
+ * `defaultFileEncryptedDatabaseEffects`); the type is deliberately absent from
+ * the package barrel, so production consumers cannot configure filesystem
+ * behavior and always run the real effects.
  */
-export const __fileEncryptedDatabaseTestEffects = {
-  replace(overrides: Partial<FileEncryptedDatabaseEffects>): void {
-    fileEncryptedDatabaseEffects = {
-      ...defaultFileEncryptedDatabaseEffects,
-      ...overrides,
-    };
-  },
-  reset(): void {
-    fileEncryptedDatabaseEffects = defaultFileEncryptedDatabaseEffects;
-  },
-};
+export type FileEncryptedDatabaseStoreInternalOptions = Readonly<{
+  effects?: Partial<FileEncryptedDatabaseEffects>;
+}>;

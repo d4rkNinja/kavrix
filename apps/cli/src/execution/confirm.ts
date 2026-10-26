@@ -1,4 +1,4 @@
-﻿import { createInterface } from 'node:readline/promises';
+import { createInterface } from 'node:readline/promises';
 
 export type ApprovalOutcome = 'granted' | 'declined' | 'unavailable';
 

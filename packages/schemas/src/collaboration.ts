@@ -3428,6 +3428,18 @@ export const durableOperationOutcomeSchema = z
     }
     if (outcome.signedMutationReceipt !== undefined) {
       const receipt = outcome.signedMutationReceipt;
+      // canonicalJson only accepts defined tuples, so a receipt whose tuples
+      // are absent is treated as a binding mismatch rather than allowed to
+      // throw a TypeError out of the refinement.
+      const isAbsent = (value: unknown): boolean => value === undefined;
+      const tuplesMismatch =
+        isAbsent(receipt.priorTuple) !== isAbsent(outcome.priorTuple) ||
+        isAbsent(receipt.committedTuple) !== isAbsent(outcome.committedTuple) ||
+        (!isAbsent(receipt.priorTuple) &&
+          canonicalJson(receipt.priorTuple) !== canonicalJson(outcome.priorTuple)) ||
+        (!isAbsent(receipt.committedTuple) &&
+          canonicalJson(receipt.committedTuple) !==
+            canonicalJson(outcome.committedTuple));
       if (
         receipt.databaseId !== outcome.databaseId ||
         receipt.vaultId !== outcome.vaultId ||
@@ -3440,8 +3452,7 @@ export const durableOperationOutcomeSchema = z
         receipt.committedHeadDigest !== outcome.committedHeadDigest ||
         receipt.finalizedMutationLinkDigest !== outcome.finalizedMutationLinkDigest ||
         receipt.outcomeDigest !== outcome.outcomeDigest ||
-        canonicalJson(receipt.priorTuple) !== canonicalJson(outcome.priorTuple) ||
-        canonicalJson(receipt.committedTuple) !== canonicalJson(outcome.committedTuple)
+        tuplesMismatch
       ) {
         addIssue(
           context,

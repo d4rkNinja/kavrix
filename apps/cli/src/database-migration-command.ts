@@ -1,4 +1,4 @@
-﻿import {
+import {
   databaseRevisionAnchorPath,
   validateSecureFileDestination,
   validateSecureFileSource,
@@ -8,6 +8,8 @@ import {
   vaultIdSchema,
   type DatabaseId,
   type LocalVaultDocument,
+  type ProfileId,
+  type VaultId,
 } from '@kavrix/schemas';
 import {
   FileEncryptedDatabaseStore,
@@ -18,6 +20,7 @@ import {
 } from '@kavrix/storage';
 
 import { migrateLegacyVaultToDatabase } from './database-migration.js';
+import { LocalCliError } from './cli-error.js';
 import { DatabaseSessionError } from './database-session.js';
 import { DatastoreProfileRegistry } from './datastore-profiles.js';
 import { LocalSecretInput, type LocalSecretKind } from './local-secrets.js';
@@ -65,10 +68,8 @@ export async function executeDatabaseMigrationCommand(
       ? {}
       : { configDirectory: options.profileConfigDir },
   );
-  const sourceProfile = await registry.get(profileIdSchema.parse(sourceProfileId));
-  const destinationProfile = await registry.get(
-    profileIdSchema.parse(destinationProfileId),
-  );
+  const sourceProfile = await registry.get(parseProfileId(sourceProfileId));
+  const destinationProfile = await registry.get(parseProfileId(destinationProfileId));
   if (
     sourceProfile.databaseId !== undefined ||
     (options.initialize === true
@@ -86,9 +87,7 @@ export async function executeDatabaseMigrationCommand(
       'MongoDB destination initialization is unavailable without ownership-bound cleanup.',
     );
   }
-  const sourceVaultId = vaultIdSchema.parse(
-    required(options.sourceVault, '--source-vault'),
-  );
+  const sourceVaultId = parseVaultId(required(options.sourceVault, '--source-vault'));
   await prevalidateProfiles(sourceProfile, destinationProfile, options.initialize);
 
   const kinds = databaseMigrationSecretKinds(
@@ -247,6 +246,27 @@ function required(value: string | undefined, name: string): string {
     throw new DatabaseMigrationCommandError(`${name} is required.`);
   }
   return value;
+}
+
+/**
+ * Validates routing identifiers with reviewed messages, so malformed
+ * `--source-profile` / `--source-vault` values fail as input errors instead of
+ * raw ZodErrors rendering as generic command failures.
+ */
+function parseProfileId(value: string): ProfileId {
+  try {
+    return profileIdSchema.parse(value);
+  } catch {
+    throw new LocalCliError('Profile ID is invalid.');
+  }
+}
+
+function parseVaultId(value: string): VaultId {
+  try {
+    return vaultIdSchema.parse(value);
+  } catch {
+    throw new LocalCliError('Vault ID is invalid.');
+  }
 }
 
 function secret(values: readonly string[], index: number): string {

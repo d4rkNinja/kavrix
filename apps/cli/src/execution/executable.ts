@@ -1,4 +1,4 @@
-﻿import { createHash } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import { constants, createReadStream } from 'node:fs';
 import { access, lstat, realpath, stat } from 'node:fs/promises';
 import { basename, delimiter, isAbsolute, join, resolve } from 'node:path';

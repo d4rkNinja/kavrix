@@ -120,17 +120,40 @@ export const secretBytesSchema = z
   })
   .brand<'SecretBytes'>();
 
-export const base64UrlSchema = z
-  .string()
-  .min(1)
-  .max(MAX_CIPHERTEXT_CHARS)
-  .regex(/^[A-Za-z0-9_-]+$/, 'Must use unpadded base64url encoding')
-  .refine(hasCanonicalBase64UrlTerminalBits, {
-    error: 'Must use canonical unpadded base64url encoding',
-  })
-  .refine((value) => Buffer.from(value, 'base64url').toString('base64url') === value, {
-    error: 'Must use canonical unpadded base64url encoding',
-  });
+/**
+ * Shared base64url validation with a caller-specific character ceiling.
+ *
+ * Record-level ciphertext uses {@link base64UrlSchema}; whole-file archive
+ * envelopes need a larger ceiling and call this factory with their own bound.
+ */
+export function base64UrlSchemaWithMaxChars(maxChars: number): z.ZodString {
+  return z
+    .string()
+    .min(1)
+    .max(maxChars)
+    .regex(/^[A-Za-z0-9_-]+$/, 'Must use unpadded base64url encoding')
+    .refine(hasCanonicalBase64UrlTerminalBits, {
+      error: 'Must use canonical unpadded base64url encoding',
+    })
+    .refine(
+      (value) => Buffer.from(value, 'base64url').toString('base64url') === value,
+      {
+        error: 'Must use canonical unpadded base64url encoding',
+      },
+    );
+}
+
+export const base64UrlSchema = base64UrlSchemaWithMaxChars(MAX_CIPHERTEXT_CHARS);
+
+/**
+ * Exact maximum unpadded base64url character count for a value that must not
+ * decode to more than `byteLimit` bytes. Character ceilings derived this way
+ * bound decoding allocation before the byte length is checked.
+ */
+export function maxBase64UrlCharsForByteLimit(byteLimit: number): number {
+  const remainder = byteLimit % 3;
+  return 4 * Math.floor(byteLimit / 3) + (remainder === 0 ? 0 : remainder + 1);
+}
 
 export const sha256DigestSchema = base64UrlSchema
   .length(SHA256_DIGEST_BASE64URL_CHARS)

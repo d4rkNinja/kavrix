@@ -118,12 +118,7 @@ export const itemPayloadV1Schema = z
   .superRefine((item, context) => {
     const fieldIds = new Set<string>();
     const stableKeys = new Set<string>();
-    const templateFieldIds = new Set<string>();
-    const templateStableKeys = new Set<string>();
-    for (const [index, value] of [
-      ...item.templateValues,
-      ...item.itemValues,
-    ].entries()) {
+    for (const [index, value] of item.templateValues.entries()) {
       if (fieldIds.has(value.fieldId) || stableKeys.has(value.stableKey)) {
         context.addIssue({
           code: 'custom',
@@ -133,10 +128,19 @@ export const itemPayloadV1Schema = z
       }
       fieldIds.add(value.fieldId);
       stableKeys.add(value.stableKey);
-      if (index < item.templateValues.length) {
-        templateFieldIds.add(value.fieldId);
-        templateStableKeys.add(value.stableKey);
+    }
+    const templateFieldIds = new Set(fieldIds);
+    const templateStableKeys = new Set(stableKeys);
+    for (const [index, value] of item.itemValues.entries()) {
+      if (fieldIds.has(value.fieldId) || stableKeys.has(value.stableKey)) {
+        context.addIssue({
+          code: 'custom',
+          message: 'Active field values must have unique IDs and stable keys',
+          path: ['itemValues', index],
+        });
       }
+      fieldIds.add(value.fieldId);
+      stableKeys.add(value.stableKey);
     }
 
     const itemDefinitionsById = new Map<string, (typeof item.itemFields)[number]>();

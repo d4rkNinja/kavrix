@@ -272,6 +272,12 @@ export const TUI_COMMAND_KILL_GRACE_MS = 1_000;
 export interface CliTuiSessionOptions {
   readonly profileConfigDir?: string;
   readonly ascii?: boolean;
+  /**
+   * Explicit operator opt-in forwarded to MongoDB connections and child CLI
+   * invocations. Without it, remote non-TLS MongoDB hosts fail closed exactly
+   * like the numbered CLI commands.
+   */
+  readonly allowInsecureTransport?: boolean;
   /** Effective theme resolved by the command layer (flag > env > persisted). */
   readonly theme?: string;
   binPath?: string;
@@ -441,25 +447,30 @@ class CliTuiSession {
 
   constructor(options: CliTuiSessionOptions) {
     this.#options = options;
-    this.#vaultSession = new TuiVaultSession(async (error) => {
-      await this.#lock();
-      // The vault session wipes keys before this callback runs, so the lock
-      // above is the security boundary. A snapshot or listener failure after
-      // it must not reach the vault session's expiry hard-stop, which would
-      // permanently brick every later action for a one-off notify glitch;
-      // the locked state is still reported by the next dispatch.
-      try {
-        this.#notice =
-          error === undefined
-            ? 'TUI session expired; unlock again.'
-            : 'TUI session cleanup failed; restart the app.';
-        this.#noticeTone = error === undefined ? 'info' : 'error';
-        const snapshot = await this.#buildSnapshot();
-        for (const listener of this.#listeners) listener(snapshot);
-      } catch {
-        // The vault is locked; the expiry state is enforced by the session.
-      }
-    });
+    this.#vaultSession = new TuiVaultSession(
+      async (error) => {
+        await this.#lock();
+        // The vault session wipes keys before this callback runs, so the lock
+        // above is the security boundary. A snapshot or listener failure after
+        // it must not reach the vault session's expiry hard-stop, which would
+        // permanently brick every later action for a one-off notify glitch;
+        // the locked state is still reported by the next dispatch.
+        try {
+          this.#notice =
+            error === undefined
+              ? 'TUI session expired; unlock again.'
+              : 'TUI session cleanup failed; restart the app.';
+          this.#noticeTone = error === undefined ? 'info' : 'error';
+          const snapshot = await this.#buildSnapshot();
+          for (const listener of this.#listeners) listener(snapshot);
+        } catch {
+          // The vault is locked; the expiry state is enforced by the session.
+        }
+      },
+      TUI_SESSION_IDLE_MS,
+      TUI_SESSION_MAX_MS,
+      this.#options.allowInsecureTransport === true,
+    );
   }
 
   subscribe(listener: (snapshot: CliTuiSnapshot) => void): () => void {
@@ -1026,7 +1037,7 @@ class CliTuiSession {
   }
 
   /**
-   * Matches scripts/tui-vault-smoke.ts:
+   * Mirrors the guided onboarding sequence:
    * db profile add → db profile use → db init → db vault create → db vault use.
    * Secrets travel only as stdin frames (`--passphrase-stdin`).
    */
@@ -1395,9 +1406,13 @@ class CliTuiSession {
     if (action.vaultCollection?.trim()) {
       collectionArgs.push('--vault-collection', action.vaultCollection.trim());
     }
-    const transport = needsInsecureTransport(databaseUrl)
-      ? (['--allow-insecure-transport'] as const)
-      : [];
+    // Only an explicit operator opt-in ever enables non-TLS transport; remote
+    // hosts without it fail closed inside the storage layer, matching every
+    // numbered CLI command.
+    const transport =
+      this.#options.allowInsecureTransport === true
+        ? (['--allow-insecure-transport'] as const)
+        : [];
     let profileAdded = false;
     let vaultReady = false;
 
@@ -2478,7 +2493,7 @@ class CliTuiSession {
     if (current?.datastore !== 'mongodb' || this.#databaseUrl === null) {
       return [];
     }
-    return needsInsecureTransport(this.#databaseUrl.toString('utf8'))
+    return this.#options.allowInsecureTransport === true
       ? ['--allow-insecure-transport']
       : [];
   }
@@ -2490,9 +2505,10 @@ class CliTuiSession {
     const current = profile === undefined ? await this.#currentProfile() : profile;
     if (current?.datastore === 'mongodb') {
       const url = this.#requireDatabaseUrl();
-      const insecure = needsInsecureTransport(url)
-        ? (['--allow-insecure-transport'] as const)
-        : [];
+      const insecure =
+        this.#options.allowInsecureTransport === true
+          ? (['--allow-insecure-transport'] as const)
+          : [];
       return {
         args: ['--database-url-stdin', ...insecure],
         frames: [url, ...rest],
@@ -2685,16 +2701,6 @@ class CliTuiSession {
       throw new Error('Invalid command timeout configuration.');
     }
     return configured;
-  }
-}
-
-function needsInsecureTransport(databaseUrl: string): boolean {
-  try {
-    const parsed = new URL(databaseUrl);
-    const host = parsed.hostname.replace(/^\[|\]$/gu, '').toLowerCase();
-    return host !== 'localhost' && host !== '127.0.0.1' && host !== '::1';
-  } catch {
-    return true;
   }
 }
 
@@ -2959,6 +2965,7 @@ export async function runInteractiveTui(
     theme?: string;
     profileConfigDir?: string;
     configDir?: string;
+    allowInsecureTransport?: boolean;
   }>,
 ): Promise<void> {
   const themeSource = options.theme ?? process.env['KAVRIX_TUI_THEME'];
@@ -3006,6 +3013,9 @@ export async function runInteractiveTui(
   }
   const backend = createCliTuiBackend({
     ascii,
+    ...(options.allowInsecureTransport === true
+      ? { allowInsecureTransport: true }
+      : {}),
     ...(themeSource === undefined ? {} : { theme: themeSource }),
     ...(profileConfigDir === undefined ? {} : { profileConfigDir }),
   });

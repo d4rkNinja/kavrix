@@ -7,6 +7,7 @@ import { useInputInteraction } from './interaction.js';
 import { ClickTarget } from './mouse.js';
 import { TerminalViewport } from './viewport.js';
 import {
+  folderBrowserWindow,
   onboardingStepFocus,
   isPathStep,
   type OnboardingKey,
@@ -455,8 +456,7 @@ function renderOnboardingBody(
   }
   if (state.toolView?.kind === 'folders') {
     const view = state.toolView;
-    const rows = Math.max(1, Math.min(8, state.height - 11));
-    const start = Math.max(0, state.folderIndex - rows + 1);
+    const { start, rows } = folderBrowserWindow(state);
     return (
       <Panel title="Choose folder" ascii={ascii} color={color} paddingX={1}>
         <SingleLine>{safe(view.directory, ascii)}</SingleLine>
@@ -469,7 +469,9 @@ function renderOnboardingBody(
             ascii={ascii}
             accent={CHROME.accent}
             onPress={() => {
-              press({ text: String(start + offset + 1) });
+              // Digits are 1-based over the visible rows, matching the
+              // keyboard digits resolved by folderDigitIndex.
+              press({ text: String(offset + 1) });
             }}
           />
         ))}

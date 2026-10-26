@@ -10,7 +10,11 @@
  */
 import { Command } from 'commander';
 import { CLI_EXIT_CODES } from '@kavrix/schemas/cli-exit-codes';
-import { commanderExitCode, sessionUnlockExitCode } from './cli-exit-mapping.js';
+import {
+  classifyAggregateFailure,
+  commanderExitCode,
+  sessionUnlockExitCode,
+} from './cli-exit-mapping.js';
 import { addDatabaseOwnerCommands } from './database-commands.js';
 import { LocalCliError } from './cli-error.js';
 import { InitOnboardingCancelledError } from './init-onboarding.js';
@@ -127,11 +131,17 @@ function classifyLightCliFailure(
       exitCode: sessionUnlockExitCode((error as { code: string }).code),
     };
   }
-  if (
-    error instanceof AggregateError ||
-    error instanceof InitOnboardingCancelledError ||
-    error instanceof LocalCliError
-  ) {
+  if (error instanceof AggregateError) {
+    // Classify by member with the shared startup-safe helper. When no member
+    // carries a non-generic exit code here, defer to the full classifier: its
+    // members may be heavy failure classes (storage, key files, migration)
+    // this graph deliberately cannot name.
+    const classified = classifyAggregateFailure(error, classifyLightCliFailure);
+    return classified.exitCode === CLI_EXIT_CODES.unclassifiedFailure
+      ? undefined
+      : classified;
+  }
+  if (error instanceof InitOnboardingCancelledError || error instanceof LocalCliError) {
     return { message: error.message, exitCode: CLI_EXIT_CODES.unclassifiedFailure };
   }
   if (

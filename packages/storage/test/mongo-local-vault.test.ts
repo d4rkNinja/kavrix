@@ -354,6 +354,34 @@ describe('MongoLocalVaultStore', () => {
     );
     await store.close();
   });
+
+  it('rejects every operation after close with the closed code', async () => {
+    const store = await MongoLocalVaultStore.connect(URI, DATABASE_NAME);
+    await store.close();
+    expect(mongodb.client.close).toHaveBeenCalledOnce();
+
+    await store.close();
+    expect(mongodb.client.close).toHaveBeenCalledOnce();
+
+    await expect(store.ping()).rejects.toEqual(new MongoLocalVaultError('closed'));
+    await expect(store.get('vault.one')).rejects.toEqual(
+      new MongoLocalVaultError('closed'),
+    );
+    await expect(store.listVaultIds()).rejects.toEqual(
+      new MongoLocalVaultError('closed'),
+    );
+    await expect(store.create(document())).rejects.toEqual(
+      new MongoLocalVaultError('closed'),
+    );
+    await expect(store.update(document('vault.one', 1), revision(0))).rejects.toEqual(
+      new MongoLocalVaultError('closed'),
+    );
+    await expect(store.delete('vault.one', revision(0))).rejects.toEqual(
+      new MongoLocalVaultError('closed'),
+    );
+    expect(mongodb.collection.findOne).not.toHaveBeenCalled();
+    expect(mongodb.collection.insertOne).not.toHaveBeenCalled();
+  });
 });
 
 function document(id = 'vault.one', revision = 0): LocalVaultDocument {

@@ -27,10 +27,7 @@ import {
   verifyWindowsUserOnlyAcl,
 } from '@kavrix/key-files/windows-acl';
 
-import {
-  EncryptedVaultStoreError,
-  type EncryptedVaultStore,
-} from './encrypted-vault-store.js';
+import { EncryptedVaultStoreError, type EncryptedVaultStore } from '@kavrix/core';
 
 export const MAX_FILE_LOCAL_VAULT_BYTES = 32 * 1024 * 1024;
 

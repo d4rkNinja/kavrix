@@ -94,7 +94,15 @@ export function sanitizeTerminalText(value: string, ascii = false): string {
     const codePoint = value.codePointAt(index);
     if (codePoint === undefined) continue;
     if (codePoint > 0xffff) index += 1;
-    if (isBidiControl(codePoint) || codePoint === 0x2028 || codePoint === 0x2029) {
+    // Lone surrogates (which JSON.parse can produce from "\ud800" escapes)
+    // would make String.fromCodePoint throw, so they degrade exactly like
+    // other hostile invisible characters instead of crashing the renderer.
+    if (
+      (codePoint >= 0xd800 && codePoint <= 0xdfff) ||
+      isBidiControl(codePoint) ||
+      codePoint === 0x2028 ||
+      codePoint === 0x2029
+    ) {
       output += ascii ? '?' : REPLACEMENT;
       continue;
     }

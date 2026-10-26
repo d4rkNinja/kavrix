@@ -1,4 +1,4 @@
-﻿import {
+import {
   AuthorizationStateFileError,
   authorizationStatePath,
   initializeAuthorizationStateFile,
@@ -57,6 +57,19 @@ export type StateMutation<T> = (
     next: (apply: (draft: StateMutationDraft) => void) => void;
   }>,
 ) => Promise<T> | T;
+
+/**
+ * Typed outcome of one locked grant-consumption transition. A denial is
+ * recorded inside the transition (the audit event commits with the state) and
+ * surfaces as its marker first; the typed error is thrown only after the
+ * commit, preserving the callers' error and exit-code contract.
+ */
+type GrantConsumptionOutcome =
+  | Readonly<{ status: 'allowed'; grant: GrantRecord }>
+  | Readonly<{ status: 'not-found' }>
+  | Readonly<{ status: 'revoked' }>
+  | Readonly<{ status: 'expired' }>
+  | Readonly<{ status: 'exhausted' }>;
 
 /**
  * One unlocked scope's sealed authorization state. Every mutation runs under
@@ -258,20 +271,44 @@ export class AuthorizationState {
    * Reserves one use of a grant inside the locked transition. Expiry and the
    * use count are revalidated against freshly-read state, so concurrent
    * invocations can never both claim the final use.
+   *
+   * Every denial — raced or not — is recorded as an audit event inside the
+   * same locked transition and committed before the typed error is thrown, so
+   * a denial can never race past without leaving a persisted audit event and
+   * can never be double-audited by the caller.
    */
   public async consumeGrantUse(
     grantIdInput: string,
     meta: Readonly<{ executable: string; argvPreview?: readonly string[] | undefined }>,
   ): Promise<GrantRecord> {
     const grantId = parseGrantId(grantIdInput);
-    return this.mutate((view) => {
+    const outcome = await this.mutate<GrantConsumptionOutcome>((view) => {
       const grant = view.snapshot.grants[grantId];
       if (grant === undefined) {
-        throw grantInvalid(`Grant '${grantId}' was not found.`);
+        view.next((draft) => {
+          appendAudit(draft.audit, {
+            actor: 'user',
+            action: 'authorization-denied',
+            grantId,
+            command: meta.executable,
+            reason: 'invalid-request',
+          });
+        });
+        return { status: 'not-found' };
       }
       const nowMs = Date.now();
       if (grant.revokedAt !== undefined) {
-        throw authorizationDenied('The requested grant has been revoked.');
+        view.next((draft) => {
+          appendAudit(draft.audit, {
+            actor: grant.actor === 'agent' ? 'agent' : 'user',
+            action: 'authorization-denied',
+            grantId,
+            secret: grant.secret,
+            command: meta.executable,
+            reason: 'revoked',
+          });
+        });
+        return { status: 'revoked' };
       }
       if (grant.expiresAt !== undefined && nowMs > Date.parse(grant.expiresAt)) {
         view.next((draft) => {
@@ -283,7 +320,7 @@ export class AuthorizationState {
             command: meta.executable,
           });
         });
-        throw grantInvalid('The temporary grant has expired.');
+        return { status: 'expired' };
       }
       if (grant.maxUses !== undefined && grant.usedCount >= grant.maxUses) {
         view.next((draft) => {
@@ -295,7 +332,7 @@ export class AuthorizationState {
             command: meta.executable,
           });
         });
-        throw grantInvalid('The temporary grant has no remaining uses.');
+        return { status: 'exhausted' };
       }
       let updated: GrantRecord | undefined;
       view.next((draft) => {
@@ -318,8 +355,23 @@ export class AuthorizationState {
             : { argvPreview: [...meta.argvPreview] }),
         });
       });
-      return updated ?? grant;
+      return { status: 'allowed', grant: updated ?? grant };
     });
+    // Thrown only after the denial audit event committed with the state, so
+    // callers observe the same typed errors and exit codes as before.
+    if (outcome.status === 'not-found') {
+      throw grantInvalid(`Grant '${grantId}' was not found.`);
+    }
+    if (outcome.status === 'revoked') {
+      throw authorizationDenied('The requested grant has been revoked.');
+    }
+    if (outcome.status === 'expired') {
+      throw grantInvalid('The temporary grant has expired.');
+    }
+    if (outcome.status === 'exhausted') {
+      throw grantInvalid('The temporary grant has no remaining uses.');
+    }
+    return outcome.grant;
   }
 
   public async recordEvent(event: RuntimeAuditEventInput): Promise<number> {

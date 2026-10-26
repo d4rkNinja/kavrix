@@ -1,4 +1,4 @@
-import { access, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { access, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
@@ -57,6 +57,7 @@ import {
 import { DatabaseSession, DatabaseSessionError } from '../src/database-session.js';
 import { DatabaseMigrationError } from '../src/database-migration.js';
 import * as migrationCommands from '../src/database-migration-command.js';
+import { LocalSecretInput } from '../src/local-secrets.js';
 
 const PASSPHRASE = 'local-cli-coverage-passphrase';
 const DIFFERENT_PASSPHRASE = 'local-cli-coverage-different-passphrase';
@@ -355,6 +356,89 @@ describe(
         ),
       ) as Record<string, unknown>;
       expect(keyStatus).toMatchObject({ keyFile: value.key, protected: true });
+    });
+
+    it('round-trips a multiline secret exactly through get --reveal --json', async () => {
+      const value = await target();
+      await initVault(value);
+      const multiline =
+        'line-one\nline-two\ttabbed\r\nesc-tail\u001b]52;c;ZXZpLWNhbmFyeQ\u0007 done';
+      const encoded = Buffer.from(multiline, 'utf8').toString('base64');
+      await runCli(
+        [
+          'add',
+          'multiline',
+          ...route(value),
+          '--passphrase-stdin',
+          '--value-stdin-base64',
+        ],
+        `${PASSPHRASE}\n${encoded}\n`,
+      );
+
+      const revealed = await runCli(
+        [
+          'get',
+          'multiline',
+          ...route(value),
+          '--passphrase-stdin',
+          '--reveal',
+          '--json',
+        ],
+        `${PASSPHRASE}\n`,
+      );
+      // The machine-readable reveal path must preserve every byte: newline,
+      // tab, carriage return, and even hostile escape sequences travel as
+      // JSON string escapes instead of the display '[CONTROL]' replacement.
+      const parsed = JSON.parse(revealed) as { name: string; value: string };
+      expect(parsed.name).toBe('multiline');
+      expect(parsed.value).toBe(multiline);
+      // The emitted bytes themselves stay terminal-safe: no raw control
+      // characters outside of JSON's own escaped presentations.
+      const rawEscapes = revealed.match(/\u001b/gu) ?? [];
+      expect(rawEscapes).toHaveLength(0);
+    });
+
+    it('reports a tampered database key file precisely instead of falling through', async () => {
+      const value = await target();
+      // The public database-owner armor marker routes this file to the
+      // database binding reader; its integrity diagnosis must surface instead
+      // of the legacy reader's vaguer one.
+      await writeFile(
+        value.key,
+        '-----BEGIN KAVRIX DATABASE KEY-----\ncorrupted binding body\n',
+        'ascii',
+      );
+      const readBinding = vi
+        .spyOn(keyFiles, 'readDatabaseKeyFileBinding')
+        .mockRejectedValue(new PortableKeyFileError('KEY_FILE_UNSAFE'));
+      const readSecrets = vi.spyOn(LocalSecretInput.prototype, 'read');
+
+      await expect(runCli(['key', 'status', '--key-file', value.key])).rejects.toThrow(
+        'The portable key file is not safe to use.',
+      );
+      expect(readBinding).toHaveBeenCalledTimes(1);
+      // The precise database-key diagnosis surfaces before any secret input.
+      expect(readSecrets).not.toHaveBeenCalled();
+    });
+
+    it('keeps legacy key files on the legacy reader path', async () => {
+      const value = await target();
+      await writeFile(
+        value.key,
+        '-----BEGIN CREDVAULT PORTABLE KEY-----\nnot a real legacy key\n',
+        'ascii',
+      );
+      const readBinding = vi
+        .spyOn(keyFiles, 'readDatabaseKeyFileBinding')
+        .mockRejectedValue(new PortableKeyFileError('KEY_FILE_UNSAFE'));
+
+      // Legacy armor never probes the database binding; the command falls
+      // through to the legacy reader (which here fails closed on secret input
+      // for a non-terminal run) instead of surfacing the database diagnosis.
+      await expect(runCli(['key', 'status', '--key-file', value.key])).rejects.toThrow(
+        'A masked prompt requires a terminal',
+      );
+      expect(readBinding).not.toHaveBeenCalled();
     });
 
     it('resolves MongoDB routes and reports invalid connection-name combinations safely', async () => {

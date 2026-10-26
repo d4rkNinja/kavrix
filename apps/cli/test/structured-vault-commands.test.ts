@@ -19,6 +19,7 @@ import {
 } from '@kavrix/schemas';
 
 import { registerStructuredVaultCommands } from '../src/structured-vault-commands.js';
+import * as revealPolicy from '../src/execution/reveal-policy.js';
 import {
   assertStructuredFieldRevealAllowed,
   createProjectContext,
@@ -1132,6 +1133,46 @@ describe('structured vault command model', () => {
         'main',
       ),
     ).rejects.toThrow('either --reveal or --reveal-base64');
+
+    // Reveal rendering keeps multiline values faithful (newlines, tabs, and
+    // carriage returns are not silently merged) while still removing hostile
+    // escape sequences before the terminal sees the text.
+    vi.spyOn(revealPolicy, 'enforceRevealPolicy').mockResolvedValue(undefined);
+    nextFieldValue =
+      'line-one\nline-two\ttabbed\r\nhostile\u001b]52;c;canary\u0007 tail';
+    await execute(
+      'field',
+      'set',
+      'multiline',
+      '--type',
+      'text',
+      '--sensitive',
+      '--context',
+      'production-project',
+      '--service',
+      'postgres',
+      '--item',
+      'main',
+    );
+    output.length = 0;
+    await buildLocalCli().parseAsync([
+      'node',
+      'kavrix',
+      'field',
+      'get',
+      'multiline',
+      '--reveal',
+      '--context',
+      'production-project',
+      '--service',
+      'postgres',
+      '--item',
+      'main',
+      ...route,
+    ]);
+    const multilineReveal = output.join('');
+    expect(multilineReveal).toContain('line-one\nline-two\ttabbed\r\nhostile tail');
+    expect(multilineReveal).not.toContain('\u001b');
     await expect(
       executeRaw(
         'field',

@@ -3,6 +3,8 @@ import { describe, expect, it } from 'vitest';
 import {
   createInitialOnboardingState,
   describeOnboardingScreen,
+  folderBrowserWindow,
+  folderDigitIndex,
   onboardingStepFocus,
   transitionOnboarding as rawTransition,
   type OnboardingKey,
@@ -584,5 +586,84 @@ describe('init onboarding router', () => {
     expect(finish.state.completedRecoveryFile).toBe(
       '/home/user/.kavrix/kavrix.recovery',
     );
+  });
+});
+
+describe('folder browser digit selection', () => {
+  const height = 24; // rows = min(8, height - 11) = 8 visible rows.
+
+  function folderState(entries: number, folderIndex = 0): OnboardingState {
+    return {
+      ...createInitialOnboardingState({ height }),
+      step: 'file-recovery-file',
+      storage: 'file',
+      folderIndex,
+      toolView: {
+        kind: 'folders',
+        directory: '/home/user',
+        parent: '/home',
+        entries: Array.from({ length: entries }, (_entry, index) => ({
+          name: `dir-${String(index)}`,
+          path: `/home/user/dir-${String(index)}`,
+        })),
+        truncated: false,
+      },
+    };
+  }
+
+  it('exposes the visible window the renderer and digit selection share', () => {
+    expect(folderBrowserWindow({ height, folderIndex: 0 })).toEqual({
+      rows: 8,
+      start: 0,
+    });
+    expect(folderBrowserWindow({ height, folderIndex: 9 })).toEqual({
+      rows: 8,
+      start: 2,
+    });
+    expect(folderBrowserWindow({ height: 12, folderIndex: 5 })).toEqual({
+      rows: 1,
+      start: 5,
+    });
+  });
+
+  it('resolves 1-based digits onto the visible window only', () => {
+    const entries = 10;
+    expect(folderDigitIndex({ height, folderIndex: 0 }, 1, entries)).toBe(0);
+    expect(folderDigitIndex({ height, folderIndex: 0 }, 8, entries)).toBe(7);
+    // Digits outside the visible rows, before 1, or past the entries are ignored.
+    expect(folderDigitIndex({ height, folderIndex: 0 }, 9, entries)).toBeUndefined();
+    expect(folderDigitIndex({ height, folderIndex: 0 }, 0, entries)).toBeUndefined();
+    expect(folderDigitIndex({ height, folderIndex: 0 }, 8, 4)).toBeUndefined();
+    // A scrolled window: digit 1 names the first visible row, not entries[0].
+    expect(folderDigitIndex({ height, folderIndex: 9 }, 1, entries)).toBe(2);
+    expect(folderDigitIndex({ height, folderIndex: 9 }, 3, entries)).toBe(4);
+  });
+
+  it('selects the clicked row and keyboard digits consistently', () => {
+    // A click on the third visible row sends digit '3' and selects entries[2];
+    // the pre-fix mapper sent the absolute index + 1 and selected entries[3].
+    expect(
+      rawTransition(folderState(10), { type: 'key', key: { text: '3' } }).state
+        .folderIndex,
+    ).toBe(2);
+    // Keyboard digit '1' selects the first visible entry.
+    expect(
+      rawTransition(folderState(10), { type: 'key', key: { text: '1' } }).state
+        .folderIndex,
+    ).toBe(0);
+    // Digits without a visible row leave the selection unchanged.
+    expect(
+      rawTransition(folderState(10), { type: 'key', key: { text: '9' } }).state
+        .folderIndex,
+    ).toBe(0);
+    expect(
+      rawTransition(folderState(4), { type: 'key', key: { text: '8' } }).state
+        .folderIndex,
+    ).toBe(0);
+    // Scrolled window: digit '1' selects the first visible row.
+    expect(
+      rawTransition(folderState(10, 9), { type: 'key', key: { text: '1' } }).state
+        .folderIndex,
+    ).toBe(2);
   });
 });

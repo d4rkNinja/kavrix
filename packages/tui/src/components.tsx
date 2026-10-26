@@ -133,8 +133,11 @@ export function VaultTui({
 }: VaultTuiProps): ReactElement {
   const { stdout } = useStdout();
   const { exit } = useApp();
-  const initial = createInitialTuiState(stdout.columns, stdout.rows, ascii);
-  const [state, setState] = useState(initial);
+  // Lazy initializer: `createInitialTuiState` is only meaningful for the first
+  // render, so it must not re-run on every keystroke or tick.
+  const [state, setState] = useState(() =>
+    createInitialTuiState(stdout.columns, stdout.rows, ascii),
+  );
   const stateRef = useRef(state);
   const activeController = useRef<AbortController | null>(null);
   const lockConfirmed = useRef(false);
@@ -335,10 +338,12 @@ function mapInkInput(
     shift: boolean;
   }>,
 ): TuiKey | null {
-  if (key.upArrow) return { name: 'up' };
-  if (key.downArrow) return { name: 'down' };
-  if (key.leftArrow) return { name: 'left' };
-  if (key.rightArrow) return { name: 'right' };
+  // Shift must survive the mapping: the repeatable-field editor reorders on
+  // Shift+Up/Down, and Ink reports the modifier on the same key object.
+  if (key.upArrow) return { name: 'up', shift: key.shift };
+  if (key.downArrow) return { name: 'down', shift: key.shift };
+  if (key.leftArrow) return { name: 'left', shift: key.shift };
+  if (key.rightArrow) return { name: 'right', shift: key.shift };
   if (key.tab) return { name: 'tab', shift: key.shift };
   if (key.return) return { name: 'return', shift: key.shift };
   if (key.escape) return { name: 'escape' };

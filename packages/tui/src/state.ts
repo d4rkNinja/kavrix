@@ -17,6 +17,7 @@ import {
 
 import type { TuiSaveResult } from './contracts.js';
 import { describeFieldEditor } from './field-registry.js';
+import { MOTION } from './motion.js';
 
 export type TuiPane = 'groups' | 'items' | 'details';
 export type TuiOverlay =
@@ -861,8 +862,12 @@ function scalarFromInput(
       case 'secret':
         return { kind: 'secret', value: secretValueSchema.parse(input) };
       case 'number': {
-        const value = Number(input);
-        return Number.isFinite(value) ? { kind: 'number', value } : null;
+        // Strict decimal text only. `Number()` would silently accept '0x11',
+        // ' 12 ', and '1e3', and would commit an empty repeatable element as
+        // 0. Policy bounds (min/max, integer port range) stay with
+        // fieldValueMatchesDefinition, which runs on the parsed value.
+        if (!/^-?\d+(?:\.\d+)?$/u.test(input)) return null;
+        return { kind: 'number', value: Number(input) };
       }
       case 'boolean':
         if (input.toLowerCase() === 'true' || input.toLowerCase() === 'yes')
@@ -952,7 +957,7 @@ function revealSelectedField(state: TuiState, nowMs: number): TuiTransition {
         ? {}
         : { elementIndex: target.elementIndex }),
       ...(target?.elementId === undefined ? {} : { elementId: target.elementId }),
-      expiresAt: nowMs + 15_000,
+      expiresAt: nowMs + MOTION.revealWindowMs,
     }),
     {
       itemId: item.id,
@@ -992,7 +997,7 @@ function confirmedReveal(state: TuiState, nowMs: number): TuiTransition {
       fieldId,
       ...(elementIndex === undefined ? {} : { elementIndex }),
       ...(elementId === undefined ? {} : { elementId }),
-      expiresAt: nowMs + 15_000,
+      expiresAt: nowMs + MOTION.revealWindowMs,
     }),
     {
       itemId: item.id,

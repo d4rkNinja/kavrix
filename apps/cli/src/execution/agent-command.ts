@@ -11,6 +11,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { performance } from 'node:perf_hooks';
 
+import { zeroize } from '@kavrix/crypto';
 import {
   agentBrokerClientFrameSchema,
   agentBrokerRequestSchema,
@@ -50,9 +51,13 @@ import {
   type EvaluationContext,
 } from './engine.js';
 import {
+  BrokerFrameAuthError,
   NdjsonDecoder,
   auditCommandName,
   boundedPreview,
+  decodeBrokerFrameLine,
+  deriveBrokerSessionKey,
+  encodeBrokerFrameLine,
   streamOutputFrames,
   tokensMatch,
 } from './broker-protocol.js';
@@ -123,17 +128,20 @@ export interface AgentExecOptions {
 
 /**
  * Runs one AI-agent process under the credential firewall. The agent receives
- * no credential material â€” only a local broker endpoint and a one-session
- * token â€” and every credential-backed operation must be requested through
+ * no credential material — only a local broker endpoint and a one-session
+ * token — and every credential-backed operation must be requested through
  * `kavrix agent exec`, where Kavrix authorizes the operation against the
  * agent's permission entries and supplies the secret directly to the
  * authorized child only.
  *
  * Residual boundary: any descendant of the agent inherits the endpoint and
  * token environment variables, so broker access is available to the whole
- * agent process tree; policy still gates every individual request. Secrets
- * live in broker memory for the session lifetime, which same-user process
- * inspection can read â€” identical to the documented unlocked-vault limit.
+ * agent process tree; policy still gates every individual request. Every
+ * broker frame is sealed with chacha20-poly1305 under a key derived from the
+ * session token, so passive same-user observation of the pipe or socket sees
+ * only ciphertext. Secrets live in broker memory for the session lifetime,
+ * which same-user process inspection can read — identical to the documented
+ * unlocked-vault limit.
  */
 export async function executeAgentRun(options: AgentRunOptions): Promise<unknown> {
   const argv = options.executableAndArgs;
@@ -208,6 +216,11 @@ export async function executeAgentRun(options: AgentRunOptions): Promise<unknown
 
   const state = await openAgentState(keyFile, authzKey, scopeId);
 
+  // From here on, one finalizer owns every resource: the broker listener, the
+  // signal handlers, queued broker work, the in-memory secrets, the state
+  // object's key copy, and the derived key itself. This covers a
+  // `startBroker` rejection and failed executable resolution, not only the
+  // spawn path.
   const session: BrokerSession = {
     token: randomBytes(32).toString('base64url'),
     permissions,
@@ -218,38 +231,44 @@ export async function executeAgentRun(options: AgentRunOptions): Promise<unknown
     queue: Promise.resolve(),
   };
 
-  const broker = await startBroker(session);
-
-  const resolution = await resolveExecutable(argv[0] ?? '');
-  if (resolution.status !== 'resolved') {
-    await broker.cleanup();
-    state.close();
-    throw executionFailed('The agent executable could not be resolved.');
-  }
-
+  let broker: Awaited<ReturnType<typeof startBroker>> | undefined;
+  let handlers: ReadonlyMap<NodeJS.Signals, () => void> | undefined;
   const childRef: { current: ChildProcess | null } = { current: null };
-  const handlers = installSignalForwarding(childRef);
-
   let result;
   try {
-    result = await runSecureCommand({
-      executable: resolution.absolutePath,
-      arguments: argv.slice(1),
-      cwd: process.cwd(),
-      environment: [
-        [AGENT_BROKER_ENV, { kind: 'text', value: broker.endpoint }],
-        [
-          AGENT_TOKEN_ENV,
-          { kind: 'secret', value: secretValueSchema.parse(session.token) },
-        ],
-      ] satisfies readonly EnvironmentMapping[],
-      inheritEnvironment: INHERITED_ENVIRONMENT,
-      input: 'inherit',
-      output: { mode: 'inherit' },
-      onSpawn(child) {
-        childRef.current = child;
-      },
-    });
+    broker = await startBroker(session);
+
+    const resolution = await resolveExecutable(argv[0] ?? '');
+    if (resolution.status !== 'resolved') {
+      throw executionFailed('The agent executable could not be resolved.');
+    }
+
+    handlers = installSignalForwarding(childRef);
+    try {
+      result = await runSecureCommand({
+        executable: resolution.absolutePath,
+        arguments: argv.slice(1),
+        cwd: process.cwd(),
+        environment: [
+          [AGENT_BROKER_ENV, { kind: 'text', value: broker.endpoint }],
+          [
+            AGENT_TOKEN_ENV,
+            { kind: 'secret', value: secretValueSchema.parse(session.token) },
+          ],
+        ] satisfies readonly EnvironmentMapping[],
+        inheritEnvironment: INHERITED_ENVIRONMENT,
+        input: 'inherit',
+        output: { mode: 'inherit' },
+        onSpawn(child) {
+          childRef.current = child;
+        },
+      });
+    } finally {
+      for (const [signalName, handler] of handlers) {
+        process.off(signalName, handler);
+      }
+      await session.queue.catch(() => undefined);
+    }
   } catch (error) {
     if (error instanceof RunnerError) {
       throw runnerFailure(
@@ -261,13 +280,10 @@ export async function executeAgentRun(options: AgentRunOptions): Promise<unknown
     }
     throw error;
   } finally {
-    for (const [signalName, handler] of handlers) {
-      process.off(signalName, handler);
-    }
-    await session.queue.catch(() => undefined);
-    await broker.cleanup();
+    if (broker !== undefined) await broker.cleanup();
     session.secrets = new Map();
     state.close();
+    zeroize(authzKey);
   }
 
   return {
@@ -332,6 +348,7 @@ export async function executeAgentExec(options: AgentExecOptions): Promise<unkno
 
   const socket = netConnect(endpoint);
   await waitForConnect(socket);
+  const frameKey = deriveBrokerSessionKey(token, endpoint);
 
   return await new Promise<unknown>((resolvePromise, rejectPromise) => {
     let denialReason: AuthorizationReason | undefined;
@@ -394,8 +411,12 @@ export async function executeAgentExec(options: AgentExecOptions): Promise<unkno
       for (const line of lines) {
         let parsedFrame: unknown;
         try {
-          parsedFrame = JSON.parse(line) as unknown;
+          parsedFrame = decodeBrokerFrameLine(frameKey, 'server-to-client', line);
         } catch {
+          socket.destroy();
+          finishFailure(
+            new CodedCliError('USAGE_ERROR', 'The Kavrix agent broker failed.'),
+          );
           continue;
         }
         const frame = agentBrokerServerFrameSchema.safeParse(parsedFrame);
@@ -447,7 +468,7 @@ export async function executeAgentExec(options: AgentExecOptions): Promise<unkno
       }
     });
 
-    socket.write(`${JSON.stringify(request)}\n`);
+    socket.write(`${encodeBrokerFrameLine(frameKey, 'client-to-server', request)}\n`);
     process.stdin.on('data', (chunk: Buffer | string) => {
       const bytes = typeof chunk === 'string' ? Buffer.from(chunk, 'utf8') : chunk;
       for (let offset = 0; offset < bytes.byteLength; offset += MAX_BROKER_DATA_BYTES) {
@@ -455,7 +476,7 @@ export async function executeAgentExec(options: AgentExecOptions): Promise<unkno
           offset,
           Math.min(offset + MAX_BROKER_DATA_BYTES, bytes.byteLength),
         );
-        sendClientFrame(socket, {
+        sendClientFrame(frameKey, socket, {
           v: 1,
           event: 'stdin',
           data: bounded.toString('base64'),
@@ -463,7 +484,7 @@ export async function executeAgentExec(options: AgentExecOptions): Promise<unkno
       }
     });
     process.stdin.on('end', () => {
-      sendClientFrame(socket, { v: 1, event: 'close-stdin' });
+      sendClientFrame(frameKey, socket, { v: 1, event: 'close-stdin' });
     });
     process.stdin.resume();
   });
@@ -573,6 +594,8 @@ interface BrokerRuntime {
 interface ConnectionContext {
   readonly session: BrokerSession;
   readonly runtime: BrokerRuntime;
+  /** Session key sealing every frame in both directions. */
+  readonly frameKey: Buffer;
   readonly terminated: Promise<void>;
   readonly resolveTerminated: () => void;
   requestSeen: boolean;
@@ -620,9 +643,12 @@ function startBroker(
   const endpoint = isWindows
     ? `\\\\.\\pipe\\kavrix-agent-${randomUUID()}`
     : join(tmpdir(), `kavrix-agent-${randomUUID()}.sock`);
+  const frameKey = deriveBrokerSessionKey(session.token, endpoint);
   return new Promise<BrokerListener>((resolveListener, rejectListener) => {
     const server: Server = createServer((socket) => {
-      void handleConnection(socket, session, runtime).catch(() => socket.destroy());
+      void handleConnection(socket, session, runtime, frameKey).catch(() =>
+        socket.destroy(),
+      );
     });
     server.on('error', (error) => {
       rejectListener(new CodedCliError('DATASTORE_FAILURE', describeError(error)));
@@ -657,6 +683,7 @@ async function handleConnection(
   socket: Socket,
   session: BrokerSession,
   runtime: BrokerRuntime,
+  frameKey: Buffer,
 ): Promise<void> {
   let resolveTerminated = (): void => undefined;
   const terminated = new Promise<void>((resolvePromise) => {
@@ -665,6 +692,7 @@ async function handleConnection(
   const context: ConnectionContext = {
     session,
     runtime,
+    frameKey,
     terminated,
     resolveTerminated,
     requestSeen: false,
@@ -733,8 +761,11 @@ function handleRelayLine(
   }
   let parsedFrame: unknown;
   try {
-    parsedFrame = JSON.parse(line) as unknown;
-  } catch {
+    parsedFrame = decodeBrokerFrameLine(context.frameKey, 'client-to-server', line);
+  } catch (error) {
+    if (error instanceof BrokerFrameAuthError) {
+      socket.destroy();
+    }
     return;
   }
   const frame = agentBrokerClientFrameSchema.safeParse(parsedFrame);
@@ -823,7 +854,7 @@ function terminateBrokerConnection(
         true,
       ).catch(() => undefined);
     }
-    sendServerFrame(socket, {
+    sendServerFrame(context, socket, {
       v: 1,
       event: 'stderr',
       data: Buffer.from(message, 'utf8').toString('base64'),
@@ -911,7 +942,7 @@ async function dispatchRequest(
   const { session } = context;
   let parsedRequest: unknown;
   try {
-    parsedRequest = JSON.parse(line) as unknown;
+    parsedRequest = decodeBrokerFrameLine(context.frameKey, 'client-to-server', line);
   } catch {
     socket.destroy();
     return;
@@ -1171,7 +1202,7 @@ function wireChildRelay(
   ): Promise<void> => {
     if (readable === null) return;
     for await (const chunk of readable) {
-      streamOutput(socket, event, chunk as Buffer);
+      streamOutput(context, socket, event, chunk as Buffer);
     }
   };
   void Promise.all([pump(child.stdout, 'stdout'), pump(child.stderr, 'stderr')]).catch(
@@ -1232,7 +1263,7 @@ function sendDecisionFrame(
   frame: Extract<AgentBrokerServerFrame, { event: 'decision' }>,
 ): void {
   context.decisionSent = true;
-  sendServerFrame(socket, frame);
+  sendServerFrame(context, socket, frame);
 }
 
 function sendExitFrame(
@@ -1242,7 +1273,7 @@ function sendExitFrame(
 ): void {
   if (context.exitSent) return;
   context.exitSent = true;
-  sendServerFrame(socket, frame);
+  sendServerFrame(context, socket, frame);
 }
 
 function sendChildStartFailure(
@@ -1259,18 +1290,35 @@ function sendChildStartFailure(
   });
 }
 
-function sendServerFrame(socket: Socket, frame: AgentBrokerServerFrame): void {
+function sendServerFrame(
+  context: ConnectionContext,
+  socket: Socket,
+  frame: AgentBrokerServerFrame,
+): void {
   if (socket.destroyed || socket.writableEnded) return;
-  socket.write(`${JSON.stringify(frame)}\n`);
+  socket.write(
+    `${encodeBrokerFrameLine(context.frameKey, 'server-to-client', frame)}\n`,
+  );
 }
 
-function sendClientFrame(socket: Socket, frame: AgentBrokerClientFrame): void {
+function sendClientFrame(
+  frameKey: Buffer,
+  socket: Socket,
+  frame: AgentBrokerClientFrame,
+): void {
   if (socket.destroyed || socket.writableEnded) return;
-  socket.write(`${JSON.stringify(frame)}\n`);
+  socket.write(`${encodeBrokerFrameLine(frameKey, 'client-to-server', frame)}\n`);
 }
 
-function streamOutput(socket: Socket, event: 'stdout' | 'stderr', chunk: Buffer): void {
-  streamOutputFrames(socket, event, chunk, sendServerFrame);
+function streamOutput(
+  context: ConnectionContext,
+  socket: Socket,
+  event: 'stdout' | 'stderr',
+  chunk: Buffer,
+): void {
+  streamOutputFrames(socket, event, chunk, (target, frame) => {
+    sendServerFrame(context, target, frame);
+  });
 }
 
 const authorizationReasonValues: readonly string[] = authorizationReasonSchema.options;

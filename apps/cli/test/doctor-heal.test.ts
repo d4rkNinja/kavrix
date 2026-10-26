@@ -22,6 +22,7 @@ import {
 import {
   collectOwnedSecretParentDirectories,
   doctorHealModeFromOptions,
+  isBroadFilesystemRoot,
   runDoctorHeal,
 } from '../src/doctor-heal.js';
 import { runCli } from './execution-helpers.js';
@@ -1163,3 +1164,26 @@ function overrideHomeEnv(directory: string): () => void {
     else process.env.USERPROFILE = previousUserProfile;
   };
 }
+
+describe('isBroadFilesystemRoot', () => {
+  it('refuses every filesystem root, including another Windows drive root', () => {
+    // On Windows this resolves to the current drive root; on POSIX it is `/`.
+    expect(isBroadFilesystemRoot('/')).toBe(true);
+    // A normal directory below the temp root is never broad.
+    expect(isBroadFilesystemRoot(join(tmpdir(), 'kavrix-heal-probe'))).toBe(false);
+    if (process.platform === 'win32') {
+      const currentDriveRoot = resolve(process.cwd()).slice(0, 3);
+      expect(isBroadFilesystemRoot(currentDriveRoot)).toBe(true);
+      // Regression: a key file directly on a different drive (parent `D:\`)
+      // used to match no guard because canonicalizeExistingPathSync('/')
+      // only ever resolves the current drive. A path that is its own parent
+      // is a root on every platform, so the artifact's own drive root is
+      // refused too — even when that drive does not exist here.
+      const otherDriveRoot = currentDriveRoot.startsWith('Z') ? 'Y:\\' : 'Z:\\';
+      expect(isBroadFilesystemRoot(otherDriveRoot)).toBe(true);
+    } else {
+      expect(isBroadFilesystemRoot('/tmp')).toBe(true);
+      expect(isBroadFilesystemRoot('/private')).toBe(true);
+    }
+  });
+});

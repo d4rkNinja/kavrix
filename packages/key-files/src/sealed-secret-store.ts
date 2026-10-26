@@ -1,5 +1,5 @@
 import { createHash, hkdfSync, randomBytes } from 'node:crypto';
-import { chmod, mkdir, unlink } from 'node:fs/promises';
+import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import {
@@ -12,8 +12,12 @@ import { passphraseDerivationSchema } from '@kavrix/schemas';
 import sodium from 'libsodium-wrappers';
 
 import { PortableKeyFileError } from './errors.js';
-import { readSecureFile, writeSecureFile } from './filesystem.js';
-import { setWindowsUserOnlyAcl } from './windows-acl.js';
+import {
+  deleteSecureFile,
+  hardenExistingSecureDirectory,
+  readSecureFile,
+  writeSecureFile,
+} from './filesystem.js';
 
 /**
  * Passphrase-sealed replacement for the native OS credential store.
@@ -210,14 +214,19 @@ export class SealedSecretStore {
   public async delete(service: string, account: string): Promise<void> {
     assertEntryLabels(service, account);
     try {
-      await unlink(this.#pathFor(service, account));
+      // Deletion goes through the quarantine-rename primitive: the exact file
+      // is identity-rechecked (regular, singly linked, bounded) before it is
+      // unlinked, so a replaced path or a hard link can never widen deletion.
+      await deleteSecureFile(this.#pathFor(service, account));
     } catch (error) {
-      const code =
-        typeof error === 'object' && error !== null && 'code' in error
-          ? String(error.code)
-          : '';
-      if (code !== 'ENOENT')
-        throw new PortableKeyFileError('KEY_FILE_OPERATION_FAILED');
+      if (
+        error instanceof PortableKeyFileError &&
+        error.code === 'KEY_FILE_NOT_FOUND'
+      ) {
+        // An absent entry — or an absent store directory — is already deleted.
+        return;
+      }
+      throw error;
     }
   }
 
@@ -247,15 +256,18 @@ export class SealedSecretStore {
   /**
    * The secure-file layer requires a user-only directory, so the store owns
    * provisioning rather than trusting whatever permissions it inherits.
+   *
+   * `ensureSecureDirectory` cannot be used here because it never creates the
+   * parent chain, and the store directory may sit several levels deep under
+   * the user profile. The recursive creation is therefore followed by the
+   * package's re-hardening primitive: it refuses symlinks and reparse points,
+   * binds the POSIX chmod to the captured inode instead of the pathname, and
+   * re-verifies strict owner-only access on both platforms.
    */
   async #ensureDirectory(): Promise<void> {
     try {
       await mkdir(this.#directory, { recursive: true, mode: 0o700 });
-      if (process.platform === 'win32') {
-        await setWindowsUserOnlyAcl(this.#directory);
-      } else {
-        await chmod(this.#directory, 0o700);
-      }
+      await hardenExistingSecureDirectory(this.#directory);
     } catch (error) {
       if (error instanceof PortableKeyFileError) throw error;
       throw new PortableKeyFileError('KEY_FILE_UNSAFE');

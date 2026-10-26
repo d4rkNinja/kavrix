@@ -1,4 +1,7 @@
 import { createHash } from 'node:crypto';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { ChildProcess } from 'node:child_process';
 
 import {
@@ -15,6 +18,7 @@ import {
   isReservedEnvironmentName,
   RESERVED_ENVIRONMENT_NAMES,
   RunnerError,
+  RUNNER_LIMITS,
   RUNNER_SPAWN_FAILED_CLI_ERROR_CODE,
   runSecureCommand,
   type EnvironmentMapping,
@@ -22,6 +26,7 @@ import {
   type RunnerOutputPolicy,
   type SecureRunRequest,
 } from '../src/index.js';
+import { prepareEnvironment } from '../src/environment.js';
 
 const workingDirectory = process.cwd();
 
@@ -62,6 +67,65 @@ async function expectRunnerError(
   expect((caught as RunnerError).code).toBe(code);
   if (forbiddenValue !== undefined) {
     expect(String(caught)).not.toContain(forbiddenValue);
+  }
+}
+
+/** Synchronous counterpart of expectRunnerError for prepareEnvironment. */
+function expectEnvironmentRejected(run: () => unknown): void {
+  let caught: unknown;
+  try {
+    run();
+  } catch (error) {
+    caught = error;
+  }
+  expect(caught).toBeInstanceOf(RunnerError);
+  expect((caught as RunnerError).code).toBe('RUNNER_ENVIRONMENT_REJECTED');
+}
+
+/** Mutates one parent variable for the duration of run, then restores it. */
+async function withParentVariable(
+  name: string,
+  value: string,
+  run: () => Promise<void>,
+): Promise<void> {
+  const previous = process.env[name];
+  process.env[name] = value;
+  try {
+    await run();
+  } finally {
+    if (previous === undefined) {
+      Reflect.deleteProperty(process.env, name);
+    } else {
+      process.env[name] = previous;
+    }
+  }
+}
+
+function isPidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+async function waitForPredicate(
+  predicate: () => boolean,
+  timeoutMs: number,
+  intervalMs = 25,
+): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    if (predicate()) return true;
+    if (Date.now() >= deadline) return false;
+    await delay(intervalMs);
   }
 }
 
@@ -317,6 +381,21 @@ describe('runSecureCommand', () => {
     expect(result.exitCode === null || result.exitCode !== 0).toBe(true);
   });
 
+  it('reports a requested termination with the requested signal', async () => {
+    // Default grace so the Windows tree sweep (an external taskkill whose raw
+    // TerminateProcess artifact would surface as exit code 1 with no signal)
+    // lands before the direct-child escalation; POSIX reports the group
+    // SIGTERM directly. Either way the observable shape must be one requested
+    // SIGTERM-shaped termination.
+    const result = await runSecureCommand(
+      nodeRequest('setInterval(() => {}, 1_000)', { timeoutMs: 40 }),
+    );
+
+    expect(result.termination).toBe('timeout');
+    expect(result.exitCode).toBeNull();
+    expect(result.signal).toBe('SIGTERM');
+  });
+
   it('terminates a child when its abort signal fires', async () => {
     const controller = new AbortController();
     const pending = runSecureCommand(
@@ -331,6 +410,73 @@ describe('runSecureCommand', () => {
 
     const result = await pending;
     expect(result.termination).toBe('aborted');
+  });
+
+  it('terminates descendants of the spawned child, not only the child itself', async () => {
+    const treeDirectory = mkdtempSync(join(tmpdir(), 'kavrix-runner-tree-'));
+    const pidFile = join(treeDirectory, 'grandchild-pid');
+    // The spawner publishes the grandchild pid through a file so the test
+    // cancels only after the descendant exists. The grandchild is spawned
+    // without `detached` so it stays inside the runner child's POSIX process
+    // group while also remaining in the Windows parent chain taskkill walks.
+    const spawnerSource = `
+      const { spawn } = require('node:child_process');
+      const { writeFileSync } = require('node:fs');
+      const grandchild = spawn(
+        process.execPath,
+        ['-e', 'setInterval(() => {}, 1_000)'],
+        { stdio: 'ignore' },
+      );
+      grandchild.unref();
+      writeFileSync(process.env.KAVRIX_TREE_PID_FILE, String(grandchild.pid));
+      setInterval(() => {}, 1_000);
+    `;
+    const controller = new AbortController();
+    const pending = runSecureCommand(
+      nodeRequest(spawnerSource, {
+        signal: controller.signal,
+        // Generous grace so the Windows taskkill sweep (which must observe
+        // the live tree) is never preempted by the direct-child escalation.
+        terminationGraceMs: 5_000,
+        environment: [['KAVRIX_TREE_PID_FILE', { kind: 'text', value: pidFile }]],
+      }),
+    );
+    let grandchildPid = 0;
+    try {
+      const published = await waitForPredicate(() => {
+        try {
+          const parsed = Number(readFileSync(pidFile, 'utf8'));
+          return Number.isSafeInteger(parsed) && parsed > 0;
+        } catch {
+          return false;
+        }
+      }, 30_000);
+      expect(published).toBe(true);
+      grandchildPid = Number(readFileSync(pidFile, 'utf8'));
+
+      controller.abort();
+      const result = await pending;
+      expect(result.termination).toBe('aborted');
+      expect(await waitForPredicate(() => !isPidAlive(grandchildPid), 10_000)).toBe(
+        true,
+      );
+    } finally {
+      controller.abort();
+      // The primary assertions above already failed the test if the run went
+      // wrong; settle the promise here so a failure path cannot leave it
+      // dangling or surface an unhandled rejection during cleanup.
+      await pending.catch(() => {
+        // Cleanup only; the run's failure was already reported.
+      });
+      if (grandchildPid > 0) {
+        try {
+          process.kill(grandchildPid, 'SIGKILL');
+        } catch {
+          // Already terminated; nothing to clean up.
+        }
+      }
+      rmSync(treeDirectory, { recursive: true, force: true });
+    }
   });
 
   it('rejects an already-aborted request before spawning', async () => {
@@ -634,6 +780,7 @@ describe('request and environment validation', () => {
     { output: { mode: 'capture', maxBytes: 0 } as const },
     { output: { mode: 'unknown' } as unknown as RunnerOutputPolicy },
     { input: 'stdout' as unknown as 'ignore' },
+    { cwd: 42 as unknown as string },
     { arguments: ['bad\0argument'] },
   ])('rejects malformed execution bounds', async (override) => {
     await expectRunnerError(
@@ -652,17 +799,76 @@ describe('request and environment validation', () => {
       'RUNNER_ENVIRONMENT_REJECTED',
     );
 
+    // Sized from the live aggregate budget so this case stays above the cap
+    // if the constant moves; fixed-width names keep every entry the same
+    // size, matching how environmentBytes counts name=value\0.
+    const entryValue = 'x'.repeat(12 * 1_024);
+    const entryBytes = 'KAVRIX_AGGREGATE_000'.length + 1 + entryValue.length + 1;
+    const entryCount = Math.ceil(
+      (RUNNER_LIMITS.maxEnvironmentTotalBytes + 1) / entryBytes,
+    );
+    expect(entryCount).toBeLessThanOrEqual(RUNNER_LIMITS.maxEnvironmentEntries);
     const mappings = Array.from(
-      { length: 3 },
+      { length: entryCount },
       (_, index) =>
         [
-          `KAVRIX_AGGREGATE_${String(index)}`,
-          { kind: 'text', value: 'x'.repeat(12 * 1_024) },
+          `KAVRIX_AGGREGATE_${String(index).padStart(3, '0')}`,
+          { kind: 'text', value: entryValue },
         ] as const satisfies EnvironmentMapping,
     );
     await expectRunnerError(
       nodeRequest('process.exit(0)', { environment: mappings }),
       'RUNNER_ENVIRONMENT_REJECTED',
+    );
+  });
+
+  it('accepts an inherited PATH between the secret cap and the inherited cap', async () => {
+    const inheritedPath = 'x'.repeat(20 * 1_024);
+    await withParentVariable('PATH', inheritedPath, async () => {
+      const result = await runSecureCommand(
+        nodeRequest('process.stdout.write(String(process.env.PATH.length))', {
+          inheritEnvironment: ['PATH'],
+        }),
+      );
+
+      expect(capturedText(result.stdout)).toBe(String(inheritedPath.length));
+    });
+  });
+
+  it('never classifies an inherited value as a secret while accepting the platform-sized cap', () => {
+    const inheritedPath = 'x'.repeat(20 * 1_024);
+    const accepted = prepareEnvironment([], ['PATH'], { PATH: inheritedPath });
+    try {
+      expect(accepted.childEnvironment['PATH']).toBe(inheritedPath);
+      expect(accepted.secretValues).toEqual([]);
+      expect(accepted.secretBuffers).toEqual([]);
+    } finally {
+      accepted.clear();
+    }
+
+    // Above the inherited (platform-sized) cap inheritance still fails even
+    // though the same value would fit the raised aggregate budget. The value
+    // is injected through the parentEnvironment port because the OS itself
+    // cannot hold a 32 KiB+ variable on Windows for an end-to-end run.
+    expectEnvironmentRejected(() =>
+      prepareEnvironment([], ['PATH'], { PATH: 'x'.repeat(32 * 1_024 + 1) }),
+    );
+  });
+
+  it('still rejects a mapped secret above the tighter secret cap', async () => {
+    await expectRunnerError(
+      nodeRequest('process.exit(0)', {
+        inheritEnvironment: ['PATH'],
+        environment: [secret('KAVRIX_SECRET_OVER_CAP', 'x'.repeat(16 * 1_024 + 1))],
+      }),
+      'RUNNER_ENVIRONMENT_REJECTED',
+    );
+    expectEnvironmentRejected(() =>
+      prepareEnvironment(
+        [secret('KAVRIX_SECRET_OVER_CAP', 'x'.repeat(16 * 1_024 + 1))],
+        ['PATH'],
+        { PATH: 'x'.repeat(20 * 1_024) },
+      ),
     );
   });
 });

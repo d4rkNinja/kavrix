@@ -992,6 +992,34 @@ function setupTool(
   );
 }
 
+/**
+ * Visible folder-row window, shared by the folder-browser renderer and digit
+ * selection so a rendered row and the digit that selects it can never disagree.
+ */
+export function folderBrowserWindow(
+  state: Readonly<Pick<OnboardingState, 'height' | 'folderIndex'>>,
+): Readonly<{ start: number; rows: number }> {
+  const rows = Math.max(1, Math.min(8, state.height - 11));
+  return { rows, start: Math.max(0, state.folderIndex - rows + 1) };
+}
+
+/**
+ * Resolve a 1-based digit (keyboard press, or the chip a click sends for a
+ * visible row) to the entry index it selects, or undefined when it names no
+ * visible row.
+ */
+export function folderDigitIndex(
+  state: Readonly<Pick<OnboardingState, 'height' | 'folderIndex'>>,
+  digit: number,
+  entryCount: number,
+): number | undefined {
+  if (!Number.isInteger(digit) || digit < 1) return undefined;
+  const { start, rows } = folderBrowserWindow(state);
+  if (digit > rows) return undefined;
+  const index = start + digit - 1;
+  return index < entryCount ? index : undefined;
+}
+
 function folderKey(state: OnboardingState, key: OnboardingKey): OnboardingTransition {
   const view = state.toolView;
   if (view?.kind !== 'folders') return unchanged(state);
@@ -1026,9 +1054,8 @@ function folderKey(state: OnboardingState, key: OnboardingKey): OnboardingTransi
       : setupTool(state, { type: 'browse-setup-folders', path: entry.path });
   }
   if (key.text !== undefined && /^\d+$/u.test(key.text)) {
-    const index = Number(key.text);
-    if (view.entries[index] !== undefined)
-      return unchanged({ ...state, folderIndex: index });
+    const index = folderDigitIndex(state, Number(key.text), view.entries.length);
+    if (index !== undefined) return unchanged({ ...state, folderIndex: index });
   }
   return unchanged(state);
 }

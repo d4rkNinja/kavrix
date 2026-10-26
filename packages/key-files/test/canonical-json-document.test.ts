@@ -100,6 +100,26 @@ describe('protected canonical JSON documents', () => {
     }
   });
 
+  it('rejects invalid UTF-8 whose replacement character keeps the byte length', async () => {
+    const file = path('invalid-utf8.json');
+    // A truncated 4-byte sequence inside a string value non-fatally decodes to
+    // exactly one U+FFFD, whose re-encoded length equals the input length, so
+    // only fatal UTF-8 decoding catches the substitution.
+    const bytes = Buffer.concat([
+      Buffer.from('{"entries":["', 'utf8'),
+      Buffer.from([0xf0, 0x9f, 0x98]),
+      Buffer.from('"],"version":1}', 'utf8'),
+    ]);
+    await writeFile(file, bytes);
+    await expect(readProtectedJsonDocument(file, options)).rejects.toThrow('invalid');
+    await expect(
+      transitionProtectedJsonDocument(file, options, (current) => ({
+        document: current,
+        result: undefined,
+      })),
+    ).rejects.toThrow('invalid');
+  });
+
   it('preserves the existing bytes when a transition rejects its replacement', async () => {
     const file = path();
     await writeProtectedJsonDocument(

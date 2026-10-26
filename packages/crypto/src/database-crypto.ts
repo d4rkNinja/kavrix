@@ -283,6 +283,10 @@ export async function decryptDatabaseAead(
       key,
     );
   } catch {
+    // Deliberate ambiguity: a wrong key, tampered bytes, and a malformed or
+    // schema-defective envelope all fold into one AuthenticationError here, so
+    // the database path never discloses which part of the unwrap failed.
+    // Unlike decryptAead, CryptoInputError is intentionally not preserved.
     throw new AuthenticationError();
   } finally {
     zeroize(nonce);

@@ -142,7 +142,11 @@ export async function openDatabaseBackupArchive(
   try {
     kek = await derivePassphraseKek(passphrase, archive.derivation);
     nonce = decodeBase64Url(archive.nonce, { exactBytes: BACKUP_ARCHIVE_NONCE_BYTES });
-    ciphertext = decodeBase64Url(archive.ciphertext);
+    ciphertext = decodeBase64Url(archive.ciphertext, {
+      // Same bound the archive schema enforces; a cast object must not skip it
+      // and force a large allocation before the byteLength check below.
+      maximumBytes: MAX_DATABASE_BACKUP_PLAINTEXT_BYTES,
+    });
     tag = decodeBase64Url(archive.authenticationTag, {
       exactBytes: 16,
     });

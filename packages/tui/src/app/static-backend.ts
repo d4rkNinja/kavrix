@@ -10,7 +10,9 @@ import {
 /**
  * Unit-test / inventory-smoke backend that serves a fixed snapshot.
  * NEVER mount from `kavrix tui` / `createCliTuiBackend` — product path uses the
- * real CLI session only. Credential put/rename/remove mutate memory only.
+ * real CLI session only. Not re-exported from the package index: tests import
+ * it directly from this module. Credential put/rename/remove mutate memory
+ * only.
  */
 export function createStaticAppBackend(
   initial: AppSnapshot = emptySnapshot('Static TUI snapshot.'),

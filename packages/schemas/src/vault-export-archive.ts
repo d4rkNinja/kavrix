@@ -5,7 +5,12 @@ import {
   sealedArchiveTagSchema,
 } from './database-backup-archive.js';
 import { passphraseDerivationSchema } from './encrypted-records.js';
-import { base64UrlSchema, maxTextBytesSchema, timestampSchema } from './primitives.js';
+import {
+  base64UrlSchemaWithMaxChars,
+  maxBase64UrlCharsForByteLimit,
+  maxTextBytesSchema,
+  timestampSchema,
+} from './primitives.js';
 
 /**
  * Passphrase-sealed export of the flat credentials in one vault.
@@ -47,7 +52,19 @@ export const vaultExportPlaintextSchema = z
     }
   });
 
-const exportCiphertextSchema = base64UrlSchema.refine(
+/**
+ * Character ceiling for export ciphertext: the largest unpadded base64url
+ * string that cannot decode to more than the plaintext bound. The shared
+ * record-level `base64UrlSchema` ceiling does not apply here because a whole
+ * vault export is legitimately larger than a single record payload.
+ */
+export const MAX_VAULT_EXPORT_CIPHERTEXT_CHARS = maxBase64UrlCharsForByteLimit(
+  MAX_VAULT_EXPORT_PLAINTEXT_BYTES,
+);
+
+const exportCiphertextSchema = base64UrlSchemaWithMaxChars(
+  MAX_VAULT_EXPORT_CIPHERTEXT_CHARS,
+).refine(
   (value) =>
     Buffer.from(value, 'base64url').byteLength <= MAX_VAULT_EXPORT_PLAINTEXT_BYTES,
   { error: 'Ciphertext exceeds the supported export size' },

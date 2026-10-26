@@ -34,7 +34,7 @@ import {
   type VaultId,
 } from '@kavrix/schemas';
 
-import { EncryptedDatabaseStoreError } from '../src/encrypted-database-store.js';
+import { EncryptedDatabaseStoreError } from '@kavrix/core';
 import {
   MongoCollaborativeVaultStore,
   type MongoCollaborativeVaultCollectionNames,

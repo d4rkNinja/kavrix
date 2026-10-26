@@ -21,7 +21,7 @@ import {
   type EncryptedDatabaseStore,
   type EncryptedDatabaseStoreErrorCode,
   type UpdateVaultInput,
-} from '../src/encrypted-database-store.js';
+} from '@kavrix/core';
 
 const TIMESTAMP = '2026-08-19T00:00:00.000Z';
 const DIGEST = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';

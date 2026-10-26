@@ -24,6 +24,14 @@ export type ProtectedJsonDocumentTransition<T, Result> = Readonly<{
   result: Result;
 }>;
 
+/**
+ * Fatal decoding rejects invalid, overlong, and truncated UTF-8 outright.
+ * A non-fatal decoder would substitute U+FFFD, and a substitution whose
+ * re-encoded length matches the input can slip past the byte-length check in
+ * `parseCanonicalDocument`.
+ */
+const UTF8_DECODER = new TextDecoder('utf-8', { fatal: true });
+
 const protectedJsonDocumentPublicationBrand = Symbol(
   'protectedJsonDocumentPublication',
 );
@@ -269,7 +277,10 @@ function parseCanonicalDocument<T>(
   schema: CanonicalJsonDocumentSchema<T>,
 ): T {
   try {
-    const text = Buffer.from(bytes).toString('utf8');
+    // Fail closed on any byte sequence that is not valid UTF-8; the fatal
+    // decoder throws before a replacement character could be parsed, and the
+    // length check below stays as defense in depth.
+    const text = UTF8_DECODER.decode(bytes);
     if (Buffer.byteLength(text, 'utf8') !== bytes.byteLength) throw invalid();
     const parsed = schema.parse(JSON.parse(text) as unknown);
     // The byte comparison below is what proves this document is canonical, so

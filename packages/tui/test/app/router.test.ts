@@ -5,7 +5,6 @@ import { describe, expect, it } from 'vitest';
 import {
   APP_SCREEN_IDS,
   createInitialAppRouterState,
-  createStaticAppBackend,
   emptySnapshot,
   navigateToScreen,
   transitionAppRouter,
@@ -32,6 +31,7 @@ import {
   type AppRouterState,
   type AppSnapshot,
 } from '../../src/index.js';
+import { createStaticAppBackend } from '../../src/app/static-backend.js';
 import { join, sep } from 'node:path';
 
 function sampleSnapshot(): AppSnapshot {
@@ -910,6 +910,18 @@ describe('paste into overlays', () => {
       'secret-value',
     );
     expect(sanitizePasteText('mongo://url\n')).toBe('mongo://url');
+  });
+
+  it('removes escape sequences whole so no CSI payload fragments survive', () => {
+    expect(sanitizePasteText('\x1b[31mred\x1b[0m')).toBe('red');
+    expect(sanitizePasteText('safe\x1b[2Jclear')).toBe('safeclear');
+    expect(sanitizePasteText('\x1b]0;title\u0007value')).toBe('value');
+    // Literal brackets without an ESC byte are ordinary text, not sequences.
+    expect(sanitizePasteText('plain[31mtext')).toBe('plain[31mtext');
+  });
+
+  it('strips interior newlines so paste never acts as Enter', () => {
+    expect(sanitizePasteText('line1\nline2\r\nline3')).toBe('line1line2line3');
   });
 
   it('appends multi-character paste once without treating it as Enter', () => {

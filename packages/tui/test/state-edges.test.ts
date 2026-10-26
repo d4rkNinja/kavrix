@@ -12,6 +12,7 @@ import {
 import { describe, expect, it } from 'vitest';
 
 import { describeFieldEditor, scalarDisplayValue } from '../src/field-registry.js';
+import { MOTION } from '../src/motion.js';
 import { buildTuiScreenModel, renderTuiScreenText } from '../src/screen-model.js';
 import {
   createInitialTuiState,
@@ -20,7 +21,7 @@ import {
   transitionTui,
   type TuiState,
 } from '../src/state.js';
-import { sanitizeTerminalText } from '../src/terminal-text.js';
+import { sanitizeTerminalText, secretMask } from '../src/terminal-text.js';
 import { browserState, group, item, passwordField, tenantField } from './fixtures.js';
 
 const timestamp = '2026-08-10T00:00:00.000Z';
@@ -343,7 +344,7 @@ describe('state edge behavior', () => {
       keyboardTransition(confirmReveal, { text: 'y' }, 100).effects[0],
     ).toMatchObject({
       kind: 'authorize-reveal',
-      expiresAt: 15_100,
+      expiresAt: 100 + MOTION.revealWindowMs,
     });
   });
 
@@ -372,6 +373,35 @@ describe('state edge behavior', () => {
     expect(invalidReference.message).toContain('does not satisfy');
     const invalidEnvironment = editField(state, environmentField, 'missing-separator');
     expect(invalidEnvironment.message).toContain('does not satisfy');
+
+    // Number parsing is strict decimal text: `Number()` would silently accept
+    // '0x11', ' 12 ', '1e3', and would commit an empty repeatable element as
+    // 0. Each edit runs against a fresh state so the assertion exercises the
+    // number parser itself, not an earlier overlay in this test.
+    const repeatableNumberField = fieldDefinitionSchema.parse({
+      ...definition('field.sizes', 'sizes', 'number', 9, false, true),
+      required: false,
+    });
+    const sizesItem = itemPayloadSchema.parse({
+      ...item,
+      itemFields: [repeatableNumberField],
+      itemValues: [],
+    });
+    const freshSizesState = (): TuiState => ({
+      ...details(),
+      items: [sizesItem],
+      draft: sizesItem,
+      dirty: false,
+    });
+    for (const rejected of ['', '1e3', ' 12 ', '0x11', '+4', '.5']) {
+      const attempt = editField(freshSizesState(), repeatableNumberField, rejected);
+      expect(attempt.message).toContain('does not satisfy');
+      expect(attempt.dirty).toBe(false);
+    }
+    for (const accepted of ['42', '-2.5', '12.5', '0', '-0.25']) {
+      const attempt = editField(freshSizesState(), repeatableNumberField, accepted);
+      expect(attempt.dirty).toBe(true);
+    }
 
     state = keyboardTransition(
       {
@@ -448,6 +478,81 @@ describe('formatting edge behavior', () => {
         value: { classification: 'text', value: 'value' },
       }),
     ).toBe('KEY=value');
+  });
+
+  it('masks secret-shaped values even when the definition is not flagged sensitive', () => {
+    // Hostile/legacy data: the renderer must not rely on field.sensitive alone.
+    // These definitions are schema-invalid on purpose (a secret type must be
+    // sensitive), so they are built directly instead of parsed.
+    const leakSecretField: FieldDefinition = {
+      ...passwordField,
+      sensitive: false,
+      revealPolicy: 'never',
+      reauthenticationPolicy: 'never',
+    };
+    const leakEnvironmentField: FieldDefinition = {
+      ...environmentField,
+      sensitive: false,
+    };
+    const leakItem = itemPayloadSchema.parse({
+      ...item,
+      templateValues: [
+        {
+          fieldId: leakSecretField.id,
+          stableKey: leakSecretField.stableKey,
+          value: present({
+            kind: 'secret',
+            value: secretValueSchema.parse('LEAK-CANARY'),
+          }),
+          updatedAt: timestamp,
+        },
+        {
+          fieldId: leakEnvironmentField.id,
+          stableKey: leakEnvironmentField.stableKey,
+          value: {
+            version: 1,
+            state: 'present',
+            content: {
+              cardinality: 'multiple',
+              elements: [
+                {
+                  id: 'leak.environment',
+                  value: {
+                    kind: 'environment-entry',
+                    key: 'TOKEN',
+                    value: {
+                      classification: 'secret',
+                      value: secretValueSchema.parse('ENV-LEAK-CANARY'),
+                    },
+                  },
+                  lifecycle: { version: 1, status: 'available' },
+                },
+              ],
+            },
+          },
+          updatedAt: timestamp,
+        },
+      ],
+    });
+    const leakGroup = {
+      ...group,
+      template: {
+        ...group.template,
+        fields: [leakSecretField, leakEnvironmentField],
+      },
+    };
+    const state: TuiState = {
+      ...details(),
+      groups: [leakGroup],
+      items: [leakItem],
+      draft: leakItem,
+    };
+    const output = renderTuiScreenText(buildTuiScreenModel(state, 0));
+    expect(output).not.toContain('LEAK-CANARY');
+    expect(output).not.toContain('ENV-LEAK-CANARY');
+    expect(output).toContain(secretMask(state.ascii));
+    // Non-secret values on non-sensitive fields stay visible.
+    expect(output).toContain('tenant-42');
   });
 
   it('renders every overlay and terminal value-state marker without unsafe content', () => {

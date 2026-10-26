@@ -1899,7 +1899,11 @@ export async function fieldGet(
     process.stdout.write(
       revealBase64
         ? `${encodeStructuredFieldValueBase64(storedValue)}\n`
-        : `${sanitizeText(renderFieldValue(storedValue))}\n`,
+        : // Reveal renders the exact value: newline/tab/carriage-return
+          // separators stay faithful so multiline values are not silently
+          // merged, while ESC/OSC/CSI sequences and every other control
+          // character are still removed before the terminal sees the text.
+          `${sanitizeJsonText(renderFieldValue(storedValue))}\n`,
     );
   });
 }

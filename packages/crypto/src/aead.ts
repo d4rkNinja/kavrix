@@ -138,7 +138,7 @@ function canonicalAssociatedDataChecked(aad: AssociatedData): Uint8Array {
   const groupId = aad.groupId === undefined ? undefined : asciiBytes(aad.groupId);
   const parentId = aad.parentId === undefined ? undefined : asciiBytes(aad.parentId);
   const purpose = asciiBytes(aad.purpose);
-  // 17 = 4 length bytes + 17-byte domain string, written twice below.
+  // 20 = 4 length bytes + 16-byte domain string, written twice below.
   const totalLength =
     4 +
     domain.byteLength +
@@ -219,7 +219,7 @@ export function createAttachmentChunkAadFactory(
 /** [len][domain][base][version=1][chunkIndex]. */
 function appendChunkIndexToBase(base: Uint8Array, chunkIndex: number): Uint8Array {
   const domain = ATTACHMENT_CHUNK_AAD_DOMAIN;
-  // 17 = 4 length bytes + 17-byte attachment-chunk domain string.
+  // 40 = 4 length bytes + 36-byte attachment-chunk domain string.
   const totalLength = 4 + domain.byteLength + base.byteLength + 4 + 4;
   const output = Buffer.allocUnsafe(totalLength);
   let offset = 0;

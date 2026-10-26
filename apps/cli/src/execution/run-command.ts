@@ -173,93 +173,99 @@ export async function executeRun(options: RunCliOptions): Promise<RunOutcome> {
   const handle = await openDatabaseFlatVault(options, flatSecrets);
   let unlocked: UnlockedScope;
   let resolvedGrants: readonly ResolvedGrantRef[];
+  // The derived authorization-state key is owned exactly once, by the
+  // finalizer below: every exit path after this derivation zeroizes it, while
+  // each AuthorizationState instance keeps its own copy and zeroes that copy
+  // on close.
+  const authzKey = handle.session.authorizationStateKey();
   try {
-    // Resolve grant references against the sealed state first so the exact
-    // credential set is known before any vault inspection or consumption.
-    const authzKey = handle.session.authorizationStateKey();
-    const state = await AuthorizationState.open(handle.profile.keyFile, authzKey, {
-      scopeKind: 'database',
-      scopeId: handle.session.databaseId,
-    });
     try {
-      const snapshot = await state.read();
-      resolvedGrants = grantRefs.map((ref) => {
-        const located = locateGrant(snapshot.grants, ref);
-        if (located === undefined) {
-          throw grantInvalid(`No active grant matches '${ref}'.`);
-        }
-        return { ref, grant: located };
-      });
-      const neededNames = new Set<string>([
-        ...mappings.map((mapping) => mapping.secret),
-        ...resolvedGrants.map((resolved) => resolved.grant.secret),
-      ]);
-      const values = new Map<string, string>();
-      let missingName: string | undefined;
-      await handle.session.inspectVault(handle.vaultId, (payload) => {
-        const missing: string[] = [];
-        for (const name of neededNames) {
-          const record = payload.records[name];
-          if (record === undefined) missing.push(name);
-          else values.set(name, record.value);
-        }
-        missingName = missing[0];
-      });
-      // Session callbacks must not throw: failures are surfaced after inspection
-      // so the session can close cleanly and map codes without translation.
-      if (missingName !== undefined) throw new MissingCredentialError(missingName);
-      unlocked = {
-        values,
-        authzKey,
-        keyFile: handle.profile.keyFile,
+      // Resolve grant references against the sealed state first so the exact
+      // credential set is known before any vault inspection or consumption.
+      const state = await AuthorizationState.open(handle.profile.keyFile, authzKey, {
+        scopeKind: 'database',
         scopeId: handle.session.databaseId,
-      };
+      });
+      try {
+        const snapshot = await state.read();
+        resolvedGrants = grantRefs.map((ref) => {
+          const located = locateGrant(snapshot.grants, ref);
+          if (located === undefined) {
+            throw grantInvalid(`No active grant matches '${ref}'.`);
+          }
+          return { ref, grant: located };
+        });
+        const neededNames = new Set<string>([
+          ...mappings.map((mapping) => mapping.secret),
+          ...resolvedGrants.map((resolved) => resolved.grant.secret),
+        ]);
+        const values = new Map<string, string>();
+        let missingName: string | undefined;
+        await handle.session.inspectVault(handle.vaultId, (payload) => {
+          const missing: string[] = [];
+          for (const name of neededNames) {
+            const record = payload.records[name];
+            if (record === undefined) missing.push(name);
+            else values.set(name, record.value);
+          }
+          missingName = missing[0];
+        });
+        // Session callbacks must not throw: failures are surfaced after inspection
+        // so the session can close cleanly and map codes without translation.
+        if (missingName !== undefined) throw new MissingCredentialError(missingName);
+        unlocked = {
+          values,
+          authzKey,
+          keyFile: handle.profile.keyFile,
+          scopeId: handle.session.databaseId,
+        };
+      } catch (error) {
+        if (error instanceof MissingCredentialError) {
+          throw new CodedCliError('CREDENTIAL_MISSING', error.message);
+        }
+        throw error;
+      } finally {
+        // Zeroes this probe's key copy; the caller reopens the state with the
+        // original bytes for the authorize-and-spawn phase.
+        state.close();
+      }
     } catch (error) {
       if (error instanceof MissingCredentialError) {
         throw new CodedCliError('CREDENTIAL_MISSING', error.message);
       }
       throw error;
     } finally {
-      // Zeroes this probe's key copy; the caller reopens the state with the
-      // original bytes for the authorize-and-spawn phase.
+      await closeDatabaseFlatVault(handle);
+    }
+
+    const state = await openStateSafely(unlocked);
+    try {
+      return await authorizeAndSpawn(
+        options,
+        { request: targetRequest, args: targetRest },
+        mappings,
+        policyNames,
+        resolvedGrants,
+        unlocked.values,
+        configDocument,
+        state,
+      );
+    } finally {
       state.close();
     }
-  } catch (error) {
-    if (error instanceof MissingCredentialError) {
-      throw new CodedCliError('CREDENTIAL_MISSING', error.message);
-    }
-    throw error;
   } finally {
-    await closeDatabaseFlatVault(handle);
-  }
-
-  const state = await openStateSafely(unlocked);
-  try {
-    return await authorizeAndSpawn(
-      options,
-      { request: targetRequest, args: targetRest },
-      mappings,
-      policyNames,
-      resolvedGrants,
-      unlocked.values,
-      configDocument,
-      state,
-    );
-  } finally {
-    state.close();
+    zeroize(authzKey);
   }
 }
 
 async function openStateSafely(unlocked: UnlockedScope): Promise<AuthorizationState> {
-  try {
-    return await AuthorizationState.open(unlocked.keyFile, unlocked.authzKey, {
-      scopeKind: 'database',
-      scopeId: unlocked.scopeId,
-    });
-  } catch (error) {
-    zeroize(unlocked.authzKey);
-    throw error;
-  }
+  // Zeroization of the derived key is owned by executeRun's finalizer; this
+  // open hands the bytes to a state object that copies and later zeroizes its
+  // own copy on close.
+  return AuthorizationState.open(unlocked.keyFile, unlocked.authzKey, {
+    scopeKind: 'database',
+    scopeId: unlocked.scopeId,
+  });
 }
 
 async function loadOptionalProjectConfig(
@@ -483,6 +489,10 @@ async function authorizeAndSpawn(
     values,
   );
 
+  // consumeGrantUse records every denial (expired, exhausted, revoked, or
+  // raced away) as an audit event inside its own locked transition, so no
+  // denyExecution fallback is added here: one denial always yields exactly
+  // one persisted audit event, and a raced denial can never go unrecorded.
   for (const resolved of resolvedGrants) {
     await state.consumeGrantUse(resolved.grant.grantId, {
       executable: resolution.displayName,

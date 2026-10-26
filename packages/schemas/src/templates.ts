@@ -73,10 +73,12 @@ export const groupTemplateSchema = z
     }
   });
 
-const migrationStepBaseSchema = z.object({
-  affectedItemCount: z.number().int().nonnegative(),
-  requiresConfirmation: z.boolean(),
-});
+const migrationStepBaseSchema = z
+  .object({
+    affectedItemCount: z.number().int().nonnegative(),
+    requiresConfirmation: z.boolean(),
+  })
+  .strict();
 
 export const templateMigrationStepSchema = z.discriminatedUnion('kind', [
   migrationStepBaseSchema.extend({

@@ -251,10 +251,16 @@ export async function executeLocalDatabaseOnboarding(
     zeroize(ownerPassphrase);
     zeroize(recoveryPassphrase);
     if (closeErrors.length > 0) {
+      // Cleanup failures must not replace the root cause: the original
+      // failure leads the aggregate (or stays the sole cause) so its
+      // classification still decides the rendered failure and exit code.
       failure = new GuidedLocalOnboardingError(
         phase,
         parsed.profileId,
-        new AggregateError(closeErrors, 'Protected onboarding cleanup failed.'),
+        new AggregateError(
+          failure !== undefined ? [failure, ...closeErrors] : closeErrors,
+          'Protected onboarding cleanup failed.',
+        ),
       );
     }
     // Safe rollback: profile published but never bound (phase still profile-added)

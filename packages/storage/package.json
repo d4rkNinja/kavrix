@@ -24,6 +24,7 @@
     "test": "vitest run --root ../.. --config packages/storage/vitest.config.ts"
   },
   "dependencies": {
+    "@kavrix/core": "workspace:*",
     "@kavrix/key-files": "workspace:*",
     "@kavrix/schemas": "workspace:*",
     "mongodb": "catalog:"

@@ -135,8 +135,19 @@ export const RUNNER_LIMITS = Object.freeze({
   defaultTerminationGraceMs: 1_000,
   maxTerminationGraceMs: 60_000,
   maxEnvironmentEntries: 256,
+  // Mapped values (text or secret) stay under the tight secret-sized cap:
+  // every mapped value is redaction-tracked or user-provided content, and no
+  // legitimate credential-sized value belongs in an environment variable.
   maxEnvironmentValueBytes: 16 * 1_024,
-  maxEnvironmentTotalBytes: 32 * 1_024,
+  // Inherited values are allowlisted names copied verbatim from the parent
+  // and are never treated as secrets. Windows caps a single variable at
+  // 32,767 characters, and a real developer PATH there commonly exceeds the
+  // 16 KiB secret cap, so inheritance gets this platform-sized cap instead.
+  maxInheritedEnvironmentValueBytes: 32 * 1_024,
+  // Whole child-environment budget (name=value\0 per entry). Sized for a
+  // full-size Windows PATH plus the rest of the inherit allowlist and mapped
+  // values on a real developer machine, with headroom for several of them.
+  maxEnvironmentTotalBytes: 128 * 1_024,
 });
 
 export type RunnerOutputCapturePolicy = Readonly<{
@@ -165,6 +176,13 @@ export type RunnerOutputPipePolicy = Readonly<{
 export type RunnerOutputPolicy =
   RunnerOutputCapturePolicy | RunnerOutputInheritPolicy | RunnerOutputPipePolicy;
 
+/**
+ * How the child's stdin is provided. With `pipe`, stdin is opened as a pipe
+ * that is reachable only through the `onSpawn` handle: the consumer must
+ * write to and then end (or destroy) `child.stdin` itself. Nothing writes or
+ * closes it automatically, so a consumer that never wires stdin owns the
+ * resulting child lifetime — a child reading stdin waits on the open pipe.
+ */
 export type RunnerInputPolicy = 'ignore' | 'inherit' | 'pipe';
 
 export type SecureRunRequest = Readonly<{
@@ -178,7 +196,15 @@ export type SecureRunRequest = Readonly<{
   timeoutMs?: number;
   terminationGraceMs?: number;
   signal?: AbortSignal;
-  /** Observation-only handle delivery for supervisor concerns like signal forwarding. */
+  /**
+   * Delivers the child handle to the consumer immediately after spawn: for
+   * observation and supervisor concerns such as signal forwarding, and — with
+   * `input: 'pipe'` — as the only access to the child's stdin. In that case
+   * the consumer must write to and end (or destroy) `child.stdin` itself;
+   * nothing in the runner writes, closes, or drains it, so a consumer that
+   * never wires stdin keeps the child's stdin pipe open for the child's
+   * whole lifetime.
+   */
   onSpawn?: (child: ChildProcess) => void;
 }>;
 

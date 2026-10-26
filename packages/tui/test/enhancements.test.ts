@@ -125,6 +125,17 @@ describe('theme glyphs stay printable and mode-safe', () => {
     // Unknown non-ASCII still fails closed to '?' in ascii mode.
     expect(sanitizeTerminalText('\u{1F512}', true)).toBe('?');
   });
+
+  it('degrades lone surrogates instead of throwing on String.fromCodePoint', () => {
+    // JSON.parse can produce lone surrogates from hostile records
+    // ('"\\ud800"'); the sanitizer must replace them, never crash.
+    const lone = JSON.parse('"\\ud800"') as string;
+    expect(() => sanitizeTerminalText(lone)).not.toThrow();
+    expect(sanitizeTerminalText('a\ud800b')).toBe('a\uFFFDb');
+    expect(sanitizeTerminalText('a\udfffb', true)).toBe('a?b');
+    // Valid surrogate pairs still survive as whole code points.
+    expect(sanitizeTerminalText('\u{1F512}')).toBe('\u{1F512}');
+  });
 });
 
 describe('screen tab strip', () => {

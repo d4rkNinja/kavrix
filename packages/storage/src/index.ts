@@ -1,16 +1,28 @@
-export {
-  EncryptedVaultStoreError,
-  type EncryptedVaultStore,
-  type EncryptedVaultStoreErrorCode,
-} from './encrypted-vault-store.js';
-export {
-  EncryptedDatabaseStoreError,
-  type CreateVaultInput,
-  type DeleteVaultInput,
-  type EncryptedDatabaseStore,
-  type EncryptedDatabaseStoreErrorCode,
-  type UpdateVaultInput,
-} from './encrypted-database-store.js';
+/**
+ * The persistence ports are owned by @kavrix/core; this barrel re-exports
+ * them so consumers can keep a single storage import. The adapters below
+ * implement the core-owned ports.
+ */
+export { EncryptedVaultStoreError } from '@kavrix/core';
+export type { EncryptedVaultStore, EncryptedVaultStoreErrorCode } from '@kavrix/core';
+export { EncryptedDatabaseStoreError } from '@kavrix/core';
+export type {
+  CreateVaultInput,
+  DeleteVaultInput,
+  EncryptedDatabaseStore,
+  EncryptedDatabaseStoreErrorCode,
+  UpdateVaultInput,
+} from '@kavrix/core';
+export type {
+  ActivateCollaborativeGenesisInput,
+  BeginCollaborativeMigrationInput,
+  CollaborativeProofPosition,
+  CollaborativeVaultStore,
+  CompactCollaborativeOperationOutcomeInput,
+  DestroyCollaborativeVaultInput,
+  GetCollaborativeMutationProofRangeInput,
+  PublishCollaborativeVaultInput,
+} from '@kavrix/core';
 export {
   FileLocalVaultError,
   FileLocalVaultStore,
@@ -35,13 +47,5 @@ export {
 export { probeMongoConnection } from './mongo-connection-probe.js';
 export {
   MongoCollaborativeVaultStore,
-  type ActivateCollaborativeGenesisInput,
-  type BeginCollaborativeMigrationInput,
-  type CollaborativeProofPosition,
-  type CollaborativeVaultStore,
-  type CompactCollaborativeOperationOutcomeInput,
-  type DestroyCollaborativeVaultInput,
-  type GetCollaborativeMutationProofRangeInput,
   type MongoCollaborativeVaultCollectionNames,
-  type PublishCollaborativeVaultInput,
 } from './collaborative-vault-store.js';

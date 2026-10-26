@@ -25,6 +25,7 @@ kavrix init
 kavrix init --no-tui   # classic guided prompts
 kavrix init --no-mouse # fullscreen setup with keyboard input / native selection
 kavrix tui             # full interactive app after setup
+kavrix tui --allow-insecure-transport  # explicit non-TLS opt-in for isolated networks
 ```
 
 During setup, `Ctrl+G` opens paged Help; Enter/arrows page and Escape returns to
@@ -161,9 +162,12 @@ with exact database/vault binding. Database and vault labels are stored only in
 the encrypted catalog. Ordinary list/status output returns opaque IDs and
 `[REDACTED]`, not labels. `db vault create --secrets-stdin` expects the database
 key passphrase followed by the private vault label; MongoDB mode prepends its URI.
-`db vault remove <vaultId> --secrets-stdin` expects only `[mongodb-url,]
-passphrase` (see `kavrix frames`). A failed removal never advances the revision
-anchor: the previously working key keeps working. `db recovery use` rotates the
+`db vault remove <vaultId> --secrets-stdin` expects `[mongodb-url,] passphrase`
+followed by the exact confirmation frame `REMOVE <vaultId>` (see
+`kavrix frames`); interactive runs ask for the same confirmation on the
+terminal, and a wrong or missing confirmation cancels the removal. A failed
+removal never advances the revision anchor: the previously working key keeps
+working. `db recovery use` rotates the
 database owner key: the previous owner key stops working and the selected profile
 still names its old key path until it is updated, so re-run with `--key-file`
 pointing at the recovered key.

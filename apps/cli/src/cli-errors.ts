@@ -8,10 +8,13 @@ import { CLI_EXIT_CODES } from '@kavrix/schemas/cli-exit-codes';
 
 import { LocalCliError } from './cli-error.js';
 import {
+  classifyAggregateFailure,
   commanderExitCode,
   databaseMigrationExitCode,
+  GENERIC_CLI_FAILURE_MESSAGE,
   portableKeyFileExitCode,
   sessionUnlockExitCode,
+  type ClassifiedCliFailure,
 } from './cli-exit-mapping.js';
 import { keyFileGuidance } from './key-file-guidance.js';
 import { DatabaseFlatCommandError } from './database-flat-commands.js';
@@ -48,10 +51,23 @@ function isCommanderError(error: unknown): error is CommanderErrorLike {
  * Unknown failures stay generic and never leak raw error text, except
  * short module-load diagnostics that cannot carry vault secrets.
  */
-export function classifyCliFailure(error: unknown): Readonly<{
-  message: string;
-  exitCode: number;
-}> {
+export function classifyCliFailure(error: unknown): ClassifiedCliFailure {
+  if (error instanceof AggregateError) {
+    // Aggregate members carry the real failure (the aggregate's own message
+    // tends to be the cleanup summary): classify by member so wrapped coded
+    // errors keep their stable exit codes and their redacted messages reach
+    // the rendered line.
+    return classifyAggregateFailure(error, classifySingleCliFailure);
+  }
+  return (
+    classifySingleCliFailure(error) ?? {
+      message: GENERIC_CLI_FAILURE_MESSAGE,
+      exitCode: CLI_EXIT_CODES.unclassifiedFailure,
+    }
+  );
+}
+
+function classifySingleCliFailure(error: unknown): ClassifiedCliFailure | undefined {
   if (isCommanderError(error)) {
     // Commander has already rendered help, version, or the sanitized usage
     // error through the configured streams; a second message would duplicate it.
@@ -106,11 +122,7 @@ export function classifyCliFailure(error: unknown): Readonly<{
   ) {
     return { message: (error as Error).message, exitCode: CLI_EXIT_CODES.usageError };
   }
-  if (
-    error instanceof AggregateError ||
-    error instanceof InitOnboardingCancelledError ||
-    error instanceof LocalCliError
-  ) {
+  if (error instanceof InitOnboardingCancelledError || error instanceof LocalCliError) {
     return { message: error.message, exitCode: CLI_EXIT_CODES.unclassifiedFailure };
   }
   if (
@@ -137,8 +149,5 @@ export function classifyCliFailure(error: unknown): Readonly<{
       exitCode: CLI_EXIT_CODES.unclassifiedFailure,
     };
   }
-  return {
-    message: 'Kavrix command failed.',
-    exitCode: CLI_EXIT_CODES.unclassifiedFailure,
-  };
+  return undefined;
 }

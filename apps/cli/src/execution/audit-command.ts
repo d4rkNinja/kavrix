@@ -1,4 +1,4 @@
-﻿import type { DatabaseFlatCommandOptions } from '../database-flat-commands.js';
+import type { DatabaseFlatCommandOptions } from '../database-flat-commands.js';
 import { withAuthorizationSnapshot } from './authorization-session.js';
 
 export interface AuditOptions extends DatabaseFlatCommandOptions {

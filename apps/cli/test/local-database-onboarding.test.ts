@@ -273,6 +273,46 @@ describe('guided local database onboarding', () => {
     ]);
     expect(await registry.current()).toBeNull();
   });
+
+  it(
+    'keeps the original failure ahead of cleanup failures when both fail',
+    { timeout: integrationTimeoutMs },
+    async () => {
+      const target = await createTarget('cleanup-chained');
+      const primaryFailure = new DatabaseSessionError('operation');
+      const cleanupFailure = new DatabaseSessionError('authentication');
+      // The primary failure happens at the final profile-selection step, so
+      // nothing inside the session consumes the once-only close rejection.
+      vi.spyOn(DatastoreProfileRegistry.prototype, 'useExpected').mockRejectedValueOnce(
+        primaryFailure,
+      );
+      vi.spyOn(DatabaseSession.prototype, 'close').mockRejectedValueOnce(
+        cleanupFailure,
+      );
+
+      const failure = await executeGuidedLocalOnboarding({
+        ...target.destinations,
+        databaseLabel: 'database',
+        ownerPassphrase: OWNER_PASSPHRASE,
+        vaultLabel: 'vault',
+        recoveryPassphrase: RECOVERY_PASSPHRASE,
+      }).catch((error: unknown) => error);
+
+      expect(failure).toBeInstanceOf(GuidedLocalOnboardingError);
+      // The cleanup AggregateError must not replace the root cause: the
+      // original failure leads the aggregate (so its classification still
+      // decides the rendered failure) with the cleanup failures following it,
+      // and the primary error stays reachable as the lead member's cause.
+      const cause = (failure as { cause?: unknown }).cause;
+      expect(cause).toBeInstanceOf(AggregateError);
+      expect((cause as AggregateError).message).toBe(
+        'Protected onboarding cleanup failed.',
+      );
+      const [lead, ...cleanup] = (cause as AggregateError).errors;
+      expect(cleanup).toEqual([cleanupFailure]);
+      expect((lead as { cause?: unknown }).cause).toBe(primaryFailure);
+    },
+  );
 });
 
 async function createTarget(label: string): Promise<

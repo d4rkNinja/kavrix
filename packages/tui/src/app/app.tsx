@@ -575,12 +575,6 @@ function mapInkInput(
     name?: string;
   }>,
 ): AppKey | null {
-  // Ink reports Ctrl+C as the raw byte with `key.name === 'c'`. Without this the
-  // control byte reaches the router as `text: '\x03'`, which matches no exit
-  // path, and the documented Ctrl+C quit silently does nothing.
-  if (input === '\u0003' || (key.ctrl && key.name === 'c')) {
-    return { text: 'c', ctrl: true };
-  }
   if (key.upArrow) return { name: 'up' };
   if (key.downArrow) return { name: 'down' };
   if (key.leftArrow) return { name: 'left' };
@@ -594,5 +588,9 @@ function mapInkInput(
   if (key.pageUp) return { name: 'page-up' };
   if (key.pageDown) return { name: 'page-down' };
   if (input.length === 0) return null;
+  // Ink 7 delivers Ctrl+C as letter input 'c' with `ctrl: true` (the `key`
+  // object carries no `name`, and no raw control byte reaches the handler), so
+  // this fallthrough is what hands the router `{ text: 'c', ctrl: true }` — the
+  // shape its secure quit path matches on.
   return { text: input, ctrl: key.ctrl };
 }

@@ -57,8 +57,10 @@ describe('protected streaming file publication', () => {
       writeSecureStreamFile(path, values([first, second]), 32),
     ).resolves.toEqual({ bytes: 5 });
     await expect(readFile(path)).resolves.toEqual(Buffer.from([1, 2, 3, 4, 5]));
-    expect(first).toEqual(new Uint8Array(3));
-    expect(second).toEqual(new Uint8Array(2));
+    // The writer borrows chunks: caller-owned buffers are neither retained
+    // nor mutated (in particular, they are not zeroized).
+    expect(first).toEqual(new Uint8Array([1, 2, 3]));
+    expect(second).toEqual(new Uint8Array([4, 5]));
     expect(await readdir(directory)).toEqual(['backup.cvkx']);
   });
 
@@ -79,8 +81,30 @@ describe('protected streaming file publication', () => {
     await expect(
       writeSecureStreamFile(join(directory, 'oversized.cvkx'), values([oversized]), 2),
     ).rejects.toMatchObject({ code: 'KEY_FILE_OPERATION_FAILED' });
-    expect(oversized).toEqual(new Uint8Array(3));
+    expect(oversized).toEqual(new Uint8Array([6, 5, 4]));
     expect(await readdir(directory)).toEqual([]);
+  });
+
+  it('leaves caller-owned chunk buffers unchanged on success and on a source failure', async () => {
+    const written = new Uint8Array([7, 7, 7]);
+    const path = join(directory, 'borrowed.cvkx');
+    await expect(writeSecureStreamFile(path, values([written]), 32)).resolves.toEqual({
+      bytes: 3,
+    });
+    expect(written).toEqual(new Uint8Array([7, 7, 7]));
+    expect(await readFile(path)).toEqual(Buffer.from([7, 7, 7]));
+
+    const failed = new Uint8Array([1, 1, 1]);
+    const failing = {
+      async *[Symbol.asyncIterator](): AsyncGenerator<Uint8Array> {
+        yield failed;
+        throw new Error('source failure canary');
+      },
+    };
+    await expect(
+      writeSecureStreamFile(join(directory, 'failed.cvkx'), failing, 32),
+    ).rejects.toMatchObject({ code: 'KEY_FILE_OPERATION_FAILED' });
+    expect(failed).toEqual(new Uint8Array([1, 1, 1]));
   });
 
   it('preflights links and refuses to replace an existing archive', async () => {

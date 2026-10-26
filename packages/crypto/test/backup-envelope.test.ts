@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { databaseIdSchema } from '@kavrix/schemas';
+import { databaseIdSchema, MAX_DATABASE_BACKUP_PLAINTEXT_BYTES } from '@kavrix/schemas';
 
 import { AuthenticationError, CryptoInputError } from '../src/errors.js';
 import {
@@ -105,6 +105,23 @@ describe('database backup archive', () => {
     await expect(openDatabaseBackupArchive(parsed, PASSPHRASE())).rejects.toThrow(
       AuthenticationError,
     );
+  });
+
+  it('fails closed on a ciphertext over the schema bound before decoding it', async () => {
+    const archive = await sealDatabaseBackupArchive(
+      new TextEncoder().encode('canary'),
+      PASSPHRASE(),
+      HEADER,
+    );
+    // One character past the encoded length the schema's plaintext cap allows,
+    // so an unvalidated cast object cannot force a large allocation.
+    const maximumEncoded = Math.ceil((MAX_DATABASE_BACKUP_PLAINTEXT_BYTES * 4) / 3);
+    await expect(
+      openDatabaseBackupArchive(
+        { ...archive, ciphertext: 'A'.repeat(maximumEncoded + 1) },
+        PASSPHRASE(),
+      ),
+    ).rejects.toThrow(CryptoInputError);
   });
 
   it('rejects unknown formats, versions, and malformed documents before any key work', () => {

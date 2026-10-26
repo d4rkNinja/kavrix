@@ -3,7 +3,11 @@ import { Readable, Writable } from 'node:stream';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { classifyCliFailure } from '../src/cli-errors.js';
-import { LocalSecretInput } from '../src/local-secrets.js';
+import {
+  LocalSecretInput,
+  MAX_SECRET_BYTES,
+  readVisibleLine,
+} from '../src/local-secrets.js';
 import { EXEC_PASSPHRASE, passphraseFrame } from './execution-helpers.js';
 
 class TestTerminalInput extends Readable {
@@ -772,5 +776,52 @@ describe('local secret input policy', () => {
       new LocalSecretInput(input, output).read(['passphrase'], false),
     ).rejects.toThrow('A masked prompt requires a terminal');
     expect(output.text()).toBe('');
+  });
+});
+
+describe('visible confirmation input', () => {
+  it('reads an echoed, non-secret confirmation line from a terminal', async () => {
+    const input = new TestTerminalInput();
+    const output = new TestTerminalOutput(true);
+    const reading = readVisibleLine(input, output, 'Delete the source? (y/N) ');
+
+    input.enter('y\n');
+
+    await expect(reading).resolves.toBe('y');
+    // Unlike masked secret prompts, the answer is echoed: it is not a secret.
+    expect(output.text()).toContain('Delete the source? (y/N) ');
+    expect(output.text()).toContain('y');
+  });
+
+  it('fails closed when the input stream is not a terminal', async () => {
+    const input = Readable.from([]);
+    const output = new TestTerminalOutput();
+
+    await expect(
+      readVisibleLine(input, output, 'Delete the source? (y/N) '),
+    ).rejects.toThrow('A visible confirmation requires a terminal.');
+    expect(output.text()).toBe('');
+  });
+
+  it('fails closed when the input ends before an answer arrives', async () => {
+    const input = new TestTerminalInput();
+    const output = new TestTerminalOutput(true);
+    const reading = readVisibleLine(input, output, 'Delete the source? (y/N) ');
+
+    input.push(null);
+
+    await expect(reading).rejects.toThrow(
+      'Confirmation input ended before a value was entered.',
+    );
+  });
+
+  it('rejects oversized confirmation answers', async () => {
+    const input = new TestTerminalInput();
+    const output = new TestTerminalOutput(true);
+    const reading = readVisibleLine(input, output, 'Confirm: ');
+
+    input.enter(`${'a'.repeat(MAX_SECRET_BYTES + 1)}\n`);
+
+    await expect(reading).rejects.toThrow('Confirmation input is invalid.');
   });
 });

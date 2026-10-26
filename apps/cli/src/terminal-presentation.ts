@@ -40,3 +40,20 @@ export function renderTerminalPrompt(label: string, color: boolean): string {
   const marker = color ? `${ANSI_ESCAPE}[1;36m?${ANSI_RESET}` : '?';
   return `${marker} ${label} (input hidden): `;
 }
+
+/**
+ * Renders one operator- or archive-supplied identifier or path safely for
+ * terminal output: every control character (C0, DEL, and the C1 range)
+ * becomes the literal text '[CONTROL]', so hostile names or paths cannot
+ * inject ANSI/OSC escape sequences into messages that echo them.
+ */
+export function sanitizeTerminalText(value: string): string {
+  return Array.from(value)
+    .map((character) => {
+      const point = character.codePointAt(0) ?? 0;
+      return point < 32 || point === 127 || (point >= 128 && point <= 159)
+        ? '[CONTROL]'
+        : character;
+    })
+    .join('');
+}

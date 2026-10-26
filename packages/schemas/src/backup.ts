@@ -113,11 +113,17 @@ export const encryptedBackupEntrySchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('tombstone'), record: tombstoneRecordSchema }).strict(),
 ]);
 
+const backupRecordCountSchema = z
+  .number()
+  .int()
+  .positive()
+  .max(DEFAULT_MAX_BACKUP_RECORDS);
+
 export const encryptedBackupFooterSchema = z
   .object({
     type: z.literal('footer'),
     version: z.literal(1),
-    recordCount: z.number().int().positive().max(10_000_000),
+    recordCount: backupRecordCountSchema,
     transcriptSha256: sha256DigestSchema,
     authenticationTag: backupAuthenticationTagSchema,
   })
@@ -139,11 +145,6 @@ export type ResolvedBackupLimits = Readonly<{
   maximumRecords: number;
 }>;
 
-const backupRecordCountSchema = z
-  .number()
-  .int()
-  .positive()
-  .max(DEFAULT_MAX_BACKUP_RECORDS);
 const backupSubcountSchema = z
   .number()
   .int()

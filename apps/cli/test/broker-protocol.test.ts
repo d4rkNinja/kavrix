@@ -3,11 +3,15 @@ import { describe, expect, it } from 'vitest';
 import { agentBrokerClientFrameSchema, MAX_BROKER_DATA_BYTES } from '@kavrix/schemas';
 
 import {
+  BrokerFrameAuthError,
   BrokerFrameTooLargeError,
   MAX_FRAME_BYTES,
   NdjsonDecoder,
   auditCommandName,
   boundedPreview,
+  decodeBrokerFrameLine,
+  deriveBrokerSessionKey,
+  encodeBrokerFrameLine,
   safeCommandName,
   tokensMatch,
 } from '../src/execution/broker-protocol.js';
@@ -104,5 +108,66 @@ describe('auditCommandName', () => {
     expect(auditCommandName('-leading-dash')).toBeUndefined();
     expect(auditCommandName('/')).toBeUndefined();
     expect(auditCommandName('')).toBeUndefined();
+  });
+});
+
+describe('encrypted broker framing', () => {
+  const key = deriveBrokerSessionKey('session-token', '\\.\pipe\kavrix-agent-test');
+  const frame = { v: 1, event: 'decision', outcome: 'allow', reason: 'policy-allowed' };
+
+  it('round-trips a frame through one encrypted line', () => {
+    const line = encodeBrokerFrameLine(key, 'server-to-client', frame);
+    expect(JSON.parse(line)).toMatchObject({ v: 1, event: 'enc' });
+    expect(decodeBrokerFrameLine(key, 'server-to-client', line)).toEqual(frame);
+  });
+
+  it('binds direction into the authenticated data', () => {
+    const line = encodeBrokerFrameLine(key, 'client-to-server', frame);
+    expect(() => decodeBrokerFrameLine(key, 'server-to-client', line)).toThrow(
+      BrokerFrameAuthError,
+    );
+  });
+
+  it('rejects tampered ciphertext and wrong keys', () => {
+    const line = encodeBrokerFrameLine(key, 'server-to-client', frame);
+    const record = JSON.parse(line) as { c: string };
+    const flipped = Buffer.from(record.c, 'base64url');
+    flipped[0] ^= 0x01;
+    record.c = flipped.toString('base64url');
+    expect(() =>
+      decodeBrokerFrameLine(key, 'server-to-client', JSON.stringify(record)),
+    ).toThrow(BrokerFrameAuthError);
+    const otherKey = deriveBrokerSessionKey(
+      'other-token',
+      '\\.\pipe\kavrix-agent-test',
+    );
+    expect(() => decodeBrokerFrameLine(otherKey, 'server-to-client', line)).toThrow(
+      BrokerFrameAuthError,
+    );
+  });
+
+  it('rejects plaintext and malformed envelopes', () => {
+    expect(() =>
+      decodeBrokerFrameLine(key, 'server-to-client', JSON.stringify(frame)),
+    ).toThrow(BrokerFrameAuthError);
+    expect(() => decodeBrokerFrameLine(key, 'server-to-client', 'not json')).toThrow(
+      BrokerFrameAuthError,
+    );
+    expect(() =>
+      decodeBrokerFrameLine(
+        key,
+        'server-to-client',
+        JSON.stringify({ v: 1, event: 'enc', n: 'AA', c: 'AA', t: 'AA' }),
+      ),
+    ).toThrow(BrokerFrameAuthError);
+  });
+
+  it('derives distinct keys per endpoint and token', () => {
+    const same = deriveBrokerSessionKey('t', 'endpoint-a');
+    expect(Buffer.compare(same, deriveBrokerSessionKey('t', 'endpoint-b'))).not.toBe(0);
+    expect(Buffer.compare(same, deriveBrokerSessionKey('t2', 'endpoint-a'))).not.toBe(
+      0,
+    );
+    expect(same.byteLength).toBe(32);
   });
 });

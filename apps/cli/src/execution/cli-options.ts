@@ -8,7 +8,7 @@ export type ExecutionCommandOptions = DatabaseFlatCommandOptions;
 
 /**
  * Merges options across the full command hierarchy, preferring explicitly set
- * values over inherited defaults â€” the same contract the core CLI applies.
+ * values over inherited defaults — the same contract the core CLI applies.
  */
 export function extractMergedOptions(
   command: Command,

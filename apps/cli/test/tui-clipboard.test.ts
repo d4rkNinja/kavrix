@@ -17,6 +17,9 @@ describe('copySecretToClipboard', () => {
   it('reports a scheduled terminal clear honestly and never promises native automatic clearing', () => {
     expect(clipboardCopyNotice('osc52')).toContain('best-effort');
     expect(clipboardCopyNotice('osc52')).toContain('while Kavrix stays open');
+    // Terminals that silently drop OSC 52 cannot be detected; the notice must
+    // describe the mechanism without promising a verified copy.
+    expect(clipboardCopyNotice('osc52')).toContain('terminal clipboard escape');
     expect(clipboardCopyNotice('system')).toContain(
       'automatic clearing is unavailable',
     );
@@ -122,19 +125,65 @@ describe('copySecretToClipboard', () => {
     expect(clipboardProcess.spawn).toHaveBeenCalledTimes(1);
   });
 
-  it('clears only the newest terminal copy and tolerates terminal shutdown', async () => {
+  it('clears the previous terminal copy immediately when a newer copy lands', async () => {
     vi.useFakeTimers();
-    const write = vi.fn(() => true);
-    const stdout = { isTTY: true, write } as unknown as NodeJS.WriteStream;
+    const writes: string[] = [];
+    const stdout = {
+      isTTY: true,
+      write: (chunk: string) => {
+        writes.push(String(chunk));
+        return true;
+      },
+    } as unknown as NodeJS.WriteStream;
     await copySecretToClipboard('old-copy-canary', { stdout, clearAfterMs: 20 });
     await copySecretToClipboard('new-copy-canary', { stdout, clearAfterMs: 40 });
+    const firstPayload = Buffer.from('old-copy-canary', 'utf8').toString('base64');
+    const secondPayload = Buffer.from('new-copy-canary', 'utf8').toString('base64');
+    // The first secret is evicted before the second payload lands: two quick
+    // copies never leave the older secret resident until its own timer.
+    expect(writes).toEqual([
+      `\x1b]52;c;${firstPayload}\x07`,
+      '\x1b]52;c;\x07',
+      `\x1b]52;c;${secondPayload}\x07`,
+    ]);
+    // Only the newest copy's clear timer remains, and it still fires.
+    await vi.advanceTimersByTimeAsync(45);
+    expect(writes).toHaveLength(4);
+    expect(writes[3]).toBe('\x1b]52;c;\x07');
+  });
+
+  it('tolerates a closed terminal during the scheduled clear', async () => {
+    vi.useFakeTimers();
+    const writes: string[] = [];
+    const stdout = {
+      isTTY: true,
+      write: (chunk: string) => {
+        writes.push(String(chunk));
+        if (writes.length > 1) throw new Error('terminal closed');
+        return true;
+      },
+    } as unknown as NodeJS.WriteStream;
+    await expect(
+      copySecretToClipboard('closed-terminal-canary', { stdout, clearAfterMs: 20 }),
+    ).resolves.toBe('osc52');
     await vi.advanceTimersByTimeAsync(25);
-    expect(write).toHaveBeenCalledTimes(2);
-    write.mockImplementation(() => {
-      throw new Error('terminal closed');
-    });
-    await vi.advanceTimersByTimeAsync(20);
-    expect(write).toHaveBeenCalledTimes(3);
+    expect(writes).toHaveLength(2);
+  });
+
+  it('refuses oversized payloads instead of writing a truncatable sequence', async () => {
+    const writes: string[] = [];
+    const stdout = {
+      isTTY: true,
+      write: (chunk: string) => {
+        writes.push(String(chunk));
+        return true;
+      },
+    } as unknown as NodeJS.WriteStream;
+    const oversized = 'x'.repeat(64 * 1024);
+    await expect(copySecretToClipboard(oversized, { stdout })).rejects.toThrow(
+      /size cap/u,
+    );
+    expect(writes).toEqual([]);
   });
 
   it('handles a broken stdin pipe and tries the next Linux backend', async () => {

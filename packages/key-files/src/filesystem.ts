@@ -881,6 +881,131 @@ function lockPath(directoryPath: string, targetPath: string): string {
   return join(directoryPath, `.kavrix-${digest}.lock`);
 }
 
+/** Owner record persisted inside each lock file for stale-lock recovery. */
+const LOCK_RECORD_MAX_BYTES = 256;
+/**
+ * A lock with no readable owner record younger than this is presumed to be a
+ * live acquisition between create and owner-record write (which completes in
+ * milliseconds); only an older empty lock can be a crashed predecessor.
+ */
+const LOCK_WRITE_GRACE_MS = 60_000;
+/**
+ * A lock whose recorded owner process is still running is honored unless it
+ * is older than this. Transitions hold locks for seconds, so an ancient lock
+ * means the recorded pid was recycled or its owner wedged.
+ */
+const LOCK_OWNER_ABSOLUTE_STALE_MS = 24 * 60 * 60 * 1000;
+const MAX_LOCK_ACQUISITION_ATTEMPTS = 4;
+
+type LockOwner = Readonly<{ pid: number }>;
+
+function parseLockOwner(content: string): LockOwner | undefined {
+  try {
+    const parsed: unknown = JSON.parse(content);
+    const pid =
+      typeof parsed === 'object' && parsed !== null
+        ? (parsed as { pid?: unknown }).pid
+        : undefined;
+    if (typeof pid === 'number' && Number.isInteger(pid) && pid > 0) {
+      return { pid };
+    }
+  } catch {
+    // Unparseable content falls back to age-only staleness decisions.
+  }
+  return undefined;
+}
+
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    // EPERM proves a live process the caller may not signal. Same-user lock
+    // directories make this rare, and treating it as alive never deletes a
+    // lock that might still be held.
+    return fileErrorCode(error) === 'EPERM';
+  }
+}
+
+async function createLockFile(path: string): Promise<FileHandle> {
+  const handle = await createSecureEmptyFile(path);
+  try {
+    const record = `${JSON.stringify({
+      pid: process.pid,
+      createdAt: new Date().toISOString(),
+    })}\n`;
+    await handle.writeFile(record, 'utf8');
+    await handle.sync();
+    return handle;
+  } catch (error) {
+    let cleanupFailed = false;
+    try {
+      await handle.close();
+    } catch {
+      cleanupFailed = true;
+    }
+    try {
+      await removeIfPresent(path);
+    } catch {
+      cleanupFailed = true;
+    }
+    if (cleanupFailed) {
+      throw new PortableKeyFileError('KEY_FILE_OPERATION_FAILED');
+    }
+    throw mappedFileError(error, 'KEY_FILE_OPERATION_FAILED');
+  }
+}
+
+/**
+ * Removes the lock at `path` only when its contents prove no live process
+ * owns it. Returns true when a stale lock was removed (or vanished on its
+ * own) so the caller may retry acquisition; false when the lock must still
+ * be treated as busy. Identity is rechecked immediately before unlinking so
+ * a lock replaced by a live acquirer is never deleted.
+ */
+async function recoverStaleLock(path: string): Promise<boolean> {
+  let handle: FileHandle | undefined;
+  try {
+    handle = await open(path, noFollowReadFlags());
+  } catch (error) {
+    // The previous owner released between EEXIST and this read; the caller's
+    // next attempt observes an absent lock.
+    return fileErrorCode(error) === 'ENOENT';
+  }
+  try {
+    const metadata = await handle.stat({ bigint: true });
+    if (!metadata.isFile()) return false;
+    const record = Buffer.alloc(LOCK_RECORD_MAX_BYTES);
+    const read = await handle.read(record, 0, record.byteLength, 0);
+    const owner = parseLockOwner(record.subarray(0, read.bytesRead).toString('utf8'));
+    const ageMs = Date.now() - Number(metadata.mtimeMs);
+    if (owner !== undefined) {
+      if (isProcessAlive(owner.pid) && ageMs < LOCK_OWNER_ABSOLUTE_STALE_MS) {
+        return false;
+      }
+    } else if (ageMs < LOCK_WRITE_GRACE_MS) {
+      // Possibly a live acquisition that has not written its owner record yet.
+      return false;
+    }
+    const before = identityOf(metadata);
+    const current = await lstat(path, { bigint: true });
+    if (!sameIdentity(before, identityOf(current))) return false;
+    try {
+      await unlink(path);
+    } catch (error) {
+      // Removed by its owner between the identity check and now.
+      return fileErrorCode(error) === 'ENOENT';
+    }
+    return true;
+  } catch {
+    // Failure to inspect a lock fails toward honoring it (busy), never
+    // toward deleting a lock that might be held.
+    return false;
+  } finally {
+    await handle.close().catch(() => undefined);
+  }
+}
+
 async function writeTemporaryFile(
   directoryPath: string,
   contents: Uint8Array,
@@ -941,20 +1066,24 @@ async function writeTemporaryStreamFile(
       }
       const next = bytes + chunk.byteLength;
       if (!Number.isSafeInteger(next) || next > maximumBytes) {
-        chunk.fill(0);
         throw new PortableKeyFileError('KEY_FILE_OPERATION_FAILED');
       }
+      // The caller owns each chunk; this writer only borrows it. Copy into an
+      // internal buffer (chunks are bounded by MAX_SECURE_STREAM_CHUNK_BYTES)
+      // so the bytes handled here can be zeroized without mutating memory the
+      // caller may still hold or reuse.
+      const owned = Buffer.from(chunk);
       try {
         let offset = 0;
-        while (offset < chunk.byteLength) {
-          const result = await handle.write(chunk, offset, chunk.byteLength - offset);
+        while (offset < owned.byteLength) {
+          const result = await handle.write(owned, offset, owned.byteLength - offset);
           if (result.bytesWritten <= 0) {
             throw new PortableKeyFileError('KEY_FILE_OPERATION_FAILED');
           }
           offset += result.bytesWritten;
         }
       } finally {
-        chunk.fill(0);
+        owned.fill(0);
       }
       bytes = next;
     }
@@ -1331,17 +1460,26 @@ export async function releaseOwnedSecureFilePublication(
 }
 
 async function acquireReplacementLock(path: string): Promise<FileHandle> {
-  try {
-    return await createSecureEmptyFile(path);
-  } catch (error) {
-    if (
-      error instanceof PortableKeyFileError &&
-      error.code === 'KEY_FILE_ALREADY_EXISTS'
-    ) {
-      throw new PortableKeyFileError('KEY_FILE_BUSY');
+  for (let attempt = 0; attempt < MAX_LOCK_ACQUISITION_ATTEMPTS; attempt += 1) {
+    try {
+      return await createLockFile(path);
+    } catch (error) {
+      if (
+        !(error instanceof PortableKeyFileError) ||
+        error.code !== 'KEY_FILE_ALREADY_EXISTS'
+      ) {
+        throw error;
+      }
+      // Recover only provably stale locks; a live owner still means busy.
+      if (
+        attempt + 1 >= MAX_LOCK_ACQUISITION_ATTEMPTS ||
+        !(await recoverStaleLock(path))
+      ) {
+        throw new PortableKeyFileError('KEY_FILE_BUSY');
+      }
     }
-    throw error;
   }
+  throw new PortableKeyFileError('KEY_FILE_BUSY');
 }
 
 async function validateReplacementTarget(
@@ -1775,7 +1913,9 @@ export async function replaceOwnedSecureFileWhileExclusive(
 
 /**
  * Streams bounded contents to a hidden, restrictive sibling and publishes it
- * with create-only semantics. The destination is never replaced.
+ * with create-only semantics. The destination is never replaced. The source
+ * keeps ownership of its chunks: this writer copies each chunk before writing
+ * and neither retains nor mutates caller-owned buffers.
  */
 export async function writeSecureStreamFile(
   inputPath: string,

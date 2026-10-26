@@ -1,4 +1,14 @@
-import { chmod, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import {
+  chmod,
+  link,
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  rm,
+  stat,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -410,6 +420,48 @@ describe('SealedSecretStore', () => {
         await store.delete(SERVICE, ACCOUNT);
         await store.delete(SERVICE, ACCOUNT);
         expect(await store.load(SERVICE, ACCOUNT)).toBeNull();
+      } finally {
+        await store.close();
+      }
+    },
+    TIMEOUT_MS,
+  );
+
+  it(
+    'refuses to delete a seal file that gained a second link',
+    async () => {
+      const store = storeAt(directory);
+      try {
+        await store.store(SERVICE, ACCOUNT, SECRET);
+        const sealed = join(directory, requireSealFile(await readdir(directory)));
+        await link(sealed, `${sealed}.hardlink`);
+
+        await expect(store.delete(SERVICE, ACCOUNT)).rejects.toMatchObject({
+          code: 'KEY_FILE_UNSAFE',
+        });
+        // Deletion was refused, so the sealed envelope is still on disk
+        // (loads fail closed too while it has two links).
+        await expect(stat(sealed)).resolves.toBeTruthy();
+      } finally {
+        await store.close();
+      }
+    },
+    TIMEOUT_MS,
+  );
+
+  it(
+    're-hardens a store directory that pre-existed with loose permissions',
+    async () => {
+      if (process.platform === 'win32') return;
+      const loose = join(directory, 'loose');
+      await mkdir(loose, { recursive: true, mode: 0o777 });
+      await chmod(loose, 0o777);
+
+      const store = storeAt(loose);
+      try {
+        await store.store(SERVICE, ACCOUNT, SECRET);
+        expect((await stat(loose)).mode & 0o777).toBe(0o700);
+        expect((await stat(loose)).uid).toBe(process.getuid());
       } finally {
         await store.close();
       }

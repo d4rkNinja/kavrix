@@ -11,6 +11,7 @@ import {
   profileIdSchema,
   vaultIdSchema,
   type DatabaseId,
+  type ProfileId,
   type VaultId,
 } from '@kavrix/schemas';
 import {
@@ -22,6 +23,7 @@ import type { Command } from 'commander';
 
 import { DatabaseFlatCommandError } from './database-flat-commands.js';
 
+import { LocalCliError } from './cli-error.js';
 import {
   DatastoreProfileRegistry,
   resolveDatastoreProfileRouting,
@@ -29,7 +31,11 @@ import {
   type DatastoreProfile,
 } from './datastore-profiles.js';
 import { DatabaseSession, DatabaseSessionError } from './database-session.js';
-import { LocalSecretInput, type LocalSecretKind } from './local-secrets.js';
+import {
+  LocalSecretInput,
+  readVisibleLine,
+  type LocalSecretKind,
+} from './local-secrets.js';
 import { databaseProfileBindingState } from './database-flat-commands.js';
 import { doctorHealModeFromOptions, runDoctorHeal } from './doctor-heal.js';
 import { resolveProfileConfigDirectory } from './profile-config-directory.js';
@@ -620,40 +626,95 @@ export async function handleVaultRemove(
   vaultId: string,
   options: DatabaseCommandOptions,
 ): Promise<void> {
-  await withOwnerSession(options, [], async (session, _extras, route) => {
-    const id = parseVaultIdentifier(vaultId);
-    const { createDatabaseVaultDeletionAuthorization } =
-      await import('./database-session.js');
-    await session.deleteVault(id, createDatabaseVaultDeletionAuthorization());
-    const remaining = session.listVaults();
-    let selection: Readonly<{
-      action: 'unchanged' | 'cleared' | 'reselected';
-      vaultId?: string | null;
-    }> = { action: 'unchanged' };
-    if (
-      route.registry !== null &&
-      route.profile !== null &&
-      route.profile.defaultVaultId === id
-    ) {
-      if (remaining.length === 1) {
-        const next = remaining[0];
-        if (next === undefined) throw new DatabaseSessionError('operation');
-        const selected = await route.registry.setDefaultVaultId(
-          route.profile.id,
-          next.id,
-          session.databaseId,
-        );
-        selection = {
-          action: 'reselected',
-          vaultId: selected.defaultVaultId ?? next.id,
-        };
-      } else {
-        await route.registry.clearDefaultVaultId(route.profile.id, session.databaseId);
-        selection = { action: 'cleared', vaultId: null };
+  const id = parseVaultIdentifier(vaultId);
+  const expected = `REMOVE ${id}`;
+  const useStdin = options.secretsStdin === true || options.passphraseStdin === true;
+  await withOwnerSession(
+    options,
+    // Framed stdin must carry the confirmation in the same single pass as the
+    // unlock material; interactive runs collect it through a visible prompt.
+    useStdin ? ['confirmation'] : [],
+    async (session, extras, route) => {
+      await session.getVault(id);
+      process.stderr.write(
+        [
+          '',
+          'Permanent vault removal requested.',
+          `Vault: ${sanitize(id)}`,
+          `Database: ${sanitize(session.databaseId)}`,
+          'Backups and snapshots are not removed.',
+          '',
+        ].join('\n'),
+      );
+      // Irreversible deletion is gated exactly like `destroy`: the operator
+      // types the confirmation on a terminal, or framed stdin carries the
+      // exact confirmation line. Non-interactive runs without the frame fail
+      // closed; the internal deletion authorization is never constructed
+      // without it.
+      const confirmation = useStdin
+        ? requiredConfirmationFrame(extras[0])
+        : await readVaultRemovalConfirmation(expected);
+      if (confirmation !== expected) {
+        throw new LocalCliError('Vault removal was cancelled.');
       }
-    }
-    writeOutput({ removed: true, vaultId: id, selection });
-  });
+      const { createDatabaseVaultDeletionAuthorization } =
+        await import('./database-session.js');
+      await session.deleteVault(id, createDatabaseVaultDeletionAuthorization());
+      const remaining = session.listVaults();
+      let selection: Readonly<{
+        action: 'unchanged' | 'cleared' | 'reselected';
+        vaultId?: string | null;
+      }> = { action: 'unchanged' };
+      if (
+        route.registry !== null &&
+        route.profile !== null &&
+        route.profile.defaultVaultId === id
+      ) {
+        if (remaining.length === 1) {
+          const next = remaining[0];
+          if (next === undefined) throw new DatabaseSessionError('operation');
+          const selected = await route.registry.setDefaultVaultId(
+            route.profile.id,
+            next.id,
+            session.databaseId,
+          );
+          selection = {
+            action: 'reselected',
+            vaultId: selected.defaultVaultId ?? next.id,
+          };
+        } else {
+          await route.registry.clearDefaultVaultId(
+            route.profile.id,
+            session.databaseId,
+          );
+          selection = { action: 'cleared', vaultId: null };
+        }
+      }
+      writeOutput({ removed: true, vaultId: id, selection });
+    },
+  );
+}
+
+function requiredConfirmationFrame(value: string | undefined): string {
+  if (value === undefined) {
+    throw new LocalCliError(
+      'Vault removal requires the confirmation frame "REMOVE <vaultId>" after the unlock frames.',
+    );
+  }
+  return value;
+}
+
+async function readVaultRemovalConfirmation(expected: string): Promise<string> {
+  if (!process.stdin.isTTY || !process.stderr.isTTY) {
+    throw new LocalCliError(
+      'Vault removal confirmation requires a terminal, or --secrets-stdin with the "REMOVE <vaultId>" frame after the unlock frames.',
+    );
+  }
+  return readVisibleLine(
+    process.stdin,
+    process.stderr,
+    `Type ${expected} to permanently remove the vault: `,
+  );
 }
 
 /**
@@ -669,6 +730,19 @@ function parseVaultIdentifier(value: string): VaultId {
     return vaultIdSchema.parse(value);
   } catch {
     throw new DatabaseFlatCommandError('Vault ID is invalid.');
+  }
+}
+
+/**
+ * Validates one profile identifier with a reviewed message and exit code, so
+ * a malformed `--profile` fails as invalid configuration instead of a raw
+ * ZodError rendering as a generic command failure.
+ */
+function parseProfileIdentifier(value: string): ProfileId {
+  try {
+    return profileIdSchema.parse(value);
+  } catch {
+    throw new DatabaseFlatCommandError('Profile ID is invalid.');
   }
 }
 
@@ -715,7 +789,8 @@ async function withOwnerSession(
     await operation(session, values.slice(extraOffset), route);
   } finally {
     zeroize(passphrase);
-    if (session !== undefined) await session.close();
+    // A failed close must never mask the operation's own error or exit code.
+    if (session !== undefined) await session.close().catch(() => undefined);
     else await opened.store.close().catch(() => undefined);
   }
 }
@@ -748,7 +823,7 @@ async function resolveRoute(options: DatabaseCommandOptions): Promise<ResolvedRo
       ? null
       : options.profile === undefined
         ? await registry.current()
-        : await registry.get(profileIdSchema.parse(options.profile));
+        : await registry.get(parseProfileIdentifier(options.profile));
   const profile =
     selected === null
       ? null

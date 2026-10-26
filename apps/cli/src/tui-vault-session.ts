@@ -59,12 +59,20 @@ export class TuiVaultSession {
   #timer: ReturnType<typeof setTimeout> | undefined;
   #inFlight = false;
   #expired = false;
+  /**
+   * Explicit operator opt-in only. Without it, remote non-TLS MongoDB hosts
+   * fail closed inside the storage layer; the session never decides on the
+   * operator's behalf.
+   */
+  readonly #allowInsecureTransport: boolean;
 
   constructor(
     private readonly onExpired: (error?: unknown) => Promise<void>,
     private readonly idleMs = TUI_SESSION_IDLE_MS,
     private readonly maxMs = TUI_SESSION_MAX_MS,
+    allowInsecureTransport = false,
   ) {
+    this.#allowInsecureTransport = allowInsecureTransport;
     if (
       !Number.isSafeInteger(idleMs) ||
       idleMs <= 0 ||
@@ -113,7 +121,7 @@ export class TuiVaultSession {
               {
                 databaseCollectionName: profile.databaseCollection,
                 vaultCollectionName: profile.vaultCollection,
-                allowInsecureTransport: needsInsecureTransport(requireUrl(databaseUrl)),
+                allowInsecureTransport: this.#allowInsecureTransport,
               },
             );
       if (this.#session === undefined) {
@@ -223,9 +231,4 @@ async function keyIdentity(path: string): Promise<string> {
 function requireUrl(value: string | undefined): string {
   if (value === undefined) throw new Error('MongoDB connection input is required.');
   return value;
-}
-
-function needsInsecureTransport(value: string): boolean {
-  const host = new URL(value).hostname.replace(/^\[|\]$/gu, '').toLowerCase();
-  return host !== 'localhost' && host !== '127.0.0.1' && host !== '::1';
 }

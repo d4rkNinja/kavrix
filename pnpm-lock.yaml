@@ -179,6 +179,9 @@ importers:
 
   packages/storage:
     dependencies:
+      '@kavrix/core':
+        specifier: workspace:*
+        version: link:../core
       '@kavrix/key-files':
         specifier: workspace:*
         version: link:../key-files

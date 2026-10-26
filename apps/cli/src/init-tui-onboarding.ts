@@ -1,6 +1,6 @@
 import { LocalCliError } from './cli-error.js';
 import { resolveProfileConfigDirectory } from './profile-config-directory.js';
-import { terminalColorEnabled } from './terminal-presentation.js';
+import { sanitizeTerminalText, terminalColorEnabled } from './terminal-presentation.js';
 import { createCliTuiBackend } from './tui-session.js';
 import { CLI_VERSION } from './version.js';
 
@@ -116,7 +116,9 @@ export function writeInitTuiOnboardingComplete(
   const profileId = options.profileId.replace(/[^\w.-]/gu, '');
   const recoveryFile =
     typeof options.recoveryFile === 'string' && options.recoveryFile.length > 0
-      ? options.recoveryFile.replace(/[\0\r\n]/gu, '')
+      ? // Full control-character stripping: paths are echoed to the terminal
+        // and must not carry ESC/BEL or any other control byte.
+        sanitizeTerminalText(options.recoveryFile)
       : null;
   const lines = [
     '',

@@ -13,6 +13,7 @@
   ],
   "references": [
     { "path": "../schemas/tsconfig.build.json" },
+    { "path": "../core/tsconfig.build.json" },
     { "path": "../key-files/tsconfig.build.json" }
   ]
 }

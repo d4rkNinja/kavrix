@@ -1,4 +1,4 @@
-﻿import type { Collection, Db, MongoClient, MongoServerError } from 'mongodb';
+import type { Collection, Db, MongoClient, MongoServerError } from 'mongodb';
 
 import {
   localVaultDocumentSchema,
@@ -7,10 +7,7 @@ import {
   type LocalVaultDocument,
 } from '@kavrix/schemas';
 
-import {
-  EncryptedVaultStoreError,
-  type EncryptedVaultStore,
-} from './encrypted-vault-store.js';
+import { EncryptedVaultStoreError, type EncryptedVaultStore } from '@kavrix/core';
 import {
   loadMongoDriver,
   MONGO_MAX_POOL_SIZE,
@@ -27,20 +24,22 @@ interface StoredLocalVaultDocument {
 }
 
 export type MongoLocalVaultErrorCode =
-  'conflict' | 'connection' | 'exists' | 'invalid' | 'operation';
+  'closed' | 'conflict' | 'connection' | 'exists' | 'invalid' | 'operation';
 
 export class MongoLocalVaultError extends EncryptedVaultStoreError {
   constructor(code: MongoLocalVaultErrorCode) {
     const message =
-      code === 'conflict'
-        ? 'The vault changed while this command was running.'
-        : code === 'exists'
-          ? 'A vault already exists in this database.'
-          : code === 'invalid'
-            ? 'The database contains an invalid Kavrix vault document.'
-            : code === 'connection'
-              ? 'The database connection failed.'
-              : 'The database operation failed.';
+      code === 'closed'
+        ? 'The vault store is closed.'
+        : code === 'conflict'
+          ? 'The vault changed while this command was running.'
+          : code === 'exists'
+            ? 'A vault already exists in this database.'
+            : code === 'invalid'
+              ? 'The database contains an invalid Kavrix vault document.'
+              : code === 'connection'
+                ? 'The database connection failed.'
+                : 'The database operation failed.';
     super(code, message);
     this.name = 'MongoLocalVaultError';
   }
@@ -62,6 +61,7 @@ export class MongoLocalVaultStore implements EncryptedVaultStore {
    * driver's module graph in this module's import scope.
    */
   readonly #serverError: typeof MongoServerError;
+  #closed = false;
 
   private constructor(
     client: MongoClient,
@@ -117,6 +117,7 @@ export class MongoLocalVaultStore implements EncryptedVaultStore {
   }
 
   async ping(): Promise<void> {
+    this.#assertOpen();
     try {
       await this.#database.command({ ping: 1 });
     } catch {
@@ -125,6 +126,7 @@ export class MongoLocalVaultStore implements EncryptedVaultStore {
   }
 
   async get(vaultId: string): Promise<LocalVaultDocument | null> {
+    this.#assertOpen();
     const id = parseVaultId(vaultId);
     try {
       const stored = await this.#collection.findOne({ _id: id });
@@ -136,6 +138,7 @@ export class MongoLocalVaultStore implements EncryptedVaultStore {
   }
 
   async listVaultIds(): Promise<string[]> {
+    this.#assertOpen();
     try {
       const rows = await this.#collection
         .find({}, { projection: { _id: 1 } })
@@ -149,6 +152,7 @@ export class MongoLocalVaultStore implements EncryptedVaultStore {
   }
 
   async create(document: LocalVaultDocument): Promise<void> {
+    this.#assertOpen();
     const parsed = parseDocument(document);
     try {
       await this.#collection.insertOne({ ...parsed, _id: parsed.id });
@@ -164,6 +168,7 @@ export class MongoLocalVaultStore implements EncryptedVaultStore {
     document: LocalVaultDocument,
     expectedRevision: LocalVaultDocument['revision'],
   ): Promise<void> {
+    this.#assertOpen();
     const parsed = parseDocument(document);
     if (parsed.revision !== expectedRevision + 1) {
       throw new MongoLocalVaultError('invalid');
@@ -197,6 +202,7 @@ export class MongoLocalVaultStore implements EncryptedVaultStore {
     vaultId: string,
     expectedRevision: LocalVaultDocument['revision'],
   ): Promise<void> {
+    this.#assertOpen();
     const id = parseVaultId(vaultId);
     const expected = parseRevision(expectedRevision);
     try {
@@ -209,7 +215,17 @@ export class MongoLocalVaultStore implements EncryptedVaultStore {
   }
 
   async close(): Promise<void> {
-    await this.#client.close();
+    if (this.#closed) return;
+    this.#closed = true;
+    try {
+      await this.#client.close();
+    } catch {
+      throw new MongoLocalVaultError('operation');
+    }
+  }
+
+  #assertOpen(): void {
+    if (this.#closed) throw new MongoLocalVaultError('closed');
   }
 }
 

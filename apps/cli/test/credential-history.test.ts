@@ -30,6 +30,7 @@ import {
   CredentialHistoryCommandError,
   parseCredentialHistoryListLimit,
   projectCredentialHistory,
+  projectCredentialHistoryForResolve,
   resolveCredentialHistoryEntry,
 } from '../src/credential-history-impl.js';
 import { registerStructuredVaultCommands } from '../src/structured-vault-commands.js';
@@ -234,6 +235,60 @@ describe('credential history command model', () => {
     expect(projection.history).toHaveLength(1);
     expect(projection.truncated).toBe(true);
     expect(projection.history[0]?.version).toBe('history.first');
+  });
+
+  it('resolves an entry beyond the 500-record list ceiling with show', () => {
+    const base = payloadWithHistory();
+    const group = base.payload.groups.find((entry) => entry.name === 'postgres');
+    const item = base.payload.items.find((entry) => entry.title === 'primary');
+    if (group === undefined || item === undefined) {
+      throw new Error('fixture hierarchy missing');
+    }
+    const baseMs = Date.parse(at);
+    const bulk = Array.from(
+      { length: CREDENTIAL_HISTORY_MAX_LIST_LIMIT + 1 },
+      (_, index) => {
+        const position = index + 1;
+        return historyRecord(
+          `history.bulk-${String(position).padStart(4, '0')}`,
+          'vault.history',
+          item.id,
+          group.id,
+          position,
+          timestampSchema.parse(new Date(baseMs + position * 1_000).toISOString()),
+        );
+      },
+    );
+    const payload = structuredVaultPayloadSchema.parse({
+      ...base.payload,
+      history: bulk,
+    });
+
+    const listed = projectCredentialHistory(payload, {
+      context: 'Payments',
+      service: 'postgres',
+      item: 'primary',
+      limit: CREDENTIAL_HISTORY_MAX_LIST_LIMIT,
+    });
+    expect(listed.history).toHaveLength(CREDENTIAL_HISTORY_MAX_LIST_LIMIT);
+    expect(listed.truncated).toBe(true);
+    // The display ceiling hides the newest record from the list.
+    const beyond = `history.bulk-${String(CREDENTIAL_HISTORY_MAX_LIST_LIMIT + 1).padStart(4, '0')}`;
+    expect(listed.history.some((entry) => entry.version === beyond)).toBe(false);
+
+    // Regression: `show` used to resolve against the truncated list, so any
+    // record beyond the ceiling reported credentialMissing although it exists.
+    const full = projectCredentialHistoryForResolve(payload, {
+      context: 'Payments',
+      service: 'postgres',
+      item: 'primary',
+    });
+    expect(full.history).toHaveLength(CREDENTIAL_HISTORY_MAX_LIST_LIMIT + 1);
+    expect(resolveCredentialHistoryEntry(full.history, beyond).version).toBe(beyond);
+    // The truncated list still rejects it; resolution never falls back to it.
+    expect(() => resolveCredentialHistoryEntry(listed.history, beyond)).toThrow(
+      'Credential was not found.',
+    );
   });
 
   it('reports only the records bound to the requested item', () => {

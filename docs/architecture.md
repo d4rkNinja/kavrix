@@ -46,6 +46,9 @@ for database files.
 
 ## Boundaries
 
+- `packages/core` owns the persistence ports (`EncryptedVaultStore`,
+  `EncryptedDatabaseStore`, `CollaborativeVaultStore`) that storage adapters
+  implement, plus secret generation. Port modules depend only on schemas.
 - `packages/schemas` owns canonical database, catalog, vault, local-container,
   legacy version 2, authenticated-envelope, policy, grant, audit-event,
   broker-protocol, and CLI-contract schemas.
@@ -55,8 +58,9 @@ for database files.
 - `packages/key-files` owns protected database-owner key/recovery formats,
   revision anchors, the sealed authorization-state sidecar, path/link safety,
   POSIX modes, and Windows ACL enforcement.
-- `packages/storage` owns the database-scoped compare-and-swap port, atomic local
-  container, MongoDB two-collection adapter, URI/TLS policy, and transactions.
+- `packages/storage` implements the core-owned persistence ports with the
+  atomic local container, the MongoDB two-collection adapters, URI/TLS policy,
+  and transactions.
 - `packages/runner` owns shell-free child execution: fixed executable paths,
   argument arrays, minimal environments with deny-by-default inheritance and
   reserved-name rejection, argv-secret refusal, bounded capture with secret

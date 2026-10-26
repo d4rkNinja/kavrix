@@ -10,8 +10,10 @@ import {
   rm,
   stat,
   symlink,
+  utimes,
   writeFile,
 } from 'node:fs/promises';
+import { spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
@@ -455,5 +457,124 @@ describe('filesystem adapter branch coverage', () => {
     await expect(hardenExistingSecureFile(linkFile)).rejects.toMatchObject({
       code: 'KEY_FILE_UNSAFE',
     });
+  });
+});
+
+describe('stale replacement-lock recovery', () => {
+  async function lockPathFor(name: string): Promise<string> {
+    const canonical = await realpath(target(name));
+    return join(
+      directory,
+      `.kavrix-${createHash('sha256').update(canonical, 'utf8').digest('hex')}.lock`,
+    );
+  }
+
+  async function writeLockFile(
+    name: string,
+    content: string,
+    ageMs = 0,
+  ): Promise<string> {
+    const lockPath = await lockPathFor(name);
+    await writeFile(lockPath, content, { mode: 0o600 });
+    if (ageMs > 0) {
+      const past = new Date(Date.now() - ageMs);
+      await utimes(lockPath, past, past);
+    }
+    return lockPath;
+  }
+
+  async function deadPid(): Promise<number> {
+    const child = spawn(process.execPath, ['-e', 'process.exit(0)'], {
+      stdio: 'ignore',
+    });
+    const pid = child.pid;
+    await new Promise<void>((resolve) => {
+      child.on('exit', () => resolve());
+    });
+    expect(pid).toBeDefined();
+    return pid as number;
+  }
+
+  it('recovers a lock left by a dead process and cleans it up after the transition', async () => {
+    const path = target('recovered.cvkx');
+    await writeSecureFile(path, new Uint8Array([1]), 'create');
+    const lockPath = await writeLockFile(
+      'recovered.cvkx',
+      `${JSON.stringify({ pid: await deadPid(), createdAt: '2026-01-01T00:00:00.000Z' })}\n`,
+    );
+
+    await expect(withExclusiveSecureFile(path, 32, async () => 'done')).resolves.toBe(
+      'done',
+    );
+    await expect(lstat(lockPath)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('recovers an ancient empty lock left by an older release', async () => {
+    const path = target('legacy.cvkx');
+    await writeSecureFile(path, new Uint8Array([1]), 'create');
+    const DAY_MS = 24 * 60 * 60 * 1000;
+    const lockPath = await writeLockFile('legacy.cvkx', '', DAY_MS + 60_000);
+
+    await expect(withExclusiveSecureFile(path, 32, async () => 'done')).resolves.toBe(
+      'done',
+    );
+    await expect(lstat(lockPath)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('recovers an ancient lock whose recorded owner is still running', async () => {
+    const path = target('ancient.cvkx');
+    await writeSecureFile(path, new Uint8Array([1]), 'create');
+    const DAY_MS = 24 * 60 * 60 * 1000;
+    const lockPath = await writeLockFile(
+      'ancient.cvkx',
+      `${JSON.stringify({ pid: process.pid })}\n`,
+      DAY_MS + 60_000,
+    );
+
+    await expect(withExclusiveSecureFile(path, 32, async () => 'done')).resolves.toBe(
+      'done',
+    );
+    await expect(lstat(lockPath)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('honors a lock whose recorded owner is alive and recent', async () => {
+    const path = target('live.cvkx');
+    await writeSecureFile(path, new Uint8Array([1]), 'create');
+    await writeLockFile('live.cvkx', `${JSON.stringify({ pid: process.pid })}\n`);
+
+    await expect(
+      withExclusiveSecureFile(path, 32, async () => 'done'),
+    ).rejects.toMatchObject({ code: 'KEY_FILE_BUSY' });
+  });
+
+  it('honors a fresh ownerless lock that may be mid-acquisition', async () => {
+    const path = target('fresh.cvkx');
+    await writeSecureFile(path, new Uint8Array([1]), 'create');
+    await writeLockFile('fresh.cvkx', '');
+
+    await expect(
+      withExclusiveSecureFile(path, 32, async () => 'done'),
+    ).rejects.toMatchObject({ code: 'KEY_FILE_BUSY' });
+  });
+
+  it('recovers an ancient malformed lock but honors a fresh one', async () => {
+    const path = target('malformed.cvkx');
+    await writeSecureFile(path, new Uint8Array([1]), 'create');
+    const DAY_MS = 24 * 60 * 60 * 1000;
+
+    await writeLockFile('malformed.cvkx', 'not json at all');
+    await expect(
+      withExclusiveSecureFile(path, 32, async () => 'done'),
+    ).rejects.toMatchObject({ code: 'KEY_FILE_BUSY' });
+
+    const DAY_MS_BACKDATED = await writeLockFile(
+      'malformed.cvkx',
+      'not json at all',
+      DAY_MS + 60_000,
+    );
+    await expect(withExclusiveSecureFile(path, 32, async () => 'done')).resolves.toBe(
+      'done',
+    );
+    await expect(lstat(DAY_MS_BACKDATED)).rejects.toMatchObject({ code: 'ENOENT' });
   });
 });

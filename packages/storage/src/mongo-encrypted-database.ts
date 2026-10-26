@@ -1,4 +1,4 @@
-﻿import type { ClientSession, Collection, Db, MongoClient } from 'mongodb';
+import type { ClientSession, Collection, Db, MongoClient } from 'mongodb';
 
 import {
   databaseIdSchema,
@@ -21,20 +21,20 @@ import {
   type DeleteVaultInput,
   type EncryptedDatabaseStore,
   type UpdateVaultInput,
-} from './encrypted-database-store.js';
+} from '@kavrix/core';
 import {
   loadMongoDriver,
   MONGO_MAX_POOL_SIZE,
   MONGO_MIN_POOL_SIZE,
   MONGO_WAIT_QUEUE_TIMEOUT_MS,
 } from './mongo-driver.js';
-import {
-  MongoCollaborativeVaultStore,
-  type CollaborativeVaultStore,
-  type CompactCollaborativeOperationOutcomeInput,
-  type DestroyCollaborativeVaultInput,
-  type MongoCollaborativeVaultCollectionNames,
-} from './collaborative-vault-store.js';
+import { MongoCollaborativeVaultStore } from './collaborative-vault-store.js';
+import type { MongoCollaborativeVaultCollectionNames } from './collaborative-vault-store.js';
+import type {
+  CollaborativeVaultStore,
+  CompactCollaborativeOperationOutcomeInput,
+  DestroyCollaborativeVaultInput,
+} from '@kavrix/core';
 import { assertMongoUriAllowed } from './mongo-local-vault.js';
 
 const DEFAULT_DATABASE_COLLECTION = 'kavrix_databases';
@@ -185,6 +185,30 @@ export class MongoEncryptedDatabaseStore
     // touches it, so both collections must be materialized before any CAS
     // write. Index creation auto-creates the parent collection and is
     // idempotent, which keeps first use race-free on an empty deployment.
+    if (!(await this.#databasesCollectionExists())) {
+      try {
+        await this.#database.createCollection(this.#databases.collectionName);
+      } catch (error: unknown) {
+        // Two processes connecting to an empty deployment concurrently both
+        // observe the missing collection and race to create it; the loser
+        // receives the server's NamespaceExists rejection. The collection
+        // exists in exactly that case, so a confirming re-list turns the race
+        // into success while every other failure keeps failing closed.
+        if (!isNamespaceExistsError(error)) throw error;
+        if (!(await this.#databasesCollectionExists())) {
+          throw new EncryptedDatabaseStoreError('connection');
+        }
+      }
+    }
+    await this.#vaults.createIndex(
+      { databaseId: 1, id: 1 },
+      { name: 'database_vault_identity', unique: true },
+    );
+    await this.#collaboration.initializeIndexes();
+  }
+
+  /** Lists the store's catalog collection by its exact name. */
+  async #databasesCollectionExists(): Promise<boolean> {
     const listing = this.#database.listCollections({
       name: this.#databases.collectionName,
     });
@@ -192,14 +216,7 @@ export class MongoEncryptedDatabaseStore
       typeof listing.toArray === 'function'
         ? await listing.toArray()
         : await Promise.resolve(listing as unknown as { name: string }[]);
-    if (listed.length === 0) {
-      await this.#database.createCollection(this.#databases.collectionName);
-    }
-    await this.#vaults.createIndex(
-      { databaseId: 1, id: 1 },
-      { name: 'database_vault_identity', unique: true },
-    );
-    await this.#collaboration.initializeIndexes();
+    return listed.length > 0;
   }
 
   async ping(): Promise<void> {
@@ -229,32 +246,30 @@ export class MongoEncryptedDatabaseStore
    * Proves the deployment can run a transaction before a caller invests in one.
    *
    * Fail closed in both directions: a reply that positively identifies a
-   * standalone is rejected outright, and a reply that never arrives is treated as
-   * an unusable deployment rather than as "probably fine". Silently assuming
-   * capability here would only move the failure into the transaction, after a
-   * caller had already published state.
+   * standalone is rejected outright, and any reply that fails to prove replica
+   * set or sharded capability — an `ok: 0` command error, a reply missing the
+   * expected fields, or a `hello` that fails before a reply document arrives —
+   * is treated as an unusable deployment rather than as "probably fine".
+   * Silently assuming capability here would only move the failure into the
+   * transaction, after a caller had already published state.
    */
   async #assertTransactionCapable(): Promise<void> {
     let hello: unknown;
     try {
       hello = await this.#database.command({ hello: 1 });
-    } catch {
+    } catch (error: unknown) {
+      // mongodb 7.5 surfaces an `ok: 0` reply as a thrown server error that
+      // carries the reply document's fields, so an unauthorized or otherwise
+      // failed `hello` proves nothing about transactions and must never read
+      // as a capable deployment. A failure without a server reply is a
+      // connection failure instead.
+      if (isOkZeroErrorReply(error)) {
+        throw new EncryptedDatabaseStoreError('unsupported');
+      }
       throw new EncryptedDatabaseStoreError('connection');
     }
 
-    if (
-      hello === null ||
-      hello === undefined ||
-      typeof hello !== 'object' ||
-      typeof (hello as Record<string, unknown>)['setName'] === 'string' ||
-      (hello as Record<string, unknown>)['msg'] === 'isdbgrid' ||
-      (hello as Record<string, unknown>)['isWritablePrimary'] === false
-    ) {
-      return;
-    }
-    const reply = hello as Record<string, unknown>;
-    if (reply['ok'] === 1 || reply['ok'] === true) {
-      // Standalone without replica set: writes that require transactions cannot succeed.
+    if (!isTransactionCapableHelloReply(hello)) {
       throw new EncryptedDatabaseStoreError('unsupported');
     }
   }
@@ -880,6 +895,48 @@ function isDuplicateKeyError(error: unknown): boolean {
     'code' in error &&
     error.code === 11_000
   );
+}
+
+/**
+ * Recognizes a failed command by its `ok: 0` reply. mongodb 7.5 throws a
+ * `MongoServerError` that copies the reply document's fields onto itself, and
+ * a defensively handled resolved `ok: 0` document is treated identically.
+ */
+function isOkZeroErrorReply(value: unknown): boolean {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    (value as Record<string, unknown>)['ok'] === 0
+  );
+}
+
+/**
+ * Only a successful `hello` reply that positively identifies a replica set or
+ * a sharded cluster proves transaction capability. Every other shape — an
+ * error document, a malformed reply, or a standalone — does not, because
+ * transaction writes on it cannot succeed or its usability is unproven.
+ */
+function isTransactionCapableHelloReply(value: unknown): boolean {
+  if (typeof value !== 'object' || value === null) return false;
+  const reply = value as Record<string, unknown>;
+  if (reply['ok'] !== 1 && reply['ok'] !== true) return false;
+  return (
+    typeof reply['setName'] === 'string' ||
+    reply['msg'] === 'isdbgrid' ||
+    reply['isWritablePrimary'] === false
+  );
+}
+
+/**
+ * Recognizes the server's rejection of a lost create-collection race: MongoDB
+ * answers `create` on an existing namespace with `ok: 0`, code 48, and
+ * codeName "NamespaceExists", and the driver copies those reply fields onto
+ * the thrown `MongoServerError`.
+ */
+function isNamespaceExistsError(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) return false;
+  const candidate = error as Record<string, unknown>;
+  return candidate['code'] === 48 || candidate['codeName'] === 'NamespaceExists';
 }
 
 function isStandaloneTransactionError(error: unknown): boolean {

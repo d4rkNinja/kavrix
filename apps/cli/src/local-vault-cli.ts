@@ -31,7 +31,7 @@ export { buildLocalCli, runLocalCli } from './cli-registration.js';
 export type { LocalCliOptions } from './cli-registration.js';
 
 import { createHash, randomUUID } from 'node:crypto';
-import { existsSync, realpathSync } from 'node:fs';
+import { closeSync, existsSync, openSync, readSync, realpathSync } from 'node:fs';
 import { realpath } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
@@ -1552,7 +1552,11 @@ export async function handleGet(name: string, options: LocalCliOptions): Promise
       if (options.reveal === true) {
         await enforceRevealPolicy(session, profile, name);
         if (options.json === true) {
-          writeJson({ name, value: found.value, revision: document.revision });
+          writeRevealJson({
+            name: sanitizeTerminalText(name),
+            value: found.value,
+            revision: document.revision,
+          });
         } else {
           const value = process.stdout.isTTY
             ? sanitizeTerminalText(found.value)
@@ -1575,7 +1579,11 @@ export async function handleGet(name: string, options: LocalCliOptions): Promise
       if (record === undefined) throw credentialMissing();
       if (options.reveal === true) {
         if (options.json === true) {
-          writeJson({ name, value: record.value, revision: document.revision });
+          writeRevealJson({
+            name: sanitizeTerminalText(name),
+            value: record.value,
+            revision: document.revision,
+          });
         } else {
           const value = process.stdout.isTTY
             ? sanitizeTerminalText(record.value)
@@ -2946,13 +2954,13 @@ export async function handleVaultStatus(options: LocalCliOptions): Promise<void>
 export async function handleKeyStatus(options: LocalCliOptions): Promise<void> {
   const keyFile = options.source ?? options.keyFile;
   // Database-owner keys are managed through `kavrix db key` commands; guide the operator explicitly.
-  try {
+  if (hasDatabaseKeyFileMarker(keyFile)) {
+    // Database-format armor: surface its precise binding diagnostics (missing,
+    // tampered, or unsafe) instead of falling through to the legacy reader.
     await readDatabaseKeyFileBinding(keyFile);
     throw new LocalCliError(
       'This is a database-owner key. Use `kavrix db key status` or `kavrix db key create` for database keys; `kavrix key status` is for legacy vault keys.',
     );
-  } catch (error) {
-    if (error instanceof LocalCliError) throw error;
   }
   const values = await readSecrets(['passphrase'], options);
   const passphrase = requiredSecret(values, 0);
@@ -2979,13 +2987,13 @@ export async function handleKeyStatus(options: LocalCliOptions): Promise<void> {
 
 export async function handleKeyCopy(options: LocalCliOptions): Promise<void> {
   const sourceKeyFile = options.source ?? options.keyFile;
-  try {
+  if (hasDatabaseKeyFileMarker(sourceKeyFile)) {
+    // Database-format armor: surface its precise binding diagnostics (missing,
+    // tampered, or unsafe) instead of falling through to the legacy reader.
     await readDatabaseKeyFileBinding(sourceKeyFile);
     throw new LocalCliError(
       'This is a database-owner key. Use `kavrix db key create` to share a database; `kavrix key copy` is for legacy vault keys.',
     );
-  } catch (error) {
-    if (error instanceof LocalCliError) throw error;
   }
   const outputKeyFile = requiredOption(
     options.outputKeyFile ?? options.destination,
@@ -3079,13 +3087,13 @@ export async function handleKeyCopy(options: LocalCliOptions): Promise<void> {
 
 export async function handleKeyRewrap(options: LocalCliOptions): Promise<void> {
   const keyFile = options.source ?? options.keyFile;
-  try {
+  if (hasDatabaseKeyFileMarker(keyFile)) {
+    // Database-format armor: surface its precise binding diagnostics (missing,
+    // tampered, or unsafe) instead of falling through to the legacy reader.
     await readDatabaseKeyFileBinding(keyFile);
     throw new LocalCliError(
       'This is a database-owner key. Use `kavrix db key` lifecycle; `kavrix key rewrap` is for legacy vault keys.',
     );
-  } catch (error) {
-    if (error instanceof LocalCliError) throw error;
   }
   const values = await readSecrets(
     ['passphrase', 'new-passphrase', 'new-passphrase'],
@@ -3530,6 +3538,36 @@ function sanitizeTerminalText(value: string): string {
     }
   }
   return sanitized;
+}
+
+const DATABASE_KEY_FILE_BEGIN_MARKER = '-----BEGIN KAVRIX DATABASE KEY-----';
+
+/**
+ * Reports whether a key file carries the public database-owner armor marker.
+ * Only the first line decides which reader owns the file: the read is bounded
+ * to the marker bytes and any access failure defers to the legacy reader,
+ * whose guarded read surfaces the precise filesystem or integrity diagnosis.
+ */
+function hasDatabaseKeyFileMarker(path: string): boolean {
+  let descriptor: number | undefined;
+  try {
+    descriptor = openSync(path, 'r');
+    const marker = Buffer.alloc(DATABASE_KEY_FILE_BEGIN_MARKER.length);
+    const read = readSync(descriptor, marker, 0, marker.byteLength, 0);
+    return (
+      marker.subarray(0, read).toString('ascii') === DATABASE_KEY_FILE_BEGIN_MARKER
+    );
+  } catch {
+    return false;
+  } finally {
+    if (descriptor !== undefined) {
+      try {
+        closeSync(descriptor);
+      } catch {
+        /* the guarded key-file readers surface access failures precisely */
+      }
+    }
+  }
 }
 
 function now(): LocalVaultDocument['createdAt'] {
@@ -4055,6 +4093,32 @@ function writeRecoveryStatus(result: {
 
 function writeJson(value: unknown): void {
   process.stdout.write(JSON.stringify(sanitizeJsonValue(value)) + '\n');
+}
+
+// eslint-disable-next-line no-control-regex
+const JSON_TERMINAL_CONTROL_PATTERN = /[\u0000-\u001f\u007f-\u009f]/gu;
+
+function escapeJsonTerminalControls(serialized: string): string {
+  return serialized.replace(
+    JSON_TERMINAL_CONTROL_PATTERN,
+    (character) => `\\u${character.charCodeAt(0).toString(16).padStart(4, '0')}`,
+  );
+}
+
+/**
+ * Emits one `--reveal --json` payload so the revealed value round-trips
+ * exactly. The display-oriented control replacement would corrupt multiline
+ * secrets, so terminal safety here comes from JSON string escaping plus a
+ * final full-range pass: JSON.stringify already escapes C0 controls inside
+ * strings, and DEL plus the C1 range — which it leaves literal — are escaped
+ * before the bytes reach the terminal. Non-value fields keep their
+ * display sanitization.
+ */
+function writeRevealJson(payload: Record<string, unknown>): void {
+  const serialized = JSON.stringify(payload) as string | undefined;
+  process.stdout.write(
+    `${serialized === undefined ? 'undefined' : escapeJsonTerminalControls(serialized)}\n`,
+  );
 }
 
 export function sanitizeJsonValue(

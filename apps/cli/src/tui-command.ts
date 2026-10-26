@@ -26,6 +26,10 @@ export function registerTuiCommand(program: Command): void {
     )
     .option('--profile-config-dir <path>', 'Protected profile configuration directory.')
     .option('--config-dir <path>', 'Protected profile configuration directory.')
+    .option(
+      '--allow-insecure-transport',
+      'Permit non-TLS MongoDB transport for remote hosts on explicitly isolated networks. Forwarded to every database connection this session opens.',
+    )
     .action(async (...args: unknown[]) => {
       const command = args.at(-1) as Command;
       const { runInteractiveTui } = await import('./tui-session.js');
