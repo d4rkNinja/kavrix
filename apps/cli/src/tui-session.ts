@@ -8,7 +8,6 @@ import { performance } from 'node:perf_hooks';
 import { z } from 'zod';
 
 import { zeroize } from '@kavrix/crypto';
-import { sanitizeTerminalText } from '@kavrix/tui';
 import { CLI_EXIT_CODES } from '@kavrix/schemas/cli-exit-codes';
 import {
   databaseRevisionAnchorPath,
@@ -3026,6 +3025,7 @@ export async function runInteractiveTui(
       waitUntilExit: () => Promise<void>;
       unmount: () => void;
     };
+    sanitizeTerminalText: (value: string, ascii?: boolean) => string;
   };
   const handle = tui.mountKavrixApp({
     backend,
@@ -3050,7 +3050,7 @@ export async function runInteractiveTui(
     }
     const detail =
       error instanceof Error && error.message.length > 0
-        ? sanitizeTerminalText(error.message.slice(0, 200), ascii)
+        ? tui.sanitizeTerminalText(error.message.slice(0, 200), ascii)
         : 'no details';
     process.stderr.write(`kavrix tui stopped after an unexpected ${kind}: ${detail}\n`);
     process.exit(CLI_EXIT_CODES.unclassifiedFailure);
