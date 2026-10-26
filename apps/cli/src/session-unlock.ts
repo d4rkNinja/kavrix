@@ -293,7 +293,13 @@ function macPort(account: string): SessionUnlockPort {
         'security',
         ['find-generic-password', '-s', KEYCHAIN_SERVICE, '-a', account, '-w'],
         { allowNotFound: true },
-      );
+      ).catch((error: unknown) => {
+        // An unreachable keychain reads as "no stored session": nothing is
+        // decrypted and the operator re-authenticates. This mirrors the
+        // Windows port and keeps every platform fail-safe on load.
+        if (isKeychainUnavailable(error)) return null;
+        throw error;
+      });
       return out === null || out.trim().length === 0 ? null : out.trim();
     },
     remove: async () => {
@@ -319,6 +325,13 @@ function linuxPort(account: string): SessionUnlockPort {
     load: async () => {
       const out = await runCommand('secret-tool', ['lookup', ...attributes], {
         allowNotFound: true,
+      }).catch((error: unknown) => {
+        // An unreachable keychain (for example secret-tool missing on a
+        // headless host) reads as "no stored session": nothing is decrypted
+        // and the operator re-authenticates. This mirrors the Windows port
+        // and keeps every platform fail-safe on load.
+        if (isKeychainUnavailable(error)) return null;
+        throw error;
       });
       return out === null || out.trim().length === 0 ? null : out.trim();
     },
