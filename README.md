@@ -158,19 +158,21 @@ Use `kavrix init --no-tui` for classic line prompts, or stdin/explicit routing
 for scripts. Bare `kavrix` on a non-interactive stream keeps printing help. The
 TUI locks after two idle minutes or fifteen minutes since unlock.
 
-## What's new in 0.3.1
+## What's new
 
-- **Simplified command surface.** The everyday commands are now `add`, `get`,
-  `ls`, `rm`, and `mv`; listing and filtering merged into `ls [pattern]`;
-  advanced database, key, and migration operations moved under `kavrix db`;
-  legacy aliases (`put`, `list`, `search`, `remove`, `rename`, `ui`,
-  `environment`, `group`, `credential`) were removed. See
-  [0.3.1 release notes](docs/release-notes-0.3.1.md).
-- **TUI reliability.** Every keypress, mouse, resize, and animation path now
-  fails safe with a visible notice instead of crashing: router transitions,
-  mouse handlers, shared animation clock, child-output JSON parsing, and
-  session-expiry notifications are all guarded, a failed operation reports its
-  actual error, and an unexpected crash restores your terminal.
+- **0.3.2 — documentation clarity.** Every user-facing guide now describes the
+  current command surface directly. See the
+  [0.3.2 release notes](docs/release-notes-0.3.2.md).
+- **0.3.1 — simplified command surface.** The everyday commands are `add`,
+  `get`, `ls`, `rm`, and `mv`; listing and filtering merged into
+  `ls [pattern]`; advanced database, key, and migration operations live under
+  `kavrix db`. See the [0.3.1 release notes](docs/release-notes-0.3.1.md).
+- **0.3.1 — TUI reliability.** Every keypress, mouse, resize, and animation
+  path now fails safe with a visible notice instead of crashing: router
+  transitions, mouse handlers, shared animation clock, child-output JSON
+  parsing, and session-expiry notifications are all guarded, a failed
+  operation reports its actual error, and an unexpected crash restores your
+  terminal.
 
 ## Local-first storage
 

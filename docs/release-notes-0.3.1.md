@@ -1,45 +1,42 @@
 # Release notes — 0.3.1
 
-0.3.1 is a focused simplification and reliability release. It restructures the
+0.3.1 is a focused simplification and reliability release. It structures the
 public command surface into a small everyday core and hardens the TUI so a
 task failure reports a notice instead of breaking the session.
 
-## Simplified command surface (breaking)
+## Simplified command surface
 
-The everyday credential commands are renamed and merged. Old names are removed,
-not hidden:
+The everyday credential commands are:
 
-| Old                         | New                     |
-| --------------------------- | ----------------------- |
-| `kavrix put <name>`         | `kavrix add <name>`     |
-| `kavrix list`               | `kavrix ls`             |
-| `kavrix search <pattern>`   | `kavrix ls <pattern>`   |
-| `kavrix remove <name>`      | `kavrix rm <name>`      |
-| `kavrix rename <from> <to>` | `kavrix mv <from> <to>` |
+| Command                 | Purpose                                 |
+| ----------------------- | --------------------------------------- |
+| `kavrix add <name>`     | Encrypt and store one secret.           |
+| `kavrix get <name>`     | Show one credential, masked by default. |
+| `kavrix ls`             | List every credential name.             |
+| `kavrix ls <pattern>`   | Filter names by glob or substring.      |
+| `kavrix rm <name>`      | Delete one credential.                  |
+| `kavrix mv <from> <to>` | Rename a credential, keeping its value. |
 
-Removed without replacement:
+`kavrix get <name>` keeps its masked-by-default behavior; `--reveal` remains
+the explicit plaintext guard.
 
-- Alias commands: `kavrix ui` (use `tui`), `environment` (use `context`),
-  `group` (use `service`), `credential` (use `item`), `db profile show`
-  (use `db profile status`), `key replicate` and `key assign` (use
-  `key copy`), and the bare `kavrix grant <secret>` form (use
-  `grant create <secret>`).
-- Top-level `migrate database` moved to `kavrix db migrate` with the same
-  options and stdin frames.
+Advanced database, owner-key, recovery, and migration operations live under
+`kavrix db ...`; explicit copy-first migration runs as `kavrix db migrate`. In
+the structured-vault groups, `context`, `service`, `item`, `field`, and `note`
+are the only spellings, and a secret grant is created with
+`kavrix grant create <secret>`. `kavrix tui` opens the interactive app.
 
-Hidden but still functional (kept for the TUI, legacy vaults, and scripts;
+`kavrix --help` leads with a "start here" hint and registers the everyday
+commands first; the advanced database group (`kavrix db`) is listed last.
+
+Hidden but still functional (kept for the TUI, version 2 vaults, and scripts;
 absent from `--help`):
 
 - `kavrix view`, `kavrix stats`, `kavrix has`, `kavrix frames`
-- Legacy flat-vault operations: `kavrix key ...`, `kavrix recovery ...`,
+- Flat-vault operations: `kavrix key ...`, `kavrix recovery ...`,
   `kavrix vault ...` (database-container profiles use `kavrix db key`,
   `db recovery`, and `db vault`)
-- `kavrix destroy` (unchanged)
-
-`kavrix --help` now leads with a "start here" hint and registers the everyday
-commands first; the advanced database group (`kavrix db`) is listed last.
-`kavrix get <name>` keeps its masked-by-default behavior; `--reveal` remains
-the explicit plaintext guard.
+- `kavrix destroy`
 
 ## TUI reliability
 
@@ -74,19 +71,18 @@ safely. <detail>`) instead of discarding it, and onboarding setup results no
 ## Why these names
 
 `add/get/ls/rm/mv` match the file verbs developers already know; `ls <pattern>`
-absorbs `search` because listing and filtering are one task; and `db` groups
-everything an everyday user can defer. Hidden commands keep the TUI and legacy
-vault owners working without cluttering help.
+covers both listing and filtering because they are one task; and `db` groups
+everything an everyday user can defer. Hidden commands keep the TUI and
+version 2 vault owners working without cluttering help.
 
 ## Compatibility
 
-- Scripts and docs written against 0.2.x command names must update to the table
-  above. Exit codes, output shapes, stdin frame orders, and the TUI are
-  unchanged.
-- `kavrix frames <command>` reflects the new names (`frames add`,
+- Exit codes, output shapes, stdin frame orders, and the TUI are unchanged
+  from prior releases.
+- `kavrix frames <command>` reflects the current names (`frames add`,
   `frames db migrate`).
 - The published npm package ships `apps/cli/README.md`; the repository README
-  and user docs were rewritten around the new surface.
+  and user docs describe the command surface directly.
 
 ## Version note
 

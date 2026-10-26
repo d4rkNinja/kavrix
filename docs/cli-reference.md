@@ -10,26 +10,6 @@ secret-reading command, and `kavrix status` shows the selected profile and
 active routing mode. `kavrix --help` prints a `New here? Run kavrix init…`
 hint line and lists the everyday commands first, with `db` last.
 
-### 0.3.1 renamed commands
-
-Release 0.3.1 renamed and merged several root commands; the old names now fail
-with an unknown-command error. See the [release notes](release-notes-0.3.1.md)
-for the full change list.
-
-| Before (≤ 0.2.51)           | Now (0.3.1)             |
-| --------------------------- | ----------------------- |
-| `kavrix put <name>`         | `kavrix add <name>`     |
-| `kavrix list`               | `kavrix ls`             |
-| `kavrix search <pattern>`   | `kavrix ls <pattern>`   |
-| `kavrix remove <name>`      | `kavrix rm <name>`      |
-| `kavrix rename <from> <to>` | `kavrix mv <from> <to>` |
-| `kavrix migrate database`   | `kavrix db migrate`     |
-
-The `ui`, `environment`, `group`, `credential`, `db profile show`,
-`key replicate`/`key assign`, and bare `kavrix grant <secret>` aliases were
-removed in 0.3.1; use `tui`, `context`, `service`, `item`,
-`db profile status`, `key copy`, and `grant create <secret>` instead.
-
 The recommended local first-run path is a bare no-option `kavrix init` on a
 TTY. Interactive sessions open Ink TUI onboarding by default; pass `--no-tui`
 for classic masked line prompts (useful in scripts that still want guided TTY
@@ -232,8 +212,7 @@ kavrix field set password --type password \
   --profile work
 ```
 
-`context`, `service`, and `item` are the only spellings: the 0.2.x
-`environment`, `group`, and `credential` aliases were removed in 0.3.1. Each
+`context`, `service`, and `item` are the only spellings. Each
 family provides create/list/rename/remove operations;
 parents can be removed only when empty. `item show` reports metadata and field
 states without values. Removing an item also removes its owned encrypted
@@ -309,8 +288,8 @@ ciphertext digest. It never prints a value. `--limit <count>` bounds one page
 (default 50, maximum 500) and `truncated: true` reports that more records exist.
 
 `kavrix item history show <title> <version>` reports the same metadata for one
-record. `<version>` is the opaque history record id that `list` prints as
-`version`.
+record. `<version>` is the opaque history record id that `item history list`
+prints as `version`.
 
 This group is deliberately read-only, and the reason is structural rather than a
 missing implementation:
@@ -355,8 +334,7 @@ history, or untrusted child processes.
 
 `ls` with no pattern lists every credential name. With a pattern it filters
 names by glob (`*`, `?`) or substring; `--limit`, `--ignore-case`, and
-`--case-sensitive` apply to the pattern form. The `search` command of earlier
-releases was removed in 0.3.1 and merged into `ls <pattern>`.
+`--case-sensitive` apply to the pattern form.
 
 Names are decrypted locally for these operations. Values remain masked unless a
 separate reveal option is explicit.
@@ -464,20 +442,19 @@ creates a new VRK-bound destination vault; reopens the destination; and compares
 the complete canonical payload before success. Source data/key/anchor files stay
 unchanged. A failed or ambiguous publication is never reported as migrated.
 
-## 8. Legacy and hidden commands (0.3.1)
+## 8. Version 2 compatibility and hidden commands
 
 The root `init`, `vault`, `key`, `recovery`, and `doctor` groups operate on the
 stable version 2 single-vault format. They remain functional for compatibility
-and migration but, as of 0.3.1, `key`, `recovery`, and `vault` are hidden from
-`--help`. They are not aliases for database-owner operations. The hidden
-flat/legacy paths are:
+and migration, and `key`, `recovery`, and `vault` are hidden from `--help`.
+They are not aliases for database-owner operations. The hidden flat/legacy
+paths are:
 
 - `kavrix view [name]`, `kavrix stats`, and `kavrix has <name>` — read-only
   flat-credential dashboard, counts, and existence checks.
-- `kavrix key status|verify|copy|rewrap` — legacy flat-vault key operations
-  (`key replicate` and `key assign` were removed in 0.3.1; use `key copy`).
-- `kavrix recovery ...` — legacy flat-vault recovery kits.
-- `kavrix vault ...` — legacy flat vault list/status.
+- `kavrix key status|verify|copy|rewrap` — flat-vault key operations.
+- `kavrix recovery ...` — flat-vault recovery kits.
+- `kavrix vault ...` — flat vault list/status.
 - `kavrix frames [command...]` and `kavrix destroy` — frame reference and the
   destructive legacy command.
 
@@ -677,8 +654,7 @@ kavrix run --grant production/database -- psql ...
 
 `grant create --help` lists every effective creation, routing, and protected
 input option inherited from the parent grant command. Creation options may be
-placed before or after `create <secret>`. The bare `kavrix grant <secret>`
-form of earlier releases was removed in 0.3.1.
+placed before or after `create <secret>`.
 
 `run --grant <ref>` accepts either a grant id or its credential name. The
 referenced credential is resolved in-session and verified to exist **before**

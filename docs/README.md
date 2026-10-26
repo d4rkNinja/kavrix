@@ -66,7 +66,8 @@ remains a command reference and is not loaded automatically.
 - [Architecture](architecture.md)
 - [Release procedure](release.md): local preflight, trusted publication, and recovery reruns.
 - [Active release boundary](active-release-boundary.md)
-- Release notes: [0.3.1 — renamed command surface](release-notes-0.3.1.md);
+- Release notes: [0.3.2 — documentation clarity](release-notes-0.3.2.md);
+  [0.3.1 — simplified command surface](release-notes-0.3.1.md);
   [post-0.2.0 hardening](release-notes-post-0.2.0-hardening.md),
   [0.2.20](release-notes-0.2.20.md), [0.2.21](release-notes-0.2.21.md),
   [0.2.22](release-notes-0.2.22.md), [0.2.23](release-notes-0.2.23.md),
