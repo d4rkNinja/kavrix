@@ -114,7 +114,7 @@ export async function preflightGuidedLocalOnboarding(
  * profile is selected only after every authenticated step succeeds.
  *
  * Interactive guided setup always supplies recovery material. Scripted
- * `kavrix init` may omit recovery so `put` / `run` work immediately; operators
+ * `kavrix init` may omit recovery so `add` / `run` work immediately; operators
  * should create a kit afterward with `kavrix db recovery create`.
  */
 export async function executeLocalDatabaseOnboarding(

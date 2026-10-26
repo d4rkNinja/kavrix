@@ -240,7 +240,7 @@ describe('human-rendered command output', () => {
     }
   });
 
-  it('rejects invalid limits and bare grants without secrets', async () => {
+  it('rejects invalid limits and incomplete grant creation without secrets', async () => {
     fixture = await createExecutionFixture({});
     try {
       const badLimit = await runCli(
@@ -249,10 +249,6 @@ describe('human-rendered command output', () => {
       );
       expect(badLimit.exitCode).toBe(14);
       expect(badLimit.stderr).toContain('--limit expects');
-
-      const bareGrant = await runCli(['grant'], passphraseFrame());
-      expect(bareGrant.exitCode).toBe(2);
-      expect(bareGrant.stderr).toContain('Specify a secret');
 
       const noTtl = await runCli(
         [

@@ -157,7 +157,15 @@ export function VaultTui({
     const controller = new AbortController();
     activeController.current = controller;
     const complete = (action: TuiAction): void => {
-      if (!controller.signal.aborted) dispatchRef.current(action);
+      // complete runs as a void-ed promise continuation: a throwing dispatch
+      // here would become an unhandled rejection and kill the app. A failed
+      // dispatch degrades to a dropped result, which the user can retry.
+      if (controller.signal.aborted) return;
+      try {
+        dispatchRef.current(action);
+      } catch {
+        return;
+      }
     };
     const failed = (): void => {
       complete({ type: 'operation-failed', requestId: effect.requestId });
@@ -234,7 +242,15 @@ export function VaultTui({
 
   const dispatch = useCallback(
     (action: TuiAction): void => {
-      const next = transitionTui(stateRef.current, action);
+      let next: ReturnType<typeof transitionTui>;
+      try {
+        next = transitionTui(stateRef.current, action);
+      } catch {
+        // dispatch runs from resize listeners, tick intervals, and promise
+        // continuations; a transition bug must degrade to a dropped action,
+        // never an uncaught exception.
+        return;
+      }
       stateRef.current = next.state;
       setState(next.state);
       for (const effect of next.effects) runEffect(effect);

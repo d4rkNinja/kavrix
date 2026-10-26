@@ -48,7 +48,7 @@ describe('0.2.19 live-qa P1: vault list/status --profile routing', () => {
 
     const put = await runCli(
       [
-        'put',
+        'add',
         'demo/secret',
         '--passphrase-stdin',
         '--value-stdin',
@@ -214,7 +214,7 @@ describe('0.2.19 live-qa P1: run --secret protected destination help/error', () 
     expect(init.exitCode).toBe(0);
     const put = await runCli(
       [
-        'put',
+        'add',
         'demo',
         '--passphrase-stdin',
         '--value-stdin',
@@ -270,7 +270,7 @@ describe('0.2.19 live-qa Jr P2: matching bound-profile path overrides', () => {
 
     const put = await runCli(
       [
-        'put',
+        'add',
         'x',
         '--passphrase-stdin',
         '--value-stdin',
@@ -312,7 +312,7 @@ describe('0.2.19 live-qa Jr P2: matching bound-profile path overrides', () => {
 
     const put = await runCli(
       [
-        'put',
+        'add',
         'x',
         '--passphrase-stdin',
         '--value-stdin',

@@ -117,7 +117,7 @@ feeds it to automation.
   repairs specific, safe classes of local problems (permission drift,
   incomplete profiles, dangling selection) and never invents passphrase
   recovery or deletes data.
-- Key files can be verified, copied, replicated, assigned, and rewrapped;
+- Key files can be verified, copied, and rewrapped;
   every operation checks file permissions (owner-only on Unix and Windows).
 - `kavrix backup create` seals the whole database file into one
   passphrase-protected archive; `backup verify` authenticates it, and
@@ -164,7 +164,7 @@ narrows the list. Esc clears." rather than advertising keys that would type into
 the search. The Home menu groups its destinations into Set up, Secrets,
 Security, and Tools, each section reporting how many destinations it holds.
 Empty lists offer the one key that moves you forward: `n create a file profile`
-on Profiles, `n put a credential` (or `u unlock your vault` while locked) on
+on Profiles, `n add a credential` (or `u unlock your vault` while locked) on
 Credentials, `n create a recovery kit` on Recovery. An affordance the screen
 cannot honour is not offered at all — Vaults and Session unlock only show an
 unlock chip while the vault is actually locked. Notice rows carry a tone glyph

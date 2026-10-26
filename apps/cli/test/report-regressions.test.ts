@@ -98,7 +98,7 @@ describe('documented exit codes', () => {
   });
 
   it('exits 2 for usage errors instead of the generic failure', async () => {
-    const unknownOption = await runCli(['list', '--definitely-not-a-flag'], '');
+    const unknownOption = await runCli(['ls', '--definitely-not-a-flag'], '');
     expect(unknownOption.exitCode).toBe(2);
     const unknownCommand = await runCli(['definitely-not-a-command'], '');
     expect(unknownCommand.exitCode).toBe(2);
@@ -147,7 +147,7 @@ describe('multi-line and empty values via base64 frames', () => {
     );
     const putMulti = await runCli(
       [
-        'put',
+        'add',
         'notes/multiline',
         '--datastore',
         'file',
@@ -182,7 +182,7 @@ describe('multi-line and empty values via base64 frames', () => {
 
     const putEmpty = await runCli(
       [
-        'put',
+        'add',
         'placeholders/empty',
         '--datastore',
         'file',
@@ -216,7 +216,7 @@ describe('multi-line and empty values via base64 frames', () => {
 
     const invalidBase64 = await runCli(
       [
-        'put',
+        'add',
         'bad/base64',
         '--datastore',
         'file',
@@ -248,7 +248,7 @@ describe('credential-name hardening', () => {
     ]) {
       const result = await runCli(
         [
-          'put',
+          'add',
           name,
           ...container.routingArgs,
           '--passphrase-stdin',
@@ -263,10 +263,10 @@ describe('credential-name hardening', () => {
   });
 });
 
-describe('search semantics', () => {
+describe('ls pattern semantics', () => {
   it('matches globs case-insensitively by default and substrings literally', async () => {
     const glob = await runCli(
-      ['search', 'git*', ...container.routingArgs, '--passphrase-stdin', '--json'],
+      ['ls', 'git*', ...container.routingArgs, '--passphrase-stdin', '--json'],
       passphraseFrame(),
     );
     expect(glob.exitCode).toBe(0);
@@ -276,7 +276,7 @@ describe('search semantics', () => {
     expect(globResult.matches.map((match) => match.name)).toContain('github/token');
 
     const starWrapped = await runCli(
-      ['search', '*TOKEN*', ...container.routingArgs, '--passphrase-stdin', '--json'],
+      ['ls', '*TOKEN*', ...container.routingArgs, '--passphrase-stdin', '--json'],
       passphraseFrame(),
     );
     const starResult = JSON.parse(starWrapped.stdout.trim()) as {
@@ -286,7 +286,7 @@ describe('search semantics', () => {
 
     const sensitive = await runCli(
       [
-        'search',
+        'ls',
         'GIT*',
         '--case-sensitive',
         ...container.routingArgs,
@@ -351,7 +351,7 @@ describe('stdin frame reference and status', () => {
     expect(all.exitCode).toBe(0);
     expect(all.stdout).toContain('kavrix db init');
     expect(all.stdout).toContain('destroy');
-    const single = await runCli(['frames', 'put'], '');
+    const single = await runCli(['frames', 'add'], '');
     expect(single.exitCode).toBe(0);
     expect(single.stdout).toContain(
       '[mongodb-url with --database-url-stdin,] passphrase, value',
@@ -382,14 +382,14 @@ describe('stdin frame reference and status', () => {
     expect(unknown.stderr).toContain('kavrix frames');
     expect(unknown.stderr).toContain('quote the full command');
     const migrateFrames = await runCli(
-      ['frames', 'migrate', 'database', '--secrets-stdin'],
+      ['frames', 'db', 'migrate', '--secrets-stdin'],
       '',
     );
     expect(migrateFrames.exitCode).toBe(0);
     expect(migrateFrames.stdout).toContain(
       '[mongodb-url,] source-passphrase, destination-passphrase, migrated-vault-label',
     );
-    const migrateParent = await runCli(['frames', 'migrate', 'database'], '');
+    const migrateParent = await runCli(['frames', 'db', 'migrate'], '');
     expect(migrateParent.exitCode).toBe(0);
     expect(migrateParent.stdout).toContain(
       '[mongodb-url,] source-passphrase, destination-passphrase, migrated-vault-label',
@@ -398,7 +398,7 @@ describe('stdin frame reference and status', () => {
 
   it.each([
     ['db', 'init'],
-    ['migrate', 'database'],
+    ['db', 'migrate'],
     ['context', 'list'],
     ['policy', 'list'],
   ])('advertises both config directory flags for %s %s', async (...command) => {

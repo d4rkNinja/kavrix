@@ -232,8 +232,8 @@ export function writeGuidedLocalOnboardingComplete(
       `${style('[OK]', '32')} Protected datastore profile selected: ${profileId}`,
       '',
       'Try:',
-      `  kavrix put <name> --profile ${profileId}`,
-      `  kavrix list --profile ${profileId}`,
+      `  kavrix add <name> --profile ${profileId}`,
+      `  kavrix ls --profile ${profileId}`,
       '',
       'Stop typing the passphrase every time: enable OS session unlock with',
       `  kavrix session enable --profile ${profileId}`,
@@ -414,7 +414,7 @@ export function writeInitOnboardingComplete(
     lines.push(
       style('NOTICE', '1;33') +
         ' A database-bound datastore profile is currently selected.',
-      'Flat commands (`put`, `get`, `list`, `run`, ...) route through that',
+      'Flat commands (`add`, `get`, `ls`, `run`, ...) route through that',
       'profile and use its stored default vault. If none is selected, run',
       '`kavrix db vault use <id>`. Pass explicit `--datastore/--data-file`',
       'flags (as below) to bypass it, or select a',
@@ -425,8 +425,8 @@ export function writeInitOnboardingComplete(
   lines.push(
     'Next steps:',
     `  kavrix recovery create --recovery-file <protected-path> ${routing}`,
-    `  kavrix put <name> ${routing} --key-file <key-path> --passphrase-stdin`,
-    `  kavrix list ${routing} --key-file <key-path> --passphrase-stdin`,
+    `  kavrix add <name> ${routing} --key-file <key-path> --passphrase-stdin`,
+    `  kavrix ls ${routing} --key-file <key-path> --passphrase-stdin`,
     '',
     'Keep the portable key and recovery kit in separate secure locations.',
     '',

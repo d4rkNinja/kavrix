@@ -106,7 +106,7 @@ describe('launch P1 follow-ups', () => {
     );
   });
 
-  it('aligns unbound list/put messages with run (exit 14)', async () => {
+  it('aligns unbound ls/add messages with run (exit 14)', async () => {
     const directory = await scratch('unbound');
     const data = join(directory, 'x.v');
     const key = join(directory, 'x.k');
@@ -138,7 +138,7 @@ describe('launch P1 follow-ups', () => {
       ).exitCode,
     ).toBe(0);
     const list = await runCli(
-      ['list', '--passphrase-stdin', '--profile-config-dir', configDir],
+      ['ls', '--passphrase-stdin', '--profile-config-dir', configDir],
       PASSPHRASE,
     );
     expect(list.exitCode).toBe(14);
@@ -146,7 +146,7 @@ describe('launch P1 follow-ups', () => {
     expect(list.stderr).toContain('db init');
     const put = await runCli(
       [
-        'put',
+        'add',
         'X',
         '--passphrase-stdin',
         '--value-stdin',
@@ -211,7 +211,7 @@ describe('launch P1 follow-ups', () => {
     fixture = await createExecutionFixture({});
     const put = await runCli(
       [
-        'put',
+        'add',
         'EMPTY',
         '--passphrase-stdin',
         '--value-stdin-base64',
@@ -250,8 +250,8 @@ describe('launch P1 follow-ups', () => {
     expect(status.stderr).not.toContain('Vault is not initialized');
   });
 
-  it('documents --database-url-stdin in frames put', async () => {
-    const frames = await runCli(['frames', 'put'], '');
+  it('documents --database-url-stdin in frames add', async () => {
+    const frames = await runCli(['frames', 'add'], '');
     expect(frames.exitCode).toBe(0);
     expect(frames.stdout).toContain('--database-url-stdin');
   });

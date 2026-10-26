@@ -1,7 +1,7 @@
 /**
  * Manual vault mutation smoke for the TUI session backend.
  * Uses a temp HOME, inits a file database vault via CLI, then exercises
- * CliTuiSession unlock/list/reveal/put/rename/remove without Ink.
+ * CliTuiSession unlock/list/reveal/add/mv/rm without Ink.
  */
 import { chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -165,7 +165,7 @@ async function main(): Promise<void> {
 
     result = await runCli(
       [
-        'put',
+        'add',
         'seed',
         '--profile',
         'smoke',
@@ -178,10 +178,10 @@ async function main(): Promise<void> {
       { HOME: home },
     );
     if (result.code !== 0) {
-      fail(`cli put seed: ${result.stderr || result.stdout}`);
+      fail(`cli add seed: ${result.stderr || result.stdout}`);
       return;
     }
-    pass('cli put seed');
+    pass('cli add seed');
 
     const backend = createCliTuiBackend({
       profileConfigDir: cfg,

@@ -88,8 +88,8 @@ try {
       frames: [passphrase],
     },
     {
-      name: 'listUnlocked',
-      args: ['list', ...fileArgs(), ...keyArgs(), '--passphrase-stdin'],
+      name: 'lsUnlocked',
+      args: ['ls', ...fileArgs(), ...keyArgs(), '--passphrase-stdin'],
       frames: [passphrase],
     },
     {
@@ -110,9 +110,9 @@ try {
       frames: [passphrase],
     },
     {
-      name: 'searchJson',
+      name: 'lsPatternJson',
       args: [
-        'search',
+        'ls',
         'perf',
         ...fileArgs(),
         ...keyArgs(),
@@ -129,12 +129,12 @@ try {
       frames: [passphrase],
     },
     {
-      name: 'putAndRemove',
+      name: 'addAndRm',
       runs: 2,
       steps: [
         {
           args: [
-            'put',
+            'add',
             temporaryName,
             ...fileArgs(),
             ...keyArgs(),
@@ -145,7 +145,7 @@ try {
         },
         {
           args: [
-            'remove',
+            'rm',
             temporaryName,
             ...fileArgs(),
             ...keyArgs(),
@@ -156,12 +156,12 @@ try {
       ],
     },
     {
-      name: 'renameAlternate',
+      name: 'mvAlternate',
       runs: 2,
       steps: [
         {
           args: [
-            'rename',
+            'mv',
             renamePair[0],
             renamePair[1],
             ...fileArgs(),
@@ -172,7 +172,7 @@ try {
         },
         {
           args: [
-            'rename',
+            'mv',
             renamePair[1],
             renamePair[0],
             ...fileArgs(),
@@ -251,7 +251,7 @@ async function primeVault() {
   );
   await runChecked(
     [
-      'put',
+      'add',
       credentialName,
       ...fileArgs(),
       ...keyArgs(),
@@ -264,7 +264,7 @@ async function primeVault() {
   // rename-a -> rename-b -> rename-a, so each iteration stays valid.
   await runChecked(
     [
-      'put',
+      'add',
       renamePair[0],
       ...fileArgs(),
       ...keyArgs(),

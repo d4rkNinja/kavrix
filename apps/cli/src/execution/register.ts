@@ -241,10 +241,8 @@ function addPolicyDefinitionOptions(command: Command): Command {
 
 function registerGrant(program: Command): void {
   const grant = program
-    .command('grant [secretRef]')
+    .command('grant')
     .description('Issue, inspect, list, or revoke temporary consumable authorizations.')
-    // The documented bare form `kavrix grant <secret>` accepts creation flags
-    // directly so it behaves exactly like `grant create`.
     .option('--json', 'Emit machine-readable output.')
     .option(
       '--command <name>',
@@ -291,12 +289,6 @@ function registerGrant(program: Command): void {
   revoke.action(async (...args: unknown[]) => {
     const impl = await import('./commands.js');
     await impl.executeGrantRevokeAction(args);
-  });
-
-  // Bare `kavrix grant <secret>` behaves like `grant create` per the product spec.
-  grant.action(async (...args: unknown[]) => {
-    const impl = await import('./commands.js');
-    await impl.executeGrantAction(args);
   });
 }
 

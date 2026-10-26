@@ -39,7 +39,7 @@ the protected registry.
 kavrix db init --profile local-work
 kavrix db vault create --profile local-work
 kavrix db vault use <vault-id> --profile local-work
-kavrix put service/token --profile local-work
+kavrix add service/token --profile local-work
 ```
 
 The selection command authenticates the profile's database and verifies that
@@ -155,7 +155,7 @@ if the profile is still bound to that authenticated database.
 ## Migration
 
 Legacy version 2 files are not silently rewritten. Register the legacy source
-and destination as separate profiles, then run `kavrix migrate database`. Use
+and destination as separate profiles, then run `kavrix db migrate`. Use
 `--initialize` only for an unbound local destination. Migration authenticates the
 source key and anchor, copies the complete payload, verifies the new destination,
 and leaves the source intact.

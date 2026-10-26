@@ -315,7 +315,7 @@ async function putCredential(run, paths, profile, vaultId, passphrase, name, val
   const result = parseJson(
     await run(
       [
-        'put',
+        'add',
         name,
         ...credentialRoute(paths, profile, vaultId),
         '--passphrase-stdin',
@@ -323,7 +323,7 @@ async function putCredential(run, paths, profile, vaultId, passphrase, name, val
       ],
       [passphrase, value],
     ),
-    `put ${name}`,
+    `add ${name}`,
   );
   assert(result.saved === true, `credential ${name} was not saved`);
 }
@@ -364,10 +364,10 @@ async function assertCredentialList(
 ) {
   const result = parseJson(
     await run(
-      ['list', ...credentialRoute(paths, profile, vaultId), '--passphrase-stdin'],
+      ['ls', ...credentialRoute(paths, profile, vaultId), '--passphrase-stdin'],
       [passphrase],
     ),
-    `list ${profile}`,
+    `ls ${profile}`,
   );
   assert(
     result.names?.includes(expectedName),
@@ -968,7 +968,7 @@ async function exerciseDatabaseContainer(run, paths) {
   );
   await run(
     [
-      'put',
+      'add',
       'legacy/item',
       ...legacyFileArgs(paths.legacyDataFile, paths.legacyKeyFile, 'legacy-v2'),
       '--passphrase-stdin',
@@ -987,8 +987,8 @@ async function exerciseDatabaseContainer(run, paths) {
   const migrated = parseJson(
     await run(
       [
+        'db',
         'migrate',
-        'database',
         '--source-profile',
         'legacy',
         '--destination-profile',

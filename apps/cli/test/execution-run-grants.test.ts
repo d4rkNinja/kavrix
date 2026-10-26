@@ -153,7 +153,7 @@ describe('kavrix run --grant', () => {
     const grantId = await issueGrant('production/database');
     const removed = await runCli(
       [
-        'remove',
+        'rm',
         'production/database',
         ...fixture.routingArgs,
         '--passphrase-stdin',
@@ -183,7 +183,7 @@ describe('kavrix run --grant', () => {
     // Restore the credential and prove the earlier failure burned nothing.
     const restored = await runCli(
       [
-        'put',
+        'add',
         'production/database',
         ...fixture.routingArgs,
         '--passphrase-stdin',

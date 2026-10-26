@@ -37,11 +37,18 @@ let timer: ReturnType<typeof setInterval> | undefined;
 function tick(): void {
   const now = performance.now();
   // Iterate a copy so a subscriber that unsubscribes during delivery cannot skip
-  // another subscriber this tick.
+  // another subscriber this tick. The timer is process-wide: one throwing
+  // subscriber would otherwise become an uncaught exception and kill the app,
+  // so a subscriber failure skips that subscriber and keeps the clock alive.
   for (const registration of [...registrations]) {
     if (!registrations.has(registration)) continue;
     const elapsed = now - registration.startedAtMs;
-    registration.subscriber(Math.min(elapsed, registration.durationMs));
+    try {
+      registration.subscriber(Math.min(elapsed, registration.durationMs));
+    } catch {
+      registrations.delete(registration);
+      continue;
+    }
     if (elapsed >= registration.durationMs) registrations.delete(registration);
   }
   if (registrations.size === 0) stop();

@@ -76,8 +76,8 @@ export function generateDefaultConfigToml(): string {
 # validated TLS, and database-container writes require transaction support.
 #
 # After \`db vault use\`, vault-scoped commands use that profile's stored default:
-#   kavrix put github/token --profile work
-#   kavrix list --profile work
+#   kavrix add github/token --profile work
+#   kavrix ls --profile work
 #   kavrix get github/token --reveal --profile work
 # Pass \`--vault <vault-id>\` to override the stored default for one command.
 #

@@ -25,23 +25,23 @@ const entries = [
 ] as const;
 
 describe('local vault command surface', () => {
-  it('registers working view, search, and stats commands', () => {
+  it('registers working view, ls, and stats commands', () => {
     const cli = buildLocalCli();
     const commandNames = cli.commands.map((command) => command.name());
     expect(commandNames).toEqual(
       expect.arrayContaining([
         'db',
         'view',
-        'search',
+        'ls',
         'stats',
         'recovery',
         'vault',
         'key',
-        'put',
+        'add',
         'get',
-        'remove',
+        'rm',
         'has',
-        'rename',
+        'mv',
         'doctor',
       ]),
     );
@@ -52,7 +52,6 @@ describe('local vault command surface', () => {
       'list',
       'use',
       'status',
-      'show',
       'remove',
     ]);
     const profileAdd = profile?.commands.find((command) => command.name() === 'add');

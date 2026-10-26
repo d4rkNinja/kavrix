@@ -316,7 +316,7 @@ async function main() {
       'bare kavrix did not print root usage',
     );
     assert(
-      bareRoot.stderr.includes('Local encrypted credential vault'),
+      bareRoot.stderr.includes('Local-first secrets firewall'),
       'bare kavrix did not print the root description',
     );
     assert(
@@ -335,13 +335,29 @@ async function main() {
     const rootHelp = run(process.execPath, [bin, '--help'], installRoot);
     assertSafeText(rootHelp.stdout + rootHelp.stderr, 'kavrix --help output');
     assert(rootHelp.stderr.trim() === '', 'kavrix --help wrote to stderr');
-    assert(
-      !/^\s*destroy(?:\s|$)/mu.test(rootHelp.stdout),
-      'hidden destroy command leaked into root help',
-    );
+    for (const hiddenName of [
+      'destroy',
+      'view',
+      'stats',
+      'has',
+      'frames',
+      'key',
+      'recovery',
+      'vault',
+    ]) {
+      // Command entries sit at a two-space indent; wrapped description
+      // continuation lines align much deeper and must not match.
+      assert(
+        !new RegExp(`^  ${hiddenName}(?:\\s|$)`, 'mu').test(rootHelp.stdout),
+        `hidden ${hiddenName} command leaked into root help`,
+      );
+    }
     for (const [args, marker] of [
-      [['--help'], 'Local encrypted credential vault'],
-      [['db', '--help'], 'Database operations'],
+      [['--help'], 'Local-first secrets firewall'],
+      [
+        ['db', '--help'],
+        'Advanced: databases, profiles, vaults, owner keys, recovery kits, and migration',
+      ],
       [['db', 'profile', '--help'], 'datastore routing profiles'],
       [['db', 'init', '--help'], 'encrypted multi-vault database'],
       [['db', 'vault', '--help'], 'vaults in an encrypted database'],
@@ -349,7 +365,7 @@ async function main() {
         ['db', 'vault', 'use', '--help'],
         'Select the default vault for one protected datastore profile',
       ],
-      [['migrate', 'database', '--help'], 'legacy version 2 vault'],
+      [['db', 'migrate', '--help'], 'legacy version 2 vault'],
       [['recovery', '--help'], 'Legacy-vault recovery kits'],
       [['db', 'recovery', '--help'], 'Manage database-root recovery kits'],
       [['key', '--help'], 'Protected key-file lifecycle'],

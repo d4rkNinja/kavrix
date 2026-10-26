@@ -550,8 +550,16 @@ export function createMouseInput(options: MouseInputOptions): MouseInput {
           return false;
         }
 
-        const bounds = region.getBounds();
-        return bounds ? contains(bounds, event) : false;
+        // A repaint can detach a region between registration and this report;
+        // measuring a detached node must not crash the raw stdin listener.
+        let inside: boolean;
+        try {
+          const bounds = region.getBounds();
+          inside = bounds ? contains(bounds, event) : false;
+        } catch {
+          inside = false;
+        }
+        return inside;
       })
       .sort(
         (left, right) => right.priority - left.priority || right.order - left.order,
@@ -561,10 +569,15 @@ export function createMouseInput(options: MouseInputOptions): MouseInput {
       return;
     }
 
-    if (event.type === 'click') {
-      target.onClick?.();
-    } else {
-      target.onScroll?.(event.delta);
+    try {
+      if (event.type === 'click') {
+        target.onClick?.();
+      } else {
+        target.onScroll?.(event.delta);
+      }
+    } catch {
+      // A click handler runs inside the raw stdin 'data' listener; a handler
+      // bug degrades to an ignored click instead of an uncaught exception.
     }
   };
 

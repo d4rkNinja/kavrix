@@ -232,15 +232,21 @@ describe('structured vault command model', () => {
     expect(STDIN_FRAME_CONTRACTS['note add']).toContain('note-content');
   });
 
-  it('registers one command for each alias pair', () => {
+  it('registers the structured family without retired alias routes', () => {
     const program = new Command();
     registerStructuredVaultCommands(program);
-    const aliases = new Map(
-      program.commands.map((command) => [command.name(), command.aliases()]),
+    const names = program.commands.map((command) => command.name());
+    // 0.3.1 retired the environment/group/credential aliases; the canonical
+    // routes are the only public surface.
+    expect(names).toEqual(
+      expect.arrayContaining(['context', 'service', 'item', 'field', 'note']),
     );
-    expect(aliases.get('context')).toContain('environment');
-    expect(aliases.get('service')).toContain('group');
-    expect(aliases.get('item')).toContain('credential');
+    expect(names).not.toContain('environment');
+    expect(names).not.toContain('group');
+    expect(names).not.toContain('credential');
+    for (const command of program.commands) {
+      expect(command.aliases(), command.name()).toEqual([]);
+    }
   });
 
   it('maps explicit routing flags to the shared database profile override contract', () => {
@@ -939,7 +945,7 @@ describe('structured vault command model', () => {
       buildLocalCli().parseAsync(['node', 'kavrix', ...args, ...route]);
 
     await expect(
-      execute('environment', 'create', 'project', '--environment', 'production'),
+      execute('context', 'create', 'project', '--environment', 'production'),
     ).resolves.toMatchObject({ created: true, type: 'context' });
     await expect(execute('context', 'create', 'no-environment')).resolves.toMatchObject(
       { created: true, type: 'context' },
@@ -966,7 +972,7 @@ describe('structured vault command model', () => {
       execute('context', 'rename', 'project', 'production-project'),
     ).resolves.toMatchObject({ renamed: true, type: 'context' });
     await expect(
-      execute('group', 'create', 'database', '--context', 'production-project'),
+      execute('service', 'create', 'database', '--context', 'production-project'),
     ).resolves.toMatchObject({ created: true, type: 'service' });
     await expect(
       execute('service', 'list', '--context', 'production-project'),
@@ -983,7 +989,7 @@ describe('structured vault command model', () => {
     ).resolves.toMatchObject({ renamed: true, type: 'service' });
     await expect(
       execute(
-        'credential',
+        'item',
         'create',
         'primary',
         '--context',

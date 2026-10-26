@@ -330,34 +330,6 @@ export async function executeGrantRevokeAction(
   );
 }
 
-// Bare `kavrix grant <secret>` behaves like `grant create` per the product spec.
-export async function executeGrantAction(args: readonly unknown[]): Promise<void> {
-  const command = args.at(-1) as Command;
-  const operands = [...command.args].filter((value) => typeof value === 'string');
-  const first = operands[0];
-  if (first === undefined || first.length === 0) {
-    process.stderr.write(
-      'Specify a secret, or use `kavrix grant create|list|show|revoke`.\n',
-    );
-    process.exitCode = 2;
-    return;
-  }
-  const merged = extractMergedOptions(command);
-  await guard(merged['json'] === true, () =>
-    executeGrantCreate({
-      ...executionFlatOptions(merged),
-      secret: first,
-      commands: asStrings(merged['command']),
-      hashes: asStrings(merged['hash']),
-      ...(optString(merged['env']) === undefined
-        ? {}
-        : { env: optString(merged['env']) }),
-      ttl: requireTtl(merged['ttl']),
-      ...(typeof merged['maxUses'] === 'number' ? { maxUses: merged['maxUses'] } : {}),
-    }),
-  );
-}
-
 // ---- executable pass-through guard ------------------------------------------
 
 /**

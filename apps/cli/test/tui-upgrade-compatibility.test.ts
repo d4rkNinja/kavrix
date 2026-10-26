@@ -67,7 +67,7 @@ describe('TUI compatibility with an existing legacy vault', () => {
     ]);
     await runCliSuccessfully(
       [
-        'put',
+        'add',
         'legacy-token',
         '--datastore',
         'file',
@@ -142,7 +142,7 @@ describe.runIf(process.env['KAVRIX_TEST_LOCAL_MONGO'] === '1')(
         );
         await runCliSuccessfully(
           [
-            'put',
+            'add',
             'legacy-token',
             '--datastore',
             'mongodb',

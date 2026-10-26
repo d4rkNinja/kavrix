@@ -26,15 +26,14 @@ const expectedHelpPaths = [
   ['init'],
   ['db'],
   ['db', 'ping'],
-  ['put'],
+  ['add'],
   ['get'],
-  ['list'],
+  ['ls'],
   ['view'],
-  ['search'],
   ['stats'],
-  ['remove'],
+  ['rm'],
   ['has'],
-  ['rename'],
+  ['mv'],
   ['doctor'],
   ['doctor', 'health'],
   ['recovery'],
@@ -50,8 +49,6 @@ const expectedHelpPaths = [
   ['key', 'status'],
   ['key', 'verify'],
   ['key', 'copy'],
-  ['key', 'replicate'],
-  ['key', 'assign'],
   ['key', 'rewrap'],
 ];
 
@@ -214,8 +211,6 @@ async function runDestroy(bin, cwd, paths, passphrase, secret, revision) {
   const artifacts = [
     paths.primaryKeyFile,
     paths.copyKeyFile,
-    paths.replicaKeyFile,
-    paths.assignedKeyFile,
     paths.recoveryFile,
     paths.secondRecoveryFile,
     paths.replacementRecoveryFile,
@@ -363,8 +358,6 @@ async function exerciseLifecycle(run, bin, installRoot, paths) {
 
   for (const [command, destination, destinationPassphrase] of [
     ['copy', paths.copyKeyFile, ephemeralSecret()],
-    ['replicate', paths.replicaKeyFile, ephemeralSecret()],
-    ['assign', paths.assignedKeyFile, ephemeralSecret()],
   ]) {
     await run(
       [
@@ -386,7 +379,7 @@ async function exerciseLifecycle(run, bin, installRoot, paths) {
   const currentPass = [rewrappedPassphrase];
   await run(
     [
-      'put',
+      'add',
       paths.credentialName,
       ...file,
       ...key,
@@ -405,20 +398,20 @@ async function exerciseLifecycle(run, bin, installRoot, paths) {
     revealed.stdout.trim() === paths.secret,
     'get --reveal returned the wrong value',
   );
-  await run(['list', ...file, ...key, ...passStdin], currentPass);
+  await run(['ls', ...file, ...key, ...passStdin], currentPass);
   await run(['view', ...file, ...key, ...passStdin, '--json'], currentPass);
   await run(
     ['view', paths.credentialName, ...file, ...key, ...passStdin, '--json'],
     currentPass,
   );
   await run(
-    ['search', 'acceptance', ...file, ...key, ...passStdin, '--json', '--limit', '5'],
+    ['ls', 'acceptance', ...file, ...key, ...passStdin, '--json', '--limit', '5'],
     currentPass,
   );
   await run(['stats', ...file, ...key, ...passStdin, '--json'], currentPass);
   await run(
     [
-      'rename',
+      'mv',
       paths.credentialName,
       paths.renamedCredential,
       ...file,
@@ -429,7 +422,7 @@ async function exerciseLifecycle(run, bin, installRoot, paths) {
   );
   await run(
     [
-      'put',
+      'add',
       paths.temporaryCredential,
       ...file,
       ...key,
@@ -438,7 +431,7 @@ async function exerciseLifecycle(run, bin, installRoot, paths) {
     [rewrappedPassphrase, ephemeralSecret()],
   );
   await run(
-    ['remove', paths.temporaryCredential, ...file, ...key, ...passStdin],
+    ['rm', paths.temporaryCredential, ...file, ...key, ...passStdin],
     currentPass,
   );
   await run(['doctor', ...file, ...key, ...passStdin], currentPass);
@@ -530,8 +523,6 @@ async function exerciseLifecycle(run, bin, installRoot, paths) {
   for (const path of [
     paths.primaryKeyFile,
     paths.copyKeyFile,
-    paths.replicaKeyFile,
-    paths.assignedKeyFile,
     paths.recoveryFile,
     paths.secondRecoveryFile,
     paths.replacementRecoveryFile,
@@ -610,7 +601,6 @@ async function main() {
       await setWindowsUserOnlyAcl(artifactRoot);
     }
     const paths = {
-      assignedKeyFile: join(artifactRoot, 'assigned.key'),
       copyKeyFile: join(artifactRoot, 'copy.key'),
       credentialName: 'acceptance/item',
       dataFile: join(artifactRoot, 'vault.kavrix'),
@@ -620,7 +610,6 @@ async function main() {
       renamedCredential: 'acceptance/renamed-item',
       replacementKeyFile: join(artifactRoot, 'replacement.key'),
       replacementRecoveryFile: join(artifactRoot, 'replacement.recovery'),
-      replicaKeyFile: join(artifactRoot, 'replica.key'),
       secondRecoveryFile: join(artifactRoot, 'second.recovery'),
       secret: 'runtime-vault-secret-canary-pre-ci',
       temporaryCredential: 'acceptance/temporary',

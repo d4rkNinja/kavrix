@@ -17,8 +17,14 @@ export function subscribeToTerminalResize(
       const release = releaseInput;
       pending = undefined;
       releaseInput = undefined;
+      // The update runs from a timer with the app's input held: a throwing
+      // update must still release input and must not escape the timer as an
+      // uncaught exception.
       try {
         update();
+      } catch {
+        // A failed resize update keeps the previous dimensions; the next
+        // resize event retries with fresh geometry.
       } finally {
         release?.();
       }

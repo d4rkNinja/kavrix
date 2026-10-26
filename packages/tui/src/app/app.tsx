@@ -119,13 +119,20 @@ export function KavrixApp({
             : { revealedSecret: result.revealedSecret }),
           nowMs: now(),
         });
-      } catch {
+      } catch (error) {
         if (!mountedRef.current || stateRef.current.quit) return;
+        // The backend funnels expected failures into its own snapshot notice;
+        // this catch only sees a throwing listener or a disposed backend, so
+        // keep the sanitized failure visible instead of a generic message.
+        const detail =
+          error instanceof Error && error.message.length > 0
+            ? ` ${error.message.slice(0, 160)}`
+            : '';
         dispatchRef.current({
           type: 'backend-result',
           snapshot: {
             ...stateRef.current.snapshot,
-            notice: 'Operation failed safely.',
+            notice: `Operation failed safely.${detail}`,
             noticeTone: 'error',
           },
           nowMs: now(),
@@ -169,7 +176,29 @@ export function KavrixApp({
         return;
       const previousScreen = stateRef.current.screen;
       const previousOverlay = stateRef.current.overlay;
-      const next = transitionAppRouter(stateRef.current, action);
+      // Dispatch runs synchronously from key, paste, mouse, and resize
+      // callbacks; an unguarded router bug would become an uncaught exception
+      // and kill the whole TUI, so a transition failure degrades to a notice.
+      let next: ReturnType<typeof transitionAppRouter>;
+      try {
+        next = transitionAppRouter(stateRef.current, action);
+      } catch (error) {
+        const detail =
+          error instanceof Error && error.message.length > 0
+            ? ` ${error.message.slice(0, 160)}`
+            : '';
+        const failed = {
+          ...stateRef.current,
+          snapshot: {
+            ...stateRef.current.snapshot,
+            notice: `Action failed safely.${detail}`,
+            noticeTone: 'error',
+          },
+        } as AppRouterState;
+        stateRef.current = failed;
+        setState(failed);
+        return;
+      }
       if (next.state === stateRef.current && next.effect.kind === 'none') return;
       stateRef.current = next.state;
       setState(next.state);

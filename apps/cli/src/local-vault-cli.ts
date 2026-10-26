@@ -881,7 +881,7 @@ async function validateInitDestinations(options: LocalCliOptions): Promise<void>
 function assertLegacyInitOmitsProfileRouting(options: LocalCliOptions): void {
   if (options.profileConfigDir !== undefined || options.profile !== undefined) {
     throw new LocalCliError(
-      'Legacy init (--legacy) does not create or bind a datastore profile. Omit --config-dir, --profile-config-dir, and --profile; use explicit --data-file/--key-file for migrate sources, or run modern `kavrix init` (without --legacy) to create a bound profile for put/run.',
+      'Legacy init (--legacy) does not create or bind a datastore profile. Omit --config-dir, --profile-config-dir, and --profile; use explicit --data-file/--key-file for migrate sources, or run modern `kavrix init` (without --legacy) to create a bound profile for add/run.',
     );
   }
 }
@@ -912,7 +912,7 @@ async function handleInit(options: LocalCliOptions): Promise<void> {
 
 /**
  * Scripted/non-interactive file init: one bound profile, initialized database,
- * and default vault so `put` / `run` / policy work without a second onboarding
+ * and default vault so `add` / `run` / policy work without a second onboarding
  * path. Recovery is optional (`--recovery-file` + recovery passphrase frames).
  */
 async function handleDatabaseContainerInit(options: LocalCliOptions): Promise<void> {
@@ -1493,7 +1493,7 @@ export async function handlePut(name: string, options: LocalCliOptions): Promise
       'Use either --value-stdin or --value-stdin-base64, not both.',
     );
   }
-  await rejectUnboundDatabaseProfile(options, 'put');
+  await rejectUnboundDatabaseProfile(options, 'add');
   if (await usesDatabaseContainer(options)) {
     const values = await readDatabaseFlatSecrets(options, [valueKind]);
     const value = requiredSecret(values.extras, 0);
@@ -1592,7 +1592,7 @@ export async function handleGet(name: string, options: LocalCliOptions): Promise
 }
 
 export async function handleList(options: LocalCliOptions): Promise<void> {
-  await rejectUnboundDatabaseProfile(options, 'list');
+  await rejectUnboundDatabaseProfile(options, 'ls');
   if (await usesDatabaseContainer(options)) {
     const values = await readDatabaseFlatSecrets(options, []);
     await withDatabaseFlatVault(options, values, async (session, vaultId) => {
@@ -1745,7 +1745,7 @@ export async function handleView(
 }
 
 /**
- * Builds the credential-name matcher for `search`. Patterns containing `*` or
+ * Builds the credential-name matcher for `ls <pattern>`. Patterns containing `*` or
  * `?` are anchored globs; anything else is a substring match. Case handling is
  * explicit: insensitive unless `--case-sensitive` is passed.
  */
@@ -1784,7 +1784,7 @@ export async function handleSearch(
   const limit = parseLimit(options.limit);
   const ignoreCase = options.caseSensitive !== true;
   const matchesName = buildSearchMatcher(normalizedTerm, ignoreCase);
-  await rejectUnboundDatabaseProfile(options, 'search');
+  await rejectUnboundDatabaseProfile(options, 'ls');
   if (await usesDatabaseContainer(options)) {
     const values = await readDatabaseFlatSecrets(options, []);
     await withDatabaseFlatVault(options, values, async (session, vaultId) => {
@@ -1904,7 +1904,7 @@ export async function handleRemove(
   options: LocalCliOptions,
 ): Promise<void> {
   validateCredentialName(name);
-  await rejectUnboundDatabaseProfile(options, 'remove');
+  await rejectUnboundDatabaseProfile(options, 'rm');
   if (await usesDatabaseContainer(options)) {
     const values = await readDatabaseFlatSecrets(options, []);
     await withDatabaseFlatVault(options, values, async (session, vaultId) => {
@@ -1994,7 +1994,7 @@ export async function handleRename(
   validateCredentialName(from);
   validateCredentialName(to);
   if (from === to) throw new LocalCliError('Credential names must be different.');
-  await rejectUnboundDatabaseProfile(options, 'rename');
+  await rejectUnboundDatabaseProfile(options, 'mv');
   if (await usesDatabaseContainer(options)) {
     const values = await readDatabaseFlatSecrets(options, []);
     await withDatabaseFlatVault(options, values, async (session, vaultId) => {

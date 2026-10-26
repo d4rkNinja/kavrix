@@ -3,7 +3,7 @@ import type { Command } from 'commander';
 import { TUI_THEME_IDS } from './tui-theme.js';
 
 /**
- * Registers `kavrix tui` / `kavrix ui`. Requires a real TTY on stdin and stdout;
+ * Registers `kavrix tui`. Requires a real TTY on stdin and stdout;
  * non-interactive automation keeps using the numbered CLI commands.
  *
  * Light registration only: the heavy TUI session implementation is dynamically
@@ -12,7 +12,6 @@ import { TUI_THEME_IDS } from './tui-theme.js';
 export function registerTuiCommand(program: Command): void {
   program
     .command('tui')
-    .alias('ui')
     .description(
       'Open the colorful interactive Kavrix TUI (requires a TTY). Secrets stay masked until an explicit REVEAL confirm.',
     )

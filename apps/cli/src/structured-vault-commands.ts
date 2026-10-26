@@ -43,8 +43,7 @@ function addDatabaseOptions(command: Command): Command {
 function registerContextCommands(program: Command): void {
   const context = program
     .command('context')
-    .alias('environment')
-    .description('Manage project contexts/environments in a database vault.');
+    .description('Manage project contexts in a database vault.');
   const create = context
     .command('create <name>')
     .description('Create a project context.');
@@ -88,8 +87,7 @@ function registerContextCommands(program: Command): void {
 function registerServiceCommands(program: Command): void {
   const service = program
     .command('service')
-    .alias('group')
-    .description('Manage services/groups inside a project context.');
+    .description('Manage services inside a project context.');
   const create = service
     .command('create <name>')
     .description('Create a service/group.');
@@ -137,8 +135,7 @@ function registerServiceCommands(program: Command): void {
 function registerItemCommands(program: Command): void {
   const item = program
     .command('item')
-    .alias('credential')
-    .description('Manage credential items inside a service/group.');
+    .description('Manage credential items inside a service.');
   const create = item
     .command('create <title>')
     .description('Create a credential item.');

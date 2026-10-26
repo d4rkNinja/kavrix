@@ -43,11 +43,11 @@ its available keys in the footer; the [TUI guide](tui-guide.md) lists its scope.
 
 ## 2. Store and read a secret
 
-Interactively, `put` prompts for the passphrase and value without echoing:
+Interactively, `add` prompts for the passphrase and value without echoing:
 
 ```sh
-kavrix put github/token
-kavrix list                        # names only, never values
+kavrix add github/token
+kavrix ls                           # names only, never values
 kavrix get github/token            # masked metadata
 kavrix get github/token --reveal   # the guarded plaintext output
 ```
@@ -56,11 +56,12 @@ For scripts, read both from stdin frames (passphrase, then value):
 
 ```sh
 printf '%s\n' 'my-passphrase-16b' 'secret-value' \
-  | kavrix put github/token --passphrase-stdin --value-stdin
+  | kavrix add github/token --passphrase-stdin --value-stdin
 ```
 
-`kavrix frames put` prints the exact frame order for any command. Replacing
-an existing credential requires `--overwrite`.
+`kavrix frames add` prints the exact frame order for any command. Replacing
+an existing credential requires `--overwrite`. To narrow the name list, pass a
+glob or substring pattern: `kavrix ls 'github/*'`.
 
 ## 3. Migrate an existing `.env`
 
@@ -182,7 +183,7 @@ workflow, configuration discovery, denial reasons, and broker limits.
 
 ```sh
 kavrix session enable     # seals unlock material via the OS credential store
-kavrix list --session     # unlock without the passphrase
+kavrix ls --session        # unlock without the passphrase
 kavrix session status
 kavrix session revoke     # remove it; the passphrase always still works
 ```

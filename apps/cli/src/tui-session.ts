@@ -8,6 +8,8 @@ import { performance } from 'node:perf_hooks';
 import { z } from 'zod';
 
 import { zeroize } from '@kavrix/crypto';
+import { sanitizeTerminalText } from '@kavrix/tui';
+import { CLI_EXIT_CODES } from '@kavrix/schemas/cli-exit-codes';
 import {
   databaseRevisionAnchorPath,
   ensureSecureDirectory,
@@ -442,13 +444,22 @@ class CliTuiSession {
     this.#options = options;
     this.#vaultSession = new TuiVaultSession(async (error) => {
       await this.#lock();
-      this.#notice =
-        error === undefined
-          ? 'TUI session expired; unlock again.'
-          : 'TUI session cleanup failed; restart the app.';
-      this.#noticeTone = error === undefined ? 'info' : 'error';
-      const snapshot = await this.#buildSnapshot();
-      for (const listener of this.#listeners) listener(snapshot);
+      // The vault session wipes keys before this callback runs, so the lock
+      // above is the security boundary. A snapshot or listener failure after
+      // it must not reach the vault session's expiry hard-stop, which would
+      // permanently brick every later action for a one-off notify glitch;
+      // the locked state is still reported by the next dispatch.
+      try {
+        this.#notice =
+          error === undefined
+            ? 'TUI session expired; unlock again.'
+            : 'TUI session cleanup failed; restart the app.';
+        this.#noticeTone = error === undefined ? 'info' : 'error';
+        const snapshot = await this.#buildSnapshot();
+        for (const listener of this.#listeners) listener(snapshot);
+      } catch {
+        // The vault is locked; the expiry state is enforced by the session.
+      }
     });
   }
 
@@ -716,9 +727,11 @@ class CliTuiSession {
       this.#notice =
         error instanceof PortableKeyFileError
           ? keyFileGuidance(error)
-          : error instanceof Error
-            ? error.message
-            : 'Operation failed safely.';
+          : error instanceof z.ZodError
+            ? 'The TUI received an invalid internal request; retry the action.'
+            : error instanceof Error
+              ? error.message.slice(0, 240)
+              : 'Operation failed safely.';
       this.#noticeTone = 'error';
       return { snapshot: await this.#buildSnapshot() };
     } finally {
@@ -747,10 +760,17 @@ class CliTuiSession {
 
   async #expireLifetime(): Promise<void> {
     await this.#lock();
-    this.#notice = 'TUI session expired; unlock again.';
-    this.#noticeTone = 'info';
-    const snapshot = await this.#buildSnapshot();
-    for (const listener of this.#listeners) listener(snapshot);
+    // The lock above is the security boundary; a snapshot or listener failure
+    // after it must not become a permanent #lifetimeFailure that bricks every
+    // later dispatch. The locked state is reported by the next dispatch.
+    try {
+      this.#notice = 'TUI session expired; unlock again.';
+      this.#noticeTone = 'info';
+      const snapshot = await this.#buildSnapshot();
+      for (const listener of this.#listeners) listener(snapshot);
+    } catch {
+      // The vault is locked; the expiry state is enforced by the session.
+    }
   }
 
   async #buildSnapshot(): Promise<CliTuiSnapshot> {
@@ -1576,7 +1596,7 @@ class CliTuiSession {
         ? native.value
         : await this.#runJsonCommand(
             [
-              'list',
+              'ls',
               ...(await this.#credentialProfileArgs(current)),
               ...this.#vaultFlagArgs(),
               ...auth.args,
@@ -1669,11 +1689,11 @@ class CliTuiSession {
       return;
     }
     const passphrase = this.#passphrase.toString('utf8');
-    // Frames contract: `kavrix frames put` → [mongodb-url,] passphrase, value
+    // Frames contract: `kavrix frames add` → [mongodb-url,] passphrase, value
     const auth = await this.#credentialAuth([passphrase, value]);
     await this.#runTextCommand(
       [
-        'put',
+        'add',
         trimmed,
         ...auth.args,
         '--passphrase-stdin',
@@ -1713,7 +1733,7 @@ class CliTuiSession {
     // Frames: `kavrix frames rename` → [mongodb-url,] passphrase
     const auth = await this.#credentialAuth([passphrase]);
     await this.#runTextCommand(
-      ['rename', source, target, ...auth.args, '--passphrase-stdin', '--json'],
+      ['mv', source, target, ...auth.args, '--passphrase-stdin', '--json'],
       auth.frames,
     );
     await this.#refreshCredentialList();
@@ -1745,7 +1765,7 @@ class CliTuiSession {
     // Frames: `kavrix frames remove` → [mongodb-url,] passphrase
     const auth = await this.#credentialAuth([passphrase]);
     await this.#runTextCommand(
-      ['remove', trimmed, ...auth.args, '--passphrase-stdin', '--json'],
+      ['rm', trimmed, ...auth.args, '--passphrase-stdin', '--json'],
       auth.frames,
     );
     await this.#refreshCredentialList();
@@ -1764,7 +1784,7 @@ class CliTuiSession {
     const passphrase = this.#passphrase.toString('utf8');
     const auth = await this.#credentialAuth([passphrase]);
     const names = await this.#runJsonCommand(
-      ['list', ...auth.args, '--json', '--passphrase-stdin'],
+      ['ls', ...auth.args, '--json', '--passphrase-stdin'],
       auth.frames,
     );
     const parsed = names as { names?: unknown };
@@ -2549,7 +2569,15 @@ class CliTuiSession {
     frames: readonly string[],
   ): Promise<unknown> {
     const text = await this.#runTextCommand(args, frames);
-    return JSON.parse(text) as unknown;
+    try {
+      return JSON.parse(text) as unknown;
+    } catch {
+      // A warning banner or partially flushed stdout must fail the task with
+      // an actionable message instead of a bare JSON parse error.
+      throw new Error(
+        `A Kavrix command returned output that is not valid JSON. Run \`kavrix ${args.join(' ')}\` to inspect it, then retry.`,
+      );
+    }
   }
 
   async #runTextCommand(
@@ -2631,7 +2659,14 @@ class CliTuiSession {
     }
     if (outcome.exitCode !== 0) {
       const detail = Buffer.concat(stderr).toString('utf8').trim() || 'CLI failed.';
-      throw new Error(detail.split('\n')[0] ?? 'CLI failed.');
+      // Multiline CLI guidance (for example a MongoDB failure with follow-up
+      // steps) used to be truncated to its first line; keep up to three lines
+      // so the notice stays actionable. The notice row sanitizes on render.
+      const lines = detail
+        .split('\n')
+        .map((line) => line.trim())
+        .filter((line) => line.length > 0);
+      throw new Error(lines.slice(0, 3).join(' ').slice(0, 240) || 'CLI failed.');
     }
     return Buffer.concat(stdout).toString('utf8');
   }
@@ -3002,9 +3037,37 @@ export async function runInteractiveTui(
     ...(options.mouse === undefined ? {} : { mouse: options.mouse }),
     ...(noSplash ? { noSplash: true } : {}),
   });
+  // Last-resort safety net while Ink owns the terminal in raw mode and the
+  // alternate screen: an exception escaping every guard inside the TUI would
+  // otherwise kill Node and leave the shell unusable. Unmount first so Ink
+  // restores the primary screen and input modes, then report one sanitized
+  // line and exit through the documented unclassified-failure code.
+  const unexpectedFailure = (kind: string, error: unknown): void => {
+    try {
+      handle.unmount();
+    } catch {
+      // Ink may already be torn down; the exit below still returns the shell.
+    }
+    const detail =
+      error instanceof Error && error.message.length > 0
+        ? sanitizeTerminalText(error.message.slice(0, 200), ascii)
+        : 'no details';
+    process.stderr.write(`kavrix tui stopped after an unexpected ${kind}: ${detail}\n`);
+    process.exit(CLI_EXIT_CODES.unclassifiedFailure);
+  };
+  const onUncaughtException = (error: Error): void => {
+    unexpectedFailure('internal error', error);
+  };
+  const onUnhandledRejection = (reason: unknown): void => {
+    unexpectedFailure('internal failure', reason);
+  };
+  process.on('uncaughtException', onUncaughtException);
+  process.on('unhandledRejection', onUnhandledRejection);
   try {
     await handle.waitUntilExit();
   } finally {
+    process.off('uncaughtException', onUncaughtException);
+    process.off('unhandledRejection', onUnhandledRejection);
     handle.unmount();
     await backend.dispose();
   }

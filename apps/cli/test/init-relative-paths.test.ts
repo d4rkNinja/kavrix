@@ -130,7 +130,7 @@ describe('init relative path persistence', () => {
 
       const put = await runCli(
         [
-          'put',
+          'add',
           'CANARY',
           '--profile-config-dir',
           configDir,

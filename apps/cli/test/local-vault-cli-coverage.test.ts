@@ -142,7 +142,7 @@ async function put(
   secret: string,
 ): Promise<Record<string, unknown>> {
   const output = await runCli(
-    ['put', name, ...route(value), '--passphrase-stdin', '--value-stdin'],
+    ['add', name, ...route(value), '--passphrase-stdin', '--value-stdin'],
     `${PASSPHRASE}\n${secret}\n`,
   );
   return JSON.parse(output) as Record<string, unknown>;
@@ -155,7 +155,7 @@ async function overwrite(
 ): Promise<Record<string, unknown>> {
   const output = await runCli(
     [
-      'put',
+      'add',
       name,
       ...route(value),
       '--passphrase-stdin',
@@ -231,10 +231,7 @@ describe(
       });
 
       const listed = JSON.parse(
-        await runCli(
-          ['list', ...route(value), '--passphrase-stdin'],
-          `${PASSPHRASE}\n`,
-        ),
+        await runCli(['ls', ...route(value), '--passphrase-stdin'], `${PASSPHRASE}\n`),
       ) as { names: string[]; revision: number };
       expect(listed).toEqual({ names: ['alpha', 'beta'], revision: 2 });
 
@@ -267,15 +264,7 @@ describe(
 
       const searched = JSON.parse(
         await runCli(
-          [
-            'search',
-            'A',
-            ...route(value),
-            '--passphrase-stdin',
-            '--limit',
-            '1',
-            '--json',
-          ],
+          ['ls', 'A', ...route(value), '--passphrase-stdin', '--limit', '1', '--json'],
           `${PASSPHRASE}\n`,
         ),
       ) as { count: number; truncated: boolean; matches: Array<{ name: string }> };
@@ -315,13 +304,13 @@ describe(
 
       expect(
         await runCli(
-          ['rename', 'alpha', 'renamed', ...route(value), '--passphrase-stdin'],
+          ['mv', 'alpha', 'renamed', ...route(value), '--passphrase-stdin'],
           `${PASSPHRASE}\n`,
         ),
       ).toMatchObject(/"renamed":true/iu);
       expect(
         await runCli(
-          ['remove', 'beta', ...route(value), '--passphrase-stdin'],
+          ['rm', 'beta', ...route(value), '--passphrase-stdin'],
           `${PASSPHRASE}\n`,
         ),
       ).toMatch(/"removed":true/iu);
@@ -564,7 +553,7 @@ describe(
         runCli(['db', 'ping', '--datastore', 'file', '--data-file', value.data]),
       ).rejects.toThrow('db ping requires --datastore mongodb');
       await expect(
-        runCli(['list', '--datastore', 'unsupported', '--data-file', value.data]),
+        runCli(['ls', '--datastore', 'unsupported', '--data-file', value.data]),
       ).rejects.toThrow('--datastore must be mongodb or file.');
     });
 
@@ -648,7 +637,7 @@ describe(
       await expect(
         runCli(
           [
-            'put',
+            'add',
             'constructor',
             ...route(value),
             '--passphrase-stdin',
@@ -659,7 +648,7 @@ describe(
       ).rejects.toThrow('That credential name is reserved.');
       await expect(
         runCli(
-          ['put', 'existing', ...route(value), '--passphrase-stdin', '--value-stdin'],
+          ['add', 'existing', ...route(value), '--passphrase-stdin', '--value-stdin'],
           `${PASSPHRASE}\nreplacement\n`,
         ),
       ).rejects.toThrow('Credential already exists.');
@@ -673,26 +662,23 @@ describe(
       });
 
       await expect(
-        runCli(
-          ['search', '   ', ...route(value), '--passphrase-stdin'],
-          `${PASSPHRASE}\n`,
-        ),
+        runCli(['ls', '   ', ...route(value), '--passphrase-stdin'], `${PASSPHRASE}\n`),
       ).rejects.toThrow('A search pattern is required.');
       await expect(
         runCli(
-          ['search', 'x'.repeat(129), ...route(value), '--passphrase-stdin'],
+          ['ls', 'x'.repeat(129), ...route(value), '--passphrase-stdin'],
           `${PASSPHRASE}\n`,
         ),
       ).rejects.toThrow('Search patterns are limited to 128 characters.');
       await expect(
         runCli(
-          ['search', 'x', ...route(value), '--passphrase-stdin', '--limit', '0'],
+          ['ls', 'x', ...route(value), '--passphrase-stdin', '--limit', '0'],
           `${PASSPHRASE}\n`,
         ),
       ).rejects.toThrow('--limit must be a whole number between 1 and 200.');
       await expect(
         runCli(
-          ['search', 'x', ...route(value), '--passphrase-stdin', '--limit', '201'],
+          ['ls', 'x', ...route(value), '--passphrase-stdin', '--limit', '201'],
           `${PASSPHRASE}\n`,
         ),
       ).rejects.toThrow('--limit must be a whole number between 1 and 200.');
@@ -771,31 +757,31 @@ describe(
 
       await expect(
         runCli(
-          ['rename', 'existing', 'existing', ...route(value), '--passphrase-stdin'],
+          ['mv', 'existing', 'existing', ...route(value), '--passphrase-stdin'],
           `${PASSPHRASE}\n`,
         ),
       ).rejects.toThrow('Credential names must be different.');
       await expect(
         runCli(
-          ['rename', 'existing', 'other', ...route(value), '--passphrase-stdin'],
+          ['mv', 'existing', 'other', ...route(value), '--passphrase-stdin'],
           `${PASSPHRASE}\n`,
         ),
       ).rejects.toThrow(/destination credential already exists/u);
       await expect(
         runCli(
-          ['rename', 'missing', 'new-name', ...route(value), '--passphrase-stdin'],
+          ['mv', 'missing', 'new-name', ...route(value), '--passphrase-stdin'],
           `${PASSPHRASE}\n`,
         ),
       ).rejects.toThrow('Credential was not found.');
       await expect(
         runCli(
-          ['put', 'later', ...route(value), '--passphrase-stdin', '--value-stdin'],
+          ['add', 'later', ...route(value), '--passphrase-stdin', '--value-stdin'],
           `${PASSPHRASE}\nlater\n`,
         ),
       ).resolves.toContain('"saved":true');
       await expect(
         runCli(
-          ['put', 'mixed', ...route(value), '--passphrase-stdin'],
+          ['add', 'mixed', ...route(value), '--passphrase-stdin'],
           `${PASSPHRASE}\n`,
         ),
       ).rejects.toThrow('Use stdin flags for every secret in a command,');
@@ -1312,7 +1298,7 @@ describe(
 
         expect(
           await runCli(
-            ['search', 'inter', ...route(value), '--passphrase-stdin'],
+            ['ls', 'inter', ...route(value), '--passphrase-stdin'],
             `${PASSPHRASE}\n`,
           ),
         ).toContain('KAVRIX / SEARCH');
@@ -1331,7 +1317,7 @@ describe(
         ).rejects.toThrow('Credential was not found.');
         await expect(
           runCli(
-            ['remove', 'missing', ...route(value), '--passphrase-stdin'],
+            ['rm', 'missing', ...route(value), '--passphrase-stdin'],
             `${PASSPHRASE}\n`,
           ),
         ).rejects.toThrow('Credential was not found.');
@@ -1557,7 +1543,7 @@ describe(
     it('maps command failures to safe, stable stderr output', async () => {
       expect(
         await runReported([
-          'search',
+          'ls',
           '   ',
           '--datastore',
           'file',
@@ -1593,8 +1579,8 @@ describe(
       ).toContain('profile was not found');
       expect(
         await runReported([
+          'db',
           'migrate',
-          'database',
           '--source-profile',
           'same',
           '--destination-profile',
@@ -1614,8 +1600,8 @@ describe(
       ).mockRejectedValueOnce(new DatabaseMigrationError('invalid'));
       expect(
         await runReported([
+          'db',
           'migrate',
-          'database',
           '--source-profile',
           'source',
           '--destination-profile',
@@ -1644,7 +1630,7 @@ describe(
       }
       expect(
         await runReported([
-          'list',
+          'ls',
           '--datastore',
           'unsupported',
           '--data-file',
@@ -1669,7 +1655,7 @@ describe(
       );
       expect(
         await runReported(
-          ['list', ...route(aggregateTarget), '--passphrase-stdin'],
+          ['ls', ...route(aggregateTarget), '--passphrase-stdin'],
           `${PASSPHRASE}\n`,
         ),
       ).toContain('aggregate failure');
@@ -1680,7 +1666,7 @@ describe(
       expect(
         await runReported(
           [
-            'list',
+            'ls',
             '--datastore',
             'mongodb',
             '--database-url-stdin',

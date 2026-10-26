@@ -33,8 +33,8 @@ the database owner, database and vault revisions, timestamps, metadata digest,
 and an authenticated encrypted credential payload. The payload is either the
 legacy flat version 2 record map or the versioned structured representation.
 Credential names, values, field definitions, and record timestamps are inside
-that payload. `list`, `search`, and `view` decrypt locally; values remain masked
-unless a guarded reveal flow is explicitly requested.
+that payload. `ls` (with or without a name pattern) and `view` decrypt locally;
+values remain masked unless a guarded reveal flow is explicitly requested.
 
 ### Structured vault payload
 
@@ -73,8 +73,8 @@ the compatibility root commands preserve records outside their projection.
 
 ### Flat compatibility projection
 
-The root `put`, `get`, `list`, `view`, `search`, `stats`, `has`, `rename`, and
-`remove` commands continue to operate on a deliberately narrow projection: the
+The root `add`, `get`, `ls`, `view`, `stats`, `has`, `mv`, and `rm` commands
+continue to operate on a deliberately narrow projection: the
 default project context, the default group/service, and each item's canonical
 `value` password field. A flat name, including a path separator such as
 `github/token`, remains one literal item title; it is never parsed as a project,
@@ -133,7 +133,7 @@ forward-reconcile its authenticated companion anchor after an owner mutation.
 
 ## Legacy migration
 
-`kavrix migrate database` authenticates and decrypts one version 2 source vault,
+`kavrix db migrate` authenticates and decrypts one version 2 source vault,
 stages its records into the destination's default project context and
 default group/service as structured items, then reopens and compares the result
 before reporting success. The root flat projection therefore retains the same

@@ -170,10 +170,11 @@ describe('stored policy lifecycle', () => {
 });
 
 describe('temporary grants', () => {
-  it('issues a grant through the documented bare form and consumes one use per run', async () => {
+  it('issues a grant through `grant create` and consumes one use per run', async () => {
     const created = await runCli(
       [
         'grant',
+        'create',
         'github/token',
         '--command',
         'node',
@@ -189,7 +190,7 @@ describe('temporary grants', () => {
     );
     expect(
       created.exitCode,
-      `bare grant failed | out=${created.stdout.slice(0, 300)} | err=${created.stderr.slice(0, 300)}`,
+      `grant create failed | out=${created.stdout.slice(0, 300)} | err=${created.stderr.slice(0, 300)}`,
     ).toBe(0);
     const grantId = parseLast(created.stdout).grantId ?? '';
     expect(grantId.startsWith('grant_')).toBe(true);

@@ -169,16 +169,17 @@ function payloadWithHistory(): Readonly<{
 }
 
 describe('credential history command model', () => {
-  it('attaches to the structured item command so item and credential cannot drift', () => {
+  it('attaches to the structured item command only, with no credential alias', () => {
     const program = new Command();
     registerStructuredVaultCommands(program);
     registerCredentialHistoryCommands(program);
 
     const item = program.commands.find((command) => command.name() === 'item');
-    expect(item?.aliases()).toContain('credential');
+    expect(item).toBeDefined();
+    expect(item?.aliases()).not.toContain('credential');
     expect(item?.commands.map((command) => command.name())).toContain('history');
-    // A second top-level `credential` route would make Commander resolve the
-    // alias before this family could ever be reached.
+    // A top-level `credential` route (canonical or aliased) would shadow the
+    // structured family; 0.3.1 retired the alias entirely.
     expect(program.commands.map((command) => command.name())).not.toContain(
       'credential',
     );
@@ -620,7 +621,7 @@ describe('credential history commands against the real encrypted datastore', () 
     ]);
 
     const list = await runCli(
-      ['credential', 'history', 'list', 'primary', '--json', ...historyRoute(vault)],
+      ['item', 'history', 'list', 'primary', '--json', ...historyRoute(vault)],
       `${PASSPHRASE}\n`,
     );
     expect(list.exitCode, list.stderr || list.stdout).toBe(0);
@@ -648,7 +649,7 @@ describe('credential history commands against the real encrypted datastore', () 
 
     const show = await runCli(
       [
-        'credential',
+        'item',
         'history',
         'show',
         'primary',
@@ -674,22 +675,13 @@ describe('credential history commands against the real encrypted datastore', () 
     });
     expect(show.stdout).not.toContain(FIELD_SECRET);
     expect(show.stdout).not.toContain(HISTORY_CIPHERTEXT);
-
-    // The alias route resolves the same command object.
-    const aliased = await runCli(
-      ['item', 'history', 'list', 'primary', '--json', ...historyRoute(vault)],
-      `${PASSPHRASE}\n`,
-    );
-    expect(aliased.exitCode, aliased.stderr || aliased.stdout).toBe(0);
-    expect(JSON.parse(aliased.stdout)).toEqual(listed);
   });
 
   it('renders ANSI-free help for every credential history route', async () => {
     for (const args of [
-      ['credential', 'history', '--help'],
       ['item', 'history', '--help'],
-      ['credential', 'history', 'list', '--help'],
-      ['credential', 'history', 'show', '--help'],
+      ['item', 'history', 'list', '--help'],
+      ['item', 'history', 'show', '--help'],
     ]) {
       const help = await runCli(args);
       expect(help.exitCode, args.join(' ')).toBe(0);
@@ -705,7 +697,7 @@ describe('credential history commands against the real encrypted datastore', () 
     await seedCredentialWithSecrets(vault);
     const reveal = await runCli(
       [
-        'credential',
+        'item',
         'history',
         'show',
         'primary',
@@ -728,7 +720,7 @@ describe('credential history commands against the real encrypted datastore', () 
     ]);
 
     const unknownItem = await runCli(
-      ['credential', 'history', 'list', 'absent', '--json', ...historyRoute(vault)],
+      ['item', 'history', 'list', 'absent', '--json', ...historyRoute(vault)],
       `${PASSPHRASE}\n`,
     );
     expect(unknownItem.exitCode).toBe(CLI_EXIT_CODES.credentialMissing);
@@ -745,7 +737,7 @@ describe('credential history commands against the real encrypted datastore', () 
 
     const unknownVersion = await runCli(
       [
-        'credential',
+        'item',
         'history',
         'show',
         'primary',
@@ -759,14 +751,7 @@ describe('credential history commands against the real encrypted datastore', () 
 
     // The same failure without --json keeps the reviewed message on stderr.
     const plain = await runCli(
-      [
-        'credential',
-        'history',
-        'show',
-        'primary',
-        'history.absent',
-        ...historyRoute(vault),
-      ],
+      ['item', 'history', 'show', 'primary', 'history.absent', ...historyRoute(vault)],
       `${PASSPHRASE}\n`,
     );
     expect(plain.exitCode).toBe(CLI_EXIT_CODES.credentialMissing);
@@ -808,7 +793,7 @@ describe('credential history commands against the real encrypted datastore', () 
     }
 
     const tampered = await runCli(
-      ['credential', 'history', 'list', 'primary', '--json', ...historyRoute(vault)],
+      ['item', 'history', 'list', 'primary', '--json', ...historyRoute(vault)],
       `${PASSPHRASE}\n`,
     );
     expect(tampered.exitCode).toBe(CLI_EXIT_CODES.authenticationFailed);
@@ -838,7 +823,7 @@ describe('credential history commands against the real encrypted datastore', () 
     await expect(appendHistoryRecords(vault, [malformed])).rejects.toThrow();
 
     const after = await runCli(
-      ['credential', 'history', 'list', 'primary', '--json', ...historyRoute(vault)],
+      ['item', 'history', 'list', 'primary', '--json', ...historyRoute(vault)],
       `${PASSPHRASE}\n`,
     );
     expect(after.exitCode, after.stderr || after.stdout).toBe(0);

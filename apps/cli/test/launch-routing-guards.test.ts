@@ -45,13 +45,13 @@ describe('launch routing guards', () => {
     }
   });
 
-  it('rejects conflicting --config-dir and --profile-config-dir on put', async () => {
+  it('rejects conflicting --config-dir and --profile-config-dir on add', async () => {
     fixture = await createExecutionFixture({ 'demo/token': 'value' });
     const left = await mkdtemp(join(tmpdir(), 'kavrix-cfg-a-'));
     const right = await mkdtemp(join(tmpdir(), 'kavrix-cfg-b-'));
     const result = await runCli(
       [
-        'put',
+        'add',
         'demo/token',
         ...fixture.routingArgs,
         '--config-dir',
@@ -133,25 +133,20 @@ describe('launch routing guards', () => {
   });
 
   it('rejects explicit --datastore mongodb when an ambient bound file profile is current', async () => {
-    process.stderr.write('HANGDBG fixture start\n');
     fixture = await createExecutionFixture({ 'demo/token': 'value' });
-    process.stderr.write('HANGDBG fixture done\n');
     const configDirIndex = fixture.routingArgs.indexOf('--profile-config-dir');
     expect(configDirIndex).toBeGreaterThanOrEqual(0);
     const configDir = fixture.routingArgs[configDirIndex + 1]!;
-    // Select ambient current profile, then omit --profile on the put.
-    process.stderr.write('HANGDBG use start\n');
+    // Select ambient current profile, then omit --profile on the add.
     const use = await runCli(
       ['db', 'profile', 'use', 'exec', '--profile-config-dir', configDir],
       '',
     );
-    process.stderr.write(`HANGDBG use done exit=${use.exitCode}\n`);
     expect(use.exitCode).toBe(0);
 
-    process.stderr.write('HANGDBG put start\n');
     const result = await runCli(
       [
-        'put',
+        'add',
         'demo/token',
         '--profile-config-dir',
         configDir,
@@ -163,7 +158,6 @@ describe('launch routing guards', () => {
       ],
       `${passphraseFrame()}x\n`,
     );
-    process.stderr.write(`HANGDBG put done exit=${result.exitCode}\n`);
     expect(result.exitCode).not.toBe(0);
     expect(result.stderr).toMatch(
       /Explicit --datastore mongodb conflicts with the current bound profile/u,

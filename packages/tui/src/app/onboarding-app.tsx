@@ -130,13 +130,19 @@ export function KavrixOnboardingApp({
       });
       if (finishedRef.current) return;
       const ok = result.snapshot.noticeTone === 'success';
+      // The backend already decided success; a drifted setup schema must not
+      // reclassify a finished setup as failed, so omit the details instead.
+      const setupResult =
+        result.setup === undefined
+          ? undefined
+          : setupToolResultSchema.safeParse(result.setup);
       const next = transitionOnboarding(stateRef.current, {
         type: 'backend-result',
         ok,
         notice: result.snapshot.notice,
-        ...(result.setup === undefined
+        ...(result.setup === undefined || !setupResult?.success
           ? {}
-          : { setup: setupToolResultSchema.parse(result.setup) }),
+          : { setup: setupResult.data }),
         profileId: result.snapshot.home.profileId,
         datastore:
           result.snapshot.home.datastore === 'mongodb'
@@ -152,9 +158,13 @@ export function KavrixOnboardingApp({
       if (next.effect.kind === 'backend') {
         void runBackend(next.effect.action);
       }
-    } catch {
+    } catch (error) {
       if (finishedRef.current) return;
-      const notice = 'Operation failed safely. Review your settings and retry.';
+      const detail =
+        error instanceof Error && error.message.length > 0
+          ? ` ${error.message.slice(0, 160)}`
+          : '';
+      const notice = `Operation failed safely.${detail} Review your settings and retry.`;
       const next = transitionOnboarding(stateRef.current, {
         type: 'backend-result',
         ok: false,
@@ -173,7 +183,14 @@ export function KavrixOnboardingApp({
     (key: OnboardingKey): void => {
       if (viewInputRef.current?.(key) === true) return;
       const previousStep = stateRef.current.step;
-      const next = transitionOnboarding(stateRef.current, { type: 'key', key });
+      let next: ReturnType<typeof transitionOnboarding>;
+      try {
+        next = transitionOnboarding(stateRef.current, { type: 'key', key });
+      } catch {
+        // dispatchKey runs synchronously from useInput; a transition bug must
+        // degrade to an ignored keypress, not an uncaught exception.
+        return;
+      }
       if (next.state === stateRef.current && next.effect.kind === 'none') return;
       stateRef.current = next.state;
       setState(next.state);
@@ -218,10 +235,17 @@ export function KavrixOnboardingApp({
     const started = Date.now();
     const timer = setInterval(() => {
       if (finishedRef.current) return;
-      const next = transitionOnboarding(stateRef.current, {
-        type: 'elapsed',
-        seconds: (Date.now() - started) / 1000,
-      });
+      let next: ReturnType<typeof transitionOnboarding>;
+      try {
+        next = transitionOnboarding(stateRef.current, {
+          type: 'elapsed',
+          seconds: (Date.now() - started) / 1000,
+        });
+      } catch {
+        // One failed elapsed tick must not escape the interval; the next
+        // tick retries with fresh state.
+        return;
+      }
       stateRef.current = next.state;
       setState(next.state);
     }, 1000);

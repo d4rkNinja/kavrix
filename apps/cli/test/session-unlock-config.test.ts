@@ -46,7 +46,7 @@ describe('session unlock error classification', () => {
 });
 
 describe('--session passphrase resolution fail-closed paths', () => {
-  it('list --session on a profile without a session fails with the enable hint', async () => {
+  it('ls --session on a profile without a session fails with the enable hint', async () => {
     const directory = await createSecureTestDirectory(
       join(tmpdir(), 'kavrix-session-miss-'),
     );
@@ -67,7 +67,7 @@ describe('--session passphrase resolution fail-closed paths', () => {
 
     const result = await runCli(
       [
-        'list',
+        'ls',
         '--profile',
         'default',
         '--profile-config-dir',
@@ -141,7 +141,7 @@ describe('ensureKavrixConfig self-heal', () => {
     expect(result.stderr.length).toBeGreaterThan(0);
   });
 
-  it('mongodb list --session fails closed when no session exists', async () => {
+  it('mongodb ls --session fails closed when no session exists', async () => {
     const directory = await createSecureTestDirectory(
       join(tmpdir(), 'kavrix-session-mongo-'),
     );
@@ -165,7 +165,7 @@ describe('ensureKavrixConfig self-heal', () => {
     // Fails at session resolution before any MongoDB connection is attempted.
     const result = await runCli(
       [
-        'list',
+        'ls',
         '--profile',
         'mongo',
         '--profile-config-dir',

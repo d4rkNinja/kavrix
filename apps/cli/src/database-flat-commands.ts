@@ -72,7 +72,7 @@ export async function usesDatabaseContainer(
  * (created via `db profile add` but never bound via `db init`). Unbound
  * profiles have no databaseId and cannot open a database container.
  *
- * Shared automation contract: root CRUD (`list`/`put`/…) must match `run`
+ * Shared automation contract: root CRUD (`ls`/`add`/…) must match `run`
  * with a clear init hint (exit 14), not a legacy "Vault is not initialized"
  * (exit 15).
  */

@@ -67,9 +67,9 @@ async function runCli(
   }
 }
 
-describe('scripted init → put → run', () => {
+describe('scripted init → add → run', () => {
   it(
-    'init --json file leaves a vault that put and run can use',
+    'init --json file leaves a vault that add and run can use',
     async () => {
       const directory = await scratch('happy');
       const dataFile = join(directory, 'db.kavrix');
@@ -111,7 +111,7 @@ describe('scripted init → put → run', () => {
 
       const put = await runCli(
         [
-          'put',
+          'add',
           'demo/token',
           '--profile-config-dir',
           configDir,

@@ -35,7 +35,7 @@ describe('root datastore default policy', () => {
 
   it('publishes the same file default on init and root CRUD help', () => {
     const program = buildLocalCli();
-    for (const name of ['init', 'put', 'get', 'list', 'doctor'] as const) {
+    for (const name of ['init', 'add', 'get', 'ls', 'doctor'] as const) {
       const command = program.commands.find((candidate) => candidate.name() === name);
       expect(command, name).toBeDefined();
       // Collapse help wrapping so "(default: file)" matches across line breaks.
@@ -77,9 +77,9 @@ describe('root datastore resolution error exits', () => {
     }
   }
 
-  it('exits non-zero for an invalid --datastore on list', async () => {
+  it('exits non-zero for an invalid --datastore on ls', async () => {
     const result = await captureExit([
-      'list',
+      'ls',
       '--datastore',
       'unsupported',
       '--data-file',
@@ -106,9 +106,9 @@ describe('root datastore resolution error exits', () => {
     expect(result.stderr).toContain(INVALID_ROOT_DATASTORE_MESSAGE);
   });
 
-  it('exits non-zero for an invalid --datastore on put', async () => {
+  it('exits non-zero for an invalid --datastore on add', async () => {
     const result = await captureExit([
-      'put',
+      'add',
       'demo/token',
       '--datastore',
       'other',

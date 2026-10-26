@@ -237,7 +237,7 @@ describe('0.2.23 live agent broker isolation (real CLI, isolated home)', () => {
       ).toBe(0);
       const put = await live(
         [
-          'put',
+          'add',
           'github/token',
           '--profile',
           'default',

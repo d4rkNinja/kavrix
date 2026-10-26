@@ -4,19 +4,19 @@
 
 A local-first secrets firewall for developers, applications, and AI agents.
 
-Zero-knowledge local encryption: Kavrix never sees your passphrases or plaintext credentials.
+Zero-knowledge local encryption: Kavrix never sees your passphrases or plaintext
+credentials.
 
 Give applications and AI agents access to credentials without handing them your
-`.env`. Kavrix decides which process may receive a secret, under which policy
-or grant, and records what happened — without shipping secrets to a Kavrix
-cloud.
+`.env`. Kavrix decides which process may receive a secret, under which policy or
+grant, and records what happened — without shipping secrets to a Kavrix cloud.
 
 ![Current Kavrix Home — grouped destinations and vault status](docs/assets/demo-frame-home-unlocked.png)
 
 ## Why not paste a `.env`?
 
-- **Scoped secret execution** — inject only the credentials a command needs,
-  for that process only (`kavrix run`).
+- **Scoped secret execution** — inject only the credentials a command needs, for
+  that process only (`kavrix run`).
 - **Policies and grants** — bound executables, SHA-256 pins, TTLs, confirmation,
   max-use, and revocable temporary access.
 - **AI agent isolation** — agents hold no credential material; they ask a local
@@ -29,71 +29,40 @@ cloud.
 The encrypted vault is infrastructure. The product is the secrets firewall in
 front of it.
 
-## Current TUI
-
-Current Ink UI captures with demonstration names and masked values. Home above
-groups the destinations and shows the active vault.
-
-**Credentials:** see names and masked values, filter with `/`, and open detail
-with Enter. Copy and reveal remain explicit actions.
-
-![Current Credentials screen — six demonstration credentials, all values masked](docs/assets/demo-frame-credentials.png)
-
-**Actions:** press `:` or `Ctrl+K` to see available commands, shortcuts, and why
-an action is blocked.
-
-![Current Actions palette — credential commands and availability explanations](docs/assets/demo-frame-actions.png)
+## Quick start
 
 ```sh
-kavrix        # interactive TTY: onboarding on first run, then the TUI
-kavrix init   # explicit TUI onboarding (classic prompts with --no-tui)
-kavrix tui    # full interactive app against the real CLI
+npm install --global kavrix
+
+kavrix init                     # one-time setup (interactive; --json for scripts)
+kavrix add github/token         # store a secret, encrypted
+kavrix ls                       # list names — values stay masked
+kavrix get github/token --reveal
+kavrix run --secret TOKEN=github/token -- printenv TOKEN
 ```
 
-Use `kavrix init --no-tui` for classic line prompts, or stdin/explicit routing
-for scripts. Bare `kavrix` on a non-interactive stream keeps printing help.
+Secret values are never accepted as arguments: they come from a masked prompt,
+stdin frames, a protected key file, or the OS keychain. Scripted flows use
+`--passphrase-stdin` / `--value-stdin` with the exact frame order from
+`kavrix frames <command>`.
 
-The TUI reuses authenticated keys for common database actions, releases storage
-between actions, and locks after two idle minutes or fifteen minutes since
-unlock. Browse and Policy/Grant/Audit each load one snapshot. Agent brokers run
-up to four requests concurrently, with bounded admission and isolated child I/O.
-See [0.2.41 behavior and limits](docs/release-notes-0.2.41.md).
+## Everyday commands
 
-Finished TUI animations release their timers, loading honors reduced motion,
-and terminal resize bursts coalesce using the latest dimensions. Agent commands
-share fail-closed project-file discovery. See the [agent guide](docs/agent-guide.md)
-and [0.2.42 changes](docs/release-notes-0.2.42.md).
+| Command                  | Purpose                                                                         |
+| ------------------------ | ------------------------------------------------------------------------------- |
+| `kavrix init`            | Set up your first encrypted vault.                                              |
+| `kavrix add <name>`      | Encrypt and store one secret.                                                   |
+| `kavrix get <name>`      | Show one credential, masked by default (`--reveal` prints it).                  |
+| `kavrix ls [pattern]`    | List credential names, or filter with a glob/substring.                         |
+| `kavrix rm <name>`       | Delete one credential.                                                          |
+| `kavrix mv <from> <to>`  | Rename a credential, keeping its encrypted value.                               |
+| `kavrix generate [name]` | Generate a random secret locally; store it without display.                     |
+| `kavrix run`             | Execute a command with selected credentials injected into its environment only. |
+| `kavrix tui`             | The full interactive app.                                                       |
 
-Agent names and live permissions require explicitly configured entries.
-Unknown and explicitly denied requests stop before executable lookup; see
-[0.2.43 changes](docs/release-notes-0.2.43.md).
-
-The interactive app is redesigned for first use: the Home menu groups its
-destinations into Set up, Secrets, Security, and Tools, every screen states what
-it is for and which keys act on it, empty lists offer the key that moves you
-forward, and notice rows carry a tone glyph for `NO_COLOR` sessions. See
-[0.2.45 changes](docs/release-notes-0.2.45.md).
-
-The 0.2.46 update makes Home arrow and page navigation follow the displayed
-groups, reuses command descriptors, and indexes credential names for faster
-successive searches. See [0.2.46 changes](docs/release-notes-0.2.46.md).
-
-The 0.2.47 update adds `kavrix export` and `kavrix import archive` for
-passphrase-sealed vault transfer, and `kavrix generate` for locally generated
-secrets that are stored without display. See
-[0.2.47 changes](docs/release-notes-0.2.47.md).
-
-The 0.2.48 update makes the TUI responsive: panels keep their borders on short
-terminals, credentials take one row from 60 columns, and lists size their page
-from the terminal height. See [0.2.48 changes](docs/release-notes-0.2.48.md).
-
-The 0.2.49 update lines list details up in one column and ends cut-off rows
-with an ellipsis. See [0.2.49 changes](docs/release-notes-0.2.49.md).
-
-Version 0.2.51 repairs typed and pasted TUI searches, filtered action selection,
-clipboard failure handling, and cancellation during process startup. It also
-includes the packaged TUI launcher, quiet color startup, and slow-profile-loading
-recovery fixes. See [0.2.51 changes](docs/release-notes-0.2.51.md).
+Advanced operations (multi-vault databases, profiles, owner keys, recovery
+kits, legacy migration) live under `kavrix db ...`. Run `kavrix --help` or see
+the [command guide](docs/cli-reference.md).
 
 ## Run tools without pasting secrets
 
@@ -102,10 +71,14 @@ recovery fixes. See [0.2.51 changes](docs/release-notes-0.2.51.md).
 kavrix run --secret AWS_KEY=aws/deploy-key -- terraform plan
 ```
 
+`kavrix run` takes the child after `--`, decrypts only the credentials you
+name, and injects them into that one process — never through command
+arguments, temp files, or your shell history.
+
 ## AI agents
 
 ```sh
-# Agent holds no credentials; the local broker authorizes each request.
+# The agent holds no credentials; the local broker authorizes each request.
 kavrix agent run --agent bot --config kavrix.yaml \
   --profile work --vault <vault-id> \
   -- codex
@@ -121,9 +94,8 @@ a one-session token. Every request is policy-evaluated against the agent's
 permission entries (allowed commands, SHA-256 pins, TTL windows,
 confirmations), the secret is injected into the authorized child only, denials
 never start a child, and both outcomes are recorded in the sealed audit trail.
-A missing or unresolvable broker-side executable reports
-`EXECUTION_FAILED` (exit 18) exactly like `kavrix run` — never a fake
-authorization denial.
+A missing or unresolvable broker-side executable reports `EXECUTION_FAILED`
+(exit 18) exactly like `kavrix run` — never a fake authorization denial.
 
 ## Policies
 
@@ -143,9 +115,7 @@ kavrix policy suggest
 Policies support command allowlists, SHA-256 executable pins, execution-window
 TTLs, working-directory restrictions, deny rules, reveal gating, and
 confirmation requirements. Every decision is evaluated fail-closed before a
-child process spawns. Policy simulation, explanation, linting, diffing, and
-suggestions authenticate authorization metadata without decrypting credential
-payloads or mutating the audit/state sidecar.
+child process spawns.
 
 ## Temporary grants
 
@@ -164,15 +134,91 @@ kavrix grant revoke <grant-id>
 kavrix audit
 ```
 
+## Interactive TUI
+
+Current Ink UI captures with demonstration names and masked values.
+
+```sh
+kavrix        # interactive TTY: onboarding on first run, then the TUI
+kavrix init   # explicit TUI onboarding (classic prompts with --no-tui)
+kavrix tui    # full interactive app against the real CLI
+```
+
+**Credentials:** see names and masked values, filter with `/`, and open detail
+with Enter. Copy and reveal remain explicit, confirmed actions.
+
+![Current Credentials screen — six demonstration credentials, all values masked](docs/assets/demo-frame-credentials.png)
+
+**Actions:** press `:` or `Ctrl+K` to see available commands, shortcuts, and why
+an action is blocked.
+
+![Current Actions palette — credential commands and availability explanations](docs/assets/demo-frame-actions.png)
+
+Use `kavrix init --no-tui` for classic line prompts, or stdin/explicit routing
+for scripts. Bare `kavrix` on a non-interactive stream keeps printing help. The
+TUI locks after two idle minutes or fifteen minutes since unlock.
+
+## What's new in 0.3.1
+
+- **Simplified command surface.** The everyday commands are now `add`, `get`,
+  `ls`, `rm`, and `mv`; listing and filtering merged into `ls [pattern]`;
+  advanced database, key, and migration operations moved under `kavrix db`;
+  legacy aliases (`put`, `list`, `search`, `remove`, `rename`, `ui`,
+  `environment`, `group`, `credential`) were removed. See
+  [0.3.1 release notes](docs/release-notes-0.3.1.md).
+- **TUI reliability.** Every keypress, mouse, resize, and animation path now
+  fails safe with a visible notice instead of crashing: router transitions,
+  mouse handlers, shared animation clock, child-output JSON parsing, and
+  session-expiry notifications are all guarded, a failed operation reports its
+  actual error, and an unexpected crash restores your terminal.
+
 ## Local-first storage
 
 Secrets stay encrypted on your machine: a protected local database file or your
 own MongoDB deployment. One database holds multiple independently encrypted
 vaults. Unlock material never leaves your control — there is no Kavrix-hosted
-service in the path.
+service in the path. Bring-your-own MongoDB is optional; the local file is
+enough for most developer workflows.
 
-Bring-your-own MongoDB is optional; local file is enough for most developer
-workflows.
+## Structured credentials
+
+Beyond flat `name → value` records, database vaults organize private data as
+project context → service → credential item → typed fields, with encrypted
+notes and history:
+
+```sh
+kavrix context create platform
+kavrix service create github --context platform
+kavrix item create deploy --context platform --service github
+kavrix field set token --type api-key --context platform --service github --item deploy
+```
+
+Flat commands (`add`, `get`, `ls`) operate over the default context/service
+projection, so `github/token` stays one literal name.
+
+## Session unlock
+
+Stop typing your passphrase on every command:
+
+```sh
+kavrix session enable     # seal unlock material behind the OS credential store
+kavrix ls --session       # commands accept --session until it expires or is revoked
+kavrix session revoke
+```
+
+Either half alone is useless, revocation removes both, and the passphrase
+always still works.
+
+## Import, export, backup
+
+```sh
+kavrix import env --file ./.env     # guarded .env import; offer to shred the source
+kavrix export --file ./transfer.kavrix-export
+kavrix import archive --file ./transfer.kavrix-export
+kavrix backup create --file ./backup.kavrix-backup
+kavrix backup verify --file ./backup.kavrix-backup
+kavrix backup restore --file ./backup.kavrix-backup
+```
 
 ## Requirements
 
@@ -186,8 +232,8 @@ npm install --global kavrix
 kavrix --version
 ```
 
-If npm fails with an engines/`EBADENGINE` error, your Node.js version
-is outside `>=24.12.0 <25` or `>=25.1.0` — upgrade or switch before retrying.
+If npm fails with an engines/`EBADENGINE` error, your Node.js version is outside
+`>=24.12.0 <25` or `>=25.1.0` — upgrade or switch before retrying.
 
 If npm fails with `EACCES` (prefix often `/usr/local`):
 
@@ -197,300 +243,33 @@ export PATH="$HOME/.local/bin:$PATH"
 npm install --global kavrix
 ```
 
-Published npm may lag git `main` (for example 0.2.20 on npm while `main` is
-already ahead). For tip-of-main from a clone:
+Published npm may lag git `main`. For tip-of-main from a clone:
 
 ```sh
 pnpm install --frozen-lockfile && pnpm build
 pnpm exec kavrix --version
 ```
 
-An older global `kavrix` on `PATH` can shadow the workspace binary — prefer
-`pnpm exec kavrix` or `node apps/cli/dist/bin.js` from a built checkout.
-
-Or pack and install into a user prefix (preferred over `npm link --prefix`):
-
-```sh
-cd apps/cli && pnpm pack
-npm install -g ./kavrix-*.tgz --prefix ~/.local
-```
-
 After a global npm install, keep current with:
 
 ```sh
-kavrix update --check --json   # report only; inspect updateAvailable / error
+kavrix update --check --json   # report only
 kavrix update                  # npm install --global kavrix@<newest>
 ```
 
-`kavrix update` only replaces detected global npm installs. Homebrew, pnpm, yarn,
-npx, and workspace checkouts refuse with the exact manual upgrade command.
-Non-TTY stdout is always JSON; use a TTY for the status line, or pass `--json`
-explicitly.
-
-## Quick start (local file)
-
-Passphrases must be at least **16 bytes**. This non-interactive flow works
-without a TTY. Profile registry: `~/.config/kavrix/`. Vault files here use
-`~/.kavrix/`.
-
-```sh
-mkdir -p ~/.kavrix
-kavrix db profile add work --datastore file \
-  --data-file ~/.kavrix/work.kavrix --key-file ~/.kavrix/work.kavrix.key
-kavrix db profile use work
-
-PASS='MyPassphrase16chars!'
-
-printf '%s\n' 'lab' "$PASS" "$PASS" \
-  | kavrix db init --profile work --passphrase-stdin
-
-printf '%s\n' "$PASS" 'default-vault' \
-  | kavrix db vault create --profile work --passphrase-stdin
-# Response includes created.id — copy it:
-# VAULT_ID=vault_…
-
-printf '%s\n' "$PASS" \
-  | kavrix db vault use "$VAULT_ID" --profile work --passphrase-stdin
-
-printf '%s\n' "$PASS" 'secret-value' \
-  | kavrix put github/token --profile work --passphrase-stdin --value-stdin
-
-printf '%s\n' "$PASS" | kavrix list --profile work --passphrase-stdin
-
-printf '%s\n' "$PASS" \
-  | kavrix run --profile work --passphrase-stdin \
-      --secret TOKEN=github/token -- printenv TOKEN
-```
-
-`kavrix run` injects only requested env vars into the child after `--`.
-
-Stdin frame order (`kavrix frames "<command>"`): `db init` → label,
-passphrase, confirm; `db vault create` → passphrase, label; `db vault use` →
-passphrase; `put` → passphrase, value (MongoDB adds an optional leading
-`mongodb-url` frame).
-
-Without `--profile`, root `put` / `get` / `list` / … default `--datastore` to
-**file** (aligned with `kavrix init`). Pass `--datastore mongodb` explicitly for
-MongoDB, or prefer `--profile` after onboarding.
-
-Interactive TTY `kavrix init` opens Ink onboarding by default and stores under
-`~/.kavrix/`. Pass `--no-tui` for classic masked prompts. Scripted file init
-(`--json` / `--passphrase-stdin`) creates a bound database-container profile so
-`put` and `kavrix run` work immediately; add `--recovery-file` for a kit, or
-`--legacy` only for version-2 migrate sources.
-
-**Node.js engines (required):** `>=24.12.0 <25` or `>=25.1.0`.
-
-## Interactive TUI
-
-On Linux, macOS, and Windows with Node.js `>=24.12.0`, Kavrix ships a real Ink
-terminal UI for managing the secrets firewall (no mocks — every action runs the
-same CLI). The chrome stays quiet and readable, and `kavrix init` renders a
-first paint immediately — including inside CI-like non-interactive terminals —
-instead of blocking on secret prompts:
-
-```sh
-kavrix        # interactive TTY: onboarding on first run, then the TUI
-kavrix init   # explicit TUI onboarding (classic prompts with --no-tui)
-kavrix tui    # full app: profiles, vaults, credentials, doctor, recovery, …
-```
-
-Use `kavrix init --no-tui` for classic line prompts, or stdin/explicit routing
-for scripts. Bare `kavrix` on a non-interactive stream keeps printing help. A
-walkthrough is embedded in the [Demo](#demo) section above.
-
-Version 0.2.39 fixes existing-vault unlock routing, preserves MongoDB connections
-after unlock, and adds direct passphrase unlock with Shift+U. Common credential
-actions avoid duplicate protected profile reads and honor the selected vault.
-Operation names and elapsed time make progress visible. See the
-[changes and compatibility checks](docs/release-notes-0.2.39.md).
-
-Version 0.2.38 adds Home/End and Page Up/Page Down navigation in the main TUI,
-skips redundant state updates for ignored input and repeated terminal sizes, and reduces reveal
-countdown redraws. See the [changes and limits](docs/release-notes-0.2.38.md).
-
-Version 0.2.37 adds a public review before creating, confirmed permission repair
-inside Kavrix's own artifact directory, a read-only MongoDB connection test,
-actual creation stages and elapsed time, cursor editing, and a bounded folder
-browser. Clipboard messages state whether clearing is scheduled or unavailable.
-See the [six improvements and limits](docs/release-notes-0.2.37.md).
-
-Version 0.2.36 fills the terminal during setup and management, with bottom-pinned
-controls, larger setup click targets, and a progress guide on wide screens. Click
-storage choices and Continue/Back/Help, or use the keyboard. Setup Help (`Ctrl+G`)
-pages long repair instructions without submitting the active field. Touch works
-where the terminal translates taps into mouse clicks. Use `kavrix init --no-mouse`
-or `kavrix tui --no-mouse` for native text selection.
-
-Version 0.2.35 checks setup destinations early on Windows, Linux, and macOS.
-Permission problems keep the destination editable with repair instructions and
-Enter to recheck. Both file and MongoDB storage require a protected local key.
-
-Version 0.2.34, **TUI refreshed**, adds compact session context, a next-step
-dashboard, clickable tabs/rows/action chips, wheel navigation, bounded lists,
-and Help topics. The workspace also paints full-screen and restores the terminal
-on exit. Mouse input requires a terminal with SGR reporting support; use
-`kavrix tui --no-mouse` for native text selection. Reveal and destructive
-actions still require confirmation. The existing demo recordings show an earlier
-interface; see the [current TUI guide](docs/tui-guide.md) for controls.
-
-### Full CRUD from the TUI (0.2.22)
-
-Every screen now surfaces its actions in the footer, and the flows cover the
-full lifecycle — no CLI round-trip required:
-
-| Screen        | Create                   | Read / use           | Update     | Delete                    |
-| ------------- | ------------------------ | -------------------- | ---------- | ------------------------- |
-| Profiles      | `n` file / `m` mongodb   | list + `Enter` use   | —          | `x` remove (files kept)   |
-| Vaults        | `n` new vault (unlocked) | list + `Enter` use   | —          | —                         |
-| Credentials   | `n` put                  | list, `Enter` detail | `m` rename | `x` remove (confirmed)    |
-| Policies      | `n` new policy           | `Enter` refresh      | —          | `x` remove (confirmed)    |
-| Grants        | `g` new grant            | `Enter` refresh      | —          | `r` revoke (confirmed)    |
-| Recovery kits | `n` create               | `v` verify           | —          | `x` revoke (last is safe) |
-
-Grant rows carry their live status (`ACTIVE`, `REVOKED`, `EXPIRED`,
-`EXHAUSTED`), destructive actions always ask for confirmation, and secrets
-stay masked end to end — reveal requires `r` then `y`, copy never paints
-plaintext, and unlock material never reaches a process argument.
-
-## Session unlock: stop typing the passphrase
-
-`kavrix session enable` (or the prompt at the end of `kavrix init`) seals your
-unlock material behind the operating system credential store — Windows Hello /
-Credential Manager, macOS Keychain, or Linux Secret Service. After that:
-
-```sh
-kavrix list --session          # unlock with the OS instead of the passphrase
-kavrix session status          # enabled? expired? created?
-kavrix session revoke          # remove it; the passphrase always still works
-```
-
-In `kavrix tui`, `u` uses the session automatically when one is active, and
-the **Session unlock** screen manages enable/remove. Sessions auto-lock after
-their TTL (default 12 hours), either half (keychain entry or sealed file) is
-useless alone, and the passphrase remains the root — nothing about it is
-weakened, stored, or transmitted.
-
-## Credential model
-
-The structured model supports field definitions such as username, password, API
-key, URL, certificate, TOTP seed, recovery-code list, JSON, and environment-map
-values. Each field carries its own copy, reveal, reauthentication, and export
-policies, so policy decisions remain schema-driven. New database vaults use a
-versioned structured payload; existing flat database payloads remain readable
-and writable through the root commands and are upgraded only by explicit
-structured access or migration.
-
-## Everyday commands
-
-| Command                     | Purpose                                              |
-| --------------------------- | ---------------------------------------------------- |
-| `kavrix put <name>`         | Add a value; replacing one requires `--overwrite`.   |
-| `kavrix get <name>`         | Read metadata; `--reveal` is required for plaintext. |
-| `kavrix list`               | List names without values.                           |
-| `kavrix view [name]`        | Show a sanitized dashboard or one credential card.   |
-| `kavrix search <pattern>`   | Search credential names only.                        |
-| `kavrix stats`              | Non-secret counts, sizes, and revisions.             |
-| `kavrix has <name>`         | Check whether a name exists.                         |
-| `kavrix rename <from> <to>` | Rename a record while keeping its encrypted value.   |
-| `kavrix remove <name>`      | Delete a record.                                     |
-| `kavrix update [--check]`   | Check/apply newest npm release (global npm only).    |
-
-### Databases, profiles, and vaults
-
-| Command                   | Purpose                                                   |
-| ------------------------- | --------------------------------------------------------- |
-| `kavrix db profile ...`   | Add, select, inspect, or remove non-secret routes.        |
-| `kavrix db init`          | Create an encrypted database and protected owner key.     |
-| `kavrix db status`        | Authenticate and inspect the selected database.           |
-| `kavrix db vault ...`     | Create, list, inspect, rename, or select database vaults. |
-| `kavrix db key create`    | Create an exact-snapshot key for full local-file sharing. |
-| `kavrix db recovery ...`  | Manage database-root recovery kits.                       |
-| `kavrix migrate database` | Copy one legacy version 2 vault into a database.          |
-| `kavrix db ping`          | Test a direct MongoDB connection.                         |
-
-### Keys, recovery, and health
-
-| Command                | Purpose                                                                                                |
-| ---------------------- | ------------------------------------------------------------------------------------------------------ |
-| `kavrix key ...`       | Verify, copy, replicate, assign, or rewrap key files.                                                  |
-| `kavrix recovery ...`  | Create, verify, inspect, revoke, or use recovery kits.                                                 |
-| `kavrix doctor`        | Authenticate and validate a vault without revealing values.                                            |
-| `kavrix doctor health` | Diagnose; with `--heal`, safely repair incomplete profiles, dangling pointers, and ACL/key-home drift. |
-| `kavrix tui` / `ui`    | Full interactive Ink app against the real CLI.                                                         |
-| `kavrix init`          | TTY: Ink onboarding; scripted file init binds profile for put/run; `--legacy` = v2.                    |
-
-## Quick start (MongoDB)
-
-Needs a replica-set URI. Profiles do not store the connection string — supply it
-as the first stdin frame on each `db …` command. Root credential commands also
-take `--database-url-stdin`.
-
-```sh
-mkdir -p ~/.kavrix
-kavrix db profile add mongo --datastore mongodb --database kavrix_e2e \
-  --key-file ~/.kavrix/mongo.kavrix.key
-kavrix db profile use mongo
-
-URI='mongodb://127.0.0.1:27017/kavrix_e2e?replicaSet=rs0'
-PASS='MyPassphrase16chars!'
-
-printf '%s\n' "$URI" 'lab' "$PASS" "$PASS" \
-  | kavrix db init --profile mongo --passphrase-stdin
-
-printf '%s\n' "$URI" "$PASS" 'default-vault' \
-  | kavrix db vault create --profile mongo --passphrase-stdin
-# VAULT_ID from created.id / vaultId
-
-printf '%s\n' "$URI" "$PASS" \
-  | kavrix db vault use "$VAULT_ID" --profile mongo --passphrase-stdin
-
-printf '%s\n' "$URI" "$PASS" 'secret-value' \
-  | kavrix put github/token --profile mongo --passphrase-stdin --database-url-stdin --value-stdin
-
-printf '%s\n' "$URI" "$PASS" \
-  | kavrix list --profile mongo --passphrase-stdin --database-url-stdin
-```
-
-More detail: [Command guide](docs/cli-reference.md), [CONTRIBUTING.md](CONTRIBUTING.md).
-
-## Options worth knowing
-
-| Flag                                | What it does                                                               |
-| ----------------------------------- | -------------------------------------------------------------------------- |
-| `--profile`, `--profile-config-dir` | Select a datastore profile without storing secrets.                        |
-| `--config-dir <path>`               | Alias of `--profile-config-dir` for profile registry routing.              |
-| `--vault <id>`                      | Override the selected profile's default vault for one command.             |
-| `--passphrase-stdin`                | Read the key passphrase from stdin.                                        |
-| `--database-url-stdin`              | Read the MongoDB URI from stdin.                                           |
-| `--value-stdin`                     | Read a credential value from stdin.                                        |
-| `--secrets-stdin`                   | Read every unlock secret from exact stdin frames.                          |
-| `--reveal`                          | The explicit guard that prints plaintext.                                  |
-| `--json`                            | Masked machine-readable output.                                            |
-| `--overwrite`                       | Opt in to replacing something that already exists.                         |
-| `--allow-insecure-transport`        | Explicit opt-in to unencrypted MongoDB transport (isolated networks only). |
-
-Without `--profile`, root credential commands default `--datastore` to
-**file** (same `datastoreFrom` rule as Quick start above). Pass
-`--datastore mongodb` explicitly when you need MongoDB without a profile.
-
-`kavrix <command> --help` is authoritative for your installed version.
+`kavrix update` only replaces detected global npm installs. Homebrew, pnpm,
+yarn, npx, and workspace checkouts refuse with the exact manual upgrade
+command. Non-TTY stdout is always JSON.
 
 ## Windows permissions
 
 Kavrix enforces owner-only access on Windows through NTFS ACLs (the equivalent
-of POSIX mode `700`/`600`). Directories under your user profile inherit extra
-ACEs by default — including leftover ACEs from deleted accounts — so a
-`~/.kavrix` directory created by an older release can fail init's portable-key
-parent check with "harden parent permissions to mode 700".
-
-Since 0.2.21, `kavrix init` and `kavrix db profile add` harden the Kavrix home
-(`%USERPROFILE%\.kavrix`) automatically before writing keys, and
-`kavrix doctor health --heal` repairs an existing Kavrix home and its
-`config.toml`. Directories Kavrix does not own — your home directory itself,
-for example — are never modified. Keep key, vault, and recovery files inside
-`~/.kavrix` (or another directory only your account can access), not directly
-in your home directory.
+of POSIX mode `700`/`600`). `kavrix init` and `kavrix db profile add` harden the
+Kavrix home (`%USERPROFILE%\.kavrix`) automatically before writing keys, and
+`kavrix doctor health --heal` repairs an existing Kavrix home. Directories
+Kavrix does not own — your home directory itself, for example — are never
+modified. Keep key, vault, and recovery files inside `~/.kavrix` (or another
+directory only your account can access).
 
 ## Backups and recovery
 
@@ -506,8 +285,8 @@ full access to every vault once its passphrase is known; there is no
 vault-scoped local sharing or revocation.
 
 If every valid owner key file and every recovery kit is lost, the database is
-permanently unrecoverable by design. There is no vendor reset or escrow, because
-no one else ever held the required material.
+permanently unrecoverable by design. There is no vendor reset or escrow,
+because no one else ever held the required material.
 
 ## Security model
 
@@ -524,9 +303,9 @@ digest.
 A revision anchor authenticated by the database root key is stored beside each
 active owner key file. Rollback attempts, same-revision forks, and inconsistent
 catalog/vault heads are rejected before plaintext is returned, and a missing or
-invalid anchor fails closed. Structured contexts, groups/services, item
-metadata, field definitions, notes, and attachment/history relationships stay
-inside the client-encrypted vault payload.
+invalid anchor fails closed. Structured contexts, services, item metadata, field
+definitions, notes, and attachment/history relationships stay inside the
+client-encrypted vault payload.
 
 MongoDB stores ciphertext plus opaque routing metadata in two collections. It
 can observe the MongoDB database and collection namespaces, opaque IDs,
@@ -548,12 +327,6 @@ Details: [threat model](docs/threat-model.md),
   program does with values it was given.
 - User identities, public enrollment, recipient discovery, per-vault grants and
   roles, revocation with rotation, and ownership transfer are not implemented.
-- Project contexts, groups/services, structured items, typed fields, notes,
-  expiry/rotation metadata, and encrypted attachment/history records are
-  modeled in database vaults. Root flat commands intentionally expose only the
-  default context/service projection. Encrypted history records carry no
-  wrapped-key record, so this CLI can list their metadata but cannot reveal,
-  restore, or diff a snapshot value; attachment transfer remains unimplemented.
 - Windows command scripts (`.bat`, `.cmd`, `.com`) are refused for execution
   because launching them requires shell argument re-parsing; invoke real
   executables.
@@ -569,6 +342,7 @@ Start with the [documentation index](docs/README.md):
 - [Getting started](docs/getting-started.md) — task-based walkthroughs
 - [Glossary](docs/glossary.md) — every term, defined
 - [Command guide](docs/cli-reference.md)
+- [Agent guide](docs/agent-guide.md)
 - [Threat model](docs/threat-model.md)
 - [Recovery guide](docs/backup-and-recovery.md)
 - [Datastore policy](docs/local-database.md)

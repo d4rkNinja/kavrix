@@ -48,13 +48,15 @@ describe('database owner command composition', () => {
   it('registers the database and multi-vault owner surface without delete or secret arguments', () => {
     const program = buildLocalCli();
     const db = program.commands.find((command) => command.name() === 'db');
-    const migrate = program.commands.find((command) => command.name() === 'migrate');
     const vault = program.commands.find((command) => command.name() === 'vault');
     const databaseVault = db?.commands.find((command) => command.name() === 'vault');
+    const migrate = db?.commands.find((command) => command.name() === 'migrate');
     expect(db?.commands.map((command) => command.name())).toEqual(
-      expect.arrayContaining(['init', 'key', 'status', 'recovery', 'vault']),
+      expect.arrayContaining(['init', 'key', 'status', 'recovery', 'vault', 'migrate']),
     );
-    expect(migrate?.commands.map((command) => command.name())).toEqual(['database']);
+    // 0.3.1 folded `migrate database` into the leaf `db migrate` route.
+    expect(program.commands.map((command) => command.name())).not.toContain('migrate');
+    expect(migrate?.commands.map((command) => command.name())).toEqual([]);
     expect(
       db?.commands
         .find((command) => command.name() === 'key')

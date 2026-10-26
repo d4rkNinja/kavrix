@@ -8,15 +8,14 @@ import { Command } from 'commander';
 export const STDIN_FRAME_CONTRACTS: Readonly<Record<string, string>> = Object.freeze({
   init: 'passphrase, passphrase-confirm[, recovery-passphrase, recovery-passphrase-confirm when --recovery-file]',
   'init --legacy': '[mongodb-url,] passphrase, passphrase-confirm',
-  put: '[mongodb-url with --database-url-stdin,] passphrase, value',
+  add: '[mongodb-url with --database-url-stdin,] passphrase, value',
   get: '[mongodb-url with --database-url-stdin,] passphrase',
-  list: '[mongodb-url with --database-url-stdin,] passphrase',
+  ls: '[mongodb-url with --database-url-stdin,] passphrase',
   view: '[mongodb-url with --database-url-stdin,] passphrase',
-  search: '[mongodb-url with --database-url-stdin,] passphrase',
   stats: '[mongodb-url with --database-url-stdin,] passphrase',
   has: '[mongodb-url with --database-url-stdin,] passphrase',
-  remove: '[mongodb-url with --database-url-stdin,] passphrase',
-  rename: '[mongodb-url with --database-url-stdin,] passphrase',
+  rm: '[mongodb-url with --database-url-stdin,] passphrase',
+  mv: '[mongodb-url with --database-url-stdin,] passphrase',
   doctor: '[mongodb-url with --database-url-stdin,] passphrase',
   'doctor health': '[mongodb-url with --database-url-stdin,] passphrase',
   'recovery create': 'key-passphrase, recovery-passphrase',
@@ -24,8 +23,7 @@ export const STDIN_FRAME_CONTRACTS: Readonly<Record<string, string>> = Object.fr
   'recovery use': 'recovery-passphrase, new-key-passphrase, new-key-passphrase-confirm',
   'recovery revoke': 'key-passphrase',
   'recovery status': '(none; reads no secrets)',
-  'key copy|replicate|assign':
-    'source-passphrase, new-passphrase, new-passphrase-confirm',
+  'key copy': 'source-passphrase, new-passphrase, new-passphrase-confirm',
   'key rewrap': 'old-passphrase, new-passphrase, new-passphrase-confirm',
   'db init': '[mongodb-url,] label, passphrase, passphrase-confirm',
   'db status': '[mongodb-url,] passphrase',
@@ -79,16 +77,15 @@ export const STDIN_FRAME_CONTRACTS: Readonly<Record<string, string>> = Object.fr
   'policy snapshot': '[mongodb-url,] passphrase',
   'policy show': '[mongodb-url,] passphrase',
   'policy remove': '[mongodb-url,] passphrase',
-  grant: '[mongodb-url,] passphrase',
   'grant create': '[mongodb-url,] passphrase',
   'grant list': '[mongodb-url,] passphrase',
   'grant show': '[mongodb-url,] passphrase',
   'grant revoke': '[mongodb-url,] passphrase',
   audit: '[mongodb-url,] passphrase',
   run: '[mongodb-url,] passphrase',
-  'migrate database | migrate database --secrets-stdin':
+  'db migrate | db migrate --secrets-stdin':
     '[mongodb-url,] source-passphrase, destination-passphrase, migrated-vault-label',
-  'migrate database --initialize --secrets-stdin (file destination)':
+  'db migrate --initialize --secrets-stdin (file destination)':
     'source-passphrase, expected-source-label, destination-passphrase, destination-passphrase-confirm, database-label, vault-label',
   destroy:
     'passphrase[, mongodb-url], "DESTROY <vaultId>", "DELETE REVISION <rev> <challenge>"',
@@ -145,11 +142,13 @@ function renderAll(): string {
   return lines.join('\n');
 }
 
-/** Registers the `kavrix frames [command]` stdin-contract reference. */
+/** Registers the hidden `kavrix frames [command]` stdin-contract reference. */
 export function registerFramesCommand(program: Command): void {
   const frames = program
-    .command('frames [command...]')
-    .description('Show the exact stdin frame contract for secret-reading commands.');
+    .command('frames [command...]', { hidden: true })
+    .description(
+      'Show the exact stdin frame contract for secret-reading commands (scripting reference).',
+    );
   // Contract keys may include flag tokens (e.g. `migrate database --secrets-stdin`).
   frames.allowUnknownOption(true);
   frames.showHelpAfterError(false);

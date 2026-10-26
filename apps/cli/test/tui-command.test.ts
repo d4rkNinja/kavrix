@@ -25,7 +25,7 @@ describe('runInteractiveTui', () => {
 
     const tui = program.commands.find((entry) => entry.name() === 'tui');
     expect(tui).toBeDefined();
-    expect(tui?.aliases()).toContain('ui');
+    expect(tui?.aliases()).not.toContain('ui');
 
     const mouse = tui?.options.find((option) => option.flags.includes('--no-mouse'));
     expect(mouse).toBeDefined();

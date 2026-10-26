@@ -435,22 +435,6 @@ try {
   );
   check('history list omits the password', !historyList.stdout.includes(FIELD_SECRET));
 
-  const historyAlias = await authed(
-    'credential',
-    'history',
-    'list',
-    'runbook',
-    '--context',
-    'platform',
-    '--service',
-    'api',
-  );
-  check(
-    'credential history alias exits 0',
-    historyAlias.exitCode === 0,
-    historyAlias.stderr.trim().slice(0, 200),
-  );
-
   const unknown = await authed(
     'item',
     'history',

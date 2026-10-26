@@ -211,7 +211,7 @@ describe('0.2.20 live-qa P1: --environment fail-closed / bad cwd yaml', () => {
   });
 });
 
-describe('0.2.20 live-qa P1: put missing --value-stdin', () => {
+describe('0.2.20 live-qa P1: add missing --value-stdin', () => {
   let fixture: ExecutionFixture;
 
   afterEach(async () => {
@@ -221,7 +221,7 @@ describe('0.2.20 live-qa P1: put missing --value-stdin', () => {
   it('names Missing --value-stdin when only passphrase-stdin is set', async () => {
     fixture = await createExecutionFixture({ alpha: 'canary-alpha' });
     const result = await runCli(
-      ['put', 'beta', ...fixture.routingArgs, '--passphrase-stdin'],
+      ['add', 'beta', ...fixture.routingArgs, '--passphrase-stdin'],
       `${EXEC_PASSPHRASE}\n`,
     );
     expect(result.exitCode).toBe(14);
@@ -367,10 +367,10 @@ describe('0.2.20 live-qa P1: vault-read --json auth envelope', () => {
   });
 
   it.each([
-    ['list', ['list']],
+    ['ls', ['ls']],
     ['get', ['get', 'alpha']],
     ['has', ['has', 'alpha']],
-    ['search', ['search', 'alp*']],
+    ['ls-pattern', ['ls', 'alp*']],
   ] as const)(
     'emits AUTHENTICATION_FAILED JSON on wrong passphrase for %s --json',
     async (_label, command) => {

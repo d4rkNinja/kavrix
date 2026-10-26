@@ -140,8 +140,8 @@ describe('legacy version 2 database migration', () => {
     const migrationArgv = [
       'node',
       'kavrix',
+      'db',
       'migrate',
-      'database',
       '--source-profile',
       'legacy',
       '--destination-profile',
@@ -190,8 +190,8 @@ describe('legacy version 2 database migration', () => {
       buildLocalCli().parseAsync([
         'node',
         'kavrix',
+        'db',
         'migrate',
-        'database',
         '--source-profile',
         'legacy',
         '--destination-profile',
@@ -284,8 +284,8 @@ describe('legacy version 2 database migration', () => {
     const migrationArgv = [
       'node',
       'kavrix',
+      'db',
       'migrate',
-      'database',
       '--source-profile',
       'legacy',
       '--destination-profile',
@@ -322,7 +322,7 @@ describe('legacy version 2 database migration', () => {
     await buildLocalCli().parseAsync([
       'node',
       'kavrix',
-      'list',
+      'ls',
       '--profile',
       'destination',
       '--profile-config-dir',
@@ -524,7 +524,7 @@ describe('legacy version 2 database migration', () => {
         buildLocalCli().parseAsync([
           'node',
           'kavrix',
-          'list',
+          'ls',
           ...route,
           '--passphrase-stdin',
         ]),
@@ -537,7 +537,7 @@ describe('legacy version 2 database migration', () => {
       expect(
         await run(
           [passphrase, 'flat-command-canary'],
-          'put',
+          'add',
           'alpha',
           ...flatRoute,
           '--value-stdin',
@@ -549,7 +549,7 @@ describe('legacy version 2 database migration', () => {
       const hostileValue = 'safe\u001B]52;c;owned\u0007\u009B31m\nnext';
       await run(
         [passphrase, hostileValue],
-        'put',
+        'add',
         'terminal-hostile',
         ...flatRoute,
         '--value-stdin',
@@ -579,16 +579,16 @@ describe('legacy version 2 database migration', () => {
         'safe[CONTROL]]52;c;owned[CONTROL][CONTROL]31m[CONTROL]next\n',
       );
       expect(
-        await run([passphrase], 'remove', 'terminal-hostile', ...flatRoute),
+        await run([passphrase], 'rm', 'terminal-hostile', ...flatRoute),
       ).toMatchObject({ removed: true });
-      expect(await run([passphrase], 'list', ...flatRoute)).toMatchObject({
+      expect(await run([passphrase], 'ls', ...flatRoute)).toMatchObject({
         names: ['alpha'],
       });
       expect(await run([passphrase], 'view', ...flatRoute, '--json')).toMatchObject({
         count: 1,
       });
       expect(
-        await run([passphrase], 'search', 'alp', ...flatRoute, '--json'),
+        await run([passphrase], 'ls', 'alp', ...flatRoute, '--json'),
       ).toMatchObject({ count: 1 });
       expect(await run([passphrase], 'stats', ...flatRoute, '--json')).toMatchObject({
         credentialCount: 1,
@@ -597,7 +597,7 @@ describe('legacy version 2 database migration', () => {
         exists: true,
       });
       expect(
-        await run([passphrase], 'rename', 'alpha', 'beta', ...flatRoute),
+        await run([passphrase], 'mv', 'alpha', 'beta', ...flatRoute),
       ).toMatchObject({ renamed: true });
       expect(await run([passphrase], 'doctor', ...flatRoute)).toMatchObject({
         healthy: true,
@@ -607,7 +607,7 @@ describe('legacy version 2 database migration', () => {
         healthy: true,
         manualRecoveryRequired: [],
       });
-      expect(await run([passphrase], 'remove', 'beta', ...flatRoute)).toMatchObject({
+      expect(await run([passphrase], 'rm', 'beta', ...flatRoute)).toMatchObject({
         removed: true,
       });
       expect(await run([passphrase], 'has', 'beta', ...flatRoute)).toMatchObject({

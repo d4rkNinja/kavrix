@@ -195,13 +195,13 @@ describe.skipIf(process.platform !== 'win32')(
         expect(after.expired).toBe(false);
 
         // THE feature: a full command run unlocks with NO passphrase at all.
-        const sessionRun = await run(['list', ...routing, '--session', '--json']);
+        const sessionRun = await run(['ls', ...routing, '--session', '--json']);
         expect(sessionRun.code, `stderr: ${sessionRun.stderr}`).toBe(0);
         expect(JSON.parse(sessionRun.stdout)).toHaveProperty('names');
 
         // A wrong passphrase still fails (session is additive, not weakening).
         const wrong = await run(
-          ['list', ...routing, '--passphrase-stdin', '--json'],
+          ['ls', ...routing, '--passphrase-stdin', '--json'],
           ['definitely-wrong-passphrase'],
         );
         expect(wrong.code).not.toBe(0);
@@ -211,7 +211,7 @@ describe.skipIf(process.platform !== 'win32')(
           (await run(['session', 'revoke', ...routing, '--json'])).stdout,
         ) as { revoked?: boolean };
         expect(revoked.revoked).toBe(true);
-        const denied = await run(['list', ...routing, '--session', '--json']);
+        const denied = await run(['ls', ...routing, '--session', '--json']);
         expect(denied.code).not.toBe(0);
         // Linux CI without secret-tool reports the store as unavailable;
         // Windows reports no-session. Both fail closed.
@@ -221,7 +221,7 @@ describe.skipIf(process.platform !== 'win32')(
 
         // The passphrase remains fully functional after revocation.
         const manual = await run(
-          ['list', ...routing, '--passphrase-stdin', '--json'],
+          ['ls', ...routing, '--passphrase-stdin', '--json'],
           [PASSPHRASE],
         );
         expect(manual.code).toBe(0);

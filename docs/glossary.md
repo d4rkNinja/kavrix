@@ -18,10 +18,10 @@ point to the deeper reference for each topic.
   stores project contexts, groups/services, typed fields, notes, and expiry
   metadata. Older flat records (one name → one value) remain supported.
 - **Legacy version 2 (v2)** — the older single-vault format. Still readable
-  through compatibility commands; `kavrix migrate database` copies a v2
-  vault into a modern database.
+  through compatibility commands; `kavrix db migrate` copies a v2 vault into a
+  modern database.
 - **Stdin frames** — when scripting, Kavrix reads secrets from stdin in a
-  strict per-command order (for `put`: passphrase, then value).
+  strict per-command order (for `add`: passphrase, then value).
   `kavrix frames "<command>"` prints the exact order.
 
 ## Keys and files

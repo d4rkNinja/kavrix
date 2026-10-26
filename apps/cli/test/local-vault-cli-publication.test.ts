@@ -508,7 +508,7 @@ describe('legacy local-vault publication boundaries', () => {
     const name = 'hostile-name-"quoted"-Δ-日本語';
     await runWithStdin(
       [
-        'put',
+        'add',
         name,
         '--datastore',
         'file',
@@ -529,7 +529,7 @@ describe('legacy local-vault publication boundaries', () => {
     try {
       await runWithStdin(
         [
-          'list',
+          'ls',
           '--json',
           '--datastore',
           'file',

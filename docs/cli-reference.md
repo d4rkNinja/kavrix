@@ -7,7 +7,28 @@ the installed version. Lead with `kavrix run`, policies, grants, audit, and
 `kavrix db ...`; stable version 2 compatibility commands remain at the root.
 `kavrix frames [command]` prints the exact stdin frame contract for every
 secret-reading command, and `kavrix status` shows the selected profile and
-active routing mode.
+active routing mode. `kavrix --help` prints a `New here? Run kavrix init…`
+hint line and lists the everyday commands first, with `db` last.
+
+### 0.3.1 renamed commands
+
+Release 0.3.1 renamed and merged several root commands; the old names now fail
+with an unknown-command error. See the [release notes](release-notes-0.3.1.md)
+for the full change list.
+
+| Before (≤ 0.2.51)           | Now (0.3.1)             |
+| --------------------------- | ----------------------- |
+| `kavrix put <name>`         | `kavrix add <name>`     |
+| `kavrix list`               | `kavrix ls`             |
+| `kavrix search <pattern>`   | `kavrix ls <pattern>`   |
+| `kavrix remove <name>`      | `kavrix rm <name>`      |
+| `kavrix rename <from> <to>` | `kavrix mv <from> <to>` |
+| `kavrix migrate database`   | `kavrix db migrate`     |
+
+The `ui`, `environment`, `group`, `credential`, `db profile show`,
+`key replicate`/`key assign`, and bare `kavrix grant <secret>` aliases were
+removed in 0.3.1; use `tui`, `context`, `service`, `item`,
+`db profile status`, `key copy`, and `grant create <secret>` instead.
 
 The recommended local first-run path is a bare no-option `kavrix init` on a
 TTY. Interactive sessions open Ink TUI onboarding by default; pass `--no-tui`
@@ -175,9 +196,9 @@ ID as that profile's default:
 
 ```sh
 kavrix db vault use <vault-id> --profile work
-kavrix put production/api-token --profile work
+kavrix add production/api-token --profile work
 kavrix get production/api-token --profile work
-kavrix list --profile work
+kavrix ls --profile work
 ```
 
 Each profile keeps its own default. An explicit `--vault <id>` overrides it for
@@ -211,8 +232,9 @@ kavrix field set password --type password \
   --profile work
 ```
 
-`context` is also available as `environment`, `service` as `group`, and `item`
-as `credential`. Each family provides create/list/rename/remove operations;
+`context`, `service`, and `item` are the only spellings: the 0.2.x
+`environment`, `group`, and `credential` aliases were removed in 0.3.1. Each
+family provides create/list/rename/remove operations;
 parents can be removed only when empty. `item show` reports metadata and field
 states without values. Removing an item also removes its owned encrypted
 attachment and history records from the aggregate.
@@ -279,8 +301,8 @@ does not add attachment transfer commands.
 
 ### Credential history (read-only)
 
-`kavrix item history list <title>` (aliased as `kavrix credential history
-list`) reports the non-sensitive metadata of one item's encrypted history
+`kavrix item history list <title>` reports the non-sensitive metadata of one
+item's encrypted history
 records: the opaque record identity, the item revision each snapshot captured,
 its creation timestamp, the envelope's schema and key versions, and its
 ciphertext digest. It never prints a value. `--limit <count>` bounds one page
@@ -310,10 +332,10 @@ Attachment transfer and history restore remain unimplemented.
 
 ## 4. Store and read credentials
 
-`put` prompts for the key-file passphrase and credential value without echoing.
+`add` prompts for the key-file passphrase and credential value without echoing.
 Replacement requires `--overwrite`. For controlled automation, combine
 `--passphrase-stdin` and `--value-stdin`; the exact frames are passphrase then
-value.
+value. `kavrix frames add` prints the exact frame contract.
 
 Default `get` output is masked. Plaintext is written only with `--reveal`:
 
@@ -324,16 +346,17 @@ kavrix get production/api-token --profile work --vault <vault-id> --reveal
 Use reveal only in a trusted terminal. Do not redirect it to logs, files, shell
 history, or untrusted child processes.
 
-| Need                           | Command                     |
-| ------------------------------ | --------------------------- |
-| List names                     | `kavrix list`               |
-| Dashboard                      | `kavrix view`               |
-| One credential card            | `kavrix view <name>`        |
-| Search names                   | `kavrix search <pattern>`   |
-| Counts and revision statistics | `kavrix stats`              |
-| Existence check                | `kavrix has <name>`         |
-| Rename                         | `kavrix rename <from> <to>` |
-| Remove                         | `kavrix remove <name>`      |
+| Need         | Command                 |
+| ------------ | ----------------------- |
+| List names   | `kavrix ls`             |
+| Filter names | `kavrix ls <pattern>`   |
+| Rename       | `kavrix mv <from> <to>` |
+| Remove       | `kavrix rm <name>`      |
+
+`ls` with no pattern lists every credential name. With a pattern it filters
+names by glob (`*`, `?`) or substring; `--limit`, `--ignore-case`, and
+`--case-sensitive` apply to the pattern form. The `search` command of earlier
+releases was removed in 0.3.1 and merged into `ls <pattern>`.
 
 Names are decrypted locally for these operations. Values remain masked unless a
 separate reveal option is explicit.
@@ -419,7 +442,7 @@ kavrix db profile add legacy --datastore file \
 kavrix db profile add destination --datastore file \
   --data-file ./new.database --key-file ./new.database.key
 
-kavrix migrate database \
+kavrix db migrate \
   --source-profile legacy \
   --destination-profile destination \
   --source-vault default \
@@ -430,7 +453,8 @@ For an unbound local destination, `--initialize --secrets-stdin` expects exactly
 the source passphrase, expected source-vault label, destination passphrase,
 destination confirmation, private database label, and private migrated-vault
 label. A MongoDB source URI frame, when applicable, comes first, making the
-supported MongoDB-source-to-local initialization flow exactly seven frames. The
+supported MongoDB-source-to-local initialization flow exactly seven frames
+(`kavrix frames db migrate` prints the exact contract). The
 expected source label is checked only after the legacy vault authenticates and a
 mismatch returns a generic migration-input error. The reader accepts at most
 seven frames and rejects requests for eight or more.
@@ -440,11 +464,25 @@ creates a new VRK-bound destination vault; reopens the destination; and compares
 the complete canonical payload before success. Source data/key/anchor files stay
 unchanged. A failed or ambiguous publication is never reported as migrated.
 
-## 8. Legacy compatibility commands
+## 8. Legacy and hidden commands (0.3.1)
 
 The root `init`, `vault`, `key`, `recovery`, and `doctor` groups operate on the
-stable version 2 single-vault format. They remain available for compatibility
-and migration; they are not aliases for database-owner operations.
+stable version 2 single-vault format. They remain functional for compatibility
+and migration but, as of 0.3.1, `key`, `recovery`, and `vault` are hidden from
+`--help`. They are not aliases for database-owner operations. The hidden
+flat/legacy paths are:
+
+- `kavrix view [name]`, `kavrix stats`, and `kavrix has <name>` — read-only
+  flat-credential dashboard, counts, and existence checks.
+- `kavrix key status|verify|copy|rewrap` — legacy flat-vault key operations
+  (`key replicate` and `key assign` were removed in 0.3.1; use `key copy`).
+- `kavrix recovery ...` — legacy flat-vault recovery kits.
+- `kavrix vault ...` — legacy flat vault list/status.
+- `kavrix frames [command...]` and `kavrix destroy` — frame reference and the
+  destructive legacy command.
+
+For database-container profiles use `kavrix db key`, `kavrix db recovery`, and
+`kavrix db vault` instead of the hidden legacy groups.
 
 ```sh
 kavrix init --datastore file --data-file ./legacy.vault \
@@ -630,7 +668,6 @@ TTL, use counts, command allowlists, and pins at consumption time under an
 exclusive lock, so concurrent invocations cannot both claim the last use:
 
 ```sh
-kavrix grant production/database --command psql --ttl 15m   # documented bare form
 kavrix grant create production/database --command psql --ttl 15m --max-uses 2
 kavrix grant list
 kavrix grant show grant_<uuid>
@@ -640,8 +677,8 @@ kavrix run --grant production/database -- psql ...
 
 `grant create --help` lists every effective creation, routing, and protected
 input option inherited from the parent grant command. Creation options may be
-placed before or after `create <secret>`; the documented bare grant form remains
-supported.
+placed before or after `create <secret>`. The bare `kavrix grant <secret>`
+form of earlier releases was removed in 0.3.1.
 
 `run --grant <ref>` accepts either a grant id or its credential name. The
 referenced credential is resolved in-session and verified to exist **before**
@@ -722,7 +759,7 @@ shell re-parsing.
 - Every stdin frame contract is machine-referenceable: `kavrix frames` lists
   the exact frames for every secret-reading command, and `kavrix frames <command>`
   prints one contract. Values that contain line breaks or are empty use the
-  dedicated base64 frame (`put --value-stdin-base64`, one base64 line).
+  dedicated base64 frame (`add --value-stdin-base64`, one base64 line).
 - On Windows, masked prompting preserves the terminal receiver, restores the
   prior raw-mode state on success/error/cancel, handles carriage return and
   backspace, and reports preparation/cleanup failures without echoing input.

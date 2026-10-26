@@ -27,7 +27,7 @@ submits or changes that field, and protected values are excluded from Help.
 operation is running. Duplicate actions are blocked until it finishes.
 Use `kavrix init --no-mouse` or `KAVRIX_TUI_MOUSE=0` for native selection.
 
-## Interactive app (`kavrix tui` / `kavrix ui`)
+## Interactive app (`kavrix tui`)
 
 For an existing vault, open `kavrix tui`, press `u` to unlock, then `4` for
 Credentials. Use `Shift+U` to enter a passphrase directly if OS session unlock
@@ -131,7 +131,7 @@ Input readiness waits for the resized frame, and pointer reports are discarded
 while the layout is pending rather than acting on old coordinates.
 Loading spinners honor reduced-motion settings as well as list and input motion.
 
-`kavrix tui` (alias `ui`) mounts the colorful Ink app from `@kavrix/tui` when
+`kavrix tui` mounts the colorful Ink app from `@kavrix/tui` when
 both stdin and stdout are TTYs. Non-TTY sessions print a clear error and exit
 non-zero so automation keeps using numbered CLI commands. Screens call CLI-owned
 use cases; administrative and legacy actions invoke the published CLI.
@@ -148,7 +148,7 @@ existing storage showcase destination.
 The header names the product and the current screen, shows the lock state, the
 active profile and vault, and the credential count. Directly beneath it is one
 line that says what this screen is for and which keys act on it — for example
-`/ filters names · Enter detail · c copy · r reveal · n put.` on Credentials.
+`/ filters names · Enter detail · c copy · r reveal · n add.` on Credentials.
 That line is state-aware: while the Credentials name filter is open it becomes
 `Name filter open: every key narrows the list. Esc clears.`, because every
 printable key is filter text at that moment. Below 16 terminal rows the line is
@@ -173,7 +173,7 @@ a different command."
 
 Every empty list offers the one key that moves you forward, introduced by
 `Next step >`: Profiles shows `n create a file profile`, Credentials shows
-`n put a credential` (or `u unlock your vault` while the vault is locked),
+`n add a credential` (or `u unlock your vault` while the vault is locked),
 Recovery shows `n create a recovery kit`, and Doctor shows `d run doctor
 checks`. Where a screen has two first steps, Policy shows
 `n create policy · g issue a grant` — the `·` separator is what stops two chips

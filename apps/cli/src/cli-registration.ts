@@ -272,10 +272,16 @@ export function buildLocalCli(): Command {
   const program = new Command();
   program
     .name('kavrix')
-    .description('Local encrypted credential vault with selectable storage.')
+    .description(
+      'Local-first secrets firewall for developers, applications, and AI agents.',
+    )
     .version(CLI_VERSION)
     .helpCommand(false)
     .showHelpAfterError()
+    .addHelpText(
+      'before',
+      'New here? Run `kavrix init` to set up your first vault, then `kavrix add <name>` to store a secret.\n',
+    )
     // Intercept parse failures so usage errors carry the documented exit
     // code 2 instead of commander's default process exit.
     .exitOverride()
@@ -289,7 +295,7 @@ export function buildLocalCli(): Command {
   const init = program
     .command('init')
     .description(
-      'Create a bound local database vault (Ink TUI on TTY by default). Scripted/--json file init creates a selected datastore profile so put/run work immediately; --no-tui uses classic guided prompts; --legacy keeps version-2 single-vault migrate sources.',
+      'Set up your first encrypted vault (interactive on first run; --json for scripts; --no-tui for classic prompts).',
     );
   // Root init and CRUD share DEFAULT_ROOT_DATASTORE (file). MongoDB requires
   // an explicit `--datastore mongodb` choice outside the guided wizard.
@@ -368,65 +374,22 @@ export function buildLocalCli(): Command {
     await impl.handleDestroy(getOptions(args));
   });
 
-  const db = program.command('db').description('Database operations.');
-  addDatastoreProfileCommands(db);
-  addDatabaseOwnerCommands(db);
-  const ping = db
-    .command('ping')
-    .description(
-      'Check direct MongoDB connectivity without unlocking a vault (requires --datastore mongodb).',
-    );
-  addMongoPingOptions(ping);
-  addDatastoreProfileSelectionOptions(ping);
-  ping.action(async (...args: unknown[]) => {
-    const impl = await loadCliImplementation();
-    await impl.handlePing(getOptions(args), profileRoutingOverrides(args));
-  });
-
-  const migrate = program
-    .command('migrate')
-    .description('Explicit copy-first migrations.');
-  const migrateDatabase = migrate
-    .command('database')
-    .description(
-      'Copy one legacy version 2 vault into an existing database. Prepare a legacy source profile (no databaseId; `kavrix init --legacy --passphrase-stdin` vault+key) and a bound destination (`db init`). Then: `kavrix migrate database --source-profile <legacy> --destination-profile <db> --source-vault <id> --secrets-stdin` with frames from `kavrix frames migrate database`.',
-    );
-  migrateDatabase
-    .requiredOption('--source-profile <id>', 'Legacy version 2 datastore profile.')
-    .requiredOption('--destination-profile <id>', 'Bound database profile.')
-    .requiredOption('--source-vault <id>', 'Legacy source vault identifier.')
-    .option('--profile-config-dir <path>', 'Protected profile configuration directory.')
-    .option('--config-dir <path>', 'Protected profile configuration directory.')
-    .option(
-      '--initialize',
-      'Explicitly initialize an unbound file destination profile.',
-    )
-    .option('--secrets-stdin', 'Read every migration secret from exact stdin frames.')
-    .option(
-      '--allow-insecure-transport',
-      'Explicitly permit unencrypted transport to a non-local MongoDB (isolated networks only).',
-    );
-  migrateDatabase.action(async (...args: unknown[]) => {
-    const impl = await loadCliImplementation();
-    await impl.handleMigrateDatabase(getOptions(args));
-  });
-
-  const put = program
-    .command('put <name>')
-    .description('Encrypt and store one credential value.');
-  addDatabaseOptions(put);
-  addKeyOptions(put);
-  put.option(
+  const add = program
+    .command('add <name>')
+    .description('Encrypt and store one secret.');
+  addDatabaseOptions(add);
+  addKeyOptions(add);
+  add.option(
     '--value-stdin',
     'Read the credential value from standard input (never from an argument).',
   );
-  put.option(
+  add.option(
     '--value-stdin-base64',
     'Read one base64-encoded credential value frame from standard input; supports multi-line values (empty values store but cannot be injected by run).',
   );
-  put.option('--overwrite', 'Replace an existing credential explicitly.');
-  put.option('--json', 'Emit machine-readable output (the default).');
-  put.action(async (...args: unknown[]) => {
+  add.option('--overwrite', 'Replace an existing credential explicitly.');
+  add.option('--json', 'Emit machine-readable output (the default).');
+  add.action(async (...args: unknown[]) => {
     const impl = await loadCliImplementation();
     await impl.handlePut(getName(args), getOptions(args));
   });
@@ -434,7 +397,7 @@ export function buildLocalCli(): Command {
   const get = program
     .command('get <name>')
     .description(
-      'Read one credential value; use --reveal for explicit plaintext output.',
+      'Show one credential, masked by default; --reveal prints the plaintext.',
     )
     .option('--json', 'Emit masked machine-readable output (the default).');
   addDatabaseOptions(get);
@@ -445,19 +408,33 @@ export function buildLocalCli(): Command {
     await impl.handleGet(getName(args), getOptions(args));
   });
 
-  const list = program
-    .command('list')
-    .description('List credential names without revealing values.')
-    .option('--json', 'Emit machine-readable output even on a terminal.');
-  addDatabaseOptions(list);
-  addKeyOptions(list);
-  list.action(async (...args: unknown[]) => {
+  const ls = program
+    .command('ls [pattern]')
+    .description(
+      'List credential names, or filter them with a glob (*, ?) or substring pattern.',
+    )
+    .option('--limit <count>', 'Maximum matches to display.', '50')
+    .option('--json', 'Emit machine-readable output even on a terminal.')
+    .option(
+      '--ignore-case',
+      'Match the pattern case-insensitively (the default).',
+      true,
+    )
+    .option('--case-sensitive', 'Match the pattern case-sensitively.');
+  addDatabaseOptions(ls);
+  addKeyOptions(ls);
+  ls.action(async (...args: unknown[]) => {
     const impl = await loadCliImplementation();
-    await impl.handleList(getOptions(args));
+    const pattern = getOptionalName(args);
+    if (pattern === undefined) {
+      await impl.handleList(getOptions(args));
+      return;
+    }
+    await impl.handleSearch(pattern, getOptions(args));
   });
 
   const view = program
-    .command('view [name]')
+    .command('view [name]', { hidden: true })
     .description('Show a readable vault dashboard or one credential card.');
   addDatabaseOptions(view);
   addKeyOptions(view);
@@ -469,28 +446,8 @@ export function buildLocalCli(): Command {
     await impl.handleView(getOptionalName(args), getOptions(args));
   });
 
-  const search = program
-    .command('search <pattern>')
-    .description(
-      'Find credential names by glob (*, ?) or substring without searching or revealing values.',
-    )
-    .option('--limit <count>', 'Maximum matches to display.', '50')
-    .option('--json', 'Emit machine-readable output.')
-    .option(
-      '--ignore-case',
-      'Match the pattern case-insensitively (the default).',
-      true,
-    )
-    .option('--case-sensitive', 'Match the pattern case-sensitively.');
-  addDatabaseOptions(search);
-  addKeyOptions(search);
-  search.action(async (...args: unknown[]) => {
-    const impl = await loadCliImplementation();
-    await impl.handleSearch(getName(args), getOptions(args));
-  });
-
   const stats = program
-    .command('stats')
+    .command('stats', { hidden: true })
     .description('Show vault health and record statistics without revealing values.');
   addDatabaseOptions(stats);
   addKeyOptions(stats);
@@ -500,19 +457,19 @@ export function buildLocalCli(): Command {
     await impl.handleStats(getOptions(args));
   });
 
-  const remove = program
-    .command('remove <name>')
-    .description('Delete one credential value.')
+  const rm = program
+    .command('rm <name>')
+    .description('Delete one credential.')
     .option('--json', 'Emit machine-readable output (the default).');
-  addDatabaseOptions(remove);
-  addKeyOptions(remove);
-  remove.action(async (...args: unknown[]) => {
+  addDatabaseOptions(rm);
+  addKeyOptions(rm);
+  rm.action(async (...args: unknown[]) => {
     const impl = await loadCliImplementation();
     await impl.handleRemove(getName(args), getOptions(args));
   });
 
   const has = program
-    .command('has <name>')
+    .command('has <name>', { hidden: true })
     .description('Check whether a credential exists without revealing its value.')
     .option('--json', 'Emit machine-readable output even on a terminal.');
   addDatabaseOptions(has);
@@ -522,96 +479,20 @@ export function buildLocalCli(): Command {
     await impl.handleHas(getName(args), getOptions(args));
   });
 
-  const rename = program
-    .command('rename <from> <to>')
-    .description('Rename a credential while keeping its encrypted value.')
-    .option('--json', 'Emit machine-readable output (the default).');
-  addDatabaseOptions(rename);
-  addKeyOptions(rename);
-  rename.action(async (...args: unknown[]) => {
+  const mv = program
+    .command('mv <from> <to>')
+    .description('Rename a credential, keeping its encrypted value.');
+  addDatabaseOptions(mv);
+  addKeyOptions(mv);
+  mv.option('--json', 'Emit machine-readable output (the default).');
+  mv.action(async (...args: unknown[]) => {
     const impl = await loadCliImplementation();
     const names = getNames(args);
     await impl.handleRename(names[0], names[1], getOptions(args));
   });
 
-  const sessionCommand = program
-    .command('session')
-    .description(
-      'Manage OS session unlock: keychain-gated convenience sessions for the selected profile.',
-    );
-
-  const sessionEnable = sessionCommand
-    .command('enable')
-    .description(
-      'Seal the unlock material for the selected profile behind the OS credential store.',
-    );
-  addDatastoreProfileSelectionOptions(sessionEnable);
-  sessionEnable
-    .option(
-      '--ttl-hours <hours>',
-      'Session lifetime in hours after enable (default 12; 1-8760).',
-    )
-    .option(
-      '--passphrase-stdin',
-      'Read the key-file passphrase from standard input (never from an argument).',
-    )
-    .option('--json', 'Emit machine-readable output.');
-  sessionEnable.action(async (...args: unknown[]) => {
-    const impl = await loadCliImplementation();
-    await impl.handleSessionEnableAction(args);
-  });
-
-  const sessionStatus = sessionCommand
-    .command('status')
-    .description('Show whether a session unlock is enabled for the selected profile.');
-  addDatastoreProfileSelectionOptions(sessionStatus);
-  sessionStatus.option('--json', 'Emit machine-readable output (the default).');
-  sessionStatus.action(async (...args: unknown[]) => {
-    const impl = await loadCliImplementation();
-    await impl.handleSessionStatusAction(args);
-  });
-
-  const sessionRevoke = sessionCommand
-    .command('revoke')
-    .description('Remove the stored session unlock for the selected profile.');
-  addDatastoreProfileSelectionOptions(sessionRevoke);
-  sessionRevoke.option('--json', 'Emit machine-readable output (the default).');
-  sessionRevoke.action(async (...args: unknown[]) => {
-    const impl = await loadCliImplementation();
-    await impl.handleSessionRevokeAction(args);
-  });
-
-  const doctor = program
-    .command('doctor')
-    .description('Decrypt and validate the local vault without revealing values.')
-    .option('--json', 'Emit machine-readable output (the default).');
-  addDatabaseOptions(doctor);
-  addKeyOptions(doctor);
-  addDoctorHealOptions(doctor);
-  doctor.action(async (...args: unknown[]) => {
-    const impl = await loadCliImplementation();
-    await impl.handleDoctorAction(args);
-  });
-
-  const doctorHealth = doctor
-    .command('health')
-    .description(
-      'Run fail-closed health checks; with --heal, apply safe local-state repairs.',
-    );
-  addDatabaseOptions(doctorHealth);
-  addKeyOptions(doctorHealth);
-  doctorHealth.option(
-    '--accept-current',
-    'Initialize a missing local rollback anchor only after manually verifying the current vault.',
-  );
-  addDoctorHealOptions(doctorHealth);
-  doctorHealth.action(async (...args: unknown[]) => {
-    const impl = await loadCliImplementation();
-    await impl.handleDoctorHealth(getOptions(args));
-  });
-
   const recovery = program
-    .command('recovery')
+    .command('recovery', { hidden: true })
     .description(
       'Legacy-vault recovery kits. For database-container profiles (modern init), use `kavrix db recovery`.',
     );
@@ -719,7 +600,7 @@ export function buildLocalCli(): Command {
   });
 
   const vault = program
-    .command('vault')
+    .command('vault', { hidden: true })
     .description('Select and inspect encrypted vaults.');
   const vaultList = vault
     .command('list')
@@ -746,7 +627,7 @@ export function buildLocalCli(): Command {
   });
 
   const key = program
-    .command('key')
+    .command('key', { hidden: true })
     .description('Protected key-file lifecycle operations.');
   addKeyOnlyOptions(
     key
@@ -762,18 +643,16 @@ export function buildLocalCli(): Command {
     const impl = await loadCliImplementation();
     await impl.handleKeyStatus(getOptions(args));
   });
-  for (const name of ['copy', 'replicate', 'assign'] as const) {
-    const description =
-      name === 'copy'
-        ? 'Create another protected key file with the same vault binding; it is not independently revocable.'
-        : `Deprecated alias of \`key copy\`; behavior and output are identical.`;
-    addKeyCopyOptions(key.command(name).description(description)).action(
-      async (...args: unknown[]) => {
-        const impl = await loadCliImplementation();
-        await impl.handleKeyCopy(getOptions(args));
-      },
-    );
-  }
+  addKeyCopyOptions(
+    key
+      .command('copy')
+      .description(
+        'Create another protected key file with the same vault binding; it is not independently revocable.',
+      ),
+  ).action(async (...args: unknown[]) => {
+    const impl = await loadCliImplementation();
+    await impl.handleKeyCopy(getOptions(args));
+  });
   addKeyRewrapOptions(
     key
       .command('rewrap')
@@ -783,19 +662,9 @@ export function buildLocalCli(): Command {
     await impl.handleKeyRewrap(getOptions(args));
   });
 
+  registerGenerateCommand(program);
   registerExecutionCommands(program);
   registerTuiCommand(program);
-  registerStructuredVaultCommands(program);
-  // After the structured family: the history group attaches to the shared
-  // item/credential command and fails closed if that command is absent.
-  registerCredentialHistoryCommands(program);
-  registerBackupCommands(program);
-  registerImportCommands(program);
-  registerExportCommand(program);
-  registerGenerateCommand(program);
-  registerFramesCommand(program);
-  registerSelfUpdateCommand(program);
-  applyStdinFrameHelp(program);
 
   const status = program
     .command('status')
@@ -808,6 +677,140 @@ export function buildLocalCli(): Command {
     const impl = await loadCliImplementation();
     await impl.handleStatus(getOptions(args));
   });
+
+  const doctor = program
+    .command('doctor')
+    .description('Decrypt and validate the local vault without revealing values.')
+    .option('--json', 'Emit machine-readable output (the default).');
+  addDatabaseOptions(doctor);
+  addKeyOptions(doctor);
+  addDoctorHealOptions(doctor);
+  doctor.action(async (...args: unknown[]) => {
+    const impl = await loadCliImplementation();
+    await impl.handleDoctorAction(args);
+  });
+
+  const doctorHealth = doctor
+    .command('health')
+    .description(
+      'Run fail-closed health checks; with --heal, apply safe local-state repairs.',
+    );
+  addDatabaseOptions(doctorHealth);
+  addKeyOptions(doctorHealth);
+  doctorHealth.option(
+    '--accept-current',
+    'Initialize a missing local rollback anchor only after manually verifying the current vault.',
+  );
+  addDoctorHealOptions(doctorHealth);
+  doctorHealth.action(async (...args: unknown[]) => {
+    const impl = await loadCliImplementation();
+    await impl.handleDoctorHealth(getOptions(args));
+  });
+
+  const sessionCommand = program
+    .command('session')
+    .description(
+      'Manage OS session unlock: keychain-gated convenience sessions for the selected profile.',
+    );
+
+  const sessionEnable = sessionCommand
+    .command('enable')
+    .description(
+      'Seal the unlock material for the selected profile behind the OS credential store.',
+    );
+  addDatastoreProfileSelectionOptions(sessionEnable);
+  sessionEnable
+    .option(
+      '--ttl-hours <hours>',
+      'Session lifetime in hours after enable (default 12; 1-8760).',
+    )
+    .option(
+      '--passphrase-stdin',
+      'Read the key-file passphrase from standard input (never from an argument).',
+    )
+    .option('--json', 'Emit machine-readable output.');
+  sessionEnable.action(async (...args: unknown[]) => {
+    const impl = await loadCliImplementation();
+    await impl.handleSessionEnableAction(args);
+  });
+
+  const sessionStatus = sessionCommand
+    .command('status')
+    .description('Show whether a session unlock is enabled for the selected profile.');
+  addDatastoreProfileSelectionOptions(sessionStatus);
+  sessionStatus.option('--json', 'Emit machine-readable output (the default).');
+  sessionStatus.action(async (...args: unknown[]) => {
+    const impl = await loadCliImplementation();
+    await impl.handleSessionStatusAction(args);
+  });
+
+  const sessionRevoke = sessionCommand
+    .command('revoke')
+    .description('Remove the stored session unlock for the selected profile.');
+  addDatastoreProfileSelectionOptions(sessionRevoke);
+  sessionRevoke.option('--json', 'Emit machine-readable output (the default).');
+  sessionRevoke.action(async (...args: unknown[]) => {
+    const impl = await loadCliImplementation();
+    await impl.handleSessionRevokeAction(args);
+  });
+
+  registerStructuredVaultCommands(program);
+  // After the structured family: the history group attaches to the shared
+  // item command and fails closed if that command is absent.
+  registerCredentialHistoryCommands(program);
+  registerBackupCommands(program);
+  registerImportCommands(program);
+  registerExportCommand(program);
+  registerSelfUpdateCommand(program);
+  registerFramesCommand(program);
+
+  // Advanced group last: database containers, profiles, vaults, keys,
+  // recovery kits, and legacy migration all live behind `kavrix db`.
+  const db = program
+    .command('db')
+    .description(
+      'Advanced: databases, profiles, vaults, owner keys, recovery kits, and migration.',
+    );
+  addDatastoreProfileCommands(db);
+  addDatabaseOwnerCommands(db);
+  const ping = db
+    .command('ping')
+    .description(
+      'Check direct MongoDB connectivity without unlocking a vault (requires --datastore mongodb).',
+    );
+  addMongoPingOptions(ping);
+  addDatastoreProfileSelectionOptions(ping);
+  ping.action(async (...args: unknown[]) => {
+    const impl = await loadCliImplementation();
+    await impl.handlePing(getOptions(args), profileRoutingOverrides(args));
+  });
+
+  const migrate = db
+    .command('migrate')
+    .description(
+      'Copy one legacy version 2 vault into an existing database. Prepare a legacy source profile (no databaseId; `kavrix init --legacy --passphrase-stdin` vault+key) and a bound destination (`db init`). Then: `kavrix db migrate --source-profile <legacy> --destination-profile <db> --source-vault <id> --secrets-stdin` with frames from `kavrix frames db migrate`.',
+    );
+  migrate
+    .requiredOption('--source-profile <id>', 'Legacy version 2 datastore profile.')
+    .requiredOption('--destination-profile <id>', 'Bound database profile.')
+    .requiredOption('--source-vault <id>', 'Legacy source vault identifier.')
+    .option('--profile-config-dir <path>', 'Protected profile configuration directory.')
+    .option('--config-dir <path>', 'Protected profile configuration directory.')
+    .option(
+      '--initialize',
+      'Explicitly initialize an unbound file destination profile.',
+    )
+    .option('--secrets-stdin', 'Read every migration secret from exact stdin frames.')
+    .option(
+      '--allow-insecure-transport',
+      'Explicitly permit unencrypted transport to a non-local MongoDB (isolated networks only).',
+    );
+  migrate.action(async (...args: unknown[]) => {
+    const impl = await loadCliImplementation();
+    await impl.handleMigrateDatabase(getOptions(args));
+  });
+
+  applyStdinFrameHelp(program);
 
   return program;
 }
@@ -888,23 +891,6 @@ export function addDatastoreProfileCommands(db: Command): void {
   addProfileConfigOption(status);
   status.option('--json', 'Emit machine-readable output.');
   status.action(async (...args: unknown[]) => {
-    const impl = await loadCliImplementation();
-    await impl.handleProfileStatus(profileCommandOptions(args));
-  });
-
-  const show = profile
-    .command('show')
-    .description('Alias of `db profile status` for compatibility.')
-    .option(
-      '--config-dir <path>',
-      'Protected datastore-profile configuration directory.',
-    )
-    .option(
-      '--profile-config-dir <path>',
-      'Protected datastore-profile configuration directory.',
-    )
-    .option('--json', 'Emit machine-readable output.');
-  show.action(async (...args: unknown[]) => {
     const impl = await loadCliImplementation();
     await impl.handleProfileStatus(profileCommandOptions(args));
   });

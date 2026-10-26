@@ -6,8 +6,8 @@ import { LocalCliError } from './cli-error.js';
  * Product default for root CLI commands when neither a datastore profile nor
  * an explicit `--datastore` is selected.
  *
- * Aligned with `kavrix init`'s local-file quick-start so `put` / `get` /
- * `list` / `doctor` (and other root CRUD) never silently flip to MongoDB —
+ * Aligned with `kavrix init`'s local-file quick-start so `add` / `get` /
+ * `ls` / `doctor` (and other root CRUD) never silently flip to MongoDB —
  * that mismatch was a launch footgun for first-run scripts.
  */
 export const DEFAULT_ROOT_DATASTORE = 'file' as const;
