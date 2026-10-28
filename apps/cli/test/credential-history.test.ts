@@ -697,9 +697,17 @@ describe('credential history commands against the real encrypted datastore', () 
         ciphertextHash: DIGEST,
       }),
       expect.objectContaining({ version: 'history.later', itemRevision: 2 }),
+      expect.objectContaining({
+        version: expect.stringMatching(/^history_/u),
+        itemRevision: 0,
+        schemaVersion: 2,
+        restorable: true,
+      }),
     ]);
     // Plaintext canary across the whole command surface.
     expect(list.stdout).not.toContain(FIELD_SECRET);
+    // A plaintext-derived digest would expose an offline guessing oracle.
+    expect(list.stdout).not.toContain('snapshotDigest');
     expect(list.stdout).not.toContain(HISTORY_CIPHERTEXT);
 
     const show = await runCli(
@@ -883,7 +891,14 @@ describe('credential history commands against the real encrypted datastore', () 
     );
     expect(after.exitCode, after.stderr || after.stdout).toBe(0);
     expect(JSON.parse(after.stdout)).toMatchObject({
-      history: [expect.objectContaining({ version: 'history.good' })],
+      history: [
+        expect.objectContaining({ version: 'history.good' }),
+        expect.objectContaining({
+          itemRevision: 0,
+          restorable: true,
+          schemaVersion: 2,
+        }),
+      ],
     });
   });
 });

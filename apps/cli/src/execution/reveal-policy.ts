@@ -1,6 +1,8 @@
 import { AuthorizationState } from './authorization-state.js';
 import { authorizationDenied } from './exit-codes.js';
 import { evaluateReveal } from './engine.js';
+import { executionReferenceIdentities } from './reference-identity.js';
+import { executionReferenceAliases, type VaultId } from '@kavrix/schemas';
 import type { DatabaseSession } from '../database-session.js';
 import type { DatastoreProfile } from '../datastore-profiles.js';
 
@@ -15,6 +17,7 @@ export async function enforceRevealPolicy(
   session: DatabaseSession,
   profile: DatastoreProfile,
   secret: string,
+  vaultId?: VaultId,
 ): Promise<void> {
   const authzKey = session.authorizationStateKey();
   let state: AuthorizationState | undefined;
@@ -24,9 +27,16 @@ export async function enforceRevealPolicy(
       scopeId: session.databaseId,
     });
     const snapshot = await state.read();
+    let identities = executionReferenceAliases(secret);
+    if (vaultId !== undefined)
+      await session.inspectStructuredVault(vaultId, (payload) => {
+        identities = executionReferenceIdentities(payload, secret);
+      });
     const covering = Object.values(snapshot.policies)
       .map((record) => record.definition)
-      .filter((entry) => entry.secret === secret);
+      .filter(
+        (entry) => entry.secret !== undefined && identities.includes(entry.secret),
+      );
     const decision = evaluateReveal(covering);
     await state.recordEvent({ actor: 'user', action: 'reveal-attempted', secret });
     if (decision.outcome !== 'allow') {

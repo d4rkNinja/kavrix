@@ -1,6 +1,11 @@
 import { z } from 'zod';
+import { policyCandidateMapSchema } from './policy.js';
 
-import { projectContextIdSchema, vaultIdSchema } from './identifiers.js';
+import {
+  historyIdSchema,
+  projectContextIdSchema,
+  vaultIdSchema,
+} from './identifiers.js';
 import {
   encryptedAttachmentRecordSchema,
   encryptedHistoryRecordSchema,
@@ -19,10 +24,22 @@ import {
  * version: an authenticated payload must still reject an unknown semantic
  * representation before any of its values are used.
  */
-export const CURRENT_STRUCTURED_VAULT_PAYLOAD_VERSION = 1;
-export const structuredVaultPayloadVersionSchema = z.literal(
-  CURRENT_STRUCTURED_VAULT_PAYLOAD_VERSION,
-);
+export const CURRENT_STRUCTURED_VAULT_PAYLOAD_VERSION = 2;
+export const structuredVaultPayloadVersionSchema = z.union([
+  z.literal(1),
+  z.literal(2),
+]);
+
+/** Private plaintext, persisted only inside the authenticated vault envelope. */
+export const itemSnapshotSchema = z
+  .object({
+    version: z.literal(1),
+    id: historyIdSchema,
+    createdAt: timestampSchema,
+    item: itemPayloadSchema,
+  })
+  .strict();
+export type ItemSnapshot = z.infer<typeof itemSnapshotSchema>;
 
 export const MAX_PROJECT_CONTEXTS = 10_000;
 export const MAX_STRUCTURED_SERVICES = 10_000;
@@ -69,9 +86,44 @@ export const structuredVaultPayloadSchema = z
       .array(encryptedAttachmentRecordSchema)
       .max(MAX_STRUCTURED_ATTACHMENTS),
     history: z.array(encryptedHistoryRecordSchema).max(MAX_STRUCTURED_HISTORY_RECORDS),
+    snapshots: z.array(itemSnapshotSchema).max(10_000).optional(),
+    executionPolicy: z.enum(['optional', 'required']).optional(),
+    policyCandidates: policyCandidateMapSchema.optional(),
   })
   .strict()
   .superRefine((payload, context) => {
+    if (
+      payload.version === 1 &&
+      (payload.snapshots !== undefined ||
+        payload.executionPolicy !== undefined ||
+        payload.policyCandidates !== undefined)
+    ) {
+      addIssue(
+        context,
+        ['version'],
+        'Snapshots and execution policy require structured payload version 2',
+      );
+    }
+    const snapshotIds = new Set<string>(payload.history.map((record) => record.id));
+    const perItem = new Map<string, number>();
+    const snapshotOwners = new Map(payload.items.map((item) => [item.id, item]));
+    for (const [index, snapshot] of (payload.snapshots ?? []).entries()) {
+      const count = (perItem.get(snapshot.item.id) ?? 0) + 1;
+      perItem.set(snapshot.item.id, count);
+      if (
+        snapshot.item.vaultId !== payload.vaultId ||
+        snapshotOwners.get(snapshot.item.id)?.groupId !== snapshot.item.groupId ||
+        snapshotIds.has(snapshot.id) ||
+        count > 100
+      ) {
+        addIssue(
+          context,
+          ['snapshots', index],
+          'Snapshot binding, identity or retention is invalid',
+        );
+      }
+      snapshotIds.add(snapshot.id);
+    }
     const projectContextIds = uniqueIds(
       payload.projectContexts,
       context,

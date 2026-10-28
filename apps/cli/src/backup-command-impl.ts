@@ -14,10 +14,12 @@ import {
   MAX_DATABASE_BACKUP_PLAINTEXT_BYTES,
   profileIdSchema,
   type DatabaseId,
+  type DatabaseBackupArchive,
   type ProfileId,
 } from '@kavrix/schemas';
 
 import { LocalCliError } from './cli-error.js';
+import { packFirewallBackup, unpackFirewallBackup } from './firewall-recovery.js';
 import {
   DatastoreProfileRegistry,
   type DatastoreProfile,
@@ -38,6 +40,7 @@ export interface BackupCommandOptions {
   readonly passphraseStdin?: boolean;
   readonly overwrite?: boolean;
   readonly json?: boolean;
+  readonly includeFirewall?: boolean;
 }
 
 const NO_PROFILE_MESSAGE =
@@ -45,7 +48,7 @@ const NO_PROFILE_MESSAGE =
 
 async function resolveFileBackupProfile(
   options: BackupCommandOptions,
-): Promise<Readonly<{ dataFile: string; databaseId: DatabaseId }>> {
+): Promise<Readonly<{ dataFile: string; keyFile: string; databaseId: DatabaseId }>> {
   const configDirectory = options.profileConfigDir ?? options.configDir;
   const registryOptions = configDirectory === undefined ? {} : { configDirectory };
   const registry =
@@ -69,7 +72,7 @@ async function resolveFileBackupProfile(
 
 function assertFileProfile(
   profile: DatastoreProfile,
-): Readonly<{ dataFile: string; databaseId: DatabaseId }> {
+): Readonly<{ dataFile: string; keyFile: string; databaseId: DatabaseId }> {
   if (profile.datastore !== 'file') {
     throw invalidConfiguration(
       'Backup supports local-file datastore profiles only in this release; MongoDB database backup is not available yet.',
@@ -80,7 +83,11 @@ function assertFileProfile(
       'The selected datastore profile is not bound to a database; run `kavrix db init` for that profile first.',
     );
   }
-  return { dataFile: profile.dataFile, databaseId: profile.databaseId };
+  return {
+    dataFile: profile.dataFile,
+    keyFile: profile.keyFile,
+    databaseId: profile.databaseId,
+  };
 }
 
 /** Reads the new backup passphrase as a confirmed pair (masked, or two stdin frames). */
@@ -168,30 +175,39 @@ async function openArchiveFromPath(
   readonly createdAt: string;
   readonly plaintextBytes: number;
   readonly plaintext: Uint8Array;
+  readonly archiveVersion: 1 | 2;
 }> {
-  const bytes = await readSecureFile(archivePath, MAX_DATABASE_BACKUP_PLAINTEXT_BYTES);
-  let parsed;
   try {
-    parsed = parseDatabaseBackupArchive(bytes);
-  } catch {
-    throw securityIntegrityFailure(
-      'The backup archive is not a valid Kavrix database backup.',
+    const bytes = await readSecureFile(
+      archivePath,
+      MAX_DATABASE_BACKUP_PLAINTEXT_BYTES,
     );
-  }
-  try {
-    const opened = await openDatabaseBackupArchive(parsed, passphrase);
-    return {
-      databaseId: opened.header.databaseId,
-      createdAt: opened.createdAt,
-      plaintextBytes: parsed.plaintextBytes,
-      plaintext: opened.plaintext,
-    };
-  } catch {
-    // A wrong passphrase and a modified archive are deliberately
-    // indistinguishable: one generic authentication failure.
-    throw authenticationFailure(
-      'Backup authentication failed. Check the archive passphrase and the file integrity.',
-    );
+    let parsed;
+    try {
+      parsed = parseDatabaseBackupArchive(bytes);
+    } catch {
+      throw securityIntegrityFailure(
+        'The backup archive is not a valid Kavrix database backup.',
+      );
+    }
+    try {
+      const opened = await openDatabaseBackupArchive(parsed, passphrase);
+      return {
+        databaseId: opened.header.databaseId,
+        createdAt: opened.createdAt,
+        plaintextBytes: parsed.plaintextBytes,
+        plaintext: opened.plaintext,
+        archiveVersion: parsed.version,
+      };
+    } catch {
+      // A wrong passphrase and a modified archive are deliberately
+      // indistinguishable: one generic authentication failure.
+      throw authenticationFailure(
+        'Backup authentication failed. Check the archive passphrase and the file integrity.',
+      );
+    }
+  } finally {
+    passphrase.fill(0);
   }
 }
 
@@ -199,14 +215,24 @@ export async function handleBackupCreate(options: BackupCommandOptions): Promise
   const archivePath = requirePath(options.file, '--file');
   const profile = await resolveFileBackupProfile(options);
   const passphrase = await readNewBackupPassphrase(options);
-  const databaseBytes = await readSecureFile(
-    profile.dataFile,
-    MAX_DATABASE_BACKUP_PLAINTEXT_BYTES,
-  );
-  const archive = await sealDatabaseBackupArchive(databaseBytes, passphrase, {
-    datastore: 'file',
-    databaseId: profile.databaseId,
-  });
+  let archive: DatabaseBackupArchive;
+  try {
+    const databaseBytes =
+      options.includeFirewall === true
+        ? await packFirewallBackup(
+            profile.dataFile,
+            profile.keyFile,
+            profile.databaseId,
+          )
+        : await readSecureFile(profile.dataFile, MAX_DATABASE_BACKUP_PLAINTEXT_BYTES);
+    archive = await sealDatabaseBackupArchive(databaseBytes, passphrase, {
+      datastore: 'file',
+      databaseId: profile.databaseId,
+      version: options.includeFirewall === true ? 2 : 1,
+    });
+  } finally {
+    passphrase.fill(0);
+  }
   const serialized = new TextEncoder().encode(JSON.stringify(archive));
   await publishProtectedFile(
     archivePath,
@@ -218,6 +244,9 @@ export async function handleBackupCreate(options: BackupCommandOptions): Promise
   if (options.json === true) {
     writeJsonResult({
       created: true,
+      ...(options.includeFirewall === true
+        ? { firewallIncluded: true, version: archive.version }
+        : {}),
       file: archivePath,
       databaseId: archive.databaseId,
       plaintextBytes: archive.plaintextBytes,
@@ -241,6 +270,7 @@ export async function handleBackupVerify(options: BackupCommandOptions): Promise
   const archivePath = requirePath(options.file, '--file');
   const passphrase = await readExistingBackupPassphrase(options);
   const opened = await openArchiveFromPath(archivePath, passphrase);
+  unpackFirewallBackup(opened.plaintext, opened.databaseId, opened.archiveVersion);
   discardBackupPlaintext(opened.plaintext);
   if (options.json === true) {
     writeJsonResult({
@@ -269,20 +299,28 @@ export async function handleBackupRestore(
   const dataFile = requirePath(options.dataFile, '--data-file');
   const passphrase = await readExistingBackupPassphrase(options);
   const opened = await openArchiveFromPath(archivePath, passphrase);
+  const restored = unpackFirewallBackup(
+    opened.plaintext,
+    opened.databaseId,
+    opened.archiveVersion,
+  );
   try {
     await publishProtectedFile(
       dataFile,
-      opened.plaintext,
+      restored.database,
       options.overwrite === true,
       'Destination file',
       MAX_DATABASE_BACKUP_PLAINTEXT_BYTES,
     );
   } finally {
     discardBackupPlaintext(opened.plaintext);
+    if (restored.database !== opened.plaintext)
+      discardBackupPlaintext(restored.database);
   }
   if (options.json === true) {
     writeJsonResult({
       restored: true,
+      firewallPending: restored.bundle?.authorization != null,
       file: archivePath,
       dataFile,
       databaseId: opened.databaseId,
@@ -296,6 +334,11 @@ export async function handleBackupRestore(
       `Database: ${opened.databaseId}`,
       'Next: point a profile at the restored file with `kavrix db profile add <id> --datastore file --data-file <path> --key-file <key-path>`,',
       'then unlock with the existing owner key, or recover ownership with `kavrix db recovery use` and a database recovery kit.',
+      ...(restored.bundle?.authorization == null
+        ? []
+        : [
+            'Firewall recovery is pending: after authenticating the restored profile, run `kavrix backup restore-firewall --file <archive> --profile <restored-profile>`. Archived grants will be discarded.',
+          ]),
     ].join('\n') + '\n',
   );
 }

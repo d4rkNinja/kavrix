@@ -1550,7 +1550,7 @@ export async function handleGet(name: string, options: LocalCliOptions): Promise
       });
       if (found === undefined) throw credentialMissing();
       if (options.reveal === true) {
-        await enforceRevealPolicy(session, profile, name);
+        await enforceRevealPolicy(session, profile, name, vaultId);
         if (options.json === true) {
           writeRevealJson({
             name: sanitizeTerminalText(name),
@@ -1697,7 +1697,7 @@ export async function handleView(
       });
       if (name !== undefined && entries.length === 0) throw credentialMissing();
       if (options.reveal === true && name !== undefined) {
-        await enforceRevealPolicy(session, profile, name);
+        await enforceRevealPolicy(session, profile, name, vaultId);
       }
       if (options.json === true || !process.stdout.isTTY) {
         writeJson({

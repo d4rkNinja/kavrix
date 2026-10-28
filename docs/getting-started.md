@@ -244,3 +244,9 @@ declined, `18` execution/spawn failure.
 - [Recovery guide](backup-and-recovery.md) — recovery kits in depth
 - [Threat model](threat-model.md) — what Kavrix protects, and what it cannot
 - [Glossary](glossary.md) — every term, defined
+
+## 0.3.4 structured firewall workflows
+
+After initial setup, use the structured workflow guide to run typed fields directly, require policies per vault, constrain complete operations, restore prior item content, and transfer or recover data without automatically granting access.
+
+See the [workflow guide](firewall-workflows.md) for commands and limitations.

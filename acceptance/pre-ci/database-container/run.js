@@ -18,6 +18,7 @@ import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { setWindowsUserOnlyAcl } from '../../../packages/key-files/dist/windows-acl.js';
+import { exerciseFirewallExtensions } from './firewall.js';
 
 const workspaceRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 const cliRoot = join(workspaceRoot, 'apps', 'cli');
@@ -1550,6 +1551,19 @@ async function main() {
     const rootHelp = await run(['--help']);
     assert(!/^\s*destroy(?:\s|$)/mu.test(rootHelp.stdout), 'destroy leaked into help');
     await exerciseDatabaseContainer(run, paths);
+    await exerciseFirewallExtensions({
+      run,
+      paths,
+      bin,
+      addFileProfile,
+      initializeDatabase,
+      createVault,
+      profileRoute,
+      parseJson,
+      assert,
+      ephemeralSecret,
+      assertNoSensitiveText,
+    });
     await scanPackage(packageRoot);
     await scanArtifacts(paths);
     if (interruptedSignal !== undefined) {

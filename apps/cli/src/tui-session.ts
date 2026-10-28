@@ -1646,7 +1646,7 @@ class CliTuiSession {
     }
     validateCredentialName(name);
     const native = await this.#withNativeSession(async (session, vaultId, profile) => {
-      await enforceRevealPolicy(session, profile, name);
+      await enforceRevealPolicy(session, profile, name, vaultId);
       let value: string | undefined;
       await session.inspectVault(vaultId, (payload) => {
         value = payload.records[name]?.value;

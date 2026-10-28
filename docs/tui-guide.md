@@ -418,3 +418,9 @@ Color is supplemental, appears only on a capable TTY, and is disabled by
 
 Terminal-rendered content is treated as hostile. Control, ANSI, and OSC
 sequences are sanitized before display.
+
+## 0.3.4 structured firewall workflows
+
+Authenticated item edits also produce the same bounded snapshots as CLI edits. Configure required-policy mode, exact operations, structured transfer, snapshot restoration and firewall recovery through the CLI commands in the workflow guide. The Agent TUI screen remains configuration dry-run rather than a live broker dashboard.
+
+See the [workflow guide](firewall-workflows.md) for commands and limitations.

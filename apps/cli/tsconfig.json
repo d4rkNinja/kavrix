@@ -6,6 +6,13 @@
   },
   "include": [
     "src/bin.ts",
+    "src/item-snapshots.ts",
+    "src/firewall-recovery.ts",
+    "src/structured-transfer.ts",
+    "src/execution/policy-candidates.ts",
+    "src/execution/secret-resolution.ts",
+    "src/execution/reference-identity.ts",
+    "src/execution/policy-mode.ts",
     "src/cli-main.ts",
     "src/cli-registration.ts",
     "src/database-commands.ts",

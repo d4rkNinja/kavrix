@@ -1,4 +1,6 @@
 import { z } from 'zod';
+import { structuredVaultPayloadSchema } from './structured-vault.js';
+import { policyCandidateMapSchema } from './policy.js';
 
 import {
   sealedArchiveNonceSchema,
@@ -35,10 +37,31 @@ export const vaultExportEntrySchema = z
 
 export const vaultExportPlaintextSchema = z
   .object({
-    entries: z.array(vaultExportEntrySchema).min(1).max(MAX_VAULT_EXPORT_ENTRIES),
+    entries: z.array(vaultExportEntrySchema).max(MAX_VAULT_EXPORT_ENTRIES),
+    structured: structuredVaultPayloadSchema.optional(),
+    policies: policyCandidateMapSchema.optional(),
   })
   .strict()
   .superRefine((plaintext, context) => {
+    if (
+      plaintext.structured === undefined &&
+      (plaintext.entries.length === 0 || plaintext.policies !== undefined)
+    )
+      context.addIssue({
+        code: 'custom',
+        message: 'Flat exports require entries and cannot contain policies',
+      });
+    if (
+      plaintext.structured !== undefined &&
+      (plaintext.structured.items.length > MAX_VAULT_EXPORT_ENTRIES ||
+        plaintext.structured.attachments.length > 0 ||
+        plaintext.structured.history.length > 0)
+    )
+      context.addIssue({
+        code: 'custom',
+        message:
+          'Structured exports exceed the item bound or contain nonportable attachment/history ciphertext',
+      });
     const seen = new Set<string>();
     for (const [index, entry] of plaintext.entries.entries()) {
       if (seen.has(entry.name)) {
@@ -73,9 +96,9 @@ const exportCiphertextSchema = base64UrlSchemaWithMaxChars(
 export const vaultExportArchiveSchema = z
   .object({
     format: z.literal('kavrix-vault-export'),
-    version: z.literal(1),
+    version: z.union([z.literal(1), z.literal(2)]),
     createdAt: timestampSchema,
-    entryCount: z.number().int().min(1).max(MAX_VAULT_EXPORT_ENTRIES),
+    entryCount: z.number().int().min(0).max(MAX_VAULT_EXPORT_ENTRIES),
     plaintextBytes: z.number().int().positive().max(MAX_VAULT_EXPORT_PLAINTEXT_BYTES),
     derivation: passphraseDerivationSchema,
     nonce: sealedArchiveNonceSchema,

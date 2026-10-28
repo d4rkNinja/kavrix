@@ -324,7 +324,14 @@ function parseStructuredCandidate(input: unknown): StructuredVaultPayload {
   const services = record['services'];
   const groups = record['groups'];
   const base = {
-    version: 1,
+    version: record['version'] ?? 1,
+    ...(record['snapshots'] === undefined ? {} : { snapshots: record['snapshots'] }),
+    ...(record['executionPolicy'] === undefined
+      ? {}
+      : { executionPolicy: record['executionPolicy'] }),
+    ...(record['policyCandidates'] === undefined
+      ? {}
+      : { policyCandidates: record['policyCandidates'] }),
     projectContexts,
     items,
     attachments,
@@ -664,6 +671,10 @@ function removeDefaultItem(
   candidate['history'] = structuredHistory(value).filter(
     (record) => record['itemId'] !== item.id,
   );
+  if (value.snapshots !== undefined)
+    candidate['snapshots'] = value.snapshots.filter(
+      (record) => record.item.id !== item.id,
+    );
   return parseStructuredPayload(candidate);
 }
 

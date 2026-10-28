@@ -3,8 +3,8 @@
 **Secrets stay in Kavrix. Applications get access. Agents get permission.**
 
 A local-first secrets firewall for developers, applications, and AI agents.
-Kavrix provides zero-knowledge local encryption: it never sees your passphrases
-or plaintext credentials, and there is no Kavrix server, account, or telemetry.
+Kavrix uses zero-knowledge storage: adapters receive encrypted vault records; the local CLI decrypts
+authorized values in memory. There is no Kavrix server, account, or telemetry.
 
 Give applications and AI agents access to credentials without handing over your
 `.env`. `kavrix run` injects only the values a process needs; policies and
@@ -177,3 +177,16 @@ CC BY 4.0: https://creativecommons.org/licenses/by/4.0/.
 ## License
 
 MIT
+
+## Structured firewall workflows in 0.3.4
+
+Run typed fields with canonical `field:context/service/item/stable-key` references.
+`policy mode required` requires a selected policy or grant for every injected
+secret. Complete operation rules restrict exact argument vectors. Item edits
+retain authenticated snapshots for `item history restore`. Structured export
+transfers fields, notes, metadata and snapshots, with optional inert policy
+candidates. `backup create --include-firewall` retains sealed firewall state;
+`backup restore-firewall` requires owner authentication and discards old grants.
+
+See the [workflow guide](https://github.com/d4rkNinja/kavrix/blob/main/docs/firewall-workflows.md)
+for commands, retention, compatibility and transfer limits.

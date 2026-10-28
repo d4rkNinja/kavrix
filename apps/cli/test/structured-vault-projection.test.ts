@@ -398,7 +398,8 @@ describe('structured vault flat compatibility projection', () => {
         changedAt,
       ),
     ).toThrow(StructuredVaultProjectionError);
-    expect(isStructuredVaultPayload({ ...source, version: 2 })).toBe(false);
+    expect(isStructuredVaultPayload({ ...source, version: 2 })).toBe(true);
+    expect(isStructuredVaultPayload({ ...source, version: 3 })).toBe(false);
   });
 
   it('refuses ambiguous delete-plus-create transitions', () => {

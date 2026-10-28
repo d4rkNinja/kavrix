@@ -1,4 +1,5 @@
 import { createHmac, hkdfSync, randomUUID } from 'node:crypto';
+import { recordItemSnapshots } from './item-snapshots.js';
 
 import { ZodError } from 'zod';
 
@@ -977,7 +978,19 @@ export class DatabaseSession {
       const nextFlat = localVaultPayloadSchema.parse(
         await update(structuredClone(currentFlat)),
       );
-      if (!isStructuredVaultPayload(current)) return nextFlat;
+      if (!isStructuredVaultPayload(current)) {
+        const at = timestampSchema.parse(now());
+        const structured = upgradeLegacyVaultPayload(
+          current,
+          vaultIdSchema.parse(idInput),
+          at,
+        );
+        return recordItemSnapshots(
+          structured,
+          applyFlatVaultPayload(structured, currentFlat, nextFlat, at),
+          at,
+        );
+      }
       return applyFlatVaultPayload(
         current,
         currentFlat,
@@ -1038,7 +1051,13 @@ export class DatabaseSession {
         JSON.parse(decodeSecretUtf8(plaintext)) as unknown,
       );
       const nextPayload = databaseVaultPayloadSchema.parse(
-        await update(structuredClone(currentPayload)),
+        recordItemSnapshots(
+          currentPayload,
+          databaseVaultPayloadSchema.parse(
+            await update(structuredClone(currentPayload)),
+          ),
+          timestampSchema.parse(now()),
+        ),
       );
       assertDatabaseVaultPayloadBinding(nextPayload, requestedId);
       nextPlaintext = UTF8_ENCODER.encode(canonicalJson(nextPayload));

@@ -57,6 +57,22 @@ export function registerCredentialHistoryCommands(program: Command): void {
     );
   addDatabaseOptions(
     history
+      .command('restore <title> <version>')
+      .description(
+        'Restore an authenticated item snapshot as a fresh revision without displaying values.',
+      ),
+  )
+    .requiredOption('--context <name>', 'Project context name.')
+    .requiredOption('--service <name>', 'Service/group name.')
+    .option('--json', 'Emit machine-readable output.')
+    .action(async (...args: unknown[]) => {
+      const impl = await import('./credential-history-impl.js');
+      await impl.credentialHistoryRestore(
+        ...(args as [string, string, Record<string, unknown>, Command]),
+      );
+    });
+  addDatabaseOptions(
+    history
       .command('list <title>')
       .description('List history versions with revision and timestamp only.'),
   )

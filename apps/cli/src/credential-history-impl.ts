@@ -1,36 +1,11 @@
 /**
- * Read-side runtime for the `credential history` command family.
- *
- * History records are opaque, AEAD-authenticated ciphertext carried by
- * `structuredVaultPayloadSchema.history` (`packages/schemas/src/encrypted-records.ts`).
- * The schema guarantees, for every record, that its envelope is bound to the
- * exact vault, group, and item it claims, that its identity is unique inside the
- * vault, and that the enclosing payload is authenticated before it is parsed.
- * This module therefore only ever projects the non-sensitive record metadata the
- * schema already guarantees: the record identity, the item revision the snapshot
- * captured, the creation timestamp, the envelope's schema and key versions, and
- * the ciphertext digest.
- *
- * Two properties of the current storage path shape this module and are recorded
- * here so no caller has to rediscover them:
- *
- * 1. No production code path writes a history record. `history` is declared,
- *    validated, counted by `item show`, and removed with its item, but nothing
- *    appends to it. A non-empty `history` can therefore only arrive in a vault
- *    that already carried records (for example an imported or restored
- *    container), never as a side effect of a mutation.
- * 2. A history envelope has no wrapped-key record. `encryptedHistoryRecordSchema`
- *    carries `encryptedPayload` plus `itemRecordRevision` but no
- *    `wrappedItemKey` equivalent, and the structured payload stores item content
- *    in plaintext inside the vault-level envelope. There is consequently no key
- *    material reachable from the authenticated vault that could decrypt a history
- *    payload, so no command in this family can reveal, restore, or diff snapshot
- *    values. Listing metadata is the whole supported surface.
- *
- * Every output path is ANSI-free, never carries a field value, and never echoes
- * untrusted terminal text without sanitization.
+ * History metadata and guarded restoration. Legacy isolated envelopes remain
+ * read-only. New snapshots are authenticated by the version 2 vault envelope;
+ * no snapshot values are printed by these commands.
  */
 import type { Command } from 'commander';
+import { timestampSchema } from '@kavrix/schemas';
+import { restoreItemSnapshot } from './item-snapshots.js';
 
 import {
   encryptedHistoryRecordSchema,
@@ -74,8 +49,9 @@ export type CredentialHistoryEntry = Readonly<{
   /** Schema version of the encrypted record envelope. */
   schemaVersion: number;
   /** Key version the snapshot envelope was sealed under. */
-  keyVersion: number;
-  ciphertextHash: string;
+  keyVersion?: number;
+  ciphertextHash?: string;
+  restorable?: boolean;
 }>;
 
 export type CredentialHistoryProjection = Readonly<{
@@ -262,9 +238,8 @@ export async function credentialHistoryShow(
         service: projection.service,
         item: projection.item,
         ...entry,
-        // A history envelope carries no wrapped-key record, so no key reachable
-        // from the authenticated vault can decrypt it. There is deliberately no
-        // reveal flag: the snapshot's values are not recoverable by design.
+        // Show never prints values. New vault snapshots are restored through
+        // the mutation command; legacy isolated envelopes remain metadata-only.
         revealable: false,
       };
     });
@@ -291,6 +266,21 @@ function collectHistoryEntries(
   vaultId: string,
 ): readonly CredentialHistoryEntry[] {
   const entries: CredentialHistoryEntry[] = [];
+  for (const snapshot of payload.snapshots ?? []) {
+    if (
+      snapshot.item.id !== itemId ||
+      snapshot.item.groupId !== groupId ||
+      snapshot.item.vaultId !== vaultId
+    )
+      continue;
+    entries.push({
+      version: snapshot.id,
+      itemRevision: snapshot.item.revision,
+      createdAt: snapshot.createdAt,
+      schemaVersion: 2,
+      restorable: true,
+    });
+  }
   for (const record of payload.history) {
     if (
       record.vaultId !== vaultId ||
@@ -442,4 +432,29 @@ function requiredOption(options: Record<string, unknown>, key: string): string {
 
 function writeJsonResult(value: Record<string, unknown>): void {
   process.stdout.write(JSON.stringify(sanitizeJsonValue(value)) + '\n');
+}
+
+export async function credentialHistoryRestore(
+  title: string,
+  version: string,
+  options: Record<string, unknown>,
+  command: Command,
+): Promise<void> {
+  const flat = commandOptions(command);
+  const context = requiredOption(options, 'context');
+  const service = requiredOption(options, 'service');
+  const values = await readDatabaseFlatSecrets(flat, []);
+  await withDatabaseFlatVault(flat, values, async (session, vaultId) => {
+    const document = await session.updateStructuredVault(vaultId, (payload) =>
+      restoreItemSnapshot(
+        payload,
+        context,
+        service,
+        title,
+        version,
+        timestampSchema.parse(new Date().toISOString()),
+      ),
+    );
+    writeJsonResult({ restored: true, version, revision: document.revision });
+  });
 }

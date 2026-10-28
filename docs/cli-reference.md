@@ -282,36 +282,20 @@ Expiry/rotation metadata, attachment ownership, and encrypted history
 are part of the structured payload and survive these operations. Version 0.2.6
 does not add attachment transfer commands.
 
-### Credential history (read-only)
+### Credential history and restoration
 
-`kavrix item history list <title>` reports the non-sensitive metadata of one
-item's encrypted history
-records: the opaque record identity, the item revision each snapshot captured,
-its creation timestamp, the envelope's schema and key versions, and its
-ciphertext digest. It never prints a value. `--limit <count>` bounds one page
-(default 50, maximum 500) and `truncated: true` reports that more records exist.
+`kavrix item history list <title>` and `show <title> <version>` report
+metadata only. Edits now capture the previous item inside the version 2 vault
+envelope, and `item history restore <title> <version>` restores a snapshot as
+a fresh revision without printing its values. All three require `--context`
+and `--service`. List limits default to 50 and are bounded to 500.
 
-`kavrix item history show <title> <version>` reports the same metadata for one
-record. `<version>` is the opaque history record id that `item history list`
-prints as `version`.
-
-This group is deliberately read-only, and the reason is structural rather than a
-missing implementation:
-
-- **No command writes a history record.** `history` is declared, schema-bounded,
-  authenticated, counted by `item show`, and removed with its item, but nothing
-  appends to it. A non-empty history can only arrive in a container that already
-  carried records when it was imported or restored. Commands in this release
-  cannot create one.
-- **History ciphertext is not restorable.** An `encryptedHistoryRecord` carries
-  its envelope plus the item revision it captured, but no wrapped-key record,
-  and the structured payload stores item content inside the vault-level
-  envelope. There is consequently no key reachable from an authenticated vault
-  that could decrypt a history payload, so no command can reveal, restore,
-  diff, or prune snapshot values. There is deliberately **no `--reveal`** on
-  this group: requesting one is a usage error, not a reveal.
-
-Attachment transfer and history restore remain unimplemented.
+Retention is 100 snapshots per item and 10,000 per vault, within the existing
+vault-size bound. Permanent item removal deletes its live snapshots. Legacy
+isolated history ciphertext still lacks reachable wrapped keys: it remains
+metadata-only and cannot be restored. See [structured workflows](firewall-workflows.md)
+for exact references, operation rules, required-policy mode, snapshot identity
+validation and downgrade restrictions.
 
 ## 4. Store and read credentials
 
@@ -783,10 +767,9 @@ project contexts, groups/services, credential items, typed fields, and notes on
 items. Its root credential commands remain the default-context/service
 compatibility projection described above. Expiry/rotation metadata, attachment
 ownership, and encrypted history records are modeled and preserved. Attachment
-transfer remains unimplemented. Encrypted history records are **read-only
-metadata**: no command writes one, and their ciphertext has no wrapped-key
-record, so no command can reveal, restore, or diff a snapshot value (see
-"Credential history" above). The `note` group covers item notes only;
+transfer remains unimplemented. Legacy isolated history ciphertext remains
+metadata-only. New snapshots inside version 2 vault payloads support guarded
+restoration (see "Credential history and restoration" above). The `note` group covers item notes only;
 service/group note collections are not
 exposed by a command. Project-file environments cover execution mappings only;
 they are not a second vault hierarchy. Structured commands, policies, grants, audit, run, and agent commands
@@ -907,7 +890,7 @@ kavrix import archive --file ./work.kavrix-export --prefix staging/ --profile ot
 - Stdin frames: `export` expects `[mongodb-url,] passphrase,
 archive-passphrase, archive-passphrase-confirm`; `import archive` expects
   `[mongodb-url,] passphrase, archive-passphrase` (see `kavrix frames export`).
-- Scope: database-container profiles and the root compatibility credentials
+- Default flat scope: database-container profiles and the root compatibility credentials
   (default context/service `value` field) only. Structured fields, notes,
   policies, grants, and audit records are not exported. Archives are bounded
   to 10,000 entries and 64 MiB of plaintext. Anyone with the archive and its
@@ -977,3 +960,14 @@ or erase undeclared or unavailable key copies, recovery kits, MongoDB oplogs or
 backups, provider snapshots, filesystem snapshots, SSD-remapped blocks, or
 offline copies. Supply every known local artifact explicitly and remove
 remaining copies separately under their owning retention policies.
+
+## 0.3.4 structured firewall additions
+
+See [structured firewall workflows](firewall-workflows.md) for canonical
+`field:` references; `policy mode [optional|required]`; repeated
+`--operation <json>` rules on policies and grants; `policy candidates` and
+`policy import <id>`; `export --structured [--include-policies]`; and
+`backup create --include-firewall` followed by `backup restore-firewall`.
+Flat transfer remains the default. Structured transfer refuses nonportable
+attachment and legacy history ciphertext. Imported policies remain inert until
+explicit approval. Backup recovery discards every archived grant.

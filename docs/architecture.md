@@ -154,3 +154,9 @@ A privileged or same-user process on an unlocked host can inspect memory or
 terminal output. JavaScript cannot guarantee removal of every runtime copy.
 Availability, endpoint security, backup retention, and secure sharing of local
 database/key files remain operator responsibilities.
+
+## 0.3.4 structured firewall workflows
+
+Version 2 structured payloads retain item snapshots and vault execution mode inside the existing encrypted vault. CLI execution resolves canonical structured references through one resolver. Exact operation evaluation is shared by run, policy simulation, grants and the broker. Policy candidates imported with data remain inert until explicit approval.
+
+See the [workflow guide](firewall-workflows.md) for commands and limitations.

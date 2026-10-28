@@ -63,7 +63,7 @@ const backupCiphertextSchema = base64UrlSchemaWithMaxChars(
 export const databaseBackupArchiveSchema = z
   .object({
     format: z.literal('kavrix-database-backup'),
-    version: z.literal(1),
+    version: z.union([z.literal(1), z.literal(2)]),
     createdAt: timestampSchema,
     datastore: z.literal('file'),
     databaseId: databaseIdSchema,
@@ -80,3 +80,7 @@ export const databaseBackupArchiveSchema = z
   .strict();
 
 export type DatabaseBackupArchive = z.infer<typeof databaseBackupArchiveSchema>;
+export const databaseBackupHeaderSchema = databaseBackupArchiveSchema
+  .pick({ datastore: true, databaseId: true, version: true })
+  .partial({ version: true });
+export type DatabaseBackupHeader = z.infer<typeof databaseBackupHeaderSchema>;

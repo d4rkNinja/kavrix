@@ -179,3 +179,9 @@ masked-terminal raw-mode restoration regression run on native Windows in the CI
 matrix; macOS/Linux results are not substituted for Windows evidence. A passing
 local suite is not evidence that a remote deployment is correctly configured for
 TLS, transactions, authorization, or backup protection.
+
+## 0.3.4 structured firewall workflows
+
+New source suites cover canonical structured references, complete operation matching, concurrent agent use limits and stored-deny precedence, vault policy requirements, snapshot capture/restore, plaintext canaries, structured export authentication/version swaps, inert imported policies, and firewall recovery that discards archived grants. Existing tampering, AAD swap, malformed input, optimistic concurrency and packed CLI gates remain required. Verification results are recorded in the 0.3.4 release notes.
+
+See the [workflow guide](firewall-workflows.md) for commands and limitations.

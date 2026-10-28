@@ -13,6 +13,7 @@ import {
 import type { AuthorizationStateSnapshot } from './authorization-state.js';
 import {
   executionWindowMs,
+  operationAllowed,
   matchesWorkingDirectory,
   requiresConfirmation,
   sameCommand,
@@ -21,7 +22,7 @@ import {
 import { invalidConfiguration } from './exit-codes.js';
 
 export type PolicyRuleKind =
-  'deny' | 'command' | 'hash' | 'directory' | 'ttl' | 'confirmation';
+  'deny' | 'command' | 'operation' | 'hash' | 'directory' | 'ttl' | 'confirmation';
 
 export type PolicyRuleStatus =
   'matched' | 'not-matched' | 'applied' | 'not-configured' | 'not-evaluated';
@@ -150,6 +151,25 @@ export function explainPolicyEvaluation(
     );
   }
 
+  if (entry.operations !== undefined) {
+    const matched = operationAllowed(entry, context);
+    push({
+      kind: 'operation',
+      status: matched ? 'matched' : 'not-matched',
+      effect: matched ? 'allow' : 'deny',
+      policyId,
+      note: 'The complete argument list must match an approved operation.',
+    });
+    if (!matched)
+      return terminalExplanation(
+        policyId,
+        entry,
+        context,
+        checks,
+        order,
+        'operation-not-allowed',
+      );
+  }
   const pin = entry.hashes?.[context.facts.displayName];
   if (pin === undefined) {
     push({
@@ -290,7 +310,11 @@ function terminalExplanation(
   context: EvaluationContext,
   checks: readonly PolicyRuleTrace[],
   nextOrder: number,
-  reason: 'command-not-allowed' | 'hash-mismatch' | 'working-directory-mismatch',
+  reason:
+    | 'command-not-allowed'
+    | 'operation-not-allowed'
+    | 'hash-mismatch'
+    | 'working-directory-mismatch',
 ): PolicyExplanation {
   return explanation(
     policyId,
@@ -566,6 +590,7 @@ function compareFindings(left: PolicyLintFinding, right: PolicyLintFinding): num
 const DIFF_FIELDS = [
   'secret',
   'commands',
+  'operations',
   'hashes',
   'env',
   'reveal',
@@ -644,6 +669,21 @@ function canonicalEntry(
       ),
     ),
     hashes,
+    ...(entry.operations === undefined
+      ? {}
+      : {
+          operations: entry.operations
+            .map((operation) => ({
+              command:
+                platform === 'win32'
+                  ? operation.command.toLowerCase()
+                  : operation.command,
+              args: [...operation.args],
+            }))
+            .sort((left, right) =>
+              JSON.stringify(left).localeCompare(JSON.stringify(right)),
+            ),
+        }),
     env: entry.env ?? null,
     reveal: entry.reveal === true,
     ttl: entry.ttl === undefined ? null : (parseDurationToMs(entry.ttl) ?? entry.ttl),
@@ -665,6 +705,25 @@ function diffImpact(
   before: unknown,
   after: unknown,
 ): PolicyDiffChange['impact'] {
+  if (field === 'operations') {
+    if (before === null && after !== null) return 'tightens';
+    if (before !== null && after === null) return 'widens';
+    if (Array.isArray(before) && Array.isArray(after)) {
+      const previous = before.map((operation: unknown) => JSON.stringify(operation));
+      const next = after.map((operation: unknown) => JSON.stringify(operation));
+      if (
+        next.length < previous.length &&
+        next.every((operation) => previous.includes(operation))
+      )
+        return 'tightens';
+      if (
+        next.length > previous.length &&
+        previous.every((operation) => next.includes(operation))
+      )
+        return 'widens';
+    }
+    return 'changes';
+  }
   if (field === 'deny' || field === 'reveal') {
     if (before === true && after === false)
       return field === 'deny' ? 'widens' : 'tightens';
@@ -770,9 +829,14 @@ export function suggestPolicyTightenings(
           );
     const entryWithoutHashes = { ...entry };
     delete entryWithoutHashes.hashes;
+    const operations = entry.operations?.filter((operation) =>
+      proposedCommands.includes(operation.command),
+    );
+    if (operations?.length === 0) continue;
     const proposedDefinition: PermissionEntry = {
       ...entryWithoutHashes,
       commands: proposedCommands,
+      ...(operations === undefined ? {} : { operations }),
       ...(hashes === undefined || Object.keys(hashes).length === 0 ? {} : { hashes }),
     };
     suggestions.push({
@@ -833,6 +897,7 @@ export function grantInspection(
     restrictions: {
       actor: grant.actor,
       commands: [...grant.commands],
+      ...(grant.operations === undefined ? {} : { operations: grant.operations }),
       hashes: grant.hashes ?? {},
       remainingUses,
       expiresAt: grant.expiresAt ?? null,

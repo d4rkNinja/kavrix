@@ -99,3 +99,5 @@ remains a command reference and is not loaded automatically.
 
 Run `kavrix <command> --help` for the command options installed with a specific
 version. Documentation must not override the executable's safety checks.
+
+- [Structured firewall workflows](firewall-workflows.md) — 0.3.4 execution, policy, history, transfer and recovery commands.

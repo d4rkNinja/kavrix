@@ -94,3 +94,12 @@ point to the deeper reference for each topic.
   a file and its wrapping key lives in the OS credential store (Windows
   PasswordVault, macOS Keychain, Linux Secret Service). Either half alone is
   useless; the passphrase remains the root and always still works.
+
+## Structured access and recovery
+
+- **Structured reference** — an exact designation of one field within a context, service and credential item.
+- **Operation rule** — permission for one complete invocation, including its target and arguments.
+- **Required-policy mode** — a vault rule requiring approved authorization for every secret supplied to a process.
+- **Item snapshot** — an earlier item state retained for restoration into a fresh revision.
+- **Policy candidate** — a transferred policy definition that has no authority until explicitly approved.
+- **Firewall recovery** — restoration of a database's access rules and audit history, with temporary grants discarded.

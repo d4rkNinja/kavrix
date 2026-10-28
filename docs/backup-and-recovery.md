@@ -66,3 +66,9 @@ database recovery kit is lost, Kavrix cannot decrypt its vaults.
 Recovery rotation protects the current document; it cannot erase copies of old
 encrypted snapshots. Protect MongoDB backups and define an appropriate retention
 policy.
+
+## 0.3.4 structured firewall workflows
+
+Use backup create --include-firewall to retain the sealed policy/grant/audit sidecar alongside exact database bytes. After database restore and owner/recovery authentication, backup restore-firewall applies policies and audit with the archive passphrase. It discards all archived grants, requires --overwrite for existing policies/grants, and does not bypass rollback anchors. Existing ciphertext-only backups remain supported.
+
+See the [workflow guide](firewall-workflows.md) for commands and limitations.

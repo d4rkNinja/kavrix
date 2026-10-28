@@ -58,9 +58,11 @@ kavrix run --secret DATABASE_URL=production/database -- node server.js
 
 ## Policies: decide what a credential may do
 
-Stored policies are fail-closed rules evaluated before any program starts:
+Selected policies are fail-closed rules evaluated before execution. Stored deny
+rules always apply. `policy mode required` requires an explicit policy or grant
+for every injected credential in the selected encrypted vault:
 
-- command allowlists and SHA-256 executable pins,
+- command allowlists, complete argument-vector operation rules, and SHA-256 executable pins,
 - per-execution time windows (TTL),
 - working-directory restrictions,
 - reveal gating — reading the plaintext is denied unless a policy allows it,
@@ -124,7 +126,9 @@ feeds it to automation.
   `backup restore` writes it back — see [backups](#keys-recovery-and-health).
 - `kavrix export` seals one vault's credentials into a passphrase-protected
   archive that `kavrix import archive` loads into another database or vault.
-  Structured fields, notes, and policies are not exported.
+  Default flat export omits structured fields, notes and policies. Add
+  `--structured` for structured data and snapshots, and `--include-policies`
+  for inert policy review candidates. See [structured workflows](firewall-workflows.md).
 
 ## Stop typing your passphrase
 
@@ -197,3 +201,12 @@ Honest boundaries — the [threat model](threat-model.md) records them in full:
   grants full access to every vault.
 - Once an authorized program has received a secret, Kavrix cannot control
   what it does with it. Execution scoping is authorization, not a sandbox.
+
+## Connected structured workflows
+
+`run`, project mappings, grants and agents accept canonical structured field
+references. Edits retain bounded, authenticated item snapshots that
+`item history restore` restores as fresh revisions. Permanent removal deletes
+the item's live snapshots. Full backups can also retain firewall state; recovery
+discards grants. The [workflow guide](firewall-workflows.md) documents exact
+commands, format compatibility, retention and transfer limitations.

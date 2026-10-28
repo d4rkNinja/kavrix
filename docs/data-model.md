@@ -148,3 +148,9 @@ Strict runtime schemas reject unknown versions, extra fields, invalid IDs,
 noncanonical encodings, oversized values, malformed envelopes, inconsistent
 associated data, duplicate vault IDs, and catalog/document revision mismatch
 before plaintext is used. Authentication failures are generic and fail closed.
+
+## 0.3.4 structured firewall workflows
+
+Structured payload versions 1 and 2 are accepted. Version 2 adds optional executionPolicy, policyCandidates and bounded item snapshots. Snapshots include the complete item and a versioned identity/timestamp; they are validated against the owning live item/group/vault and authenticated by the enclosing vault envelope. Edits record the displaced item in the same optimistic write; permanent removal deletes its retained snapshots. Isolated legacy history remains a separate read-only representation.
+
+See the [workflow guide](firewall-workflows.md) for commands and limitations.

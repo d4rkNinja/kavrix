@@ -163,7 +163,8 @@ describe('public command help contract', () => {
     //        item history's credential route, ...), so alias routes are gone
     //        and view/stats/has/recovery/vault/key/frames joined destroy as
     //        hidden commands outside the public help tree.
-    expect(routes.canonical).toHaveLength(104);
+    // 0.3.4: policy mode/candidates/import, history restore, backup restore-firewall.
+    expect(routes.canonical).toHaveLength(109);
     expect(routes.aliases).toHaveLength(0);
 
     for (const route of [...routes.canonical, ...routes.aliases]) {

@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 
 import {
+  executionReference,
   encryptedTextSchema,
   fieldDefinitionSchema,
   fieldExpectsMultipleValues,
@@ -459,6 +460,11 @@ export function removeStructuredItem(
       }),
     attachments: payload.attachments.filter((record) => record.itemId !== item.id),
     history: payload.history.filter((record) => record.itemId !== item.id),
+    ...(payload.snapshots === undefined
+      ? {}
+      : {
+          snapshots: payload.snapshots.filter((record) => record.item.id !== item.id),
+        }),
   });
 }
 
@@ -1656,7 +1662,10 @@ export async function itemShow(
         title: sanitizeText(item.title),
         notes: item.notes.length,
         attachments: item.attachmentIds.length,
-        history: payload.history.filter((record) => record.itemId === item.id).length,
+        history:
+          payload.history.filter((record) => record.itemId === item.id).length +
+          (payload.snapshots ?? []).filter((record) => record.item.id === item.id)
+            .length,
         fields: [...group.template.fields, ...item.itemFields].map((field) => ({
           name: sanitizeText(field.label),
           stableKey: sanitizeText(field.stableKey),
@@ -1895,6 +1904,7 @@ export async function fieldGet(
         observed.itemTitle,
         field.stableKey,
       ),
+      vaultId,
     );
     process.stdout.write(
       revealBase64
@@ -2060,6 +2070,7 @@ export async function noteShow(
           observation.itemTitle,
           observation.note.id,
         ),
+        vaultId,
       );
     }
     writeJsonResult({
@@ -2199,7 +2210,12 @@ function structuredFieldReference(
   itemTitle: string,
   fieldKey: string,
 ): string {
-  const reference = `${contextName}/${serviceName}/${itemTitle}/${fieldKey}`;
+  const reference = executionReference({
+    context: contextName,
+    service: serviceName,
+    item: itemTitle,
+    field: fieldKey,
+  });
   if (reference.length > MAX_POLICY_REFERENCE_CHARS) {
     throw new StructuredVaultCommandError(
       'Structured field reference is too long for authorization policy.',

@@ -14,6 +14,9 @@
  */
 
 import type { Command } from 'commander';
+import { operationRulesSchema, type PermissionEntry } from '@kavrix/schemas';
+import { executePolicyMode } from './policy-mode.js';
+import { executePolicyCandidates } from './policy-candidates.js';
 
 import { executeAgentExec, executeAgentRun } from './agent-command.js';
 import { executeAudit } from './audit-command.js';
@@ -116,6 +119,37 @@ export async function executeRunAction(args: readonly unknown[]): Promise<void> 
 }
 
 // ---- policy ----------------------------------------------------------------
+
+export async function executePolicyModeAction(args: readonly unknown[]): Promise<void> {
+  const command = args.at(-1) as Command;
+  const merged = extractMergedOptions(command);
+  await guard(merged['json'] === true, () =>
+    executePolicyMode(executionFlatOptions(merged), optString(command.args[0])),
+  );
+}
+export async function executePolicyCandidatesAction(
+  args: readonly unknown[],
+): Promise<void> {
+  const command = args.at(-1) as Command;
+  const merged = extractMergedOptions(command);
+  await guard(merged['json'] === true, () =>
+    executePolicyCandidates(executionFlatOptions(merged), optString(command.args[0])),
+  );
+}
+
+function parseOperations(value: unknown): PermissionEntry['operations'] {
+  const values = asStrings(value);
+  if (values.length === 0) return undefined;
+  try {
+    return operationRulesSchema.parse(
+      values.map((entry) => JSON.parse(entry) as unknown),
+    );
+  } catch {
+    throw invalidConfiguration(
+      '--operation expects a validated command and complete args array.',
+    );
+  }
+}
 
 export async function executePolicyCreateAction(
   args: readonly unknown[],
@@ -259,6 +293,7 @@ function policyDefinitionOptions(
       ? {}
       : { secret: optString(merged['secret']) }),
     commands: asStrings(merged['command']),
+    operations: parseOperations(merged['operation']),
     hashes: asStrings(merged['hash']),
     ...(optString(merged['env']) === undefined
       ? {}
@@ -289,6 +324,7 @@ export async function executeGrantCreateAction(
       ...executionFlatOptions(merged),
       secret,
       commands: asStrings(merged['command']),
+      operations: parseOperations(merged['operation']),
       hashes: asStrings(merged['hash']),
       ...(optString(merged['env']) === undefined
         ? {}

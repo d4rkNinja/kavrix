@@ -67,6 +67,10 @@ export const STDIN_FRAME_CONTRACTS: Readonly<Record<string, string>> = Object.fr
   'note remove': '[mongodb-url,] passphrase',
   'item history list': '[mongodb-url,] passphrase',
   'item history show': '[mongodb-url,] passphrase',
+  'item history restore': '[mongodb-url,] passphrase',
+  'policy mode': '[mongodb-url,] passphrase',
+  'policy candidates': '[mongodb-url,] passphrase',
+  'policy import': '[mongodb-url,] passphrase',
   'policy create': '[mongodb-url,] passphrase',
   'policy check': '[mongodb-url,] passphrase',
   'policy explain': '[mongodb-url,] passphrase',
@@ -92,6 +96,8 @@ export const STDIN_FRAME_CONTRACTS: Readonly<Record<string, string>> = Object.fr
   'backup create': 'backup-passphrase, backup-passphrase-confirm',
   'backup verify': 'backup-passphrase',
   'backup restore': 'backup-passphrase',
+  'backup restore-firewall':
+    '[mongodb-url with --database-url-stdin,] passphrase, archive-passphrase',
   'import env': '[mongodb-url with --database-url-stdin,] passphrase',
   'import archive':
     '[mongodb-url with --database-url-stdin,] passphrase, archive-passphrase',

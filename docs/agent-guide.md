@@ -20,6 +20,10 @@ agents:
       gh-issue-list:
         secret: github/token
         commands: [gh]
+        operations:
+          - command: gh
+            args: [issue, list]
+        maxUses: 3
         env: GITHUB_TOKEN
       forbidden:
         deny: true
@@ -27,7 +31,9 @@ agents:
 
 `gh-issue-list` is the permission key; `gh` is the permitted executable basename.
 The `env` mapping is required for a credential-backed agent request. This example
-permits the `gh` executable, not only its `issue list` subcommand. Use the
+permits exactly `gh issue list`, with no extra flags, up to three validated
+attempts in one broker session. Without `operations`, the executable allowlist
+permits arbitrary arguments to that executable. Use the
 canonical permission fields for executable hashes, working-directory restrictions,
 confirmation, TTL, and use limits when needed; see [command reference](cli-reference.md).
 
@@ -107,3 +113,11 @@ remain valid; this does not reserve new identifiers.
 Windows command scripts cannot be run targets because they require shell
 re-parsing. Use a native executable. Never send session tokens, passphrases,
 connection strings, or decrypted values in a bug report.
+
+## Structured permissions and live denies
+
+Permissions accept canonical `field:` references and complete operation argument
+vectors. Stored deny policies are checked on every request, including after
+a live owner policy edit. Agent `maxUses` is reserved atomically per permission
+per broker session and is not refunded after a spawn failure. Restarting the
+broker starts a fresh session budget. See [structured workflows](firewall-workflows.md).

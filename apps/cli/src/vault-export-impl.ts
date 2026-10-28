@@ -15,6 +15,12 @@ import {
 import { publishProtectedFile } from './backup-command-impl.js';
 import { LocalCliError } from './cli-error.js';
 import {
+  structuredVaultPayloadSchema,
+  type VaultExportPlaintext,
+} from '@kavrix/schemas';
+import { AuthorizationState } from './execution/authorization-state.js';
+import { rebindStructuredExport } from './structured-transfer.js';
+import {
   readDatabaseFlatSecrets,
   rejectUnboundDatabaseProfile,
   usesDatabaseContainer,
@@ -38,6 +44,8 @@ export type VaultExportCommandOptions = DatabaseVaultRoutingOptions &
     prefix?: string;
     overwrite?: boolean;
     json?: boolean;
+    structured?: boolean;
+    includePolicies?: boolean;
   }>;
 
 export type ImportArchiveCommandOptions = VaultExportCommandOptions;
@@ -79,6 +87,13 @@ export async function handleVaultExport(
 ): Promise<void> {
   const file = requireFile(options.file);
   const prefix = requirePrefix(options.prefix);
+  if (
+    (options.structured === true && prefix.length > 0) ||
+    (options.includePolicies === true && options.structured !== true)
+  )
+    throw new LocalCliError(
+      'Structured exports do not support --prefix; --include-policies requires --structured.',
+    );
   const flat = flatOptions(options);
   await requireDatabaseContainer(flat, 'export');
   const secrets = await readDatabaseFlatSecrets(flat, [
@@ -90,7 +105,34 @@ export async function handleVaultExport(
     throw new LocalCliError('Export passphrases do not match.');
   }
   let entries: VaultExportEntry[] = [];
-  await withDatabaseFlatVault(flat, secrets, async (session, vaultId) => {
+  let details: Pick<VaultExportPlaintext, 'structured' | 'policies'> | undefined;
+  await withDatabaseFlatVault(flat, secrets, async (session, vaultId, profile) => {
+    if (options.structured === true) {
+      await session.inspectStructuredVault(vaultId, (payload) => {
+        details = { structured: payload };
+      });
+      if (options.includePolicies === true) {
+        const key = session.authorizationStateKey();
+        try {
+          const snapshot = await AuthorizationState.readSnapshot(profile.keyFile, key, {
+            scopeKind: 'database',
+            scopeId: session.databaseId,
+          });
+          details = {
+            ...details,
+            policies: Object.fromEntries(
+              Object.entries(snapshot.policies).map(([id, record]) => [
+                id,
+                record.definition,
+              ]),
+            ),
+          };
+        } finally {
+          zeroize(key);
+        }
+      }
+      return;
+    }
     await session.inspectVault(vaultId, (payload) => {
       entries = Object.entries(payload.records)
         .filter(([name]) => name.startsWith(prefix))
@@ -102,13 +144,13 @@ export async function handleVaultExport(
         }));
     });
   });
-  if (entries.length === 0) {
+  if (entries.length === 0 && details === undefined) {
     throw credentialMissing();
   }
   const passphrase = new TextEncoder().encode(archivePassphrase);
   let archive: VaultExportArchive;
   try {
-    archive = await sealVaultExportArchive(entries, passphrase);
+    archive = await sealVaultExportArchive(entries, passphrase, details);
   } finally {
     zeroize(passphrase);
   }
@@ -123,7 +165,8 @@ export async function handleVaultExport(
   );
   if (options.json === true) {
     writeJson({
-      exported: names.length,
+      exported: details?.structured?.items.length ?? names.length,
+      structured: details !== undefined,
       file,
       names,
       archiveBytes: serialized.byteLength,
@@ -131,9 +174,10 @@ export async function handleVaultExport(
     });
     return;
   }
+  const exportedCount = details?.structured?.items.length ?? names.length;
   process.stdout.write(
     [
-      `Exported ${String(names.length)} credential${names.length === 1 ? '' : 's'} to ${file}.`,
+      `Exported ${String(exportedCount)} credential${exportedCount === 1 ? '' : 's'} to ${file}.`,
       ...names.map((name) => `  ${name}`),
       'The archive holds decrypted values sealed under its own passphrase; store both separately.',
     ].join('\n') + '\n',
@@ -161,8 +205,10 @@ export async function handleImportArchive(
   const secrets = await readDatabaseFlatSecrets(flat, ['archive-passphrase']);
   const passphrase = new TextEncoder().encode(secrets.extras[0] ?? '');
   let entries: readonly VaultExportEntry[];
+  let content: Awaited<ReturnType<typeof openVaultExportArchive>>;
   try {
-    entries = (await openVaultExportArchive(archive, passphrase)).entries;
+    content = await openVaultExportArchive(archive, passphrase);
+    entries = content.entries;
   } catch (error) {
     // Only a genuine authentication failure (wrong passphrase or a tampered
     // archive) may surface as the authentication exit; any other error keeps
@@ -173,6 +219,42 @@ export async function handleImportArchive(
     );
   } finally {
     zeroize(passphrase);
+  }
+  if (content.structured !== undefined) {
+    if (prefix.length > 0)
+      throw new LocalCliError('--prefix is not supported for a structured archive.');
+    const source = content.structured;
+    await withDatabaseFlatVault(flat, secrets, async (session, vaultId) => {
+      await session.updateStructuredVault(vaultId, (current) => {
+        if (
+          options.overwrite !== true &&
+          (current.items.length > 0 ||
+            current.projectContexts.length > 1 ||
+            current.groups.length > 1)
+        )
+          throw new LocalCliError(
+            'Structured import requires an empty vault, or explicit --overwrite to replace the complete vault.',
+          );
+        const rebound = rebindStructuredExport(source, vaultId);
+        return structuredVaultPayloadSchema.parse({
+          ...rebound,
+          version: 2,
+          executionPolicy:
+            current.executionPolicy === 'required' ||
+            rebound.executionPolicy === 'required'
+              ? 'required'
+              : 'optional',
+          policyCandidates: { ...rebound.policyCandidates, ...content.policies },
+        });
+      });
+    });
+    writeJson({
+      imported: source.items.length,
+      structured: true,
+      policiesAvailableForReview: Object.keys(content.policies ?? {}).length,
+      file,
+    });
+    return;
   }
   const names = entries.map((entry) => `${prefix}${entry.name}`);
   for (const name of names) validateImportedName(name);

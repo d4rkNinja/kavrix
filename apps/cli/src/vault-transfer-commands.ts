@@ -39,6 +39,14 @@ export function addDatabaseVaultRoutingOptions(
 export function registerExportCommand(program: Command): void {
   const exportCommand = program
     .command('export')
+    .option(
+      '--structured',
+      'Export the complete structured vault, including fields, notes, metadata and restorable snapshots.',
+    )
+    .option(
+      '--include-policies',
+      'With --structured, include stored policies as inert review candidates.',
+    )
     .description(
       'Seal the credentials of the selected database vault into a passphrase-protected export archive. Values are never printed.',
     )

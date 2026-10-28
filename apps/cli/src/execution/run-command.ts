@@ -1,8 +1,10 @@
 import type { ChildProcess } from 'node:child_process';
+import { loadExecutionSecrets } from './secret-resolution.js';
 
 import { zeroize } from '@kavrix/crypto';
 import {
   authorizationReasonSchema,
+  executionReferenceAliases,
   type ProjectConfigDocument,
   environmentVariableNameSchema,
   secretValueSchema,
@@ -95,9 +97,11 @@ class MissingCredentialError extends Error {
 
 interface UnlockedScope {
   readonly values: ReadonlyMap<string, string>;
+  readonly identities: ReadonlyMap<string, readonly string[]>;
   readonly authzKey: Uint8Array;
   readonly keyFile: string;
   readonly scopeId: string;
+  readonly policyRequired: boolean;
 }
 
 interface ResolvedGrantRef {
@@ -199,25 +203,22 @@ export async function executeRun(options: RunCliOptions): Promise<RunOutcome> {
           ...mappings.map((mapping) => mapping.secret),
           ...resolvedGrants.map((resolved) => resolved.grant.secret),
         ]);
-        const values = new Map<string, string>();
-        let missingName: string | undefined;
-        await handle.session.inspectVault(handle.vaultId, (payload) => {
-          const missing: string[] = [];
-          for (const name of neededNames) {
-            const record = payload.records[name];
-            if (record === undefined) missing.push(name);
-            else values.set(name, record.value);
-          }
-          missingName = missing[0];
-        });
-        // Session callbacks must not throw: failures are surfaced after inspection
-        // so the session can close cleanly and map codes without translation.
-        if (missingName !== undefined) throw new MissingCredentialError(missingName);
+        const { values, policyRequired, identities } = await loadExecutionSecrets(
+          handle.session,
+          handle.vaultId,
+          neededNames,
+          policyNames.flatMap((id) => {
+            const secret = findPolicy(snapshot, configDocument, id)?.secret;
+            return secret === undefined ? [] : [secret];
+          }),
+        );
         unlocked = {
           values,
+          identities,
           authzKey,
           keyFile: handle.profile.keyFile,
           scopeId: handle.session.databaseId,
+          policyRequired,
         };
       } catch (error) {
         if (error instanceof MissingCredentialError) {
@@ -249,6 +250,8 @@ export async function executeRun(options: RunCliOptions): Promise<RunOutcome> {
         unlocked.values,
         configDocument,
         state,
+        unlocked.policyRequired,
+        unlocked.identities,
       );
     } finally {
       state.close();
@@ -301,6 +304,8 @@ async function authorizeAndSpawn(
   values: ReadonlyMap<string, string>,
   configDocument: ProjectConfigDocumentLike | null,
   state: AuthorizationState,
+  policyRequired: boolean,
+  identities: ReadonlyMap<string, readonly string[]>,
 ): Promise<RunOutcome> {
   const platform = process.platform;
   const jsonMode = options.json === true;
@@ -328,6 +333,7 @@ async function authorizeAndSpawn(
       displayName: resolution.displayName,
       sha256: resolution.sha256,
       firstArgument: target.args[0],
+      arguments: target.args,
     },
     nowIso: nowIso(),
     cwdRealPath: canonicalizeDirectory(process.cwd()),
@@ -342,16 +348,38 @@ async function authorizeAndSpawn(
     }
     return { policyId, entry };
   });
+  if (policyRequired) {
+    const covered = new Set([
+      ...selectedPolicies.flatMap(({ entry }) =>
+        entry.secret === undefined ? [] : [entry.secret],
+      ),
+      ...resolvedGrants.map(({ grant }) => grant.secret),
+    ]);
+    const uncovered = mappings.find((mapping) => !covered.has(mapping.secret));
+    if (uncovered !== undefined)
+      return denyExecution(
+        state,
+        'user',
+        'policy-required',
+        undefined,
+        authorizationDenied(
+          'This vault requires an explicit policy or grant for every injected credential.',
+        ),
+        uncovered.secret,
+      );
+  }
 
   // Stored deny entries block every use of their credential, attached or not.
   // A selected policy's credential is involved even when the policy is being
   // used as a process-only gate with no explicit environment mapping. This
   // keeps real execution aligned with metadata-only policy simulation.
+  const aliases = (reference: string): readonly string[] =>
+    identities.get(reference) ?? executionReferenceAliases(reference);
   const involvedSecrets = new Set<string>([
-    ...mappings.map((mapping) => mapping.secret),
-    ...resolvedGrants.map((resolved) => resolved.grant.secret),
+    ...mappings.flatMap((mapping) => aliases(mapping.secret)),
+    ...resolvedGrants.flatMap((resolved) => aliases(resolved.grant.secret)),
     ...selectedPolicies.flatMap(({ entry }) =>
-      entry.secret === undefined ? [] : [entry.secret],
+      entry.secret === undefined ? [] : aliases(entry.secret),
     ),
   ]);
   for (const [storedId, record] of Object.entries(snapshot.policies)) {
@@ -407,11 +435,12 @@ async function authorizeAndSpawn(
   // policy for a less-sensitive credential could be presented while injecting
   // a different credential into the authorized process.
   if (selectedPolicies.length > 0) {
-    const coveredSecrets = new Set(
-      selectedPolicies.flatMap(({ entry }) =>
+    const coveredSecrets = new Set([
+      ...selectedPolicies.flatMap(({ entry }) =>
         entry.secret === undefined ? [] : [entry.secret],
       ),
-    );
+      ...resolvedGrants.map(({ grant }) => grant.secret),
+    ]);
     const uncovered = mappings.find((mapping) => !coveredSecrets.has(mapping.secret));
     if (uncovered !== undefined) {
       return await denyExecution(

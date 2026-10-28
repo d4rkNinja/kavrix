@@ -3,9 +3,10 @@ import { randomBytes } from 'node:crypto';
 import {
   canonicalJson,
   databaseBackupArchiveSchema,
+  databaseBackupHeaderSchema,
   MAX_DATABASE_BACKUP_PLAINTEXT_BYTES,
   type DatabaseBackupArchive,
-  type DatabaseId,
+  type DatabaseBackupHeader,
 } from '@kavrix/schemas';
 import sodium from 'libsodium-wrappers';
 
@@ -17,10 +18,7 @@ const BACKUP_ARCHIVE_NONCE_BYTES = 24;
 const BACKUP_AAD_DOMAIN = Buffer.from('kavrix/database-backup-aad/v1', 'ascii');
 
 /** Authenticated header fields of an archive; the crypto fields are appended by sealing. */
-export type BackupArchiveHeader = Readonly<{
-  datastore: 'file';
-  databaseId: DatabaseId;
-}>;
+export type BackupArchiveHeader = Readonly<DatabaseBackupHeader>;
 
 function headerBytes(
   archive: Omit<DatabaseBackupArchive, 'nonce' | 'authenticationTag' | 'ciphertext'>,
@@ -56,6 +54,8 @@ export async function sealDatabaseBackupArchive(
   passphrase: Uint8Array,
   header: BackupArchiveHeader,
 ): Promise<DatabaseBackupArchive> {
+  const checkedHeader = databaseBackupHeaderSchema.safeParse(header);
+  if (!checkedHeader.success) throw new CryptoInputError('Backup header is invalid.');
   if (
     !(plaintext instanceof Uint8Array) ||
     plaintext.byteLength === 0 ||
@@ -69,10 +69,10 @@ export async function sealDatabaseBackupArchive(
   const kek = await derivePassphraseKek(passphrase, derivation);
   const base = {
     format: 'kavrix-database-backup' as const,
-    version: 1 as const,
+    version: checkedHeader.data.version ?? 1,
     createdAt: new Date().toISOString(),
-    datastore: header.datastore,
-    databaseId: header.databaseId,
+    datastore: checkedHeader.data.datastore,
+    databaseId: checkedHeader.data.databaseId,
     plaintextBytes: plaintext.byteLength,
     derivation,
   };

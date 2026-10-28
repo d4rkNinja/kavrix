@@ -170,3 +170,9 @@ unresolved-executable, missing-injection-mapping, oversized-output framing,
 and exit-code propagation. Windows-specific refusal semantics are asserted
 through injected platform parameters; POSIX process-group signal behavior is
 covered only where the platform provides it.
+
+## 0.3.4 structured firewall workflows
+
+Required-policy mode is an authenticated vault setting and cannot be disabled by skipping project discovery. Exact operation rules compare the complete argument vector but do not sandbox the permitted binary, scripts, configuration or network behavior. Stored deny rules additionally gate agent requests; session-local maxUses counters serialize concurrent reservations. Imported policies are inert candidates. Full firewall recovery requires separate owner and archive authentication and does not resurrect archived grants. Bounded snapshots share vault authorization and cannot protect an unlocked host.
+
+See the [workflow guide](firewall-workflows.md) for commands and limitations.

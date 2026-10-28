@@ -23,3 +23,5 @@ Thumbs.db
 # Windows PowerShell module-analysis cache written when LOCALAPPDATA points here.
 /Microsoft/
 plans/
+# Local video-generation project; never ship its sources or generated output.
+/marketing/kavrix-demo-video/

@@ -92,6 +92,32 @@ function registerPolicy(program: Command): void {
     .command('policy')
     .description('Manage stored credential permission policies.');
 
+  const mode = policy
+    .command('mode [mode]')
+    .description(
+      "Read or set this vault's encrypted execution policy mode: optional or required.",
+    )
+    .option('--json', 'Emit machine-readable output.');
+  addExecutionRoutingOptions(mode);
+  mode.action(async (...args: unknown[]) => {
+    const impl = await import('./commands.js');
+    await impl.executePolicyModeAction(args);
+  });
+  for (const [definition, description] of [
+    ['candidates', 'Review inert policy definitions from a structured import.'],
+    ['import <id>', 'Approve one imported policy candidate; refuses an existing id.'],
+  ] as const) {
+    const command = policy
+      .command(definition)
+      .description(description)
+      .option('--json', 'Emit machine-readable output.');
+    addExecutionRoutingOptions(command);
+    command.action(async (...args: unknown[]) => {
+      const impl = await import('./commands.js');
+      await impl.executePolicyCandidatesAction(args);
+    });
+  }
+
   const snapshot = policy
     .command('snapshot')
     .description(
@@ -204,6 +230,12 @@ function addPolicyDefinitionOptions(command: Command): Command {
   return command
     .option('--secret <name>', 'Credential this policy protects.')
     .option(
+      '--operation <json>',
+      'Exact allowed operation {"command":"gh","args":["issue","list"]}; repeatable, no secret values.',
+      collectExecutionOption,
+      [],
+    )
+    .option(
       '--command <name>',
       'Allowed executable; repeatable.',
       collectExecutionOption,
@@ -243,6 +275,12 @@ function registerGrant(program: Command): void {
   const grant = program
     .command('grant')
     .description('Issue, inspect, list, or revoke temporary consumable authorizations.')
+    .option(
+      '--operation <json>',
+      'Exact allowed command and args vector; repeatable.',
+      collectExecutionOption,
+      [],
+    )
     .option('--json', 'Emit machine-readable output.')
     .option(
       '--command <name>',

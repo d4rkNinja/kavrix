@@ -1,4 +1,6 @@
 import type { Command } from 'commander';
+import type { FirewallRestoreOptions } from './firewall-recovery.js';
+import { addExecutionRoutingOptions } from './execution/cli-options.js';
 
 import type { BackupCommandOptions } from './backup-command-impl.js';
 
@@ -6,9 +8,30 @@ const BACKUP_HELP = 'Passphrase-sealed backup of one local-file database contain
 
 export function registerBackupCommands(program: Command): void {
   const backup = program.command('backup').description(BACKUP_HELP);
+  const firewall = backup
+    .command('restore-firewall')
+    .description(
+      'Restore policies and audit from a firewall backup after owner authentication; discard all archived grants.',
+    )
+    .requiredOption('--file <path>', 'Firewall backup archive.')
+    .option(
+      '--overwrite',
+      'Explicitly replace existing policies and discard active grants.',
+    )
+    .option('--json', 'Emit machine-readable output.');
+  addExecutionRoutingOptions(firewall);
+  firewall.action(async (...args: unknown[]) => {
+    const options = args.at(-2) as FirewallRestoreOptions;
+    const { restoreFirewallState } = await import('./firewall-recovery.js');
+    process.stdout.write(JSON.stringify(await restoreFirewallState(options)) + '\n');
+  });
 
   backup
     .command('create')
+    .option(
+      '--include-firewall',
+      'Include the encrypted policies/grants/audit sidecar; recovery discards grants.',
+    )
     .description(
       'Seal the local database file of the selected profile into a passphrase-protected backup archive.',
     )

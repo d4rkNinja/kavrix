@@ -47,6 +47,40 @@ jobs:
           KAVRIX_MONGODB_URI: mongodb://127.0.0.1:27017
         run: pnpm exec vitest run packages/storage/test/mongo-connection-probe.integration.test.ts
 
+      - name: Start disposable transaction-capable MongoDB
+        shell: bash
+        run: |
+          docker run --detach --name kavrix-release-replica \
+            --publish 127.0.0.1:27018:27017 \
+            mongo:8.0.17@sha256:9814652e33f0cf8b9fddea8b46dfc9d8e19b130dcfdd7b510ca58bb0d40c8b71 \
+            mongod --replSet kavrix-release --bind_ip_all
+          ready=false
+          for attempt in {1..60}; do
+            if docker exec kavrix-release-replica mongosh --quiet --eval 'db.adminCommand({ping:1}).ok' >/dev/null 2>&1; then
+              ready=true
+              break
+            fi
+            sleep 1
+          done
+          test "$ready" = true
+          docker exec kavrix-release-replica mongosh --quiet --eval 'rs.initiate({_id:"kavrix-release",members:[{_id:0,host:"127.0.0.1:27017"}]})'
+          ready=false
+          for attempt in {1..60}; do
+            if docker exec kavrix-release-replica mongosh --quiet --eval 'if (!db.hello().isWritablePrimary) quit(1)' >/dev/null 2>&1; then
+              ready=true
+              break
+            fi
+            sleep 1
+          done
+          test "$ready" = true
+      - name: Verify real transactional encrypted storage and collaboration
+        env:
+          KAVRIX_MONGODB_URI: mongodb://127.0.0.1:27018/?replicaSet=kavrix-release&directConnection=true
+        run: pnpm exec vitest run packages/storage/test/mongo-encrypted-database.integration.test.ts packages/storage/test/mongo-collaboration.integration.test.ts
+      - name: Remove disposable replica set
+        if: always()
+        run: docker rm --force kavrix-release-replica
+
   static-checks:
     name: Static checks
     runs-on: ubuntu-24.04

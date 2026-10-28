@@ -4,8 +4,8 @@
 
 A local-first secrets firewall for developers, applications, and AI agents.
 
-Zero-knowledge local encryption: Kavrix never sees your passphrases or plaintext
-credentials.
+Zero-knowledge storage: datastore adapters receive encrypted vault records.
+The local CLI decrypts authorized values in memory.
 
 Give applications and AI agents access to credentials without handing them your
 `.env`. Kavrix decides which process may receive a secret, under which policy or
@@ -159,6 +159,13 @@ for scripts. Bare `kavrix` on a non-interactive stream keeps printing help. The
 TUI locks after two idle minutes or fifteen minutes since unlock.
 
 ## What's new
+
+- **0.3.4 — connected firewall workflows.** Structured-field execution, required
+  policy mode, exact operation rules, restorable item snapshots, structured
+  transfer with reviewed policy import, and full firewall recovery. Agent use
+  limits and stored denies are enforced per request. See the
+  [workflow guide](docs/firewall-workflows.md) and
+  [release notes](docs/release-notes-0.3.4.md).
 
 - **0.3.2 — documentation clarity.** Every user-facing guide now describes the
   current command surface directly. See the

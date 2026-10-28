@@ -125,3 +125,9 @@ JavaScript runtime cannot guarantee complete memory erasure.
 
 A passing test suite and dependency audit do not replace independent
 cryptographic review.
+
+## 0.3.4 structured firewall workflows
+
+Restorable snapshots reuse the existing vault AEAD, VRK and exact vault revision binding; no new primitive or per-snapshot wrapping key is introduced. Structured export version 2 uses the existing Argon2id and XChaCha20-Poly1305 implementation with the authenticated version/count/length header. Full backup bundles contain database ciphertext plus the sealed authorization sidecar under the existing backup envelope. Owner keys are kept separately. Recovery reauthenticates the sidecar with the selected database-derived key and discards all archived grants.
+
+See the [workflow guide](firewall-workflows.md) for commands and limitations.

@@ -36,6 +36,7 @@ export interface PolicyCreateOptions extends DatabaseFlatCommandOptions {
   readonly id: string;
   readonly secret?: string | undefined;
   readonly commands?: readonly string[] | undefined;
+  readonly operations?: PermissionEntry['operations'] | undefined;
   readonly hashes?: readonly string[] | undefined;
   readonly env?: string | undefined;
   readonly reveal?: boolean | undefined;
@@ -200,6 +201,7 @@ export async function executePolicyRemove(
 export interface GrantCreateOptions extends DatabaseFlatCommandOptions {
   readonly secret: string;
   readonly commands: readonly string[];
+  readonly operations?: PermissionEntry['operations'] | undefined;
   readonly hashes?: readonly string[] | undefined;
   readonly env?: string | undefined;
   readonly ttl?: string | undefined;
@@ -230,6 +232,7 @@ export async function executeGrantCreate(
     assembled['hashes'] = parseHashPins(options.hashes);
   }
   if (options.env !== undefined) assembled['env'] = options.env;
+  if (options.operations !== undefined) assembled['operations'] = options.operations;
   if (expiresAt !== undefined) assembled['expiresAt'] = expiresAt;
   if (options.maxUses !== undefined) assembled['maxUses'] = options.maxUses;
 
@@ -293,6 +296,7 @@ function summarizeEntry(
     id,
     secret: entry.secret ?? null,
     commands: entry.commands ?? [],
+    ...(entry.operations === undefined ? {} : { operations: entry.operations }),
     ...(entry.hashes === undefined ? {} : { hashes: entry.hashes }),
     ...(entry.env === undefined ? {} : { env: entry.env }),
     ...(entry.workingDirectory === undefined
@@ -337,6 +341,7 @@ export function assembleEntry(options: PolicyCreateOptions): PermissionEntry {
   } else {
     if (options.secret !== undefined) raw['secret'] = options.secret;
     raw['commands'] = [...(options.commands ?? [])];
+    if (options.operations !== undefined) raw['operations'] = options.operations;
     if (options.reveal !== undefined) raw['reveal'] = options.reveal;
     if (options.ttl !== undefined) {
       if (parseDurationToMs(options.ttl) === undefined) {
@@ -425,6 +430,7 @@ async function policyExplanation(
         displayName: resolution.displayName,
         sha256: resolution.sha256,
         firstArgument: options.executableAndArgs[1],
+        arguments: options.executableAndArgs.slice(1),
       },
       nowIso: nowIso(),
       cwdRealPath: canonicalizeDirectory(process.cwd()),

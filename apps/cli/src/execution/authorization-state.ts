@@ -189,9 +189,17 @@ export class AuthorizationState {
   public async putPolicy(
     id: string,
     entry: PermissionEntry,
+    options: Readonly<{ createOnly?: boolean }> = {},
   ): Promise<StoredPolicyRecord> {
     const policyId = parsePolicyId(id);
     return this.mutate((view) => {
+      if (
+        options.createOnly === true &&
+        Object.hasOwn(view.snapshot.policies, policyId)
+      )
+        throw invalidConfiguration(
+          'A stored policy with this id already exists. Review and remove it explicitly before importing.',
+        );
       const record: StoredPolicyRecord = { definition: entry, createdAt: nowIso() };
       view.next((draft) => {
         draft.policies[policyId] = record;

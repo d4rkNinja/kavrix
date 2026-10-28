@@ -27,3 +27,5 @@ export * from './structured-vault.js';
 export * from './setup-tools.js';
 export * from './vault-browse.js';
 export * from './vault-export-archive.js';
+export * from './execution-reference.js';
+export * from './firewall-backup.js';

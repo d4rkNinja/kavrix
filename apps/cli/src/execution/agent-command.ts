@@ -1,4 +1,5 @@
 import { randomBytes, randomUUID } from 'node:crypto';
+import { loadExecutionSecrets } from './secret-resolution.js';
 import type { ChildProcess } from 'node:child_process';
 import { chmod, unlink } from 'node:fs/promises';
 import {
@@ -14,6 +15,7 @@ import { performance } from 'node:perf_hooks';
 import { zeroize } from '@kavrix/crypto';
 import {
   agentBrokerClientFrameSchema,
+  executionReferenceAliases,
   agentBrokerRequestSchema,
   agentBrokerServerFrameSchema,
   authorizationReasonSchema,
@@ -197,16 +199,17 @@ export async function executeAgentRun(options: AgentRunOptions): Promise<unknown
   const flatSecrets = await readDatabaseFlatSecrets(options, []);
   const handle = await openDatabaseFlatVault(options, flatSecrets);
   let secrets: Map<string, string>;
+  let referenceIdentities: ReadonlyMap<string, readonly string[]>;
   let authzKey: Uint8Array;
   let keyFile: string;
   try {
-    secrets = new Map<string, string>();
-    await handle.session.inspectVault(handle.vaultId, (payload) => {
-      for (const name of secretNames) {
-        const record = payload.records[name];
-        if (record !== undefined) secrets.set(name, record.value);
-      }
-    });
+    const loaded = await loadExecutionSecrets(
+      handle.session,
+      handle.vaultId,
+      secretNames,
+    );
+    secrets = loaded.values;
+    referenceIdentities = loaded.identities;
     authzKey = handle.session.authorizationStateKey();
     keyFile = handle.profile.keyFile;
   } finally {
@@ -225,6 +228,7 @@ export async function executeAgentRun(options: AgentRunOptions): Promise<unknown
     token: randomBytes(32).toString('base64url'),
     permissions,
     secrets,
+    referenceIdentities,
     state,
     platform: process.platform,
     counters: { allowed: 0, denied: 0 },
@@ -575,6 +579,7 @@ interface BrokerSession {
   token: string;
   permissions: Readonly<Record<string, PermissionEntry>>;
   secrets: Map<string, string>;
+  referenceIdentities?: ReadonlyMap<string, readonly string[]>;
   state: AuthorizationState;
   platform: NodeJS.Platform;
   counters: { allowed: number; denied: number };
@@ -582,6 +587,7 @@ interface BrokerSession {
 }
 
 interface BrokerRuntime {
+  permissionUses: Map<string, number>;
   activeRequests: number;
   readonly waitingRequests: (() => void)[];
   confirmationQueue: Promise<void>;
@@ -625,6 +631,7 @@ function startBroker(
 ): Promise<BrokerListener> {
   const isWindows = session.platform === 'win32';
   const runtime: BrokerRuntime = {
+    permissionUses: new Map(),
     limits: { ...DEFAULT_BROKER_LIMITS, ...limitOverrides },
     queuedRequests: 0,
     activeRequests: 0,
@@ -1034,6 +1041,7 @@ async function handleAuthorizedExec(
       displayName: resolution.displayName,
       sha256: resolution.sha256,
       firstArgument: request.argv[1],
+      arguments: request.argv.slice(1),
     },
     nowIso: nowIso(),
     cwdRealPath: canonicalizeDirectory(process.cwd()),
@@ -1087,6 +1095,38 @@ async function handleAuthorizedExec(
   }
 
   if (context.terminatedHard) return;
+
+  const reservation = context.runtime.auditQueue
+    .catch(() => undefined)
+    .then(async () => {
+      const snapshot = await session.state.read();
+      if (
+        Object.values(snapshot.policies).some(
+          (record) =>
+            record.definition.deny === true &&
+            record.definition.secret !== undefined &&
+            (
+              session.referenceIdentities?.get(entry.secret ?? '') ??
+              executionReferenceAliases(entry.secret ?? '')
+            ).includes(record.definition.secret),
+        )
+      )
+        return 'policy-denied' as const;
+      const used = context.runtime.permissionUses.get(request.permission) ?? 0;
+      if (entry.maxUses !== undefined && used >= entry.maxUses)
+        return 'exhausted' as const;
+      context.runtime.permissionUses.set(request.permission, used + 1);
+      return undefined;
+    });
+  context.runtime.auditQueue = reservation.then(
+    () => undefined,
+    () => undefined,
+  );
+  const reserved = await reservation;
+  if (reserved !== undefined) {
+    await deny(reserved);
+    return;
+  }
 
   const announceAllow = (): void => {
     if (context.decisionSent || context.terminatedHard) return;

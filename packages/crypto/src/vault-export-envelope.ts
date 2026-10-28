@@ -7,6 +7,7 @@ import {
   vaultExportPlaintextSchema,
   type VaultExportArchive,
   type VaultExportEntry,
+  type VaultExportPlaintext,
 } from '@kavrix/schemas';
 import sodium from 'libsodium-wrappers';
 
@@ -50,8 +51,12 @@ function headerBytes(header: ExportHeader): Uint8Array {
 export async function sealVaultExportArchive(
   entries: readonly VaultExportEntry[],
   passphrase: Uint8Array,
+  details?: Pick<VaultExportPlaintext, 'structured' | 'policies'>,
 ): Promise<VaultExportArchive> {
-  const validated = vaultExportPlaintextSchema.parse({ entries: [...entries] });
+  const validated = vaultExportPlaintextSchema.parse({
+    entries: [...entries],
+    ...details,
+  });
   const plaintext = Buffer.from(canonicalJson(validated), 'utf8');
   let kek: Uint8Array | undefined;
   let aad: Uint8Array | undefined;
@@ -64,9 +69,9 @@ export async function sealVaultExportArchive(
     kek = await derivePassphraseKek(passphrase, derivation);
     const header: ExportHeader = {
       format: 'kavrix-vault-export',
-      version: 1,
+      version: validated.structured === undefined ? 1 : 2,
       createdAt: new Date().toISOString(),
-      entryCount: validated.entries.length,
+      entryCount: validated.structured?.items.length ?? validated.entries.length,
       plaintextBytes: plaintext.byteLength,
       derivation,
     };
@@ -116,7 +121,7 @@ export function parseVaultExportArchive(bytes: Uint8Array): VaultExportArchive {
 export async function openVaultExportArchive(
   archive: VaultExportArchive,
   passphrase: Uint8Array,
-): Promise<Readonly<{ entries: readonly VaultExportEntry[]; createdAt: string }>> {
+): Promise<Readonly<VaultExportPlaintext & { createdAt: string }>> {
   const aad = headerBytes(archive);
   let kek: Uint8Array | undefined;
   let nonce: Uint8Array | undefined;
@@ -155,11 +160,16 @@ export async function openVaultExportArchive(
       throw new CryptoInputError('Export plaintext is malformed');
     }
     const result = vaultExportPlaintextSchema.safeParse(decoded);
-    if (!result.success || result.data.entries.length !== archive.entryCount) {
+    if (
+      !result.success ||
+      (result.data.structured?.items.length ?? result.data.entries.length) !==
+        archive.entryCount ||
+      (archive.version === 1) !== (result.data.structured === undefined)
+    ) {
       throw new CryptoInputError('Export plaintext is malformed');
     }
     return Object.freeze({
-      entries: result.data.entries,
+      ...result.data,
       createdAt: archive.createdAt,
     });
   } finally {

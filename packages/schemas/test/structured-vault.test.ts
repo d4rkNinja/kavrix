@@ -201,7 +201,7 @@ describe('structured database-vault payloads', () => {
     expect(encryptedAttachmentRecordSchema.safeParse(attachment()).success).toBe(true);
     expect(encryptedHistoryRecordSchema.safeParse(history()).success).toBe(true);
     expect(
-      structuredVaultPayloadSchema.safeParse({ ...validPayload(), version: 2 }).success,
+      structuredVaultPayloadSchema.safeParse({ ...validPayload(), version: 3 }).success,
     ).toBe(false);
     expect(
       structuredVaultPayloadSchema.safeParse({ ...validPayload(), unexpected: true })

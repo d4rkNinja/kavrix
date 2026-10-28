@@ -14,6 +14,7 @@ export type ExecutableFacts = Readonly<{
   displayName: string;
   sha256: string | undefined;
   firstArgument: string | undefined;
+  arguments?: readonly string[];
 }>;
 
 export type EvaluationContext = Readonly<{
@@ -83,6 +84,8 @@ export function evaluatePermission(
   if (!commandMatches) {
     return deny('command-not-allowed', entry.secret);
   }
+  if (!operationAllowed(entry, context))
+    return deny('operation-not-allowed', entry.secret);
   const pin = entry.hashes?.[context.facts.displayName];
   if (pin !== undefined && pin !== context.facts.sha256) {
     return deny('hash-mismatch', entry.secret);
@@ -119,6 +122,23 @@ export function sameCommand(
   return platform === 'win32'
     ? policyCommand.toLowerCase() === resolvedName.toLowerCase()
     : policyCommand === resolvedName;
+}
+
+export function operationAllowed(
+  entry: Pick<PermissionEntry, 'operations'>,
+  context: EvaluationContext,
+): boolean {
+  if (entry.operations === undefined) return true;
+  const args = context.facts.arguments;
+  return (
+    args !== undefined &&
+    entry.operations.some(
+      (operation) =>
+        sameCommand(operation.command, context.facts.displayName, context.platform) &&
+        operation.args.length === args.length &&
+        operation.args.every((arg, index) => arg === args[index]),
+    )
+  );
 }
 
 export function requiresConfirmation(
@@ -179,7 +199,8 @@ export type GrantEvaluation =
         | 'expired'
         | 'exhausted'
         | 'command-not-allowed'
-        | 'hash-mismatch';
+        | 'hash-mismatch'
+        | 'operation-not-allowed';
     }>;
 
 /**
@@ -213,6 +234,8 @@ export function evaluateGrantUse(
     sameCommand(command, context.facts.displayName, context.platform),
   );
   if (!matchesCommand) return { status: 'denied', reason: 'command-not-allowed' };
+  if (!operationAllowed(grant, context))
+    return { status: 'denied', reason: 'operation-not-allowed' };
   const pin = grant.hashes?.[context.facts.displayName];
   if (pin !== undefined && pin !== context.facts.sha256) {
     return { status: 'denied', reason: 'hash-mismatch' };

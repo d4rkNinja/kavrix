@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { parseExecutionReference } from './execution-reference.js';
 
 import {
   AEAD_AUTHENTICATION_TAG_BASE64URL_CHARS,
@@ -49,6 +50,14 @@ export const credentialReferenceSchema = z
   .refine((value) => value.trim() === value, {
     message: 'Credential references must not start or end with whitespace',
   })
+  .refine((value) => {
+    try {
+      parseExecutionReference(value);
+      return true;
+    } catch {
+      return false;
+    }
+  }, 'Credential reference is invalid')
   .refine((value) => !RESERVED_CREDENTIAL_REFERENCES.has(value), {
     message: 'Credential reference is reserved',
   });
@@ -150,6 +159,26 @@ export const confirmationRequirementSchema = z.union([
 
 export const positiveMaxUsesSchema = z.number().int().min(1).max(1_000_000);
 
+/** Entire argv vectors, not prefixes: extra flags and targets are denied. */
+export const operationRuleSchema = z
+  .object({
+    command: commandNameSchema,
+    args: z
+      .array(
+        z
+          .string()
+          .max(8_192)
+          .refine(
+            // eslint-disable-next-line no-control-regex
+            (value) => !/[\u0000-\u001f\u007f]/u.test(value),
+            'Arguments must not contain controls',
+          ),
+      )
+      .max(128),
+  })
+  .strict();
+export const operationRulesSchema = z.array(operationRuleSchema).min(1).max(64);
+
 /** Bounded path string for working-directory restrictions on permission entries. */
 export const workingDirectorySchema = z
   .string()
@@ -170,6 +199,7 @@ export const permissionEntrySchema = z
   .object({
     secret: credentialReferenceSchema.optional(),
     commands: z.array(commandNameSchema).min(1).max(MAX_COMMANDS_PER_ENTRY).optional(),
+    operations: operationRulesSchema.optional(),
     hashes: z.record(commandNameSchema, sha256HexDigestSchema).optional(),
     env: environmentVariableNameSchema.optional(),
     reveal: z.boolean().optional(),
@@ -201,6 +231,7 @@ export const permissionEntrySchema = z
     } else {
       for (const field of [
         'commands',
+        'operations',
         'hashes',
         'ttl',
         'maxUses',
@@ -215,6 +246,17 @@ export const permissionEntrySchema = z
           });
         }
       }
+    }
+    if (
+      entry.operations?.some(
+        (operation) => !entry.commands?.includes(operation.command),
+      )
+    ) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Operations must reference allowed commands',
+        path: ['operations'],
+      });
     }
     if (entry.hashes === undefined || entry.commands === undefined) return;
     const commands = new Set(entry.commands);
@@ -231,6 +273,15 @@ export const permissionEntrySchema = z
   });
 
 export type PermissionEntry = z.infer<typeof permissionEntrySchema>;
+export type PolicyCandidateMap = z.infer<typeof policyCandidateMapSchema>;
+
+/** Inert, reviewable definitions; importing them does not grant access. */
+export const policyCandidateMapSchema = z
+  .record(opaqueIdentifierSchema, permissionEntrySchema)
+  .refine(
+    (entries) => Object.keys(entries).length <= MAX_STORED_POLICIES,
+    'Too many policy candidates',
+  );
 
 /**
  * Renames documented snake_case aliases (`require_confirmation`, `max_uses`)
@@ -505,6 +556,7 @@ export const grantRecordSchema = z
     secret: credentialReferenceSchema,
     actor: grantActorSchema,
     commands: z.array(commandNameSchema).min(1).max(MAX_COMMANDS_PER_ENTRY),
+    operations: operationRulesSchema.optional(),
     hashes: z.record(commandNameSchema, sha256HexDigestSchema).optional(),
     env: environmentVariableNameSchema.optional(),
     createdByPolicyId: opaqueIdentifierSchema.optional(),
@@ -518,6 +570,14 @@ export const grantRecordSchema = z
   })
   .strict()
   .superRefine((grant, context) => {
+    if (
+      grant.operations?.some((operation) => !grant.commands.includes(operation.command))
+    )
+      context.addIssue({
+        code: 'custom',
+        message: 'Operations must reference allowed commands',
+        path: ['operations'],
+      });
     if (grant.maxUses !== undefined && grant.usedCount > grant.maxUses) {
       context.addIssue({
         code: 'custom',
@@ -576,6 +636,8 @@ export const CONFIRM_DECISION_REASONS = Object.freeze([
 ] as const);
 
 export const DENY_DECISION_REASONS = Object.freeze([
+  'operation-not-allowed',
+  'policy-required',
   'policy-denied',
   'command-not-allowed',
   'hash-mismatch',
@@ -637,6 +699,7 @@ export type AuthorizationDecision = z.infer<typeof authorizationDecisionSchema>;
 export const runtimeAuditActorSchema = z.enum(['user', 'agent']);
 
 export const runtimeAuditActionSchema = z.enum([
+  'firewall-restored',
   'unlock',
   'policy-created',
   'policy-updated',
