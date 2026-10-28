@@ -27,6 +27,19 @@ describe('version 2 structured export envelope', () => {
       payload,
     );
     await expect(
+      sealVaultExportArchive(
+        [
+          {
+            name: 'must-not-be-dropped',
+            value: 'mixed-format-canary',
+            updatedAt: archive.createdAt,
+          },
+        ],
+        passphrase,
+        { structured: payload },
+      ),
+    ).rejects.toThrow();
+    await expect(
       openVaultExportArchive({ ...archive, version: 1 }, passphrase),
     ).rejects.toThrow();
     await expect(

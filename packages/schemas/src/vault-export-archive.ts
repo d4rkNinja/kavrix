@@ -15,12 +15,12 @@ import {
 } from './primitives.js';
 
 /**
- * Passphrase-sealed export of the flat credentials in one vault.
+ * Passphrase-sealed flat or structured transfer of one vault.
  *
  * Unlike a database backup, an export carries decrypted name/value records
  * re-sealed under a separate passphrase, so it can be imported into a
- * different database or vault. The archive never contains database, vault, or
- * key identifiers; it is bound only to its own canonical header.
+ * different database or vault. Structured identities remain inside the encrypted
+ * payload and are rebound during import. Neither format carries decryption keys.
  */
 export const MAX_VAULT_EXPORT_ENTRIES = 10_000;
 export const MAX_VAULT_EXPORT_PLAINTEXT_BYTES = 64 * 1024 * 1024;
@@ -43,6 +43,11 @@ export const vaultExportPlaintextSchema = z
   })
   .strict()
   .superRefine((plaintext, context) => {
+    if (plaintext.structured !== undefined && plaintext.entries.length !== 0)
+      context.addIssue({
+        code: 'custom',
+        message: 'Structured exports cannot also contain flat entries',
+      });
     if (
       plaintext.structured === undefined &&
       (plaintext.entries.length === 0 || plaintext.policies !== undefined)
