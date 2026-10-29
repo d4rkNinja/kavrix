@@ -1,23 +1,18 @@
 #!/usr/bin/env python3
 """Pull selected code, build in the project checkout, and restart its services."""
 import argparse, fcntl, json, os, pathlib, re, shlex, shutil, signal, socket, subprocess, sys, time, urllib.request, zipfile
+from ci_reporting import Reporter, CommandFailure
+REPORT = Reporter()
 P = pathlib.Path
 BASE = P('/home/gandiv/projects')
 PM2 = '/home/gandiv/.nvm/versions/node/v22.17.1/bin/pm2'
 
-def run(args, cwd=None, capture=False):
+def run(args, cwd=None, capture=False, public=False):
     if capture:
+        # Runtime state can contain secrets; do not publish captured output.
         return subprocess.check_output(args, cwd=cwd, env=ENV, text=True)
-    with LOG.open('ab') as log:
-        child = subprocess.Popen(args, cwd=cwd, env=ENV, stdout=log, stderr=log, start_new_session=True)
-        try: code = child.wait()
-        except BaseException:
-            os.killpg(child.pid, signal.SIGTERM)
-            try: child.wait(timeout=5)
-            except subprocess.TimeoutExpired: os.killpg(child.pid, signal.SIGKILL)
-            raise
-    if code:
-        raise RuntimeError('Command failed; protected server log: ' + str(LOG))
+    return REPORT.run(args, cwd=cwd, env=ENV, log=LOG, public=public)
+
 
 def atomic_link(target, link):
     temp = link.with_name(link.name + '.new')
@@ -48,11 +43,11 @@ def build(config, release):
     stack = config['stack']
     if stack in ('npm','pnpm'):
         manager=['corepack','pnpm'] if stack=='pnpm' else ['npm']
-        run(manager+(['install','--frozen-lockfile'] if stack=='pnpm' else ['ci','--no-audit','--no-fund']),release)
-        for check in config.get('checks',[]): run(check,release)
-        for command in config['build']: run(command,release)
+        run(manager+(['install','--frozen-lockfile'] if stack=='pnpm' else ['ci','--no-audit','--no-fund']),release,public=True)
+        for check in config.get('checks',[]): run(check,release,public=True)
+        for command in config['build']: run(command,release,public=True)
     else:
-        for command in config['build']: run(command,release)
+        for command in config['build']: run(command,release,public=True)
     for required in config['outputs']:
         if not (release/required).exists(): raise RuntimeError('Required build output missing: '+required)
 
@@ -129,6 +124,7 @@ def main():
     parser.add_argument('--mode',choices=['validate','build','deploy'],required=True)
     opts=parser.parse_args(); config=json.loads(P(opts.config).read_text()); source=P(opts.source).resolve()
     root,branch,sha=validate(config,source)
+    REPORT.configure(repository=config['repository'],branch=branch,commit=sha,mode=opts.mode,root=str(root),phase='Prepare checkout')
     node=P('/home/gandiv/.nvm/versions/node')/config['node']/'bin'
     ENV={k:v for k,v in os.environ.items() if k in ('HOME','USER','LANG','LC_ALL','TMPDIR')}
     ENV.update(PATH=str(node)+':/home/gandiv/.nvm/versions/node/v22.17.1/bin:/home/gandiv/.cargo/bin:/usr/local/bin:/usr/bin:/bin:/snap/bin',GOTOOLCHAIN=config.get('go_toolchain','auto'),CI='true',NX_DAEMON='false',PM2_HOME='/home/gandiv/.pm2',NODE_OPTIONS='--max-old-space-size='+str(config.get('heap_mb',3072)))
@@ -147,6 +143,9 @@ def main():
         if backup.exists(): raise RuntimeError('Backup already exists; use a new attempt')
         backup.mkdir(mode=0o700)
         existing={e['name']:e['pm2_env'] for e in json.loads(run([PM2,'jlist'],capture=True))}
+        for runtime_state in existing.values():
+            REPORT.add_env(runtime_state)
+            REPORT.add_env(runtime_state.get('env',{}))
         names=[r['name'] for r in config['runtimes']]
         active_root=[n for n in names if n in existing and P(existing[n]['pm_cwd']).resolve().is_relative_to(root) and not P(existing[n]['pm_cwd']).resolve().is_relative_to(state)]
         if opts.mode=='build' and (active_root or config['static']):
@@ -216,12 +215,14 @@ def main():
                         archive.extract(item,root)
             print('Building directly in '+str(root)+' at '+sha,flush=True)
             building=True
+            REPORT.context['phase']='Build'
             build(config,root)
             if config['static']:
                 for d,ds,fs in os.walk(root/'dist'):
                     P(d).chmod(0o755)
                     for f in fs: (P(d)/f).chmod(0o644)
             if opts.mode=='deploy':
+                REPORT.context['phase']='Restart and readiness'
                 newfile=state/'runtime.json'; newfile.write_text(json.dumps(pm2_config(config,root,existing))); newfile.chmod(0o600)
                 restarted=True
                 for name in names:
@@ -235,28 +236,37 @@ def main():
             receipt={'repository':config['repository'],'branch':branch,'commit':sha,'run':runid,'mode':opts.mode,'time':time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime()),'build_directory':str(root),'strategy':'direct'}
             (state/('last-deploy.json' if opts.mode=='deploy' else 'last-build.json')).write_text(json.dumps(receipt,indent=2))
             print('Direct '+opts.mode+' passed: '+sha,flush=True)
-            summary=os.environ.get('GITHUB_STEP_SUMMARY')
-            if summary:
-                with open(summary,'a') as f: f.write('Branch: `'+branch+'`\n\nCommit: `'+sha+'`\n\nBuild directory: `'+str(root)+'`\n\nResult: '+opts.mode+' passed\n')
-        except BaseException:
-            print('Failed; restoring previous build outputs and targeted services.',flush=True)
-            for q in outputs:
-                if building or q in moved: remove(root/q)
-            for q in moved:
-                (root/q).parent.mkdir(parents=True,exist_ok=True); (backup/'outputs'/q).rename(root/q)
-            restore_environment(root,envfiles)
-            if restarted:
-                now={e['name'] for e in json.loads(run([PM2,'jlist'],capture=True))}
-                for name in names:
-                    if name in now: run([PM2,'delete',name])
-                for app in rollback: run([PM2,'start',str(oldfile),'--only',app['name']])
+        except BaseException as failure:
+            REPORT.rollback='In progress'
+            try:
+                print('Failed; restoring previous build outputs and targeted services.',flush=True)
+                for q in outputs:
+                    if building or q in moved: remove(root/q)
+                for q in moved:
+                    (root/q).parent.mkdir(parents=True,exist_ok=True); (backup/'outputs'/q).rename(root/q)
+                restore_environment(root,envfiles)
+                if restarted:
+                    now={e['name'] for e in json.loads(run([PM2,'jlist'],capture=True))}
+                    for name in names:
+                        if name in now: run([PM2,'delete',name])
+                    for app in rollback: run([PM2,'start',str(oldfile),'--only',app['name']])
+                else:
+                    for name in active_root: run([PM2,'restart',name])
+                if names: run([PM2,'save'])
+            except BaseException as rollback_error:
+                REPORT.rollback='FAILED: '+REPORT.clean(str(rollback_error))
+                print('Rollback failed; see the job summary.',flush=True)
             else:
-                for name in active_root: run([PM2,'restart',name])
-            if names: run([PM2,'save'])
-            raise
+                REPORT.rollback='Previous build outputs and targeted services restored'
+            raise failure
 
 if __name__=='__main__':
     def cancelled(signum,frame): raise RuntimeError('Deployment interrupted')
     signal.signal(signal.SIGTERM,cancelled); signal.signal(signal.SIGINT,cancelled)
     try: main()
-    except Exception as error: print('::error::'+str(error),file=sys.stderr); sys.exit(1)
+    except Exception as error:
+        REPORT.finish(error)
+        code=getattr(error,'returncode',1)
+        sys.exit(code if code > 0 else 128-code)
+    else:
+        REPORT.finish()
