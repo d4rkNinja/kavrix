@@ -155,7 +155,14 @@ class Reporter:
                 print('$ ' + command, flush=True)
         child = None
         try:
-            child = subprocess.Popen(args, cwd=cwd, env=env, stdout=subprocess.PIPE,
+            command_env = dict(os.environ if env is None else env)
+            # The deployer deliberately strips CI variables from runtime commands.
+            # Build descendants still need this marker so GitHub can clean them
+            # up even when cancellation kills the parent before Python unwinds.
+            # Never add it to private PM2/service activation commands.
+            if public and os.environ.get('RUNNER_TRACKING_ID'):
+                command_env['RUNNER_TRACKING_ID'] = os.environ['RUNNER_TRACKING_ID']
+            child = subprocess.Popen(args, cwd=cwd, env=command_env, stdout=subprocess.PIPE,
                                      stderr=subprocess.STDOUT, start_new_session=True)
             assert child.stdout is not None
             with (Path(log).open('ab') if log else open(os.devnull, 'ab')) as protected:
